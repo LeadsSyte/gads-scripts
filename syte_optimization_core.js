@@ -222,8 +222,8 @@ function _createExactMatchWinner(searchTerm, campaignName, sourceAdGroupName) {
     
     // Check if this exact keyword already exists
     var existingKw = exactAdGroup.keywords()
-      .withCondition('keyword.text = "' + searchTerm + '"')
-      .withCondition('keyword.match_type = "EXACT"')
+      .withCondition('ad_group_criterion.keyword.text = "' + searchTerm + '"')
+      .withCondition('ad_group_criterion.keyword.match_type = "EXACT"')
       .get();
     
     if (existingKw.hasNext()) {
@@ -334,7 +334,7 @@ function _pauseHighSpendKeywords_LeadGen(results) {
       _log('INFO', 'PAUSE: "' + kw + '" | ' + CONFIG.CURRENCY_SYMBOL + cost.toFixed(2) + ' | 0 conv');
       results.keywordsPaused.push({ keyword: kw, campaign: cn, adGroup: agn, spend: cost });
       if (!CONFIG.PREVIEW_MODE) {
-        var ki = AdsApp.keywords().withCondition('ad_group.name = "' + agn + '"').withCondition('campaign.name = "' + cn + '"').withCondition('keyword.text = "' + kw + '"').get();
+        var ki = AdsApp.keywords().withCondition('ad_group.name = "' + agn + '"').withCondition('campaign.name = "' + cn + '"').withCondition('ad_group_criterion.keyword.text = "' + kw + '"').get();
         while (ki.hasNext()) ki.next().pause();
       }
       changeCount++;
@@ -366,7 +366,7 @@ function _negativeHighSpendSearchTerms_LeadGen(results) {
 
 function _promoteWinners_LeadGen(results) {
   var dr = _getDateRange();
-  var query = 'SELECT search_term_view.search_term, campaign.name, ad_group.name, metrics.conversions, metrics.clicks, metrics.cost_micros FROM search_term_view WHERE metrics.conversions >= ' + CONFIG.PROMOTION_MIN_CONVERSIONS + ' AND metrics.clicks >= ' + (CONFIG.PROMOTION_MIN_CLICKS || 10) + ' AND campaign.status = "ENABLED" AND campaign.advertising_channel_type = "SEARCH" AND segments.date BETWEEN "' + dr.startDate + '" AND "' + dr.endDate + '"';
+  var query = 'SELECT search_term_view.search_term, campaign.name, ad_group.name, metrics.conversions, metrics.clicks, metrics.cost_micros FROM search_term_view WHERE metrics.conversions > ' + (CONFIG.PROMOTION_MIN_CONVERSIONS - 1) + ' AND metrics.clicks > ' + ((CONFIG.PROMOTION_MIN_CLICKS || 10) - 1) + ' AND campaign.status = "ENABLED" AND campaign.advertising_channel_type = "SEARCH" AND segments.date BETWEEN "' + dr.startDate + '" AND "' + dr.endDate + '"';
   try {
     var search = AdsApp.search(query); var processed = {};
     while (search.hasNext()) {
@@ -408,7 +408,7 @@ function _pauseHighSpendKeywords_Ecommerce(results) {
       _log('INFO', 'ECOM PAUSE: "' + kw + '" | ROAS: ' + roas.toFixed(2) + 'x | Spend: ' + CONFIG.CURRENCY_SYMBOL + cost.toFixed(2));
       results.ecomKeywordsPaused.push({ keyword: kw, campaign: cn, adGroup: agn, spend: cost, revenue: revenue, roas: roas });
       if (!CONFIG.PREVIEW_MODE) {
-        var ki = AdsApp.keywords().withCondition('ad_group.name = "' + agn + '"').withCondition('campaign.name = "' + cn + '"').withCondition('keyword.text = "' + kw + '"').get();
+        var ki = AdsApp.keywords().withCondition('ad_group.name = "' + agn + '"').withCondition('campaign.name = "' + cn + '"').withCondition('ad_group_criterion.keyword.text = "' + kw + '"').get();
         while (ki.hasNext()) ki.next().pause();
       }
       changeCount++;
@@ -441,7 +441,7 @@ function _negativeHighSpendSearchTerms_Ecommerce(results) {
 
 function _promoteWinners_Ecommerce(results) {
   var dr = _getDateRange();
-  var query = 'SELECT search_term_view.search_term, campaign.name, ad_group.name, metrics.conversions, metrics.conversions_value, metrics.clicks, metrics.cost_micros FROM search_term_view WHERE metrics.conversions >= ' + (CONFIG.ECOM_PROMOTION_MIN_CONVERSIONS || 2) + ' AND campaign.status = "ENABLED" AND campaign.advertising_channel_type = "SEARCH" AND segments.date BETWEEN "' + dr.startDate + '" AND "' + dr.endDate + '"';
+  var query = 'SELECT search_term_view.search_term, campaign.name, ad_group.name, metrics.conversions, metrics.conversions_value, metrics.clicks, metrics.cost_micros FROM search_term_view WHERE metrics.conversions > ' + ((CONFIG.ECOM_PROMOTION_MIN_CONVERSIONS || 2) - 1) + ' AND campaign.status = "ENABLED" AND campaign.advertising_channel_type = "SEARCH" AND segments.date BETWEEN "' + dr.startDate + '" AND "' + dr.endDate + '"';
   try {
     var search = AdsApp.search(query); var processed = {};
     while (search.hasNext()) {
@@ -1006,12 +1006,34 @@ function _autoNgramNegatives(results) {
     var existing = _getExistingNegatives(negativeList);
     var changeCount = 0;
     
+    // CRITICAL: Build a set of words that appear in active bidded keywords.
+    // Never negate these — they'd block your own keywords.
+    var activeKeywordWords = {};
+    try {
+      var kwQuery = 'SELECT ad_group_criterion.keyword.text FROM keyword_view WHERE campaign.status = "ENABLED" AND ad_group.status = "ENABLED" AND ad_group_criterion.status = "ENABLED"';
+      var kwSearch = AdsApp.search(kwQuery);
+      while (kwSearch.hasNext()) {
+        var kwText = kwSearch.next().adGroupCriterion.keyword.text.toLowerCase();
+        var kwWords = kwText.split(/\s+/);
+        for (var w = 0; w < kwWords.length; w++) {
+          var word = kwWords[w].replace(/[^a-z0-9]/g, '');
+          if (word.length >= 3) activeKeywordWords[word] = true;
+        }
+      }
+    } catch (e) { _log('WARN', 'Could not load active keyword words: ' + e.message); }
+    _log('INFO', 'Protected keyword words: ' + Object.keys(activeKeywordWords).length);
+    
     // Sort by total wasted spend (zero conversion words first)
     var wasteWords = [];
     for (var word in wordStats) {
       var ws = wordStats[word];
       if (ws.totalConversions === 0 && ws.totalCost >= ngramSpendThreshold && ws.termCount >= ngramMinTerms) {
         if (_isProtectedTerm(word) || existing[word]) continue;
+        // CRITICAL: Skip words that appear in active bidded keywords
+        if (activeKeywordWords[word]) {
+          _log('DEBUG', 'N-gram skip (in active keywords): "' + word + '" | ' + CONFIG.CURRENCY_SYMBOL + ws.totalCost.toFixed(0));
+          continue;
+        }
         // Skip common stop words
         if (['the', 'and', 'for', 'with', 'that', 'this', 'from', 'are', 'was', 'has', 'have', 'not', 'but', 'they', 'you', 'your', 'our', 'can', 'will'].indexOf(word) !== -1) continue;
         wasteWords.push({ word: word, stats: ws });
@@ -1076,7 +1098,7 @@ function _pauseLowQualityScoreKeywords(results) {
       results.lowQsPaused.push({ keyword: kw, qualityScore: qs, campaign: cn, adGroup: agn, spend: cost, clicks: clicks });
       
       if (!CONFIG.PREVIEW_MODE) {
-        var ki = AdsApp.keywords().withCondition('ad_group.name = "' + agn + '"').withCondition('campaign.name = "' + cn + '"').withCondition('keyword.text = "' + kw + '"').get();
+        var ki = AdsApp.keywords().withCondition('ad_group.name = "' + agn + '"').withCondition('campaign.name = "' + cn + '"').withCondition('ad_group_criterion.keyword.text = "' + kw + '"').get();
         while (ki.hasNext()) ki.next().pause();
       }
       changeCount++;
@@ -1163,23 +1185,10 @@ function _scanKeywordOpportunities(results) {
     return;
   }
   
-  var sheetUrl = CONFIG.KEYWORD_SHEET_URL;
-  if (!sheetUrl) {
-    _log('WARN', 'Keyword scanner skipped: KEYWORD_SHEET_URL not set in config');
-    return;
-  }
-  
   _log('INFO', 'Scanning website: ' + website);
   
   try {
-    // ============================================================
-    // PHASE 1: Process any previously APPROVED keywords first
-    // ============================================================
-    _processApprovedKeywords(sheetUrl, website, results);
-    
-    // ============================================================
-    // PHASE 2: Scan for new opportunities
-    // ============================================================
+    // Step 1: Extract services from website (via AI)
     var services = _extractServicesFromWebsite(website);
     _log('INFO', 'Services found: ' + services.length);
     
@@ -1188,40 +1197,94 @@ function _scanKeywordOpportunities(results) {
       return;
     }
     
+    // Step 2: Generate transactional keywords grouped by service
     var serviceKeywords = _generateKeywordsByService(services);
-    _log('INFO', 'Service groups with keywords: ' + serviceKeywords.length);
+    _log('INFO', 'Service groups: ' + serviceKeywords.length);
     
+    // Step 3: Get existing keywords in the account
     var existingKeywords = _getAllExistingKeywords();
     _log('INFO', 'Existing keywords in account: ' + existingKeywords.size);
     
-    // Get keywords already in the sheet to avoid duplicates
-    var sheetExisting = _getExistingSheetKeywords(sheetUrl);
+    // Step 4: Get or create the PAUSED test campaign
+    var testCampaignName = CONFIG.TEST_CAMPAIGN_NAME || '[Test] Keyword Opportunities';
+    var testCampaign = _getOrCreateTestCampaign(testCampaignName, results);
     
-    // Filter to genuinely new opportunities
-    var newOpportunities = [];
+    // Step 5: Get existing ad groups in test campaign (to avoid duplicates)
+    var existingAdGroups = {};
+    if (testCampaign) {
+      try {
+        var agi = testCampaign.adGroups().get();
+        while (agi.hasNext()) existingAdGroups[agi.next().getName().toLowerCase()] = true;
+      } catch (e) {}
+    }
+    
+    // Step 6: Build ad groups for new services only
+    var totalOpportunities = [];
+    var adGroupsCreated = 0;
+    
     for (var i = 0; i < serviceKeywords.length; i++) {
       var group = serviceKeywords[i];
+      var adGroupName = '[Test] ' + group.serviceName;
+      
+      // Skip if ad group already exists (already discovered)
+      if (existingAdGroups[adGroupName.toLowerCase()]) {
+        _log('DEBUG', 'Already exists, skipping: ' + adGroupName);
+        continue;
+      }
+      
+      // Filter keywords that already exist in the account
+      var newKws = [];
       for (var k = 0; k < group.keywords.length; k++) {
         var kwLower = group.keywords[k].keyword.toLowerCase();
-        if (!existingKeywords.has(kwLower) && !_isCloseVariation(kwLower, existingKeywords) && !sheetExisting[kwLower]) {
-          newOpportunities.push({
-            service: group.serviceName,
-            keyword: group.keywords[k].keyword,
-            matchType: group.keywords[k].matchType,
-            sourceUrl: group.sourceUrl || website
-          });
+        if (!existingKeywords.has(kwLower) && !_isCloseVariation(kwLower, existingKeywords)) {
+          newKws.push(group.keywords[k]);
         }
       }
+      
+      // Only create if at least 3 genuinely new keywords
+      if (newKws.length < 3) continue;
+      
+      // Cap at 10 new ad groups per run
+      if (adGroupsCreated >= 10) {
+        _log('INFO', 'Max 10 ad groups per run — remaining picked up next run');
+        break;
+      }
+      
+      _log('INFO', 'Building: "' + adGroupName + '" (' + newKws.length + ' keywords)');
+      
+      if (!CONFIG.PREVIEW_MODE && testCampaign) {
+        var agResult = testCampaign.newAdGroupBuilder().withName(adGroupName).withStatus('PAUSED').build();
+        if (agResult.isSuccessful()) {
+          var adGroup = agResult.getResult();
+          
+          // Add keywords
+          var kwCount = 0;
+          for (var k = 0; k < newKws.length && kwCount < 20; k++) {
+            var kw = newKws[k];
+            var formatted = kw.matchType === 'Exact' ? '[' + kw.keyword + ']' : '"' + kw.keyword + '"';
+            try {
+              adGroup.newKeywordBuilder().withText(formatted).withFinalUrl(group.sourceUrl || website).build();
+              kwCount++;
+            } catch (e) { _log('DEBUG', 'KW add: ' + e.message); }
+          }
+          
+          // Create RSA
+          _createAdGroupRSA(adGroup, group.serviceName, website);
+          adGroupsCreated++;
+          _log('INFO', '  Created with ' + kwCount + ' keywords + RSA (PAUSED)');
+        }
+      } else {
+        _log('INFO', '  Would create "' + adGroupName + '" with ' + newKws.length + ' keywords (Preview)');
+        adGroupsCreated++;
+      }
+      
+      for (var k = 0; k < newKws.length; k++) totalOpportunities.push(newKws[k]);
     }
     
-    _log('INFO', 'New keyword opportunities: ' + newOpportunities.length);
-    
-    if (newOpportunities.length > 0) {
-      _writeOpportunitiesToSheet(sheetUrl, newOpportunities, results);
-    }
-    
-    results.keywordOpportunities = newOpportunities;
+    _log('INFO', 'Ad groups created: ' + adGroupsCreated + ' | Total new keywords: ' + totalOpportunities.length);
+    results.keywordOpportunities = totalOpportunities;
     results.servicesFound = services;
+    results.testAdGroupsCreated = adGroupsCreated;
     
   } catch (e) {
     _log('ERROR', 'scanKeywordOpportunities: ' + e.message);
@@ -1231,177 +1294,48 @@ function _scanKeywordOpportunities(results) {
 
 
 /**
- * Reads the Google Sheet and returns keywords already listed (to avoid duplicates).
+ * Gets or creates the test campaign, always PAUSED.
+ * Team reviews directly in Google Ads — enables what they want.
  */
-function _getExistingSheetKeywords(sheetUrl) {
-  var existing = {};
-  try {
-    var ss = SpreadsheetApp.openByUrl(sheetUrl);
-    var sheet = ss.getSheetByName('Keyword Opportunities') || ss.getSheets()[0];
-    var data = sheet.getDataRange().getValues();
-    for (var i = 1; i < data.length; i++) {
-      var kw = String(data[i][1] || '').toLowerCase().trim();
-      if (kw) existing[kw] = true;
-    }
-  } catch (e) {
-    _log('WARN', 'Could not read existing sheet keywords: ' + e.message);
-  }
-  return existing;
-}
-
-
-/**
- * Writes new keyword opportunities to the Google Sheet for team review.
- * Team marks column E as "Yes" to approve — script picks them up next run.
- */
-function _writeOpportunitiesToSheet(sheetUrl, opportunities, results) {
-  try {
-    var ss = SpreadsheetApp.openByUrl(sheetUrl);
-    var sheet = ss.getSheetByName('Keyword Opportunities');
-    
-    if (!sheet) {
-      sheet = ss.insertSheet('Keyword Opportunities');
-      sheet.appendRow(['Service', 'Keyword', 'Match Type', 'Source Page', 'Approve? (Yes/No)', 'Date Added', 'Date Processed', 'Campaign', 'Ad Group']);
-      sheet.getRange(1, 1, 1, 9).setFontWeight('bold').setBackground('#1565c0').setFontColor('white');
-      sheet.setColumnWidth(1, 180);
-      sheet.setColumnWidth(2, 250);
-      sheet.setColumnWidth(3, 100);
-      sheet.setColumnWidth(4, 250);
-      sheet.setColumnWidth(5, 120);
-      var approveRange = sheet.getRange(2, 5, 500, 1);
-      var rule = SpreadsheetApp.newDataValidation().requireValueInList(['Yes', 'No', ''], true).build();
-      approveRange.setDataValidation(rule);
-      sheet.setFrozenRows(1);
-      _log('INFO', 'Created "Keyword Opportunities" sheet with headers');
-    }
-    
-    var today = Utilities.formatDate(new Date(), AdsApp.currentAccount().getTimeZone(), 'yyyy-MM-dd');
-    var rowsToAdd = [];
-    for (var i = 0; i < opportunities.length; i++) {
-      var opp = opportunities[i];
-      var pagePath = opp.sourceUrl ? opp.sourceUrl.replace(/https?:\/\/[^\/]+/i, '') || '/' : '/';
-      rowsToAdd.push([opp.service, opp.keyword, opp.matchType, pagePath, '', today, '', '', '']);
-    }
-    
-    if (rowsToAdd.length > 0) {
-      var lastRow = sheet.getLastRow();
-      sheet.getRange(lastRow + 1, 1, rowsToAdd.length, 9).setValues(rowsToAdd);
-      sheet.getRange(lastRow + 1, 1, rowsToAdd.length, 9).setBackground('#e8f5e9');
-      _log('INFO', 'Wrote ' + rowsToAdd.length + ' opportunities to Google Sheet');
-      results.opportunitiesWritten = rowsToAdd.length;
-    }
-  } catch (e) {
-    _log('ERROR', 'writeOpportunitiesToSheet: ' + e.message);
-    results.errors.push('Sheet write: ' + e.message);
-  }
-}
-
-
-/**
- * Reads approved keywords from sheet (Status = "Yes") and creates them
- * in a test campaign with ad groups and AI-generated RSAs.
- */
-function _processApprovedKeywords(sheetUrl, websiteUrl, results) {
-  try {
-    var ss = SpreadsheetApp.openByUrl(sheetUrl);
-    var sheet = ss.getSheetByName('Keyword Opportunities');
-    if (!sheet) return;
-    
-    var data = sheet.getDataRange().getValues();
-    if (data.length <= 1) return;
-    
-    var approvedByService = {};
-    for (var i = 1; i < data.length; i++) {
-      var service = String(data[i][0] || '').trim();
-      var keyword = String(data[i][1] || '').trim();
-      var matchType = String(data[i][2] || 'Exact').trim();
-      var sourceUrl = String(data[i][3] || '').trim();
-      var approved = String(data[i][4] || '').trim().toLowerCase();
-      var processed = String(data[i][6] || '').trim();
-      
-      if (approved === 'yes' && !processed && keyword) {
-        if (!approvedByService[service]) approvedByService[service] = { keywords: [], sourceUrl: sourceUrl };
-        approvedByService[service].keywords.push({ keyword: keyword, matchType: matchType, row: i + 1 });
-      }
-    }
-    
-    var serviceNames = Object.keys(approvedByService);
-    if (serviceNames.length === 0) {
-      _log('DEBUG', 'No approved keywords to process');
-      return;
-    }
-    
-    _log('INFO', 'Found ' + serviceNames.length + ' services with approved keywords');
-    
-    var testCampaign = _getOrCreateTestCampaign(results);
-    if (!testCampaign && !CONFIG.PREVIEW_MODE) return;
-    
-    var today = Utilities.formatDate(new Date(), AdsApp.currentAccount().getTimeZone(), 'yyyy-MM-dd');
-    var totalCreated = 0;
-    
-    for (var s = 0; s < serviceNames.length && totalCreated < 10; s++) {
-      var serviceName = serviceNames[s];
-      var serviceData = approvedByService[serviceName];
-      var adGroupName = '[Test] ' + serviceName;
-      
-      _log('INFO', 'Creating: "' + adGroupName + '" (' + serviceData.keywords.length + ' approved keywords)');
-      
-      if (!CONFIG.PREVIEW_MODE && testCampaign) {
-        var agResult = testCampaign.newAdGroupBuilder().withName(adGroupName).withStatus('PAUSED').build();
-        if (agResult.isSuccessful()) {
-          var adGroup = agResult.getResult();
-          for (var k = 0; k < serviceData.keywords.length; k++) {
-            var kw = serviceData.keywords[k];
-            var formatted = kw.matchType === 'Exact' ? '[' + kw.keyword + ']' : '"' + kw.keyword + '"';
-            try { adGroup.newKeywordBuilder().withText(formatted).withFinalUrl(websiteUrl + serviceData.sourceUrl).build(); }
-            catch (e) { _log('DEBUG', 'KW add: ' + e.message); }
-            sheet.getRange(kw.row, 7).setValue(today);
-            sheet.getRange(kw.row, 8).setValue(testCampaign.getName());
-            sheet.getRange(kw.row, 9).setValue(adGroupName);
-            sheet.getRange(kw.row, 1, 1, 9).setBackground('#bbdefb');
-          }
-          _createAdGroupRSA(adGroup, serviceName, websiteUrl);
-          totalCreated++;
-        }
-      } else {
-        for (var k = 0; k < serviceData.keywords.length; k++) {
-          _log('INFO', '  Would add: [' + serviceData.keywords[k].keyword + '] to "' + adGroupName + '"');
-        }
-        totalCreated++;
-      }
-    }
-    
-    results.approvedKeywordsProcessed = totalCreated;
-    _log('INFO', 'Processed ' + totalCreated + ' approved service groups');
-  } catch (e) {
-    _log('ERROR', 'processApprovedKeywords: ' + e.message);
-    results.errors.push('Approved keywords: ' + e.message);
-  }
-}
-
-
-function _getOrCreateTestCampaign(results) {
-  var testCampaignName = CONFIG.TEST_CAMPAIGN_NAME || '[Test] Keyword Opportunities';
+function _getOrCreateTestCampaign(testCampaignName, results) {
   try {
     var ci = AdsApp.campaigns().withCondition('campaign.name = "' + testCampaignName + '"').get();
     if (ci.hasNext()) return ci.next();
   } catch (e) {}
-  if (CONFIG.PREVIEW_MODE) { _log('INFO', 'Would create test campaign: "' + testCampaignName + '" (PAUSED)'); return null; }
+  
+  if (CONFIG.PREVIEW_MODE) {
+    _log('INFO', 'Would create test campaign: "' + testCampaignName + '" (PAUSED)');
+    return null;
+  }
+  
   try {
-    var dailyBudget = Math.round((CONFIG.MONTHLY_BUDGET * (CONFIG.TEST_BUDGET_PERCENT || 0.15)) / 30);
-    var result = AdsApp.newCampaignBuilder().withName(testCampaignName).withBudget(dailyBudget).withBiddingStrategy('MAXIMIZE_CLICKS').withStatus('PAUSED').build();
-    if (result.isSuccessful()) { results.testCampaignCreated = testCampaignName; return result.getResult(); }
-  } catch (e) { _log('ERROR', 'Test campaign: ' + e.message); }
+    var dailyBudget = Math.round((CONFIG.MONTHLY_BUDGET * (CONFIG.TEST_BUDGET_PERCENT || 0.10)) / 30);
+    var result = AdsApp.newCampaignBuilder()
+      .withName(testCampaignName)
+      .withBudget(dailyBudget)
+      .withBiddingStrategy('MAXIMIZE_CLICKS')
+      .withStatus('PAUSED')
+      .build();
+    if (result.isSuccessful()) {
+      _log('INFO', 'Created campaign: "' + testCampaignName + '" | ' + CONFIG.CURRENCY_SYMBOL + dailyBudget + '/day | PAUSED');
+      results.testCampaignCreated = testCampaignName;
+      return result.getResult();
+    }
+  } catch (e) { _log('ERROR', 'Test campaign creation: ' + e.message); }
   return null;
 }
 
 
+/**
+ * Generates an RSA for an ad group using the Anthropic API, with template fallback.
+ */
 function _createAdGroupRSA(adGroup, serviceName, websiteUrl) {
   var apiKey = CONFIG.ANTHROPIC_API_KEY;
   var biz = CONFIG.CLIENT_NAME || 'Our Company';
+  
   if (apiKey) {
     try {
-      var prompt = 'Generate a Google Responsive Search Ad.\nBusiness: ' + biz + '\nService: ' + serviceName + '\nWebsite: ' + websiteUrl + '\n\nReturn EXACTLY this format:\nH1: [max 30 chars]\n...\nH15: [max 30 chars]\nD1: [max 90 chars]\nD2: [max 90 chars]\nD3: [max 90 chars]\nD4: [max 90 chars]\n\nRules: Include business name in 2+ headlines. Include CTAs. Vary lengths. STRICT char limits.';
+      var prompt = 'Generate a Google Responsive Search Ad.\nBusiness: ' + biz + '\nService: ' + serviceName + '\nWebsite: ' + websiteUrl + '\n\nReturn EXACTLY this format:\nH1: [max 30 chars]\nH2: [max 30 chars]\nH3: [max 30 chars]\nH4: [max 30 chars]\nH5: [max 30 chars]\nH6: [max 30 chars]\nH7: [max 30 chars]\nH8: [max 30 chars]\nH9: [max 30 chars]\nH10: [max 30 chars]\nH11: [max 30 chars]\nH12: [max 30 chars]\nH13: [max 30 chars]\nH14: [max 30 chars]\nH15: [max 30 chars]\nD1: [max 90 chars]\nD2: [max 90 chars]\nD3: [max 90 chars]\nD4: [max 90 chars]\n\nRules: Include business name in 2+ headlines. Include CTAs. Vary lengths. STRICT char limits.';
       var resp = UrlFetchApp.fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
@@ -1428,7 +1362,8 @@ function _createAdGroupRSA(adGroup, serviceName, websiteUrl) {
       }
     } catch (e) { _log('WARN', 'AI RSA failed: ' + e.message); }
   }
-  // Fallback
+  
+  // Fallback: template RSA
   var svc = serviceName.substring(0, 22);
   var bizShort = biz.substring(0, 25);
   try {
@@ -1450,8 +1385,8 @@ function _createAdGroupRSA(adGroup, serviceName, websiteUrl) {
         { text: ('Get started with ' + svc.toLowerCase() + ' today. Professional team, fast turnaround. Contact us now.').substring(0, 90) }
       ])
       .withFinalUrl(websiteUrl).build();
-    _log('INFO', '  Basic RSA created for "' + serviceName + '"');
-  } catch (e) { _log('WARN', 'Basic RSA failed: ' + e.message); }
+    _log('INFO', '  Template RSA created for "' + serviceName + '"');
+  } catch (e) { _log('WARN', 'Template RSA failed: ' + e.message); }
 }
 
 
@@ -1495,6 +1430,7 @@ function _generateKeywordsByService(services) {
   }
   return groups;
 }
+
 
 /**
  * Fetches the website and extracts service/product names from:
@@ -1917,6 +1853,28 @@ function runOptimization() {
     _log('INFO', '\n=== CONVERSION HEALTH CHECK ===');
     _checkConversionHealth(results);
     
+    // === HALT if conversion tracking appears broken ===
+    // If zero conversions or 50%+ drop, skip ALL optimization tasks.
+    // Bad data = bad decisions. Only run non-conversion-dependent tasks.
+    if (results.conversionAlert) {
+      _log('ERROR', '⛔ HALTING ALL OPTIMIZATION — conversion tracking may be broken');
+      _log('ERROR', 'No keywords will be paused, no negatives added, no bid adjustments made.');
+      _log('ERROR', 'Fix conversion tracking, then the script will resume on the next run.');
+      
+      // Still run keyword scanner (doesn't depend on conversions)
+      if (CONFIG.KEYWORD_SCANNER !== false && CONFIG.CLIENT_WEBSITE) {
+        _log('INFO', '\n=== KEYWORD OPPORTUNITY SCANNER (safe to run) ===');
+        _scanKeywordOpportunities(results);
+      }
+      
+      // Still check budget pacing
+      _log('INFO', '\n=== BUDGET PACING ===');
+      _checkBudgetPacing(results);
+      
+    } else {
+    
+    // === NORMAL OPERATION — conversion tracking is healthy ===
+    
     // === LEAD GEN TASKS ===
     if (_isLeadGenMode()) {
       _log('INFO', '\n=== SEARCH (LEAD GEN) ===');
@@ -1984,6 +1942,8 @@ function runOptimization() {
     // === BUDGET PACING ===
     _log('INFO', '\n=== BUDGET PACING ===');
     _checkBudgetPacing(results);
+    
+    } // end of else (normal operation — tracking healthy)
     
   } catch (e) {
     _log('ERROR', 'Script error: ' + e.message);
