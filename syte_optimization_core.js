@@ -22,6 +22,8 @@
  * - NEW: Conversion tracking health check — urgent alert if conversions drop 50%+ week-over-week
  * - NEW: N-gram analysis — finds recurring waste words across search terms and auto-negatives them
  * - NEW: Low Quality Score keyword pausing — pauses QS 1-3 keywords above spend threshold
+ * - NEW: Keyword Opportunity Scanner — scrapes client website, finds services, generates transactional
+ *        keywords, compares vs existing account keywords, and reports gaps to bid on
  * 
  * CHANGELOG v3.1:
  * - Central hosting architecture (core + loader pattern)
@@ -1143,6 +1145,344 @@ function _checkConversionHealth(results) {
 
 
 // ============================================
+// KEYWORD OPPORTUNITY SCANNER
+// ============================================
+
+/**
+ * Scrapes the client's website to find services/products, generates
+ * transactional keywords, and compares against existing account keywords
+ * to identify gaps — services you COULD be bidding on but aren't.
+ * 
+ * Requires CONFIG.CLIENT_WEBSITE to be set.
+ * Only runs if CONFIG.KEYWORD_SCANNER !== false.
+ */
+function _scanKeywordOpportunities(results) {
+  var website = CONFIG.CLIENT_WEBSITE;
+  if (!website) {
+    _log('WARN', 'Keyword scanner skipped: CLIENT_WEBSITE not set in config');
+    return;
+  }
+  
+  _log('INFO', 'Scanning website: ' + website);
+  
+  try {
+    // Step 1: Fetch and parse the website
+    var services = _extractServicesFromWebsite(website);
+    _log('INFO', 'Services found: ' + services.length);
+    
+    if (services.length === 0) {
+      _log('WARN', 'No services extracted from website');
+      return;
+    }
+    
+    // Step 2: Generate transactional keywords from services
+    var candidateKeywords = _generateTransactionalKeywords(services);
+    _log('INFO', 'Candidate keywords generated: ' + candidateKeywords.length);
+    
+    // Step 3: Get all existing keywords in the account
+    var existingKeywords = _getAllExistingKeywords();
+    _log('INFO', 'Existing keywords in account: ' + existingKeywords.size);
+    
+    // Step 4: Find gaps
+    var opportunities = [];
+    for (var i = 0; i < candidateKeywords.length; i++) {
+      var kw = candidateKeywords[i];
+      var kwLower = kw.keyword.toLowerCase();
+      
+      // Check if this keyword (or close variation) already exists
+      if (!existingKeywords.has(kwLower) && !_isCloseVariation(kwLower, existingKeywords)) {
+        opportunities.push(kw);
+      }
+    }
+    
+    _log('INFO', 'Keyword opportunities found: ' + opportunities.length);
+    results.keywordOpportunities = opportunities;
+    results.servicesFound = services;
+    
+  } catch (e) {
+    _log('ERROR', 'scanKeywordOpportunities: ' + e.message);
+    results.errors.push('Keyword scanner: ' + e.message);
+  }
+}
+
+/**
+ * Fetches the website and extracts service/product names from:
+ * - Page titles, H1s, H2s, H3s
+ * - Navigation links
+ * - Meta descriptions
+ * Follows internal links to service/product pages.
+ */
+function _extractServicesFromWebsite(baseUrl) {
+  var services = [];
+  var visitedUrls = {};
+  var pagesToScan = [baseUrl];
+  var maxPages = CONFIG.SCANNER_MAX_PAGES || 15;
+  var pagesScanned = 0;
+  
+  // Normalize base domain
+  var domain = baseUrl.replace(/https?:\/\//i, '').replace(/\/.*$/, '').toLowerCase();
+  
+  while (pagesToScan.length > 0 && pagesScanned < maxPages) {
+    var url = pagesToScan.shift();
+    if (visitedUrls[url]) continue;
+    visitedUrls[url] = true;
+    pagesScanned++;
+    
+    try {
+      var response = UrlFetchApp.fetch(url, { muteHttpExceptions: true, followRedirects: true });
+      if (response.getResponseCode() !== 200) continue;
+      var html = response.getContentText();
+      
+      // Extract title
+      var titleMatch = html.match(/<title[^>]*>(.*?)<\/title>/i);
+      if (titleMatch) {
+        var title = _cleanText(titleMatch[1]);
+        if (title && title.length > 3 && title.length < 100) services.push({ text: title, source: 'title', url: url });
+      }
+      
+      // Extract headings (H1, H2, H3)
+      var headingRegex = /<h[1-3][^>]*>(.*?)<\/h[1-3]>/gi;
+      var hMatch;
+      while ((hMatch = headingRegex.exec(html)) !== null) {
+        var heading = _cleanText(hMatch[1]);
+        if (heading && heading.length > 3 && heading.length < 80) {
+          services.push({ text: heading, source: 'heading', url: url });
+        }
+      }
+      
+      // Extract meta description
+      var metaMatch = html.match(/<meta\s+name=["']description["']\s+content=["'](.*?)["']/i);
+      if (!metaMatch) metaMatch = html.match(/<meta\s+content=["'](.*?)["']\s+name=["']description["']/i);
+      if (metaMatch) {
+        var desc = _cleanText(metaMatch[1]);
+        if (desc) services.push({ text: desc, source: 'meta', url: url });
+      }
+      
+      // Find internal links to scan (service/product pages)
+      var linkRegex = /<a\s+[^>]*href=["'](.*?)["'][^>]*>(.*?)<\/a>/gi;
+      var linkMatch;
+      while ((linkMatch = linkRegex.exec(html)) !== null) {
+        var href = linkMatch[1];
+        var linkText = _cleanText(linkMatch[2]);
+        
+        // Only follow internal links
+        if (href.indexOf('http') === 0 && href.toLowerCase().indexOf(domain) === -1) continue;
+        
+        // Build full URL
+        var fullUrl = href;
+        if (href.indexOf('http') !== 0) {
+          fullUrl = baseUrl.replace(/\/$/, '') + (href.indexOf('/') === 0 ? '' : '/') + href;
+        }
+        
+        // Prioritize service-looking URLs
+        var serviceUrlPatterns = /\b(service|product|solution|offer|what-we-do|our-work|specialit|capabilities|feature|package)\b/i;
+        if (serviceUrlPatterns.test(href) || serviceUrlPatterns.test(linkText)) {
+          if (!visitedUrls[fullUrl] && pagesToScan.indexOf(fullUrl) === -1) {
+            pagesToScan.unshift(fullUrl); // prioritize these
+          }
+        } else if (href.indexOf('#') !== 0 && href.indexOf('mailto') !== 0 && href.indexOf('tel:') !== 0 && href.indexOf('javascript') !== 0) {
+          if (!visitedUrls[fullUrl] && pagesToScan.indexOf(fullUrl) === -1) {
+            pagesToScan.push(fullUrl);
+          }
+        }
+        
+        // Link text itself might be a service name
+        if (linkText && linkText.length > 3 && linkText.length < 50 && !/^(home|about|contact|blog|login|sign|menu|close|read more|learn more|click here)/i.test(linkText)) {
+          services.push({ text: linkText, source: 'nav-link', url: fullUrl });
+        }
+      }
+      
+    } catch (e) {
+      _log('DEBUG', 'Failed to fetch: ' + url + ' (' + e.message + ')');
+    }
+  }
+  
+  // Deduplicate and clean services
+  return _deduplicateServices(services);
+}
+
+/**
+ * Cleans extracted text: strips HTML tags, decodes entities, trims.
+ */
+function _cleanText(text) {
+  if (!text) return '';
+  return text
+    .replace(/<[^>]+>/g, '') // strip tags
+    .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&nbsp;/g, ' ').replace(/&#\d+;/g, '').replace(/&[a-z]+;/gi, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Deduplicates service names and filters out non-service content.
+ */
+function _deduplicateServices(rawServices) {
+  var seen = {};
+  var results = [];
+  
+  // Words that indicate NOT a service (navigation, generic site stuff)
+  var stopPhrases = /^(home|about us|contact|blog|news|privacy|terms|cookie|sitemap|login|sign up|cart|checkout|faq|copyright|all rights|powered by|follow us|subscribe|menu|toggle|search|loading)/i;
+  
+  for (var i = 0; i < rawServices.length; i++) {
+    var text = rawServices[i].text.toLowerCase().trim();
+    
+    // Skip very short, very long, or stopword content
+    if (text.length < 4 || text.length > 60) continue;
+    if (stopPhrases.test(text)) continue;
+    if (seen[text]) continue;
+    
+    seen[text] = true;
+    results.push(rawServices[i]);
+  }
+  
+  return results;
+}
+
+/**
+ * Takes extracted service names and generates transactional keyword variations.
+ * Only generates buyer-intent keywords, not informational.
+ */
+function _generateTransactionalKeywords(services) {
+  var transactionalModifiers = [
+    // Direct purchase intent
+    { prefix: '', suffix: ' services' },
+    { prefix: '', suffix: ' company' },
+    { prefix: '', suffix: ' agency' },
+    { prefix: '', suffix: ' provider' },
+    { prefix: '', suffix: ' specialist' },
+    { prefix: '', suffix: ' expert' },
+    // Price/quote intent
+    { prefix: '', suffix: ' cost' },
+    { prefix: '', suffix: ' pricing' },
+    { prefix: '', suffix: ' quote' },
+    { prefix: '', suffix: ' rates' },
+    { prefix: '', suffix: ' packages' },
+    // Hire/buy intent
+    { prefix: 'hire ', suffix: '' },
+    { prefix: 'get ', suffix: '' },
+    { prefix: 'buy ', suffix: '' },
+    { prefix: 'order ', suffix: '' },
+    { prefix: 'book ', suffix: '' },
+    // Quality modifiers
+    { prefix: 'best ', suffix: '' },
+    { prefix: 'top ', suffix: '' },
+    { prefix: 'professional ', suffix: '' },
+    { prefix: 'affordable ', suffix: '' },
+    // Local
+    { prefix: '', suffix: ' near me' },
+  ];
+  
+  // Add location-based modifiers from config
+  var locations = CONFIG.TARGET_LOCATIONS || [];
+  for (var l = 0; l < locations.length; l++) {
+    transactionalModifiers.push({ prefix: '', suffix: ' ' + locations[l].toLowerCase() });
+    transactionalModifiers.push({ prefix: '', suffix: ' in ' + locations[l].toLowerCase() });
+  }
+  
+  var keywords = [];
+  var seen = {};
+  
+  for (var i = 0; i < services.length; i++) {
+    var service = services[i];
+    var basePhrase = service.text.toLowerCase()
+      .replace(/[^\w\s]/g, '') // remove special chars
+      .replace(/\s+/g, ' ')
+      .trim();
+    
+    // Skip if too short or too long for a keyword base
+    if (basePhrase.length < 3 || basePhrase.split(' ').length > 5) continue;
+    
+    // Add the base phrase itself as exact match candidate
+    if (!seen[basePhrase]) {
+      keywords.push({ keyword: basePhrase, matchType: 'Exact', source: service.source, sourceUrl: service.url, modifier: 'base' });
+      seen[basePhrase] = true;
+    }
+    
+    // Generate transactional variations
+    for (var m = 0; m < transactionalModifiers.length; m++) {
+      var mod = transactionalModifiers[m];
+      var kw = (mod.prefix + basePhrase + mod.suffix).trim();
+      
+      // Skip if too long (>80 chars) or already seen
+      if (kw.length > 80 || seen[kw]) continue;
+      // Skip if modifier words already in the base phrase
+      if (mod.prefix && basePhrase.indexOf(mod.prefix.trim()) !== -1) continue;
+      if (mod.suffix && basePhrase.indexOf(mod.suffix.trim()) !== -1) continue;
+      
+      seen[kw] = true;
+      keywords.push({
+        keyword: kw,
+        matchType: kw.split(' ').length <= 3 ? 'Exact' : 'Phrase',
+        source: service.source,
+        sourceUrl: service.url,
+        modifier: (mod.prefix + '___' + mod.suffix).trim()
+      });
+    }
+  }
+  
+  return keywords;
+}
+
+/**
+ * Gets all existing keywords from the account for comparison.
+ */
+function _getAllExistingKeywords() {
+  var existing = new Set ? new Set() : {};
+  var isSet = typeof Set !== 'undefined';
+  
+  var query = 'SELECT ad_group_criterion.keyword.text FROM keyword_view WHERE campaign.status = "ENABLED" AND ad_group_criterion.status != "REMOVED"';
+  
+  try {
+    var search = AdsApp.search(query);
+    while (search.hasNext()) {
+      var kw = search.next().adGroupCriterion.keyword.text.toLowerCase();
+      if (isSet) existing.add(kw); else existing[kw] = true;
+    }
+  } catch (e) {
+    _log('WARN', 'getAllExistingKeywords: ' + e.message);
+    // Fallback: use keyword iterator
+    try {
+      var kwIterator = AdsApp.keywords().withCondition('campaign.status = "ENABLED"').get();
+      while (kwIterator.hasNext()) {
+        var kw = kwIterator.next().getText().toLowerCase().replace(/[\[\]"+]/g, '');
+        if (isSet) existing.add(kw); else existing[kw] = true;
+      }
+    } catch (e2) { _log('ERROR', 'keyword fallback: ' + e2.message); }
+  }
+  
+  // Wrap in consistent interface
+  if (!isSet) {
+    var obj = existing;
+    existing = { has: function(k) { return obj[k] === true; }, size: Object.keys(obj).length };
+  }
+  
+  return existing;
+}
+
+/**
+ * Checks if a keyword is a close variation of any existing keyword.
+ * Catches plurals, slight reordering, etc.
+ */
+function _isCloseVariation(candidate, existingSet) {
+  // Check without trailing 's' (simple plural check)
+  if (candidate.endsWith('s') && existingSet.has(candidate.slice(0, -1))) return true;
+  if (existingSet.has(candidate + 's')) return true;
+  
+  // Check with/without common suffixes
+  var suffixes = [' services', ' service', ' company', ' agency'];
+  for (var i = 0; i < suffixes.length; i++) {
+    if (candidate.endsWith(suffixes[i])) {
+      var base = candidate.slice(0, -suffixes[i].length);
+      if (existingSet.has(base)) return true;
+    }
+  }
+  
+  return false;
+}
+
+
+// ============================================
 // EMAIL REPORT
 // ============================================
 
@@ -1191,6 +1531,13 @@ function _sendReport(results, duration) {
   email += '<tr><td style="padding:4px 8px;">N-gram Negatives</td><td style="text-align:right;font-weight:bold;">' + results.ngramNegatives.length + '</td></tr>';
   email += '<tr><td style="padding:4px 8px;">Low QS Keywords Paused</td><td style="text-align:right;font-weight:bold;">' + results.lowQsPaused.length + '</td></tr>';
   
+  // Keyword scanner
+  if (results.keywordOpportunities && results.keywordOpportunities.length > 0) {
+    email += '<tr><td colspan="2" style="padding:8px;background:#bbdefb;font-weight:bold;">🔍 Keyword Scanner</td></tr>';
+    email += '<tr><td style="padding:4px 8px;">Services Found on Website</td><td style="text-align:right;font-weight:bold;">' + (results.servicesFound ? results.servicesFound.length : 0) + '</td></tr>';
+    email += '<tr><td style="padding:4px 8px;">Keyword Gaps (not bidding on)</td><td style="text-align:right;font-weight:bold;color:#1565c0;">' + results.keywordOpportunities.length + '</td></tr>';
+  }
+  
   // Conversion health
   if (results.conversionHealth) {
     var ch = results.conversionHealth;
@@ -1206,6 +1553,38 @@ function _sendReport(results, duration) {
   email += '<tr><td style="padding:4px 8px;">Budget Alerts</td><td style="text-align:right;font-weight:bold;">' + results.budgetAlerts.length + '</td></tr>';
   email += '<tr><td style="padding:4px 8px;">Errors</td><td style="text-align:right;font-weight:bold;">' + results.errors.length + '</td></tr>';
   email += '</table></div>';
+  
+  // Keyword Opportunities detail section
+  if (results.keywordOpportunities && results.keywordOpportunities.length > 0) {
+    email += '<div style="background:#fff;padding:15px;border-top:2px solid #e0e5ec;">';
+    email += '<h3 style="color:#1565c0;margin:0 0 10px;">🔍 Keyword Opportunities (' + results.keywordOpportunities.length + ' found)</h3>';
+    email += '<p style="font-size:13px;color:#666;margin:0 0 10px;">Services found on website that you\'re NOT currently bidding on. Review and add the relevant ones.</p>';
+    
+    // Group by source service
+    var byService = {};
+    for (var o = 0; o < results.keywordOpportunities.length; o++) {
+      var opp = results.keywordOpportunities[o];
+      var key = opp.sourceUrl || 'general';
+      if (!byService[key]) byService[key] = [];
+      if (byService[key].length < 8) byService[key].push(opp); // cap per source
+    }
+    
+    email += '<table style="width:100%;border-collapse:collapse;font-size:13px;">';
+    email += '<tr style="background:#e3f2fd;"><th style="padding:6px 8px;text-align:left;">Keyword</th><th style="padding:6px 8px;text-align:left;">Match Type</th><th style="padding:6px 8px;text-align:left;">Found On</th></tr>';
+    var shown = 0;
+    for (var o = 0; o < results.keywordOpportunities.length && shown < 40; o++) {
+      var opp = results.keywordOpportunities[o];
+      var bg = shown % 2 === 0 ? '#fff' : '#f8f9fa';
+      var pageLabel = opp.sourceUrl ? opp.sourceUrl.replace(/https?:\/\/[^\/]+/i, '') || '/' : '-';
+      email += '<tr style="background:' + bg + ';"><td style="padding:4px 8px;font-family:monospace;">' + opp.keyword + '</td><td style="padding:4px 8px;">' + opp.matchType + '</td><td style="padding:4px 8px;color:#888;font-size:12px;">' + pageLabel + '</td></tr>';
+      shown++;
+    }
+    if (results.keywordOpportunities.length > 40) {
+      email += '<tr><td colspan="3" style="padding:8px;color:#888;font-style:italic;">... and ' + (results.keywordOpportunities.length - 40) + ' more</td></tr>';
+    }
+    email += '</table></div>';
+  }
+  
   email += '<div style="padding:15px;color:#666;font-size:12px;"><p>Completed in ' + duration.toFixed(1) + 's | Core v3.2 | Syte Digital Agency</p></div></body></html>';
   
   var recipients = CONFIG.EMAIL_ADDRESSES || [CONFIG.EMAIL_RECIPIENT || 'michaelh@syte.co.za'];
@@ -1239,6 +1618,8 @@ function runOptimization() {
     deviceAdjustments: [], scheduleAdjustments: [], geoAdjustments: [],
     ngramNegatives: [], lowQsPaused: [],
     conversionHealth: null, conversionAlert: null,
+    // Keyword opportunity scanner
+    keywordOpportunities: [], servicesFound: [],
     errors: []
   };
   
@@ -1305,6 +1686,12 @@ function runOptimization() {
       _pauseLowQualityScoreKeywords(results);
     }
     
+    // === KEYWORD OPPORTUNITY SCANNER ===
+    if (CONFIG.KEYWORD_SCANNER !== false && CONFIG.CLIENT_WEBSITE) {
+      _log('INFO', '\n=== KEYWORD OPPORTUNITY SCANNER ===');
+      _scanKeywordOpportunities(results);
+    }
+    
     // === BUDGET PACING ===
     _log('INFO', '\n=== BUDGET PACING ===');
     _checkBudgetPacing(results);
@@ -1330,4 +1717,7 @@ function runOptimization() {
   }
   _log('INFO', 'Device: ' + results.deviceAdjustments.length + ' | Schedule: ' + results.scheduleAdjustments.length + ' | Geo: ' + results.geoAdjustments.length + ' | N-gram: ' + results.ngramNegatives.length + ' | Low QS: ' + results.lowQsPaused.length);
   _log('INFO', 'Informational: ' + results.informationalBlocked.length + ' | Irrelevant: ' + results.irrelevantBlocked.length + ' | Budget: ' + results.budgetAlerts.length + ' | Errors: ' + results.errors.length);
+  if (results.keywordOpportunities && results.keywordOpportunities.length > 0) {
+    _log('INFO', 'Keyword Opportunities: ' + results.keywordOpportunities.length + ' (from ' + (results.servicesFound ? results.servicesFound.length : 0) + ' services found)');
+  }
 }
