@@ -1205,20 +1205,23 @@ function _scanKeywordOpportunities(results) {
     var existingKeywords = _getAllExistingKeywords();
     _log('INFO', 'Existing keywords in account: ' + existingKeywords.size);
     
-    // Step 4: Get or create the PAUSED test campaign
-    var testCampaignName = CONFIG.TEST_CAMPAIGN_NAME || '[Test] Keyword Opportunities';
-    var testCampaign = _getOrCreateTestCampaign(testCampaignName, results);
-    
-    // Step 5: Get existing ad groups in test campaign (to avoid duplicates)
-    var existingAdGroups = {};
-    if (testCampaign) {
-      try {
-        var agi = testCampaign.adGroups().get();
-        while (agi.hasNext()) existingAdGroups[agi.next().getName().toLowerCase()] = true;
-      } catch (e) {}
+    // Step 4: Find the best existing search campaign to add ad groups into
+    var targetCampaign = _findBestSearchCampaign();
+    if (!targetCampaign && !CONFIG.PREVIEW_MODE) {
+      _log('WARN', 'No enabled search campaign found — cannot create test ad groups');
+      return;
     }
+    var targetCampaignName = targetCampaign ? targetCampaign.getName() : '(preview)';
+    _log('INFO', 'Target campaign: "' + targetCampaignName + '"');
     
-    // Step 6: Build ad groups for new services only
+    // Step 5: Get existing [Test] ad groups to avoid duplicates
+    var existingAdGroups = {};
+    try {
+      var agi = AdsApp.adGroups().withCondition('ad_group.name LIKE "[Test]%"').get();
+      while (agi.hasNext()) existingAdGroups[agi.next().getName().toLowerCase()] = true;
+    } catch (e) {}
+    
+    // Step 6: Create PAUSED ad groups for new services
     var totalOpportunities = [];
     var adGroupsCreated = 0;
     
@@ -1226,13 +1229,13 @@ function _scanKeywordOpportunities(results) {
       var group = serviceKeywords[i];
       var adGroupName = '[Test] ' + group.serviceName;
       
-      // Skip if ad group already exists (already discovered)
+      // Skip if already exists
       if (existingAdGroups[adGroupName.toLowerCase()]) {
         _log('DEBUG', 'Already exists, skipping: ' + adGroupName);
         continue;
       }
       
-      // Filter keywords that already exist in the account
+      // Filter to genuinely new keywords
       var newKws = [];
       for (var k = 0; k < group.keywords.length; k++) {
         var kwLower = group.keywords[k].keyword.toLowerCase();
@@ -1241,23 +1244,22 @@ function _scanKeywordOpportunities(results) {
         }
       }
       
-      // Only create if at least 3 genuinely new keywords
+      // Need at least 3 new keywords to bother
       if (newKws.length < 3) continue;
       
-      // Cap at 10 new ad groups per run
+      // Cap at 10 per run
       if (adGroupsCreated >= 10) {
-        _log('INFO', 'Max 10 ad groups per run — remaining picked up next run');
+        _log('INFO', 'Max 10 ad groups per run — rest picked up next run');
         break;
       }
       
       _log('INFO', 'Building: "' + adGroupName + '" (' + newKws.length + ' keywords)');
       
-      if (!CONFIG.PREVIEW_MODE && testCampaign) {
-        var agResult = testCampaign.newAdGroupBuilder().withName(adGroupName).withStatus('PAUSED').build();
+      if (!CONFIG.PREVIEW_MODE && targetCampaign) {
+        var agResult = targetCampaign.newAdGroupBuilder().withName(adGroupName).withStatus('PAUSED').build();
         if (agResult.isSuccessful()) {
           var adGroup = agResult.getResult();
           
-          // Add keywords
           var kwCount = 0;
           for (var k = 0; k < newKws.length && kwCount < 20; k++) {
             var kw = newKws[k];
@@ -1268,23 +1270,26 @@ function _scanKeywordOpportunities(results) {
             } catch (e) { _log('DEBUG', 'KW add: ' + e.message); }
           }
           
-          // Create RSA
           _createAdGroupRSA(adGroup, group.serviceName, website);
           adGroupsCreated++;
-          _log('INFO', '  Created with ' + kwCount + ' keywords + RSA (PAUSED)');
+          _log('INFO', '  Created in "' + targetCampaignName + '" with ' + kwCount + ' keywords + RSA (PAUSED)');
         }
-      } else {
+      } else if (CONFIG.PREVIEW_MODE) {
         _log('INFO', '  Would create "' + adGroupName + '" with ' + newKws.length + ' keywords (Preview)');
         adGroupsCreated++;
       }
       
-      for (var k = 0; k < newKws.length; k++) totalOpportunities.push(newKws[k]);
+      for (var k = 0; k < newKws.length; k++) {
+        newKws[k].service = group.serviceName;
+        totalOpportunities.push(newKws[k]);
+      }
     }
     
     _log('INFO', 'Ad groups created: ' + adGroupsCreated + ' | Total new keywords: ' + totalOpportunities.length);
     results.keywordOpportunities = totalOpportunities;
     results.servicesFound = services;
     results.testAdGroupsCreated = adGroupsCreated;
+    results.testCampaignUsed = targetCampaignName;
     
   } catch (e) {
     _log('ERROR', 'scanKeywordOpportunities: ' + e.message);
@@ -1294,34 +1299,28 @@ function _scanKeywordOpportunities(results) {
 
 
 /**
- * Gets or creates the test campaign, always PAUSED.
- * Team reviews directly in Google Ads — enables what they want.
+ * Finds the most active enabled search campaign to place test ad groups into.
+ * Picks the one with the highest spend in the last 30 days.
  */
-function _getOrCreateTestCampaign(testCampaignName, results) {
+function _findBestSearchCampaign() {
   try {
-    var ci = AdsApp.campaigns().withCondition('campaign.name = "' + testCampaignName + '"').get();
+    var query = 'SELECT campaign.name, campaign.id, metrics.cost_micros FROM campaign ' +
+      'WHERE campaign.status = "ENABLED" AND campaign.advertising_channel_type = "SEARCH" ' +
+      'AND segments.date DURING LAST_30_DAYS ORDER BY metrics.cost_micros DESC LIMIT 1';
+    var search = AdsApp.search(query);
+    if (search.hasNext()) {
+      var topCampaignName = search.next().campaign.name;
+      var ci = AdsApp.campaigns().withCondition('campaign.name = "' + topCampaignName + '"').get();
+      if (ci.hasNext()) return ci.next();
+    }
+  } catch (e) { _log('WARN', 'findBestSearchCampaign: ' + e.message); }
+  
+  // Fallback: just get any enabled search campaign
+  try {
+    var ci = AdsApp.campaigns().withCondition('campaign.status = "ENABLED"').withCondition('campaign.advertising_channel_type = "SEARCH"').withLimit(1).get();
     if (ci.hasNext()) return ci.next();
   } catch (e) {}
   
-  if (CONFIG.PREVIEW_MODE) {
-    _log('INFO', 'Would create test campaign: "' + testCampaignName + '" (PAUSED)');
-    return null;
-  }
-  
-  try {
-    var dailyBudget = Math.round((CONFIG.MONTHLY_BUDGET * (CONFIG.TEST_BUDGET_PERCENT || 0.10)) / 30);
-    var result = AdsApp.newCampaignBuilder()
-      .withName(testCampaignName)
-      .withBudget(dailyBudget)
-      .withBiddingStrategy('MAXIMIZE_CLICKS')
-      .withStatus('PAUSED')
-      .build();
-    if (result.isSuccessful()) {
-      _log('INFO', 'Created campaign: "' + testCampaignName + '" | ' + CONFIG.CURRENCY_SYMBOL + dailyBudget + '/day | PAUSED');
-      results.testCampaignCreated = testCampaignName;
-      return result.getResult();
-    }
-  } catch (e) { _log('ERROR', 'Test campaign creation: ' + e.message); }
   return null;
 }
 
@@ -1781,31 +1780,52 @@ function _sendReport(results, duration) {
   
   // Keyword Opportunities detail section
   if (results.keywordOpportunities && results.keywordOpportunities.length > 0) {
-    email += '<div style="background:#fff;padding:15px;border-top:2px solid #e0e5ec;">';
-    email += '<h3 style="color:#1565c0;margin:0 0 10px;">🔍 Keyword Opportunities (' + results.keywordOpportunities.length + ' keywords across ' + (results.testAdGroupsCreated || 0) + ' new ad groups)</h3>';
-    email += '<p style="font-size:13px;color:#666;margin:0 0 10px;">Built into <strong>[Test] Keyword Opportunities</strong> campaign (PAUSED). Review and enable what looks good.</p>';
+    var accountId = AdsApp.currentAccount().getCustomerId().replace(/-/g, '');
+    var adsUrl = 'https://ads.google.com/aw/campaigns?authuser=0&ocid=' + accountId;
+    var campaignUsed = results.testCampaignUsed || 'your main search campaign';
     
-    // Group by source service
-    var byService = {};
-    for (var o = 0; o < results.keywordOpportunities.length; o++) {
-      var opp = results.keywordOpportunities[o];
-      var key = opp.sourceUrl || 'general';
-      if (!byService[key]) byService[key] = [];
-      if (byService[key].length < 8) byService[key].push(opp); // cap per source
-    }
+    email += '<div style="background:#e3f2fd;padding:20px;border-top:3px solid #1565c0;">';
+    email += '<h3 style="color:#1565c0;margin:0 0 6px;">🔍 New Keyword Opportunities Found</h3>';
+    email += '<p style="font-size:15px;color:#333;margin:0 0 4px;"><strong>' + results.keywordOpportunities.length + ' keywords</strong> across <strong>' + (results.testAdGroupsCreated || 0) + ' new PAUSED ad groups</strong> ready for your review.</p>';
+    email += '<p style="font-size:13px;color:#666;margin:0 0 16px;">Added to campaign <strong>' + campaignUsed + '</strong> — all ad groups start PAUSED until you approve them.</p>';
     
+    // Big action button
+    email += '<div style="margin:0 0 16px;">';
+    email += '<a href="' + adsUrl + '" style="display:inline-block;padding:14px 32px;background:#1565c0;color:white;text-decoration:none;border-radius:8px;font-size:15px;font-weight:bold;">👉 Review in Google Ads</a>';
+    email += '</div>';
+    
+    // Step by step
+    email += '<div style="background:white;border-radius:8px;padding:14px 16px;margin:0 0 16px;">';
+    email += '<p style="font-size:13px;font-weight:bold;color:#333;margin:0 0 8px;">How to approve or decline:</p>';
+    email += '<p style="font-size:13px;color:#555;margin:0;line-height:1.7;">';
+    email += '1. Click the button above → open campaign <strong>' + campaignUsed + '</strong><br>';
+    email += '2. Look for ad groups starting with <strong>[Test]</strong> — e.g. [Test] SEO Services, [Test] Google Ads Management<br>';
+    email += '3. <strong style="color:#2e7d32;">✅ To approve:</strong> Enable the ad group (change from Paused to Enabled)<br>';
+    email += '4. <strong style="color:#c62828;">❌ To decline:</strong> Delete it or leave paused — the script won\'t recreate it</p>';
+    email += '</div>';
+    email += '</div>';
+    
+    // Keyword table (grouped by service)
+    email += '<div style="background:#fff;padding:15px;">';
+    email += '<p style="font-size:13px;font-weight:bold;color:#333;margin:0 0 10px;">Keywords created (preview):</p>';
+    
+    // Group by service
+    var currentService = '';
     email += '<table style="width:100%;border-collapse:collapse;font-size:13px;">';
-    email += '<tr style="background:#e3f2fd;"><th style="padding:6px 8px;text-align:left;">Keyword</th><th style="padding:6px 8px;text-align:left;">Match Type</th><th style="padding:6px 8px;text-align:left;">Found On</th></tr>';
     var shown = 0;
-    for (var o = 0; o < results.keywordOpportunities.length && shown < 40; o++) {
+    for (var o = 0; o < results.keywordOpportunities.length && shown < 50; o++) {
       var opp = results.keywordOpportunities[o];
+      var service = opp.service || opp.sourceUrl || '-';
+      if (service !== currentService) {
+        currentService = service;
+        email += '<tr><td colspan="2" style="padding:10px 8px 4px;font-weight:bold;color:#1565c0;border-bottom:1px solid #e0e5ec;">' + service + '</td></tr>';
+      }
       var bg = shown % 2 === 0 ? '#fff' : '#f8f9fa';
-      var pageLabel = opp.sourceUrl ? opp.sourceUrl.replace(/https?:\/\/[^\/]+/i, '') || '/' : '-';
-      email += '<tr style="background:' + bg + ';"><td style="padding:4px 8px;font-family:monospace;">' + opp.keyword + '</td><td style="padding:4px 8px;">' + opp.matchType + '</td><td style="padding:4px 8px;color:#888;font-size:12px;">' + pageLabel + '</td></tr>';
+      email += '<tr style="background:' + bg + ';"><td style="padding:3px 8px 3px 20px;font-family:monospace;font-size:12px;">' + opp.keyword + '</td><td style="padding:3px 8px;color:#888;font-size:12px;">' + opp.matchType + '</td></tr>';
       shown++;
     }
-    if (results.keywordOpportunities.length > 40) {
-      email += '<tr><td colspan="3" style="padding:8px;color:#888;font-style:italic;">... and ' + (results.keywordOpportunities.length - 40) + ' more</td></tr>';
+    if (results.keywordOpportunities.length > 50) {
+      email += '<tr><td colspan="2" style="padding:8px;color:#888;font-style:italic;">... and ' + (results.keywordOpportunities.length - 50) + ' more (see full list in Google Ads)</td></tr>';
     }
     email += '</table></div>';
   }
