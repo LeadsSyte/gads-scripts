@@ -1163,10 +1163,23 @@ function _scanKeywordOpportunities(results) {
     return;
   }
   
+  var sheetUrl = CONFIG.KEYWORD_SHEET_URL;
+  if (!sheetUrl) {
+    _log('WARN', 'Keyword scanner skipped: KEYWORD_SHEET_URL not set in config');
+    return;
+  }
+  
   _log('INFO', 'Scanning website: ' + website);
   
   try {
-    // Step 1: Fetch and parse the website
+    // ============================================================
+    // PHASE 1: Process any previously APPROVED keywords first
+    // ============================================================
+    _processApprovedKeywords(sheetUrl, website, results);
+    
+    // ============================================================
+    // PHASE 2: Scan for new opportunities
+    // ============================================================
     var services = _extractServicesFromWebsite(website);
     _log('INFO', 'Services found: ' + services.length);
     
@@ -1175,34 +1188,312 @@ function _scanKeywordOpportunities(results) {
       return;
     }
     
-    // Step 2: Generate transactional keywords from services
-    var candidateKeywords = _generateTransactionalKeywords(services);
-    _log('INFO', 'Candidate keywords generated: ' + candidateKeywords.length);
+    var serviceKeywords = _generateKeywordsByService(services);
+    _log('INFO', 'Service groups with keywords: ' + serviceKeywords.length);
     
-    // Step 3: Get all existing keywords in the account
     var existingKeywords = _getAllExistingKeywords();
     _log('INFO', 'Existing keywords in account: ' + existingKeywords.size);
     
-    // Step 4: Find gaps
-    var opportunities = [];
-    for (var i = 0; i < candidateKeywords.length; i++) {
-      var kw = candidateKeywords[i];
-      var kwLower = kw.keyword.toLowerCase();
-      
-      // Check if this keyword (or close variation) already exists
-      if (!existingKeywords.has(kwLower) && !_isCloseVariation(kwLower, existingKeywords)) {
-        opportunities.push(kw);
+    // Get keywords already in the sheet to avoid duplicates
+    var sheetExisting = _getExistingSheetKeywords(sheetUrl);
+    
+    // Filter to genuinely new opportunities
+    var newOpportunities = [];
+    for (var i = 0; i < serviceKeywords.length; i++) {
+      var group = serviceKeywords[i];
+      for (var k = 0; k < group.keywords.length; k++) {
+        var kwLower = group.keywords[k].keyword.toLowerCase();
+        if (!existingKeywords.has(kwLower) && !_isCloseVariation(kwLower, existingKeywords) && !sheetExisting[kwLower]) {
+          newOpportunities.push({
+            service: group.serviceName,
+            keyword: group.keywords[k].keyword,
+            matchType: group.keywords[k].matchType,
+            sourceUrl: group.sourceUrl || website
+          });
+        }
       }
     }
     
-    _log('INFO', 'Keyword opportunities found: ' + opportunities.length);
-    results.keywordOpportunities = opportunities;
+    _log('INFO', 'New keyword opportunities: ' + newOpportunities.length);
+    
+    if (newOpportunities.length > 0) {
+      _writeOpportunitiesToSheet(sheetUrl, newOpportunities, results);
+    }
+    
+    results.keywordOpportunities = newOpportunities;
     results.servicesFound = services;
     
   } catch (e) {
     _log('ERROR', 'scanKeywordOpportunities: ' + e.message);
     results.errors.push('Keyword scanner: ' + e.message);
   }
+}
+
+
+/**
+ * Reads the Google Sheet and returns keywords already listed (to avoid duplicates).
+ */
+function _getExistingSheetKeywords(sheetUrl) {
+  var existing = {};
+  try {
+    var ss = SpreadsheetApp.openByUrl(sheetUrl);
+    var sheet = ss.getSheetByName('Keyword Opportunities') || ss.getSheets()[0];
+    var data = sheet.getDataRange().getValues();
+    for (var i = 1; i < data.length; i++) {
+      var kw = String(data[i][1] || '').toLowerCase().trim();
+      if (kw) existing[kw] = true;
+    }
+  } catch (e) {
+    _log('WARN', 'Could not read existing sheet keywords: ' + e.message);
+  }
+  return existing;
+}
+
+
+/**
+ * Writes new keyword opportunities to the Google Sheet for team review.
+ * Team marks column E as "Yes" to approve — script picks them up next run.
+ */
+function _writeOpportunitiesToSheet(sheetUrl, opportunities, results) {
+  try {
+    var ss = SpreadsheetApp.openByUrl(sheetUrl);
+    var sheet = ss.getSheetByName('Keyword Opportunities');
+    
+    if (!sheet) {
+      sheet = ss.insertSheet('Keyword Opportunities');
+      sheet.appendRow(['Service', 'Keyword', 'Match Type', 'Source Page', 'Approve? (Yes/No)', 'Date Added', 'Date Processed', 'Campaign', 'Ad Group']);
+      sheet.getRange(1, 1, 1, 9).setFontWeight('bold').setBackground('#1565c0').setFontColor('white');
+      sheet.setColumnWidth(1, 180);
+      sheet.setColumnWidth(2, 250);
+      sheet.setColumnWidth(3, 100);
+      sheet.setColumnWidth(4, 250);
+      sheet.setColumnWidth(5, 120);
+      var approveRange = sheet.getRange(2, 5, 500, 1);
+      var rule = SpreadsheetApp.newDataValidation().requireValueInList(['Yes', 'No', ''], true).build();
+      approveRange.setDataValidation(rule);
+      sheet.setFrozenRows(1);
+      _log('INFO', 'Created "Keyword Opportunities" sheet with headers');
+    }
+    
+    var today = Utilities.formatDate(new Date(), AdsApp.currentAccount().getTimeZone(), 'yyyy-MM-dd');
+    var rowsToAdd = [];
+    for (var i = 0; i < opportunities.length; i++) {
+      var opp = opportunities[i];
+      var pagePath = opp.sourceUrl ? opp.sourceUrl.replace(/https?:\/\/[^\/]+/i, '') || '/' : '/';
+      rowsToAdd.push([opp.service, opp.keyword, opp.matchType, pagePath, '', today, '', '', '']);
+    }
+    
+    if (rowsToAdd.length > 0) {
+      var lastRow = sheet.getLastRow();
+      sheet.getRange(lastRow + 1, 1, rowsToAdd.length, 9).setValues(rowsToAdd);
+      sheet.getRange(lastRow + 1, 1, rowsToAdd.length, 9).setBackground('#e8f5e9');
+      _log('INFO', 'Wrote ' + rowsToAdd.length + ' opportunities to Google Sheet');
+      results.opportunitiesWritten = rowsToAdd.length;
+    }
+  } catch (e) {
+    _log('ERROR', 'writeOpportunitiesToSheet: ' + e.message);
+    results.errors.push('Sheet write: ' + e.message);
+  }
+}
+
+
+/**
+ * Reads approved keywords from sheet (Status = "Yes") and creates them
+ * in a test campaign with ad groups and AI-generated RSAs.
+ */
+function _processApprovedKeywords(sheetUrl, websiteUrl, results) {
+  try {
+    var ss = SpreadsheetApp.openByUrl(sheetUrl);
+    var sheet = ss.getSheetByName('Keyword Opportunities');
+    if (!sheet) return;
+    
+    var data = sheet.getDataRange().getValues();
+    if (data.length <= 1) return;
+    
+    var approvedByService = {};
+    for (var i = 1; i < data.length; i++) {
+      var service = String(data[i][0] || '').trim();
+      var keyword = String(data[i][1] || '').trim();
+      var matchType = String(data[i][2] || 'Exact').trim();
+      var sourceUrl = String(data[i][3] || '').trim();
+      var approved = String(data[i][4] || '').trim().toLowerCase();
+      var processed = String(data[i][6] || '').trim();
+      
+      if (approved === 'yes' && !processed && keyword) {
+        if (!approvedByService[service]) approvedByService[service] = { keywords: [], sourceUrl: sourceUrl };
+        approvedByService[service].keywords.push({ keyword: keyword, matchType: matchType, row: i + 1 });
+      }
+    }
+    
+    var serviceNames = Object.keys(approvedByService);
+    if (serviceNames.length === 0) {
+      _log('DEBUG', 'No approved keywords to process');
+      return;
+    }
+    
+    _log('INFO', 'Found ' + serviceNames.length + ' services with approved keywords');
+    
+    var testCampaign = _getOrCreateTestCampaign(results);
+    if (!testCampaign && !CONFIG.PREVIEW_MODE) return;
+    
+    var today = Utilities.formatDate(new Date(), AdsApp.currentAccount().getTimeZone(), 'yyyy-MM-dd');
+    var totalCreated = 0;
+    
+    for (var s = 0; s < serviceNames.length && totalCreated < 10; s++) {
+      var serviceName = serviceNames[s];
+      var serviceData = approvedByService[serviceName];
+      var adGroupName = '[Test] ' + serviceName;
+      
+      _log('INFO', 'Creating: "' + adGroupName + '" (' + serviceData.keywords.length + ' approved keywords)');
+      
+      if (!CONFIG.PREVIEW_MODE && testCampaign) {
+        var agResult = testCampaign.newAdGroupBuilder().withName(adGroupName).withStatus('PAUSED').build();
+        if (agResult.isSuccessful()) {
+          var adGroup = agResult.getResult();
+          for (var k = 0; k < serviceData.keywords.length; k++) {
+            var kw = serviceData.keywords[k];
+            var formatted = kw.matchType === 'Exact' ? '[' + kw.keyword + ']' : '"' + kw.keyword + '"';
+            try { adGroup.newKeywordBuilder().withText(formatted).withFinalUrl(websiteUrl + serviceData.sourceUrl).build(); }
+            catch (e) { _log('DEBUG', 'KW add: ' + e.message); }
+            sheet.getRange(kw.row, 7).setValue(today);
+            sheet.getRange(kw.row, 8).setValue(testCampaign.getName());
+            sheet.getRange(kw.row, 9).setValue(adGroupName);
+            sheet.getRange(kw.row, 1, 1, 9).setBackground('#bbdefb');
+          }
+          _createAdGroupRSA(adGroup, serviceName, websiteUrl);
+          totalCreated++;
+        }
+      } else {
+        for (var k = 0; k < serviceData.keywords.length; k++) {
+          _log('INFO', '  Would add: [' + serviceData.keywords[k].keyword + '] to "' + adGroupName + '"');
+        }
+        totalCreated++;
+      }
+    }
+    
+    results.approvedKeywordsProcessed = totalCreated;
+    _log('INFO', 'Processed ' + totalCreated + ' approved service groups');
+  } catch (e) {
+    _log('ERROR', 'processApprovedKeywords: ' + e.message);
+    results.errors.push('Approved keywords: ' + e.message);
+  }
+}
+
+
+function _getOrCreateTestCampaign(results) {
+  var testCampaignName = CONFIG.TEST_CAMPAIGN_NAME || '[Test] Keyword Opportunities';
+  try {
+    var ci = AdsApp.campaigns().withCondition('campaign.name = "' + testCampaignName + '"').get();
+    if (ci.hasNext()) return ci.next();
+  } catch (e) {}
+  if (CONFIG.PREVIEW_MODE) { _log('INFO', 'Would create test campaign: "' + testCampaignName + '" (PAUSED)'); return null; }
+  try {
+    var dailyBudget = Math.round((CONFIG.MONTHLY_BUDGET * (CONFIG.TEST_BUDGET_PERCENT || 0.15)) / 30);
+    var result = AdsApp.newCampaignBuilder().withName(testCampaignName).withBudget(dailyBudget).withBiddingStrategy('MAXIMIZE_CLICKS').withStatus('PAUSED').build();
+    if (result.isSuccessful()) { results.testCampaignCreated = testCampaignName; return result.getResult(); }
+  } catch (e) { _log('ERROR', 'Test campaign: ' + e.message); }
+  return null;
+}
+
+
+function _createAdGroupRSA(adGroup, serviceName, websiteUrl) {
+  var apiKey = CONFIG.ANTHROPIC_API_KEY;
+  var biz = CONFIG.CLIENT_NAME || 'Our Company';
+  if (apiKey) {
+    try {
+      var prompt = 'Generate a Google Responsive Search Ad.\nBusiness: ' + biz + '\nService: ' + serviceName + '\nWebsite: ' + websiteUrl + '\n\nReturn EXACTLY this format:\nH1: [max 30 chars]\n...\nH15: [max 30 chars]\nD1: [max 90 chars]\nD2: [max 90 chars]\nD3: [max 90 chars]\nD4: [max 90 chars]\n\nRules: Include business name in 2+ headlines. Include CTAs. Vary lengths. STRICT char limits.';
+      var resp = UrlFetchApp.fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+        payload: JSON.stringify({ model: 'claude-sonnet-4-20250514', max_tokens: 800, messages: [{ role: 'user', content: prompt }] }),
+        muteHttpExceptions: true
+      });
+      if (resp.getResponseCode() === 200) {
+        var text = JSON.parse(resp.getContentText()).content[0].text;
+        var headlines = [], descriptions = [];
+        text.split('\n').forEach(function(line) {
+          var hm = line.match(/^H\d+:\s*(.+)/);
+          var dm = line.match(/^D\d+:\s*(.+)/);
+          if (hm && headlines.length < 15) headlines.push(hm[1].trim().substring(0, 30));
+          if (dm && descriptions.length < 4) descriptions.push(dm[1].trim().substring(0, 90));
+        });
+        if (headlines.length >= 3 && descriptions.length >= 2) {
+          adGroup.newAd().responsiveSearchAdBuilder()
+            .withHeadlines(headlines.map(function(h) { return { text: h }; }))
+            .withDescriptions(descriptions.map(function(d) { return { text: d }; }))
+            .withFinalUrl(websiteUrl).build();
+          _log('INFO', '  AI RSA created (' + headlines.length + 'h, ' + descriptions.length + 'd)');
+          return;
+        }
+      }
+    } catch (e) { _log('WARN', 'AI RSA failed: ' + e.message); }
+  }
+  // Fallback
+  var svc = serviceName.substring(0, 22);
+  var bizShort = biz.substring(0, 25);
+  try {
+    adGroup.newAd().responsiveSearchAdBuilder()
+      .withHeadlines([
+        { text: (svc + ' Services').substring(0, 30) }, { text: (bizShort + ' | ' + svc).substring(0, 30) },
+        { text: ('Professional ' + svc).substring(0, 30) }, { text: ('Get a ' + svc + ' Quote').substring(0, 30) },
+        { text: (bizShort + ' - Experts').substring(0, 30) }, { text: ('Affordable ' + svc).substring(0, 30) },
+        { text: ('Top-Rated ' + svc).substring(0, 30) }, { text: 'Get a Free Quote Today' },
+        { text: 'Contact Us Today' }, { text: 'Trusted Professionals' },
+        { text: ('Quality ' + svc).substring(0, 30) }, { text: 'Proven Track Record' },
+        { text: ('Expert ' + svc).substring(0, 30) }, { text: ('Book ' + svc + ' Now').substring(0, 30) },
+        { text: (bizShort + ' - Call Now').substring(0, 30) }
+      ])
+      .withDescriptions([
+        { text: ('Looking for professional ' + svc.toLowerCase() + '? ' + bizShort + ' delivers results. Contact us today.').substring(0, 90) },
+        { text: ('Trusted ' + svc.toLowerCase() + ' provider. Quality service, competitive rates. Request your free quote.').substring(0, 90) },
+        { text: (bizShort + ' offers expert ' + svc.toLowerCase() + '. Proven results for businesses of all sizes.').substring(0, 90) },
+        { text: ('Get started with ' + svc.toLowerCase() + ' today. Professional team, fast turnaround. Contact us now.').substring(0, 90) }
+      ])
+      .withFinalUrl(websiteUrl).build();
+    _log('INFO', '  Basic RSA created for "' + serviceName + '"');
+  } catch (e) { _log('WARN', 'Basic RSA failed: ' + e.message); }
+}
+
+
+/**
+ * Groups keywords by service name for ad group creation.
+ */
+function _generateKeywordsByService(services) {
+  var transactionalSuffixes = [
+    'services', 'company', 'agency', 'provider', 'specialist',
+    'cost', 'pricing', 'quote', 'rates', 'packages', 'near me'
+  ];
+  var transactionalPrefixes = [
+    'hire', 'get', 'buy', 'book', 'best', 'top', 'professional', 'affordable'
+  ];
+  var locations = CONFIG.TARGET_LOCATIONS || [];
+  var groups = [];
+  for (var i = 0; i < services.length; i++) {
+    var service = services[i];
+    var base = service.text.toLowerCase().replace(/[^\w\s]/g, '').replace(/\s+/g, ' ').trim();
+    if (base.length < 3 || base.split(' ').length > 5) continue;
+    var keywords = [];
+    var seen = {};
+    if (!seen[base]) { keywords.push({ keyword: base, matchType: 'Exact' }); seen[base] = true; }
+    for (var s = 0; s < transactionalSuffixes.length; s++) {
+      var kw = base + ' ' + transactionalSuffixes[s];
+      if (!seen[kw] && base.indexOf(transactionalSuffixes[s]) === -1 && kw.length <= 80) {
+        keywords.push({ keyword: kw, matchType: kw.split(' ').length <= 3 ? 'Exact' : 'Phrase' }); seen[kw] = true;
+      }
+    }
+    for (var p = 0; p < transactionalPrefixes.length; p++) {
+      var kw = transactionalPrefixes[p] + ' ' + base;
+      if (!seen[kw] && base.indexOf(transactionalPrefixes[p]) === -1 && kw.length <= 80) {
+        keywords.push({ keyword: kw, matchType: 'Phrase' }); seen[kw] = true;
+      }
+    }
+    for (var l = 0; l < Math.min(locations.length, 3); l++) {
+      var kw = base + ' ' + locations[l].toLowerCase();
+      if (!seen[kw]) { keywords.push({ keyword: kw, matchType: 'Phrase' }); seen[kw] = true; }
+    }
+    groups.push({ serviceName: service.text, sourceUrl: service.url || '', keywords: keywords });
+  }
+  return groups;
 }
 
 /**
@@ -1422,91 +1713,6 @@ function _cleanText(text) {
 }
 
 /**
- * Takes extracted service names and generates transactional keyword variations.
- * Only generates buyer-intent keywords, not informational.
- */
-function _generateTransactionalKeywords(services) {
-  var transactionalModifiers = [
-    // Direct purchase intent
-    { prefix: '', suffix: ' services' },
-    { prefix: '', suffix: ' company' },
-    { prefix: '', suffix: ' agency' },
-    { prefix: '', suffix: ' provider' },
-    { prefix: '', suffix: ' specialist' },
-    { prefix: '', suffix: ' expert' },
-    // Price/quote intent
-    { prefix: '', suffix: ' cost' },
-    { prefix: '', suffix: ' pricing' },
-    { prefix: '', suffix: ' quote' },
-    { prefix: '', suffix: ' rates' },
-    { prefix: '', suffix: ' packages' },
-    // Hire/buy intent
-    { prefix: 'hire ', suffix: '' },
-    { prefix: 'get ', suffix: '' },
-    { prefix: 'buy ', suffix: '' },
-    { prefix: 'order ', suffix: '' },
-    { prefix: 'book ', suffix: '' },
-    // Quality modifiers
-    { prefix: 'best ', suffix: '' },
-    { prefix: 'top ', suffix: '' },
-    { prefix: 'professional ', suffix: '' },
-    { prefix: 'affordable ', suffix: '' },
-    // Local
-    { prefix: '', suffix: ' near me' },
-  ];
-  
-  // Add location-based modifiers from config
-  var locations = CONFIG.TARGET_LOCATIONS || [];
-  for (var l = 0; l < locations.length; l++) {
-    transactionalModifiers.push({ prefix: '', suffix: ' ' + locations[l].toLowerCase() });
-    transactionalModifiers.push({ prefix: '', suffix: ' in ' + locations[l].toLowerCase() });
-  }
-  
-  var keywords = [];
-  var seen = {};
-  
-  for (var i = 0; i < services.length; i++) {
-    var service = services[i];
-    var basePhrase = service.text.toLowerCase()
-      .replace(/[^\w\s]/g, '') // remove special chars
-      .replace(/\s+/g, ' ')
-      .trim();
-    
-    // Skip if too short or too long for a keyword base
-    if (basePhrase.length < 3 || basePhrase.split(' ').length > 5) continue;
-    
-    // Add the base phrase itself as exact match candidate
-    if (!seen[basePhrase]) {
-      keywords.push({ keyword: basePhrase, matchType: 'Exact', source: service.source, sourceUrl: service.url, modifier: 'base' });
-      seen[basePhrase] = true;
-    }
-    
-    // Generate transactional variations
-    for (var m = 0; m < transactionalModifiers.length; m++) {
-      var mod = transactionalModifiers[m];
-      var kw = (mod.prefix + basePhrase + mod.suffix).trim();
-      
-      // Skip if too long (>80 chars) or already seen
-      if (kw.length > 80 || seen[kw]) continue;
-      // Skip if modifier words already in the base phrase
-      if (mod.prefix && basePhrase.indexOf(mod.prefix.trim()) !== -1) continue;
-      if (mod.suffix && basePhrase.indexOf(mod.suffix.trim()) !== -1) continue;
-      
-      seen[kw] = true;
-      keywords.push({
-        keyword: kw,
-        matchType: kw.split(' ').length <= 3 ? 'Exact' : 'Phrase',
-        source: service.source,
-        sourceUrl: service.url,
-        modifier: (mod.prefix + '___' + mod.suffix).trim()
-      });
-    }
-  }
-  
-  return keywords;
-}
-
-/**
  * Gets all existing keywords from the account for comparison.
  */
 function _getAllExistingKeywords() {
@@ -1618,6 +1824,7 @@ function _sendReport(results, duration) {
     email += '<tr><td colspan="2" style="padding:8px;background:#bbdefb;font-weight:bold;">🔍 Keyword Scanner</td></tr>';
     email += '<tr><td style="padding:4px 8px;">Services Found on Website</td><td style="text-align:right;font-weight:bold;">' + (results.servicesFound ? results.servicesFound.length : 0) + '</td></tr>';
     email += '<tr><td style="padding:4px 8px;">Keyword Gaps (not bidding on)</td><td style="text-align:right;font-weight:bold;color:#1565c0;">' + results.keywordOpportunities.length + '</td></tr>';
+    email += '<tr><td style="padding:4px 8px;">Test Ad Groups Created</td><td style="text-align:right;font-weight:bold;color:#2e7d32;">' + (results.testAdGroupsCreated || 0) + '</td></tr>';
   }
   
   // Conversion health
@@ -1639,8 +1846,8 @@ function _sendReport(results, duration) {
   // Keyword Opportunities detail section
   if (results.keywordOpportunities && results.keywordOpportunities.length > 0) {
     email += '<div style="background:#fff;padding:15px;border-top:2px solid #e0e5ec;">';
-    email += '<h3 style="color:#1565c0;margin:0 0 10px;">🔍 Keyword Opportunities (' + results.keywordOpportunities.length + ' found)</h3>';
-    email += '<p style="font-size:13px;color:#666;margin:0 0 10px;">Services found on website that you\'re NOT currently bidding on. Review and add the relevant ones.</p>';
+    email += '<h3 style="color:#1565c0;margin:0 0 10px;">🔍 Keyword Opportunities (' + results.keywordOpportunities.length + ' keywords across ' + (results.testAdGroupsCreated || 0) + ' new ad groups)</h3>';
+    email += '<p style="font-size:13px;color:#666;margin:0 0 10px;">Built into <strong>[Test] Keyword Opportunities</strong> campaign (PAUSED). Review and enable what looks good.</p>';
     
     // Group by source service
     var byService = {};
@@ -1701,7 +1908,7 @@ function runOptimization() {
     ngramNegatives: [], lowQsPaused: [],
     conversionHealth: null, conversionAlert: null,
     // Keyword opportunity scanner
-    keywordOpportunities: [], servicesFound: [],
+    keywordOpportunities: [], servicesFound: [], testAdGroupsCreated: 0, testCampaignCreated: null,
     errors: []
   };
   
@@ -1800,6 +2007,6 @@ function runOptimization() {
   _log('INFO', 'Device: ' + results.deviceAdjustments.length + ' | Schedule: ' + results.scheduleAdjustments.length + ' | Geo: ' + results.geoAdjustments.length + ' | N-gram: ' + results.ngramNegatives.length + ' | Low QS: ' + results.lowQsPaused.length);
   _log('INFO', 'Informational: ' + results.informationalBlocked.length + ' | Irrelevant: ' + results.irrelevantBlocked.length + ' | Budget: ' + results.budgetAlerts.length + ' | Errors: ' + results.errors.length);
   if (results.keywordOpportunities && results.keywordOpportunities.length > 0) {
-    _log('INFO', 'Keyword Opportunities: ' + results.keywordOpportunities.length + ' (from ' + (results.servicesFound ? results.servicesFound.length : 0) + ' services found)');
+    _log('INFO', 'Keyword Scanner: ' + results.keywordOpportunities.length + ' keywords | ' + (results.testAdGroupsCreated || 0) + ' ad groups built | ' + (results.servicesFound ? results.servicesFound.length : 0) + ' services found');
   }
 }
