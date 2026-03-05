@@ -1213,15 +1213,16 @@ function _scanKeywordOpportunities(results) {
  * Follows internal links to service/product pages.
  */
 function _extractServicesFromWebsite(baseUrl) {
-  var services = [];
   var visitedUrls = {};
   var pagesToScan = [baseUrl];
-  var maxPages = CONFIG.SCANNER_MAX_PAGES || 15;
+  var maxPages = CONFIG.SCANNER_MAX_PAGES || 10;
   var pagesScanned = 0;
+  var allPageText = [];
   
   // Normalize base domain
   var domain = baseUrl.replace(/https?:\/\//i, '').replace(/\/.*$/, '').toLowerCase();
   
+  // Step 1: Crawl the site and collect page text
   while (pagesToScan.length > 0 && pagesScanned < maxPages) {
     var url = pagesToScan.shift();
     if (visitedUrls[url]) continue;
@@ -1233,62 +1234,62 @@ function _extractServicesFromWebsite(baseUrl) {
       if (response.getResponseCode() !== 200) continue;
       var html = response.getContentText();
       
-      // Extract title
-      var titleMatch = html.match(/<title[^>]*>(.*?)<\/title>/i);
-      if (titleMatch) {
-        var title = _cleanText(titleMatch[1]);
-        if (title && title.length > 3 && title.length < 100) services.push({ text: title, source: 'title', url: url });
-      }
+      // Strip scripts, styles, and get text content
+      var textContent = html
+        .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+        .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+        .replace(/<nav[^>]*>[\s\S]*?<\/nav>/gi, '') // remove nav (often noisy)
+        .replace(/<footer[^>]*>[\s\S]*?<\/footer>/gi, '') // remove footer
+        .replace(/<header[^>]*>[\s\S]*?<\/header>/gi, ''); // remove header
       
-      // Extract headings (H1, H2, H3)
-      var headingRegex = /<h[1-3][^>]*>(.*?)<\/h[1-3]>/gi;
+      // Extract headings separately (high signal)
+      var headings = [];
+      var hRegex = /<h[1-3][^>]*>(.*?)<\/h[1-3]>/gi;
       var hMatch;
-      while ((hMatch = headingRegex.exec(html)) !== null) {
-        var heading = _cleanText(hMatch[1]);
-        if (heading && heading.length > 3 && heading.length < 80) {
-          services.push({ text: heading, source: 'heading', url: url });
-        }
+      while ((hMatch = hRegex.exec(html)) !== null) {
+        var h = _cleanText(hMatch[1]);
+        if (h && h.length > 3 && h.length < 80) headings.push(h);
       }
       
-      // Extract meta description
+      // Get page title
+      var titleMatch = html.match(/<title[^>]*>(.*?)<\/title>/i);
+      var title = titleMatch ? _cleanText(titleMatch[1]) : '';
+      
+      // Get meta description
       var metaMatch = html.match(/<meta\s+name=["']description["']\s+content=["'](.*?)["']/i);
       if (!metaMatch) metaMatch = html.match(/<meta\s+content=["'](.*?)["']\s+name=["']description["']/i);
-      if (metaMatch) {
-        var desc = _cleanText(metaMatch[1]);
-        if (desc) services.push({ text: desc, source: 'meta', url: url });
-      }
+      var metaDesc = metaMatch ? _cleanText(metaMatch[1]) : '';
       
-      // Find internal links to scan (service/product pages)
-      var linkRegex = /<a\s+[^>]*href=["'](.*?)["'][^>]*>(.*?)<\/a>/gi;
+      // Clean body text (truncate to avoid token limits)
+      var bodyText = _cleanText(textContent).substring(0, 2000);
+      
+      var pageSummary = 'PAGE: ' + url + '\n';
+      if (title) pageSummary += 'TITLE: ' + title + '\n';
+      if (metaDesc) pageSummary += 'META: ' + metaDesc + '\n';
+      if (headings.length > 0) pageSummary += 'HEADINGS: ' + headings.join(' | ') + '\n';
+      pageSummary += 'BODY EXCERPT: ' + bodyText.substring(0, 800) + '\n';
+      
+      allPageText.push(pageSummary);
+      
+      // Find internal links to scan (prioritize service pages)
+      var linkRegex = /<a\s+[^>]*href=["'](.*?)["'][^>]*>/gi;
       var linkMatch;
       while ((linkMatch = linkRegex.exec(html)) !== null) {
         var href = linkMatch[1];
-        var linkText = _cleanText(linkMatch[2]);
-        
-        // Only follow internal links
         if (href.indexOf('http') === 0 && href.toLowerCase().indexOf(domain) === -1) continue;
+        if (href.indexOf('#') === 0 || href.indexOf('mailto') === 0 || href.indexOf('tel:') === 0 || href.indexOf('javascript') === 0) continue;
         
-        // Build full URL
         var fullUrl = href;
         if (href.indexOf('http') !== 0) {
           fullUrl = baseUrl.replace(/\/$/, '') + (href.indexOf('/') === 0 ? '' : '/') + href;
         }
         
         // Prioritize service-looking URLs
-        var serviceUrlPatterns = /\b(service|product|solution|offer|what-we-do|our-work|specialit|capabilities|feature|package)\b/i;
-        if (serviceUrlPatterns.test(href) || serviceUrlPatterns.test(linkText)) {
-          if (!visitedUrls[fullUrl] && pagesToScan.indexOf(fullUrl) === -1) {
-            pagesToScan.unshift(fullUrl); // prioritize these
-          }
-        } else if (href.indexOf('#') !== 0 && href.indexOf('mailto') !== 0 && href.indexOf('tel:') !== 0 && href.indexOf('javascript') !== 0) {
-          if (!visitedUrls[fullUrl] && pagesToScan.indexOf(fullUrl) === -1) {
-            pagesToScan.push(fullUrl);
-          }
-        }
-        
-        // Link text itself might be a service name
-        if (linkText && linkText.length > 3 && linkText.length < 50 && !/^(home|about|contact|blog|login|sign|menu|close|read more|learn more|click here)/i.test(linkText)) {
-          services.push({ text: linkText, source: 'nav-link', url: fullUrl });
+        var serviceUrlPatterns = /\b(service|product|solution|offer|what-we-do|our-work|specialit|capabilit|feature|package|pricing|work|portfolio)\b/i;
+        if (serviceUrlPatterns.test(href)) {
+          if (!visitedUrls[fullUrl] && pagesToScan.indexOf(fullUrl) === -1) pagesToScan.unshift(fullUrl);
+        } else {
+          if (!visitedUrls[fullUrl] && pagesToScan.indexOf(fullUrl) === -1) pagesToScan.push(fullUrl);
         }
       }
       
@@ -1297,8 +1298,114 @@ function _extractServicesFromWebsite(baseUrl) {
     }
   }
   
-  // Deduplicate and clean services
-  return _deduplicateServices(services);
+  _log('INFO', 'Scraped ' + pagesScanned + ' pages, sending to AI for service extraction');
+  
+  // Step 2: Send to Anthropic API to extract actual services
+  return _extractServicesWithAI(allPageText, baseUrl);
+}
+
+/**
+ * Uses the Anthropic API to intelligently extract actual services/products
+ * from website content. Returns clean service names, not raw HTML junk.
+ */
+function _extractServicesWithAI(pageTexts, websiteUrl) {
+  var apiKey = CONFIG.ANTHROPIC_API_KEY;
+  if (!apiKey) {
+    _log('WARN', 'Keyword scanner: ANTHROPIC_API_KEY not set — falling back to basic extraction');
+    return _fallbackExtractServices(pageTexts);
+  }
+  
+  // Combine page text, respecting token limits (~15k chars)
+  var combinedText = pageTexts.join('\n---\n').substring(0, 15000);
+  
+  var prompt = 'You are analyzing a business website to identify the specific services or products they offer. ' +
+    'Below is content scraped from ' + websiteUrl + '.\n\n' +
+    'Extract ONLY the actual services or products this business sells/offers. ' +
+    'Rules:\n' +
+    '- Return ONLY service/product names, one per line\n' +
+    '- Each should be 2-5 words maximum (e.g. "SEO services", "Google Ads management", "website development")\n' +
+    '- Only include things a customer would search for and PAY for\n' +
+    '- Do NOT include: company name, taglines, team member names, blog post titles, navigation items, generic phrases like "learn more" or "about us"\n' +
+    '- Do NOT include internal business concepts that customers wouldn\'t search for\n' +
+    '- Be specific: "ecommerce SEO" is better than just "SEO"\n' +
+    '- If you find sub-services (e.g. "technical SEO", "local SEO"), include those too\n' +
+    '- Return between 5 and 30 services maximum\n' +
+    '- Return ONLY the list, no numbering, no explanations, no other text\n\n' +
+    'WEBSITE CONTENT:\n' + combinedText;
+  
+  try {
+    var apiResponse = UrlFetchApp.fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01'
+      },
+      payload: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 1000,
+        messages: [{ role: 'user', content: prompt }]
+      }),
+      muteHttpExceptions: true
+    });
+    
+    var status = apiResponse.getResponseCode();
+    if (status !== 200) {
+      _log('WARN', 'Anthropic API error (HTTP ' + status + '): ' + apiResponse.getContentText().substring(0, 200));
+      return _fallbackExtractServices(pageTexts);
+    }
+    
+    var data = JSON.parse(apiResponse.getContentText());
+    var text = data.content && data.content[0] && data.content[0].text ? data.content[0].text : '';
+    
+    // Parse response: one service per line
+    var services = [];
+    var lines = text.split('\n');
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i].replace(/^[\-\*\d\.\)]+\s*/, '').trim(); // strip bullets/numbers
+      if (line.length >= 3 && line.length <= 60 && line.indexOf(':') === -1) {
+        services.push({ text: line, source: 'ai-extracted', url: websiteUrl });
+      }
+    }
+    
+    _log('INFO', 'AI extracted ' + services.length + ' services from website');
+    return services;
+    
+  } catch (e) {
+    _log('WARN', 'AI service extraction failed: ' + e.message + ' — falling back');
+    return _fallbackExtractServices(pageTexts);
+  }
+}
+
+/**
+ * Basic fallback if no API key: extracts from headings only, with strict filtering.
+ */
+function _fallbackExtractServices(pageTexts) {
+  var services = [];
+  var seen = {};
+  
+  var stopWords = /^(home|about|contact|blog|news|privacy|terms|cookie|sitemap|login|sign|cart|faq|copyright|all rights|powered|follow|subscribe|menu|toggle|search|loading|we are|our team|our story|our mission|welcome|get in touch|let's|read more|learn more|click|view|download|play|watch|back to|thank you|oops|error|page not found|\d+)/i;
+  
+  for (var i = 0; i < pageTexts.length; i++) {
+    var headingsMatch = pageTexts[i].match(/HEADINGS: (.+)/);
+    if (!headingsMatch) continue;
+    
+    var headings = headingsMatch[1].split(' | ');
+    for (var h = 0; h < headings.length; h++) {
+      var heading = headings[h].toLowerCase().trim();
+      
+      if (heading.length < 4 || heading.length > 50) continue;
+      if (stopWords.test(heading)) continue;
+      if (heading.split(' ').length > 5) continue;
+      if (heading.split(' ').length < 2) continue; // single words are too vague
+      if (seen[heading]) continue;
+      
+      seen[heading] = true;
+      services.push({ text: headings[h].trim(), source: 'heading', url: '' });
+    }
+  }
+  
+  return services;
 }
 
 /**
@@ -1307,36 +1414,11 @@ function _extractServicesFromWebsite(baseUrl) {
 function _cleanText(text) {
   if (!text) return '';
   return text
-    .replace(/<[^>]+>/g, '') // strip tags
+    .replace(/<[^>]+>/g, '')
     .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
     .replace(/&nbsp;/g, ' ').replace(/&#\d+;/g, '').replace(/&[a-z]+;/gi, '')
     .replace(/\s+/g, ' ')
     .trim();
-}
-
-/**
- * Deduplicates service names and filters out non-service content.
- */
-function _deduplicateServices(rawServices) {
-  var seen = {};
-  var results = [];
-  
-  // Words that indicate NOT a service (navigation, generic site stuff)
-  var stopPhrases = /^(home|about us|contact|blog|news|privacy|terms|cookie|sitemap|login|sign up|cart|checkout|faq|copyright|all rights|powered by|follow us|subscribe|menu|toggle|search|loading)/i;
-  
-  for (var i = 0; i < rawServices.length; i++) {
-    var text = rawServices[i].text.toLowerCase().trim();
-    
-    // Skip very short, very long, or stopword content
-    if (text.length < 4 || text.length > 60) continue;
-    if (stopPhrases.test(text)) continue;
-    if (seen[text]) continue;
-    
-    seen[text] = true;
-    results.push(rawServices[i]);
-  }
-  
-  return results;
 }
 
 /**
