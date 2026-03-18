@@ -1,9 +1,9 @@
 /**
- * SYTE OPTIMIZATION CORE v3.2
+ * SYTE OPTIMIZATION CORE v4.0
  * ============================
  * This file is the CORE engine — hosted centrally and fetched by each client's loader script.
  * DO NOT paste this into Google Ads Scripts directly.
- * Host this file at a URL (GitHub, Netlify, Google Cloud Storage, etc.)
+ * Host this file at a URL (GitHub raw URL recommended)
  * 
  * Each client account has a small "loader" script that:
  *   1. Defines their CONFIG
@@ -13,27 +13,23 @@
  * When you improve this core, ALL client accounts get the update on their next scheduled run.
  * 
  * Author: Syte Digital Agency (syte.co.za)
- * Version: 3.2
+ * Version: 4.0
+ * 
+ * CHANGELOG v4.0 — SELF-IMPROVEMENT ENGINE:
+ * - NEW: Change log — every action written to master Syte Google Sheet
+ * - NEW: Outcome backfill — 14 days after each change, script revisits and scores it
+ * - NEW: Weekly Claude review (runs Sunday) — reads change log + outcomes, critiques
+ *        its own logic, and emails a full rewritten script ready to paste into GitHub
+ * - Loader CONFIG additions required:
+ *     MASTER_SHEET_ID: 'your-google-sheet-id-here'  (one master sheet for all clients)
+ *     ANTHROPIC_API_KEY: 'sk-ant-...'
  * 
  * CHANGELOG v3.2 — AUTO-OPTIMIZATIONS:
- * - NEW: Device bid adjustments — auto-adjusts mobile/tablet bids based on CVR/ROAS vs desktop
- * - NEW: Hour-of-day scheduling — auto-reduces bids in hours with high spend & zero conversions
- * - NEW: Geographic bid adjustments — auto-reduces bids in underperforming locations
- * - NEW: Conversion tracking health check — urgent alert if conversions drop 50%+ week-over-week
- * - NEW: N-gram analysis — finds recurring waste words across search terms and auto-negatives them
- * - NEW: Low Quality Score keyword pausing — pauses QS 1-3 keywords above spend threshold
- * - NEW: Keyword Opportunity Scanner — scrapes client website, finds services, generates transactional
- *        keywords, compares vs existing account keywords, and reports gaps to bid on
- * 
- * CHANGELOG v3.1:
- * - Central hosting architecture (core + loader pattern)
- * - FIXED: Winner promotion now copies RSAs from source ad group into [Exact Winners]
- * - FIXED: Adds negative in source ad group to funnel traffic to exact match
- * - Added ECOMMERCE mode (ROAS-based optimization for search, shopping, PMax)
- * - Added HYBRID mode (both lead gen + ecommerce)
- * - Shopping product analysis (hero identification, zero-revenue flagging)
- * - PMax campaign monitoring and search term cleanup
- * - Asset group level alerting
+ * - Device bid adjustments, hour-of-day scheduling, geographic bid adjustments
+ * - Conversion tracking health check
+ * - N-gram analysis
+ * - Low Quality Score keyword pausing
+ * - Keyword Opportunity Scanner
  */
 
 // ============================================
@@ -114,6 +110,10 @@ function _formatDate(d) {
   return Utilities.formatDate(d, AdsApp.currentAccount().getTimeZone(), 'yyyy-MM-dd');
 }
 
+function _formatDatetime(d) {
+  return Utilities.formatDate(d, AdsApp.currentAccount().getTimeZone(), 'yyyy-MM-dd HH:mm:ss');
+}
+
 function _isProtectedTerm(term) {
   var lower = term.toLowerCase();
   return CONFIG.PROTECTED_TERMS.some(function(p) { return lower.indexOf(p.toLowerCase()) !== -1; });
@@ -152,7 +152,6 @@ function _getOrCreateNegativeList(listName) {
   if (lists.hasNext()) return lists.next();
   if (!CONFIG.PREVIEW_MODE) {
     var newList = AdsApp.newNegativeKeywordListBuilder().withName(listName).build().getResult();
-    // Apply to all enabled campaigns
     var campaigns = AdsApp.campaigns().withCondition('campaign.status = "ENABLED"').get();
     while (campaigns.hasNext()) { campaigns.next().addNegativeKeywordList(newList); }
     return newList;
@@ -173,141 +172,675 @@ function _getExistingNegatives(negativeList) {
 
 
 // ============================================
-// WINNER PROMOTION — WITH AD COPY FIX
+// CHANGE LOG — MASTER GOOGLE SHEET
 // ============================================
 
 /**
- * Creates an exact match keyword in a dedicated [Exact Winners] ad group.
- * FIXED in v3.1: Now copies RSAs from the source ad group so keywords actually serve.
- * Also adds a negative in the source ad group to funnel traffic to the exact match.
+ * Sheet columns (row 1 is header):
+ * A: change_id  B: timestamp  C: account_name  D: function_name
+ * E: entity     F: entity_type  G: campaign  H: ad_group
+ * I: reason     J: spend_at_change  K: conversions_at_change
+ * L: outcome    M: outcome_checked_date  N: outcome_notes
+ * O: script_version
  */
+
+var _sheetCache = null;
+
+function _getChangeLogSheet() {
+  if (_sheetCache) return _sheetCache;
+  if (!CONFIG.MASTER_SHEET_ID) {
+    _log('WARN', 'No MASTER_SHEET_ID in CONFIG — change logging disabled');
+    return null;
+  }
+  try {
+    var ss = SpreadsheetApp.openById(CONFIG.MASTER_SHEET_ID);
+    var sheet = ss.getSheetByName('ChangeLog');
+    if (!sheet) {
+      sheet = ss.insertSheet('ChangeLog');
+      sheet.getRange(1, 1, 1, 15).setValues([[
+        'change_id', 'timestamp', 'account_name', 'function_name',
+        'entity', 'entity_type', 'campaign', 'ad_group',
+        'reason', 'spend_at_change', 'conversions_at_change',
+        'outcome', 'outcome_checked_date', 'outcome_notes',
+        'script_version'
+      ]]);
+      sheet.getRange(1, 1, 1, 15).setFontWeight('bold');
+      sheet.setFrozenRows(1);
+    }
+    _sheetCache = sheet;
+    return sheet;
+  } catch (e) {
+    _log('ERROR', 'Cannot open change log sheet: ' + e.message);
+    return null;
+  }
+}
+
+function _generateChangeId() {
+  return Utilities.formatDate(new Date(), AdsApp.currentAccount().getTimeZone(), 'yyyyMMddHHmmss') +
+    '_' + Math.random().toString(36).substr(2, 5).toUpperCase();
+}
+
+/**
+ * Logs a single change action to the master sheet.
+ * @param {Object} change - { functionName, entity, entityType, campaign, adGroup, reason, spend, conversions }
+ * @returns {string} changeId — store in results for outcome backfill
+ */
+function _logChange(change) {
+  var sheet = _getChangeLogSheet();
+  if (!sheet || CONFIG.PREVIEW_MODE) return null;
+
+  var changeId = _generateChangeId();
+  var accountName = AdsApp.currentAccount().getName();
+
+  try {
+    sheet.appendRow([
+      changeId,
+      _formatDatetime(new Date()),
+      accountName,
+      change.functionName || '',
+      change.entity || '',
+      change.entityType || '',
+      change.campaign || '',
+      change.adGroup || '',
+      change.reason || '',
+      change.spend || 0,
+      change.conversions || 0,
+      'PENDING',           // outcome — will be backfilled in 14 days
+      '',                  // outcome_checked_date
+      '',                  // outcome_notes
+      'v4.0'              // script_version
+    ]);
+  } catch (e) {
+    _log('WARN', 'Change log write failed: ' + e.message);
+  }
+
+  return changeId;
+}
+
+
+// ============================================
+// OUTCOME BACKFILL
+// ============================================
+
+/**
+ * Runs on every execution. Finds rows logged ~14 days ago that still have
+ * outcome = 'PENDING', then checks the current performance of that entity
+ * to score whether the decision was correct.
+ *
+ * Outcome values:
+ *   CORRECT   — keyword/term paused, account CPL/ROAS improved, no sign of error
+ *   INCORRECT — keyword had conversions after pause / entity recovered
+ *   NEUTRAL   — not enough data to score
+ *   PENDING   — awaiting check
+ */
+function _backfillOutcomes() {
+  var sheet = _getChangeLogSheet();
+  if (!sheet) return;
+
+  _log('INFO', 'Running outcome backfill...');
+
+  try {
+    var data = sheet.getDataRange().getValues();
+    if (data.length < 2) return;
+
+    var headers = data[0];
+    var colIdx = {};
+    headers.forEach(function(h, i) { colIdx[h] = i; });
+
+    var accountName = AdsApp.currentAccount().getName();
+    var checkDate = new Date();
+    var cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - 14); // Only check rows 14+ days old
+
+    var rowsChecked = 0;
+
+    for (var r = 1; r < data.length; r++) {
+      var row = data[r];
+      if (row[colIdx['outcome']] !== 'PENDING') continue;
+      if (row[colIdx['account_name']] !== accountName) continue;
+
+      var changeTimestamp = new Date(row[colIdx['timestamp']]);
+      if (changeTimestamp > cutoffDate) continue; // Not old enough yet
+
+      var entity = row[colIdx['entity']];
+      var entityType = row[colIdx['entity_type']];
+      var campaign = row[colIdx['campaign']];
+      var adGroup = row[colIdx['ad_group']];
+      var originalSpend = Number(row[colIdx['spend_at_change']]) || 0;
+      var functionName = row[colIdx['function_name']];
+
+      var outcome = 'NEUTRAL';
+      var outcomeNotes = '';
+
+      try {
+        if (entityType === 'KEYWORD') {
+          // Check if the keyword was re-enabled or had conversions since pausing
+          var kwQuery = 'SELECT ad_group_criterion.keyword.text, ad_group_criterion.status, ' +
+            'metrics.conversions, metrics.cost_micros ' +
+            'FROM keyword_view WHERE ad_group_criterion.keyword.text = "' + entity + '" ' +
+            'AND campaign.name = "' + campaign + '" AND ad_group.name = "' + adGroup + '" ' +
+            'AND segments.date DURING LAST_14_DAYS';
+          var kwSearch = AdsApp.search(kwQuery);
+          if (kwSearch.hasNext()) {
+            var kw = kwSearch.next();
+            var postConv = Number(kw.metrics.conversions) || 0;
+            var status = kw.adGroupCriterion.status;
+            if (postConv > 0) {
+              outcome = 'INCORRECT';
+              outcomeNotes = 'Keyword had ' + postConv + ' conversions in 14 days after pause. Should not have been paused.';
+            } else if (status === 'PAUSED') {
+              outcome = 'CORRECT';
+              outcomeNotes = 'Keyword remains paused. No conversions observed post-pause.';
+            } else {
+              outcome = 'NEUTRAL';
+              outcomeNotes = 'Keyword re-enabled or status unclear.';
+            }
+          } else {
+            outcome = 'CORRECT';
+            outcomeNotes = 'Keyword no longer found in active queries — likely correctly removed.';
+          }
+        }
+
+        else if (entityType === 'SEARCH_TERM_NEGATIVE') {
+          // For negated search terms — check if the account CPL changed after the date of the change
+          // We compare account CPL the week before vs the 14 days after
+          var afterStart = _formatDate(changeTimestamp);
+          var afterEnd = _formatDate(checkDate);
+          var beforeEnd = _formatDate(changeTimestamp);
+          var beforeStartD = new Date(changeTimestamp);
+          beforeStartD.setDate(beforeStartD.getDate() - 14);
+          var beforeStart = _formatDate(beforeStartD);
+
+          var afterQuery = 'SELECT metrics.conversions, metrics.cost_micros FROM campaign ' +
+            'WHERE campaign.status = "ENABLED" AND segments.date BETWEEN "' + afterStart + '" AND "' + afterEnd + '"';
+          var beforeQuery = 'SELECT metrics.conversions, metrics.cost_micros FROM campaign ' +
+            'WHERE campaign.status = "ENABLED" AND segments.date BETWEEN "' + beforeStart + '" AND "' + beforeEnd + '"';
+
+          var afterConv = 0, afterCost = 0, beforeConv = 0, beforeCost = 0;
+          var s1 = AdsApp.search(afterQuery);
+          while (s1.hasNext()) { var r1 = s1.next(); afterConv += Number(r1.metrics.conversions) || 0; afterCost += Number(r1.metrics.costMicros) / 1000000; }
+          var s2 = AdsApp.search(beforeQuery);
+          while (s2.hasNext()) { var r2 = s2.next(); beforeConv += Number(r2.metrics.conversions) || 0; beforeCost += Number(r2.metrics.costMicros) / 1000000; }
+
+          var beforeCpl = beforeConv > 0 ? beforeCost / beforeConv : 0;
+          var afterCpl = afterConv > 0 ? afterCost / afterConv : 0;
+
+          if (beforeCpl > 0 && afterCpl > 0) {
+            var cplChange = ((afterCpl - beforeCpl) / beforeCpl) * 100;
+            if (cplChange < -5) {
+              outcome = 'CORRECT';
+              outcomeNotes = 'CPL improved ' + Math.abs(cplChange).toFixed(1) + '% after negative. Before: R' + beforeCpl.toFixed(0) + ' After: R' + afterCpl.toFixed(0);
+            } else if (cplChange > 10) {
+              outcome = 'INCORRECT';
+              outcomeNotes = 'CPL worsened ' + cplChange.toFixed(1) + '% after negative. May have blocked converting traffic.';
+            } else {
+              outcome = 'NEUTRAL';
+              outcomeNotes = 'CPL change within noise range (' + cplChange.toFixed(1) + '%). Insufficient signal.';
+            }
+          } else {
+            outcome = 'NEUTRAL';
+            outcomeNotes = 'Insufficient conversion data to score outcome.';
+          }
+        }
+
+        else if (entityType === 'NGRAM_NEGATIVE') {
+          // Same CPL comparison approach as search term negatives
+          outcome = 'NEUTRAL';
+          outcomeNotes = 'N-gram negative — CPL trend monitoring requires more data.';
+        }
+
+        else if (entityType === 'DEVICE_BID') {
+          outcome = 'NEUTRAL';
+          outcomeNotes = 'Device bid adjustment — scoring requires segmented CVR comparison.';
+        }
+
+      } catch (innerE) {
+        outcome = 'NEUTRAL';
+        outcomeNotes = 'Error during outcome check: ' + innerE.message;
+      }
+
+      // Write outcome back to sheet
+      var sheetRow = r + 1; // +1 because sheet rows are 1-indexed, data[0] is header
+      sheet.getRange(sheetRow, colIdx['outcome'] + 1).setValue(outcome);
+      sheet.getRange(sheetRow, colIdx['outcome_checked_date'] + 1).setValue(_formatDatetime(checkDate));
+      sheet.getRange(sheetRow, colIdx['outcome_notes'] + 1).setValue(outcomeNotes);
+
+      _log('INFO', 'Outcome backfill: "' + entity + '" -> ' + outcome);
+      rowsChecked++;
+
+      if (rowsChecked >= 50) break; // Cap per run to avoid timeout
+    }
+
+    _log('INFO', 'Outcome backfill complete. Rows checked: ' + rowsChecked);
+
+  } catch (e) {
+    _log('ERROR', 'backfillOutcomes: ' + e.message);
+  }
+}
+
+
+// ============================================
+// WEEKLY CLAUDE REVIEW (runs on Sunday)
+// ============================================
+
+/**
+ * Reads the last 90 days of change log data for this account,
+ * sends the full script code + change history + outcomes to Claude,
+ * receives a critique of the code logic + a full rewritten script,
+ * and emails it to the Syte team.
+ */
+function _weeklyClaudeReview() {
+  var today = new Date();
+  var dayOfWeek = today.getDay(); // 0 = Sunday
+  if (dayOfWeek !== 0) {
+    _log('INFO', 'Weekly review skipped — not Sunday (day=' + dayOfWeek + ')');
+    return;
+  }
+
+  _log('INFO', 'Sunday detected — running weekly Claude self-improvement review...');
+
+  if (!CONFIG.ANTHROPIC_API_KEY) {
+    _log('ERROR', 'No ANTHROPIC_API_KEY in CONFIG — weekly review skipped');
+    return;
+  }
+
+  if (!CONFIG.MASTER_SHEET_ID) {
+    _log('ERROR', 'No MASTER_SHEET_ID in CONFIG — weekly review skipped');
+    return;
+  }
+
+  // === 1. Load change log data (last 90 days, this account) ===
+  var changeLogSummary = _buildChangeLogSummary();
+  if (!changeLogSummary) {
+    _log('WARN', 'No change log data available for weekly review');
+    return;
+  }
+
+  // === 2. Load the current script from GitHub ===
+  var currentScript = '';
+  try {
+    var scriptUrl = CONFIG.CORE_SCRIPT_URL || 'https://raw.githubusercontent.com/LeadsSyte/gads-scripts/refs/heads/main/syte_optimization_core.js';
+    var response = UrlFetchApp.fetch(scriptUrl, { muteHttpExceptions: true });
+    if (response.getResponseCode() === 200) {
+      currentScript = response.getContentText();
+      _log('INFO', 'Loaded current script (' + currentScript.length + ' chars)');
+    } else {
+      _log('WARN', 'Could not fetch script from GitHub — using summary only');
+    }
+  } catch (e) {
+    _log('WARN', 'Script fetch error: ' + e.message);
+  }
+
+  // === 3. Build the prompt for Claude ===
+  var accountName = AdsApp.currentAccount().getName();
+  var prompt = _buildClaudeReviewPrompt(accountName, changeLogSummary, currentScript);
+
+  // === 4. Call Claude API ===
+  _log('INFO', 'Calling Claude API for weekly review...');
+  var claudeResponse = _callClaudeAPI(prompt);
+
+  if (!claudeResponse) {
+    _log('ERROR', 'Claude API returned no response — weekly review skipped');
+    return;
+  }
+
+  // === 5. Send the report email ===
+  _sendWeeklyReviewEmail(accountName, claudeResponse, changeLogSummary);
+  _log('INFO', 'Weekly Claude review complete and emailed.');
+}
+
+/**
+ * Reads the change log sheet and builds a structured summary
+ * of the last 90 days of changes + outcomes for this account.
+ */
+function _buildChangeLogSummary() {
+  var sheet = _getChangeLogSheet();
+  if (!sheet) return null;
+
+  try {
+    var data = sheet.getDataRange().getValues();
+    if (data.length < 2) return 'No change history found.';
+
+    var headers = data[0];
+    var colIdx = {};
+    headers.forEach(function(h, i) { colIdx[h] = i; });
+
+    var accountName = AdsApp.currentAccount().getName();
+    var cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - 90);
+
+    var rows = [];
+    var stats = {
+      total: 0, correct: 0, incorrect: 0, neutral: 0, pending: 0,
+      byFunction: {}
+    };
+
+    for (var r = 1; r < data.length; r++) {
+      var row = data[r];
+      if (row[colIdx['account_name']] !== accountName) continue;
+      var ts = new Date(row[colIdx['timestamp']]);
+      if (ts < cutoff) continue;
+
+      var fn = row[colIdx['function_name']] || 'unknown';
+      var outcome = row[colIdx['outcome']] || 'PENDING';
+
+      stats.total++;
+      if (outcome === 'CORRECT') stats.correct++;
+      else if (outcome === 'INCORRECT') stats.incorrect++;
+      else if (outcome === 'NEUTRAL') stats.neutral++;
+      else stats.pending++;
+
+      if (!stats.byFunction[fn]) stats.byFunction[fn] = { total: 0, correct: 0, incorrect: 0, neutral: 0 };
+      stats.byFunction[fn].total++;
+      if (outcome === 'CORRECT') stats.byFunction[fn].correct++;
+      else if (outcome === 'INCORRECT') stats.byFunction[fn].incorrect++;
+      else if (outcome === 'NEUTRAL') stats.byFunction[fn].neutral++;
+
+      // Only include rows with scored outcomes in the detail
+      if (outcome !== 'PENDING') {
+        rows.push({
+          timestamp: row[colIdx['timestamp']],
+          function: fn,
+          entity: row[colIdx['entity']],
+          entityType: row[colIdx['entity_type']],
+          campaign: row[colIdx['campaign']],
+          reason: row[colIdx['reason']],
+          spend: row[colIdx['spend_at_change']],
+          outcome: outcome,
+          outcomeNotes: row[colIdx['outcome_notes']]
+        });
+      }
+    }
+
+    var summary = '=== CHANGE LOG SUMMARY (Last 90 days) ===\n';
+    summary += 'Account: ' + accountName + '\n';
+    summary += 'Total changes: ' + stats.total + '\n';
+    summary += 'Correct: ' + stats.correct + ' | Incorrect: ' + stats.incorrect + ' | Neutral: ' + stats.neutral + ' | Pending: ' + stats.pending + '\n';
+
+    var accuracy = stats.correct + stats.incorrect > 0
+      ? ((stats.correct / (stats.correct + stats.incorrect)) * 100).toFixed(1)
+      : 'N/A';
+    summary += 'Decision accuracy (excl. neutral): ' + accuracy + '%\n\n';
+
+    summary += '=== BY FUNCTION ===\n';
+    for (var fn in stats.byFunction) {
+      var f = stats.byFunction[fn];
+      var fnAccuracy = f.correct + f.incorrect > 0
+        ? ((f.correct / (f.correct + f.incorrect)) * 100).toFixed(0) + '%'
+        : 'N/A';
+      summary += fn + ': ' + f.total + ' changes | accuracy=' + fnAccuracy + ' (correct=' + f.correct + ' incorrect=' + f.incorrect + ')\n';
+    }
+
+    summary += '\n=== INCORRECT DECISIONS (for code review) ===\n';
+    var incorrectRows = rows.filter(function(r) { return r.outcome === 'INCORRECT'; });
+    if (incorrectRows.length === 0) {
+      summary += 'None found in this period.\n';
+    } else {
+      incorrectRows.slice(0, 30).forEach(function(r) {
+        summary += '- [' + r.function + '] "' + r.entity + '" (' + r.entityType + ') | Campaign: ' + r.campaign + '\n';
+        summary += '  Reason for change: ' + r.reason + '\n';
+        summary += '  Outcome notes: ' + r.outcomeNotes + '\n';
+      });
+    }
+
+    summary += '\n=== SAMPLE CORRECT DECISIONS ===\n';
+    var correctRows = rows.filter(function(r) { return r.outcome === 'CORRECT'; });
+    correctRows.slice(0, 15).forEach(function(r) {
+      summary += '- [' + r.function + '] "' + r.entity + '" | ' + r.outcomeNotes + '\n';
+    });
+
+    return summary;
+
+  } catch (e) {
+    _log('ERROR', 'buildChangeLogSummary: ' + e.message);
+    return null;
+  }
+}
+
+/**
+ * Builds the prompt sent to Claude for the weekly review.
+ */
+function _buildClaudeReviewPrompt(accountName, changeLogSummary, currentScript) {
+  var prompt = 'You are a senior Google Ads engineer reviewing an automated optimization script. ';
+  prompt += 'Your job is to analyze the script\'s real-world decision history, identify flaws in its logic, ';
+  prompt += 'and produce an improved version of the full script.\n\n';
+
+  prompt += '=== CONTEXT ===\n';
+  prompt += 'Account: ' + accountName + '\n';
+  prompt += 'Script: Syte Optimization Core — a Google Ads Script that runs every 3 days to pause waste, ';
+  prompt += 'negative bad search terms, adjust bids, promote winning search terms to exact match, and send email reports.\n\n';
+
+  prompt += changeLogSummary + '\n\n';
+
+  prompt += '=== YOUR TASK ===\n';
+  prompt += 'Do the following in your response:\n\n';
+
+  prompt += '1. DECISION AUDIT\n';
+  prompt += 'For each INCORRECT decision found in the change log, explain:\n';
+  prompt += '- What the script\'s logic was doing\n';
+  prompt += '- Why that logic produced a wrong decision\n';
+  prompt += '- What the code change should be to prevent it happening again\n\n';
+
+  prompt += '2. LOGIC CRITIQUE\n';
+  prompt += 'Review the overall script logic and identify:\n';
+  prompt += '- Any thresholds that appear too aggressive or too conservative based on outcomes\n';
+  prompt += '- Any functions with low accuracy that need redesigning\n';
+  prompt += '- Any edge cases not being handled\n';
+  prompt += '- Any new optimizations worth adding based on patterns in the data\n\n';
+
+  prompt += '3. FULL REWRITTEN SCRIPT\n';
+  prompt += 'Provide the complete updated syte_optimization_core.js with all your fixes applied.\n';
+  prompt += 'Update the version number to v' + _getNextVersion() + '.\n';
+  prompt += 'Add a CHANGELOG entry at the top listing every change you made and why.\n';
+  prompt += 'Do not remove existing functionality. Only improve it.\n\n';
+
+  if (currentScript) {
+    prompt += '=== CURRENT SCRIPT CODE ===\n';
+    prompt += currentScript;
+  }
+
+  return prompt;
+}
+
+function _getNextVersion() {
+  // Extract current version number and increment patch
+  var match = '4.0'.match(/(\d+)\.(\d+)/);
+  if (match) {
+    return match[1] + '.' + (parseInt(match[2]) + 1);
+  }
+  return '4.1';
+}
+
+/**
+ * Calls the Anthropic Claude API and returns the text response.
+ */
+function _callClaudeAPI(prompt) {
+  try {
+    var payload = {
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 8000,
+      messages: [{ role: 'user', content: prompt }]
+    };
+
+    var options = {
+      method: 'post',
+      contentType: 'application/json',
+      headers: {
+        'x-api-key': CONFIG.ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01'
+      },
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true
+    };
+
+    var response = UrlFetchApp.fetch('https://api.anthropic.com/v1/messages', options);
+    var code = response.getResponseCode();
+
+    if (code !== 200) {
+      _log('ERROR', 'Claude API error ' + code + ': ' + response.getContentText().substring(0, 300));
+      return null;
+    }
+
+    var json = JSON.parse(response.getContentText());
+    if (json.content && json.content[0] && json.content[0].text) {
+      return json.content[0].text;
+    }
+
+    _log('ERROR', 'Unexpected Claude API response structure');
+    return null;
+
+  } catch (e) {
+    _log('ERROR', 'callClaudeAPI: ' + e.message);
+    return null;
+  }
+}
+
+/**
+ * Sends the weekly self-improvement report to the Syte team.
+ * Includes the full decision audit, logic critique, and rewritten script.
+ */
+function _sendWeeklyReviewEmail(accountName, claudeResponse, changeLogSummary) {
+  var today = Utilities.formatDate(new Date(), AdsApp.currentAccount().getTimeZone(), 'yyyy-MM-dd');
+  var recipients = CONFIG.EMAIL_ADDRESSES || [CONFIG.EMAIL_RECIPIENT || 'michaelh@syte.co.za'];
+  if (typeof recipients === 'string') recipients = [recipients];
+
+  // Try to extract the rewritten script from Claude's response
+  var scriptMatch = claudeResponse.match(/```javascript([\s\S]*?)```/);
+  var rewrittenScript = scriptMatch ? scriptMatch[1].trim() : null;
+
+  // Build HTML email
+  var email = '<html><body style="font-family:Arial,sans-serif;max-width:900px;margin:0 auto;color:#333;">';
+
+  // Header
+  email += '<div style="background:linear-gradient(135deg,#1a1a2e,#16213e);color:white;padding:24px;border-radius:8px 8px 0 0;">';
+  email += '<h1 style="margin:0;font-size:22px;">🤖 Syte Script — Weekly Self-Improvement Report</h1>';
+  email += '<p style="margin:6px 0 0;opacity:0.8;">' + accountName + ' | ' + today + ' | Core v4.0</p>';
+  email += '</div>';
+
+  // Change log stats banner
+  email += '<div style="background:#e8f5e9;padding:14px 20px;border-left:4px solid #2e7d32;">';
+  email += '<pre style="margin:0;font-size:12px;white-space:pre-wrap;">' + changeLogSummary + '</pre>';
+  email += '</div>';
+
+  // Claude's analysis
+  email += '<div style="padding:20px;">';
+  email += '<h2 style="color:#1a1a2e;border-bottom:2px solid #eee;padding-bottom:8px;">Claude\'s Analysis & Recommendations</h2>';
+
+  // If there's a rewritten script, separate the narrative from it
+  var narrative = rewrittenScript
+    ? claudeResponse.replace(/```javascript[\s\S]*?```/, '[Full rewritten script — see below]')
+    : claudeResponse;
+
+  email += '<div style="white-space:pre-wrap;font-size:13px;line-height:1.7;background:#f9f9f9;padding:16px;border-radius:6px;">' +
+    narrative.replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</div>';
+  email += '</div>';
+
+  // Rewritten script section
+  if (rewrittenScript) {
+    email += '<div style="padding:20px;background:#1a1a2e;color:#e0e0e0;">';
+    email += '<h2 style="color:#90caf9;margin-top:0;">📋 Rewritten Script — Ready to Paste into GitHub</h2>';
+    email += '<p style="color:#aaa;font-size:13px;margin:0 0 12px;">Copy everything below and replace the contents of <code>syte_optimization_core.js</code> in GitHub.</p>';
+    email += '<pre style="font-size:11px;line-height:1.5;white-space:pre-wrap;overflow-x:auto;">' +
+      rewrittenScript.replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</pre>';
+    email += '</div>';
+  } else {
+    email += '<div style="padding:16px;background:#fff3e0;border-left:4px solid #f57c00;">';
+    email += '<p style="margin:0;font-size:13px;">⚠️ Claude\'s response did not contain a parseable script block. ';
+    email += 'See the analysis above for manual recommendations.</p>';
+    email += '</div>';
+  }
+
+  email += '<div style="padding:14px;color:#999;font-size:11px;text-align:center;">';
+  email += 'Syte Digital Agency | Automated weekly review | syte.co.za';
+  email += '</div>';
+  email += '</body></html>';
+
+  MailApp.sendEmail({
+    to: recipients.join(','),
+    subject: '🤖 Syte Script Self-Improvement | ' + accountName + ' | ' + today,
+    htmlBody: email
+  });
+}
+
+
+// ============================================
+// WINNER PROMOTION — WITH AD COPY FIX
+// ============================================
+
 function _createExactMatchWinner(searchTerm, campaignName, sourceAdGroupName) {
   try {
-    // Find the campaign
     var ci = AdsApp.campaigns().withCondition('campaign.name = "' + campaignName + '"').get();
-    if (!ci.hasNext()) {
-      _log('WARN', 'Campaign not found: ' + campaignName);
-      return false;
-    }
+    if (!ci.hasNext()) { _log('WARN', 'Campaign not found: ' + campaignName); return false; }
     var campaign = ci.next();
-    
-    // Find or create [Exact Winners] ad group
+
     var winnersAdGroupName = CONFIG.EXACT_WINNERS_AD_GROUP_NAME || '[Exact Winners]';
     var exactAdGroup = null;
     var agi = campaign.adGroups().withCondition('ad_group.name = "' + winnersAdGroupName + '"').get();
-    
+
     if (agi.hasNext()) {
       exactAdGroup = agi.next();
-      _log('DEBUG', 'Found existing ad group: ' + winnersAdGroupName);
     } else {
-      // Create the ad group
-      var result = campaign.newAdGroupBuilder()
-        .withName(winnersAdGroupName)
-        .withStatus('ENABLED')
-        .build();
-      
+      var result = campaign.newAdGroupBuilder().withName(winnersAdGroupName).withStatus('ENABLED').build();
       if (result.isSuccessful()) {
         exactAdGroup = result.getResult();
         _log('INFO', 'Created ad group: "' + winnersAdGroupName + '" in "' + campaignName + '"');
-        
-        // *** THE FIX: Copy ads from source ad group ***
         _copyAdsToAdGroup(campaignName, sourceAdGroupName, exactAdGroup);
-      } else {
-        _log('ERROR', 'Failed to create ad group: ' + winnersAdGroupName);
-        return false;
-      }
+      } else { _log('ERROR', 'Failed to create ad group: ' + winnersAdGroupName); return false; }
     }
-    
+
     if (!exactAdGroup) return false;
-    
-    // Check if this exact keyword already exists
+
     var existingKw = exactAdGroup.keywords()
       .withCondition('ad_group_criterion.keyword.text = "' + searchTerm + '"')
-      .withCondition('ad_group_criterion.keyword.match_type = "EXACT"')
-      .get();
-    
-    if (existingKw.hasNext()) {
-      _log('DEBUG', 'Exact match already exists: [' + searchTerm + ']');
-      return false;
-    }
-    
-    // Get the final URL from source ad group
+      .withCondition('ad_group_criterion.keyword.match_type = "EXACT"').get();
+    if (existingKw.hasNext()) { _log('DEBUG', 'Exact match already exists: [' + searchTerm + ']'); return false; }
+
     var finalUrl = _getAdGroupFinalUrl(campaignName, sourceAdGroupName);
-    
-    // Add the exact match keyword
     var kwBuilder = exactAdGroup.newKeywordBuilder().withText('[' + searchTerm + ']');
     if (finalUrl) kwBuilder = kwBuilder.withFinalUrl(finalUrl);
     kwBuilder.build();
     _log('INFO', '  Added exact match: [' + searchTerm + ']');
-    
-    // Add negative in source ad group to funnel traffic
+
     var sourceAgi = campaign.adGroups().withCondition('ad_group.name = "' + sourceAdGroupName + '"').get();
     if (sourceAgi.hasNext()) {
       sourceAgi.next().createNegativeKeyword('[' + searchTerm + ']');
       _log('INFO', '  Added negative in source: "' + sourceAdGroupName + '"');
     }
-    
+
     return true;
-  } catch (e) {
-    _log('ERROR', 'createExactMatchWinner error: ' + e.message);
-    return false;
-  }
+  } catch (e) { _log('ERROR', 'createExactMatchWinner error: ' + e.message); return false; }
 }
 
-/**
- * Copies all enabled RSAs from a source ad group into a target ad group.
- * This ensures the [Exact Winners] ad group has ads and can actually serve.
- */
 function _copyAdsToAdGroup(campaignName, sourceAdGroupName, targetAdGroup) {
   try {
     var adIterator = AdsApp.ads()
       .withCondition('campaign.name = "' + campaignName + '"')
       .withCondition('ad_group.name = "' + sourceAdGroupName + '"')
-      .withCondition('ad_group_ad.status = ENABLED')
-      .get();
-    
+      .withCondition('ad_group_ad.status = ENABLED').get();
     var adsCopied = 0;
     while (adIterator.hasNext()) {
       var ad = adIterator.next();
       if (ad.getType() === 'RESPONSIVE_SEARCH_AD') {
         var rsa = ad.asType().responsiveSearchAd();
-        var headlines = rsa.getHeadlines().map(function(h) {
-          return { text: h.text, pinning: h.pinnedField || undefined };
-        });
-        var descriptions = rsa.getDescriptions().map(function(d) {
-          return { text: d.text, pinning: d.pinnedField || undefined };
-        });
-        
+        var headlines = rsa.getHeadlines().map(function(h) { return { text: h.text, pinning: h.pinnedField || undefined }; });
+        var descriptions = rsa.getDescriptions().map(function(d) { return { text: d.text, pinning: d.pinnedField || undefined }; });
         targetAdGroup.newAd().responsiveSearchAdBuilder()
-          .withHeadlines(headlines)
-          .withDescriptions(descriptions)
-          .withFinalUrl(ad.urls().getFinalUrl())
-          .build();
+          .withHeadlines(headlines).withDescriptions(descriptions)
+          .withFinalUrl(ad.urls().getFinalUrl()).build();
         adsCopied++;
       }
     }
-    
-    if (adsCopied > 0) {
-      _log('INFO', '  Copied ' + adsCopied + ' RSA(s) from "' + sourceAdGroupName + '" to [Exact Winners]');
-    } else {
-      _log('WARN', '  No enabled RSAs found in "' + sourceAdGroupName + '" to copy — ads still needed!');
-    }
-  } catch (e) {
-    _log('WARN', 'copyAds error: ' + e.message);
-  }
+    if (adsCopied > 0) { _log('INFO', '  Copied ' + adsCopied + ' RSA(s) from "' + sourceAdGroupName + '" to [Exact Winners]'); }
+    else { _log('WARN', '  No enabled RSAs found in "' + sourceAdGroupName + '" — ads still needed!'); }
+  } catch (e) { _log('WARN', 'copyAds error: ' + e.message); }
 }
 
-/**
- * Gets the final URL from the first enabled ad in an ad group.
- */
 function _getAdGroupFinalUrl(campaignName, adGroupName) {
   try {
     var ai = AdsApp.ads()
       .withCondition('campaign.name = "' + campaignName + '"')
       .withCondition('ad_group.name = "' + adGroupName + '"')
-      .withCondition('ad_group_ad.status = ENABLED')
-      .withLimit(1)
-      .get();
+      .withCondition('ad_group_ad.status = ENABLED').withLimit(1).get();
     if (ai.hasNext()) return ai.next().urls().getFinalUrl();
   } catch (e) { /* silent */ }
   return '';
@@ -320,7 +853,7 @@ function _getAdGroupFinalUrl(campaignName, adGroupName) {
 
 function _pauseHighSpendKeywords_LeadGen(results) {
   var dr = _getDateRange(); var changeCount = 0;
-  var query = 'SELECT ad_group_criterion.keyword.text, ad_group_criterion.keyword.match_type, campaign.name, ad_group.name, metrics.cost_micros, metrics.conversions, metrics.clicks, metrics.ctr FROM keyword_view WHERE metrics.cost_micros > ' + (CONFIG.KEYWORD_SPEND_THRESHOLD * 1000000) + ' AND metrics.conversions < 1 AND campaign.status = "ENABLED" AND ad_group.status = "ENABLED" AND ad_group_criterion.status = "ENABLED" AND campaign.advertising_channel_type = "SEARCH" AND segments.date BETWEEN "' + dr.startDate + '" AND "' + dr.endDate + '"';
+  var query = 'SELECT ad_group_criterion.keyword.text, ad_group_criterion.keyword.match_type, campaign.name, ad_group.name, metrics.cost_micros, metrics.conversions, metrics.clicks, metrics.ctr FROM keyword_view WHERE metrics.cost_micros > ' + (CONFIG.KEYWORD_SPEND_THRESHOLD * 1000000) + ' AND metrics.conversions < 1 AND campaign.status = "ENABLED" AND ad_group.status = "ENABLED" AND ad_group_criterion.status = "ENABLED" AND campaign.advertising_channel_type = "SEARCH" AND segments.date BETWEEN "' + _getDateRange().startDate + '" AND "' + _getDateRange().endDate + '"';
   try {
     var search = AdsApp.search(query);
     while (search.hasNext() && changeCount < CONFIG.MAX_CHANGES_PER_RUN) {
@@ -331,8 +864,13 @@ function _pauseHighSpendKeywords_LeadGen(results) {
       var ctr = Number(row.metrics.ctr) * 100;
       if (_isProtectedTerm(kw)) continue;
       if (ctr > CONFIG.MIN_CTR_TO_PROTECT && !_isInformational(kw)) continue;
-      _log('INFO', 'PAUSE: "' + kw + '" | ' + CONFIG.CURRENCY_SYMBOL + cost.toFixed(2) + ' | 0 conv');
+      var reason = 'Spend R' + cost.toFixed(0) + ' | 0 conv | CTR ' + ctr.toFixed(1) + '%';
+      _log('INFO', 'PAUSE: "' + kw + '" | ' + reason);
       results.keywordsPaused.push({ keyword: kw, campaign: cn, adGroup: agn, spend: cost });
+
+      // LOG CHANGE
+      _logChange({ functionName: '_pauseHighSpendKeywords_LeadGen', entity: kw, entityType: 'KEYWORD', campaign: cn, adGroup: agn, reason: reason, spend: cost, conversions: 0 });
+
       if (!CONFIG.PREVIEW_MODE) {
         var ki = AdsApp.keywords().withCondition('ad_group.name = "' + agn + '"').withCondition('campaign.name = "' + cn + '"').withCondition('ad_group_criterion.keyword.text = "' + kw + '"').get();
         while (ki.hasNext()) ki.next().pause();
@@ -356,8 +894,13 @@ function _negativeHighSpendSearchTerms_LeadGen(results) {
       if (processed[st] || existing[st] || _isProtectedTerm(st)) continue;
       processed[st] = true;
       var cost = Number(row.metrics.costMicros) / 1000000;
-      _log('INFO', 'NEGATIVE: "' + st + '" | ' + CONFIG.CURRENCY_SYMBOL + cost.toFixed(2) + ' | 0 conv');
+      var reason = 'Spend R' + cost.toFixed(0) + ' | 0 conv';
+      _log('INFO', 'NEGATIVE: "' + st + '" | ' + reason);
       results.searchTermsNegated.push({ searchTerm: st, campaign: row.campaign.name, spend: cost });
+
+      // LOG CHANGE
+      _logChange({ functionName: '_negativeHighSpendSearchTerms_LeadGen', entity: st, entityType: 'SEARCH_TERM_NEGATIVE', campaign: row.campaign.name, reason: reason, spend: cost, conversions: 0 });
+
       if (!CONFIG.PREVIEW_MODE && negativeList) negativeList.addNegativeKeyword('[' + st + ']');
       changeCount++;
     }
@@ -379,6 +922,10 @@ function _promoteWinners_LeadGen(results) {
       if (cvr < CONFIG.PROMOTION_MIN_CONVERSION_RATE) continue;
       _log('INFO', 'WINNER: "' + st + '" | CVR: ' + cvr.toFixed(1) + '% | Conv: ' + conv);
       results.winnersPromoted.push({ searchTerm: st, campaign: row.campaign.name, adGroup: row.adGroup.name, conversions: conv, cvr: cvr });
+
+      // LOG CHANGE
+      _logChange({ functionName: '_promoteWinners_LeadGen', entity: st, entityType: 'EXACT_MATCH_PROMOTION', campaign: row.campaign.name, adGroup: row.adGroup.name, reason: 'CVR ' + cvr.toFixed(1) + '% | Conv: ' + conv, spend: cost, conversions: conv });
+
       if (!CONFIG.PREVIEW_MODE) _createExactMatchWinner(st, row.campaign.name, row.adGroup.name);
     }
   } catch (e) { _log('ERROR', 'promoteWinners_LeadGen: ' + e.message); results.errors.push(e.message); }
@@ -405,8 +952,13 @@ function _pauseHighSpendKeywords_Ecommerce(results) {
       if (_isProtectedTerm(kw)) continue;
       if (roas >= CONFIG.MIN_ROAS_TO_KEEP) continue;
       if (revenue > CONFIG.ECOM_KEYWORD_SPEND_THRESHOLD * 0.5) continue;
-      _log('INFO', 'ECOM PAUSE: "' + kw + '" | ROAS: ' + roas.toFixed(2) + 'x | Spend: ' + CONFIG.CURRENCY_SYMBOL + cost.toFixed(2));
+      var reason = 'ROAS ' + roas.toFixed(2) + 'x | Spend R' + cost.toFixed(0);
+      _log('INFO', 'ECOM PAUSE: "' + kw + '" | ' + reason);
       results.ecomKeywordsPaused.push({ keyword: kw, campaign: cn, adGroup: agn, spend: cost, revenue: revenue, roas: roas });
+
+      // LOG CHANGE
+      _logChange({ functionName: '_pauseHighSpendKeywords_Ecommerce', entity: kw, entityType: 'KEYWORD', campaign: cn, adGroup: agn, reason: reason, spend: cost, conversions: revenue });
+
       if (!CONFIG.PREVIEW_MODE) {
         var ki = AdsApp.keywords().withCondition('ad_group.name = "' + agn + '"').withCondition('campaign.name = "' + cn + '"').withCondition('ad_group_criterion.keyword.text = "' + kw + '"').get();
         while (ki.hasNext()) ki.next().pause();
@@ -432,7 +984,12 @@ function _negativeHighSpendSearchTerms_Ecommerce(results) {
       var revenue = Number(row.metrics.conversionsValue) || 0;
       var roas = _calculateROAS(revenue, cost);
       if (roas >= CONFIG.MIN_ROAS_TO_KEEP) continue;
+      var reason = 'ROAS ' + roas.toFixed(2) + 'x | Spend R' + cost.toFixed(0);
       results.ecomSearchTermsNegated.push({ searchTerm: st, campaign: row.campaign.name, spend: cost, revenue: revenue, roas: roas });
+
+      // LOG CHANGE
+      _logChange({ functionName: '_negativeHighSpendSearchTerms_Ecommerce', entity: st, entityType: 'SEARCH_TERM_NEGATIVE', campaign: row.campaign.name, reason: reason, spend: cost, conversions: revenue });
+
       if (!CONFIG.PREVIEW_MODE && negativeList) negativeList.addNegativeKeyword('[' + st + ']');
       changeCount++;
     }
@@ -453,8 +1010,12 @@ function _promoteWinners_Ecommerce(results) {
       var cost = Number(row.metrics.costMicros) / 1000000;
       var roas = _calculateROAS(revenue, cost);
       if (revenue < (CONFIG.ECOM_PROMOTION_MIN_REVENUE || 500) || roas < (CONFIG.ECOM_PROMOTION_MIN_ROAS || 3.0)) continue;
-      _log('INFO', 'ECOM WINNER: "' + st + '" | ROAS: ' + roas.toFixed(2) + 'x | Rev: ' + CONFIG.CURRENCY_SYMBOL + revenue.toFixed(2));
+      _log('INFO', 'ECOM WINNER: "' + st + '" | ROAS: ' + roas.toFixed(2) + 'x | Rev: R' + revenue.toFixed(0));
       results.ecomWinnersPromoted.push({ searchTerm: st, campaign: row.campaign.name, adGroup: row.adGroup.name, revenue: revenue, roas: roas, spend: cost });
+
+      // LOG CHANGE
+      _logChange({ functionName: '_promoteWinners_Ecommerce', entity: st, entityType: 'EXACT_MATCH_PROMOTION', campaign: row.campaign.name, adGroup: row.adGroup.name, reason: 'ROAS ' + roas.toFixed(2) + 'x | Rev R' + revenue.toFixed(0), spend: cost, conversions: revenue });
+
       if (!CONFIG.PREVIEW_MODE) _createExactMatchWinner(st, row.campaign.name, row.adGroup.name);
     }
   } catch (e) { _log('ERROR', 'promoteWinners_Ecommerce: ' + e.message); results.errors.push(e.message); }
@@ -531,7 +1092,7 @@ function _monitorPMaxCampaigns(results) {
       var cn = row.campaign.name, cost = Number(row.metrics.costMicros) / 1000000;
       var revenue = Number(row.metrics.conversionsValue) || 0;
       var roas = _calculateROAS(revenue, cost);
-      _log('INFO', 'PMax: "' + cn + '" | ROAS: ' + roas.toFixed(2) + 'x | Rev: ' + CONFIG.CURRENCY_SYMBOL + revenue.toFixed(2));
+      _log('INFO', 'PMax: "' + cn + '" | ROAS: ' + roas.toFixed(2) + 'x | Rev: R' + revenue.toFixed(0));
       if (cost > CONFIG.PMAX_ASSET_GROUP_SPEND_THRESHOLD && roas < CONFIG.PMAX_MIN_ROAS_THRESHOLD) {
         results.pmaxAlerts.push({ type: 'LOW_ROAS', campaign: cn, cost: cost, revenue: revenue, roas: roas, recommendation: roas < 1.0 ? 'Consider pausing' : 'Review asset groups and audiences' });
       }
@@ -617,7 +1178,6 @@ function _blockInformationalTerms(results) {
 function _blockIrrelevantTerms(results) {
   var irrelevantTerms = CONFIG.IRRELEVANT_TERMS || [];
   if (irrelevantTerms.length === 0) return;
-  
   var changeCount = 0;
   var negativeList = _getOrCreateNegativeList(CONFIG.NEGATIVE_LIST_NAME_IRRELEVANT);
   var existing = _getExistingNegatives(negativeList);
@@ -653,7 +1213,7 @@ function _checkBudgetPacing(results) {
     while (search.hasNext()) totalSpend += Number(search.next().metrics.costMicros) / 1000000;
     var paceRatio = totalSpend / CONFIG.MONTHLY_BUDGET;
     var projected = (totalSpend / dom) * dim;
-    _log('INFO', 'Budget: ' + CONFIG.CURRENCY_SYMBOL + totalSpend.toFixed(2) + ' of ' + CONFIG.CURRENCY_SYMBOL + CONFIG.MONTHLY_BUDGET + ' (' + (paceRatio * 100).toFixed(1) + '%)');
+    _log('INFO', 'Budget: R' + totalSpend.toFixed(0) + ' of R' + CONFIG.MONTHLY_BUDGET + ' (' + (paceRatio * 100).toFixed(1) + '%)');
     if (paceRatio > expectedPace * (1 + (CONFIG.BUDGET_ALERT_THRESHOLD || 0.7))) results.budgetAlerts.push({ type: 'OVERPACING', currentSpend: totalSpend, projected: projected });
     if (paceRatio < expectedPace * 0.5 && dom > 7) results.budgetAlerts.push({ type: 'UNDERPACING', currentSpend: totalSpend, projected: projected });
   } catch (e) { _log('ERROR', 'checkBudgetPacing: ' + e.message); results.errors.push(e.message); }
@@ -664,68 +1224,44 @@ function _checkBudgetPacing(results) {
 // AUTO-OPTIMIZE: DEVICE BID ADJUSTMENTS
 // ============================================
 
-/**
- * Analyzes device performance and auto-applies bid modifiers.
- * If mobile CVR is 50%+ lower than desktop, applies negative bid adjustment.
- * If mobile CVR is 50%+ higher than desktop, applies positive bid adjustment.
- * Same for tablet. Caps adjustments at -90% / +300%.
- */
 function _autoAdjustDeviceBids(results) {
   var dr = _getDateRange();
-  var query = 'SELECT campaign.name, campaign.id, segments.device, metrics.cost_micros, metrics.conversions, metrics.conversions_value, metrics.clicks ' +
-    'FROM campaign WHERE campaign.status = "ENABLED" AND campaign.advertising_channel_type = "SEARCH" ' +
-    'AND segments.date BETWEEN "' + dr.startDate + '" AND "' + dr.endDate + '"';
-  
+  var query = 'SELECT campaign.name, campaign.id, segments.device, metrics.cost_micros, metrics.conversions, metrics.conversions_value, metrics.clicks FROM campaign WHERE campaign.status = "ENABLED" AND campaign.advertising_channel_type = "SEARCH" AND segments.date BETWEEN "' + dr.startDate + '" AND "' + dr.endDate + '"';
   try {
-    var search = AdsApp.search(query);
-    var campaigns = {};
-    
+    var search = AdsApp.search(query); var campaigns = {};
     while (search.hasNext()) {
       var row = search.next();
-      var cn = row.campaign.name;
-      var device = row.segments.device;
+      var cn = row.campaign.name, device = row.segments.device;
       var cost = Number(row.metrics.costMicros) / 1000000;
       var conv = Number(row.metrics.conversions) || 0;
       var clicks = Number(row.metrics.clicks) || 0;
       var revenue = Number(row.metrics.conversionsValue) || 0;
-      
       if (!campaigns[cn]) campaigns[cn] = {};
       campaigns[cn][device] = { cost: cost, conversions: conv, clicks: clicks, revenue: revenue };
     }
-    
     var minSpend = CONFIG.DEVICE_MIN_SPEND || 500;
     var minClicks = CONFIG.DEVICE_MIN_CLICKS || 50;
-    
     for (var cn in campaigns) {
       var data = campaigns[cn];
       var desktop = data['DESKTOP'] || { cost: 0, conversions: 0, clicks: 0, revenue: 0 };
       var mobile = data['MOBILE'] || { cost: 0, conversions: 0, clicks: 0, revenue: 0 };
       var tablet = data['TABLET'] || { cost: 0, conversions: 0, clicks: 0, revenue: 0 };
-      
-      // Need enough desktop data AND conversions as baseline
-      if (desktop.clicks < minClicks) continue;
-      // Require minimum 5 conversions on desktop before comparing devices
-      if (desktop.conversions < 5) continue;
-      
+      if (desktop.clicks < minClicks || desktop.conversions < 5) continue;
       var desktopCvr = desktop.clicks > 0 ? (desktop.conversions / desktop.clicks) : 0;
-      
-      // Adjust mobile
       if (mobile.clicks >= minClicks && mobile.cost >= minSpend) {
         var mobileCvr = mobile.clicks > 0 ? (mobile.conversions / mobile.clicks) : 0;
-        var adjustment = _calculateBidAdjustment(desktopCvr, mobileCvr);
-        
-        if (Math.abs(adjustment) >= 10) { // Only adjust if 10%+ difference
-          _applyDeviceBidAdjustment(cn, 'MOBILE', adjustment, results);
+        var adj = _calculateBidAdjustment(desktopCvr, mobileCvr);
+        if (Math.abs(adj) >= 10) {
+          _applyDeviceBidAdjustment(cn, 'MOBILE', adj, results);
+          _logChange({ functionName: '_autoAdjustDeviceBids', entity: cn + '_MOBILE', entityType: 'DEVICE_BID', campaign: cn, reason: 'Mobile CVR ' + (mobileCvr * 100).toFixed(1) + '% vs Desktop ' + (desktopCvr * 100).toFixed(1) + '% | Adj: ' + adj + '%', spend: mobile.cost, conversions: mobile.conversions });
         }
       }
-      
-      // Adjust tablet
       if (tablet.clicks >= minClicks && tablet.cost >= minSpend) {
         var tabletCvr = tablet.clicks > 0 ? (tablet.conversions / tablet.clicks) : 0;
-        var adjustment = _calculateBidAdjustment(desktopCvr, tabletCvr);
-        
-        if (Math.abs(adjustment) >= 10) {
-          _applyDeviceBidAdjustment(cn, 'TABLET', adjustment, results);
+        var adj2 = _calculateBidAdjustment(desktopCvr, tabletCvr);
+        if (Math.abs(adj2) >= 10) {
+          _applyDeviceBidAdjustment(cn, 'TABLET', adj2, results);
+          _logChange({ functionName: '_autoAdjustDeviceBids', entity: cn + '_TABLET', entityType: 'DEVICE_BID', campaign: cn, reason: 'Tablet CVR ' + (tabletCvr * 100).toFixed(1) + '% vs Desktop | Adj: ' + adj2 + '%', spend: tablet.cost, conversions: tablet.conversions });
         }
       }
     }
@@ -734,24 +1270,20 @@ function _autoAdjustDeviceBids(results) {
 
 function _calculateBidAdjustment(baselineCvr, deviceCvr) {
   if (baselineCvr === 0) return 0;
-  // % difference: if device CVR is 50% of desktop, adjustment = -50%
   var ratio = deviceCvr / baselineCvr;
   var adjustment = Math.round((ratio - 1) * 100);
-  // Cap at -90% to +300%
   return Math.max(-90, Math.min(300, adjustment));
 }
 
 function _applyDeviceBidAdjustment(campaignName, device, adjustment, results) {
   _log('INFO', 'DEVICE BID: "' + campaignName + '" | ' + device + ' | ' + (adjustment > 0 ? '+' : '') + adjustment + '%');
   results.deviceAdjustments.push({ campaign: campaignName, device: device, adjustment: adjustment });
-  
   if (!CONFIG.PREVIEW_MODE) {
     try {
       var ci = AdsApp.campaigns().withCondition('campaign.name = "' + campaignName + '"').get();
       if (ci.hasNext()) {
         var campaign = ci.next();
-        var targeting = campaign.targeting();
-        var platforms = targeting.platforms().get();
+        var platforms = campaign.targeting().platforms().get();
         while (platforms.hasNext()) {
           var platform = platforms.next();
           if ((device === 'MOBILE' && platform.getName() === 'Mobile devices with full browsers') ||
@@ -769,65 +1301,40 @@ function _applyDeviceBidAdjustment(campaignName, device, adjustment, results) {
 // AUTO-OPTIMIZE: AD SCHEDULE (HOUR-OF-DAY)
 // ============================================
 
-/**
- * Analyzes hourly performance. If specific hours have significant spend
- * with zero conversions, creates ad schedule bid adjustments to reduce
- * bids during those hours.
- */
 function _autoAdjustAdSchedule(results) {
-  var query = 'SELECT campaign.name, segments.hour, metrics.cost_micros, metrics.conversions, metrics.clicks ' +
-    'FROM campaign WHERE campaign.status = "ENABLED" AND campaign.advertising_channel_type = "SEARCH" ' +
-    'AND segments.date DURING LAST_30_DAYS';
-  
+  var query = 'SELECT campaign.name, segments.hour, metrics.cost_micros, metrics.conversions, metrics.clicks FROM campaign WHERE campaign.status = "ENABLED" AND campaign.advertising_channel_type = "SEARCH" AND segments.date DURING LAST_30_DAYS';
   try {
-    var search = AdsApp.search(query);
-    var hourData = {}; // { campaignName: { hour: { cost, conv, clicks } } }
-    
+    var search = AdsApp.search(query); var hourData = {};
     while (search.hasNext()) {
       var row = search.next();
-      var cn = row.campaign.name;
-      var hour = row.segments.hour;
+      var cn = row.campaign.name, hour = row.segments.hour;
       var cost = Number(row.metrics.costMicros) / 1000000;
       var conv = Number(row.metrics.conversions) || 0;
       var clicks = Number(row.metrics.clicks) || 0;
-      
       if (!hourData[cn]) hourData[cn] = {};
       if (!hourData[cn][hour]) hourData[cn][hour] = { cost: 0, conversions: 0, clicks: 0 };
       hourData[cn][hour].cost += cost;
       hourData[cn][hour].conversions += conv;
       hourData[cn][hour].clicks += clicks;
     }
-    
     var minHourSpend = CONFIG.HOUR_MIN_SPEND || 300;
     var minHourClicks = CONFIG.HOUR_MIN_CLICKS || 20;
-    
     for (var cn in hourData) {
-      // Calculate campaign average CVR
       var totalConv = 0, totalClicks = 0;
       for (var h in hourData[cn]) { totalConv += hourData[cn][h].conversions; totalClicks += hourData[cn][h].clicks; }
+      if (totalConv < 10) { _log('DEBUG', 'Schedule skip "' + cn + '": only ' + totalConv + ' conv'); continue; }
       var avgCvr = totalClicks > 0 ? totalConv / totalClicks : 0;
-      // Require minimum 10 conversions before making schedule decisions
-      // Without enough data, we can't tell which hours are truly bad
-      if (totalConv < 10) {
-        _log('DEBUG', 'Schedule skip "' + cn + '": only ' + totalConv + ' conv (need 10+)');
-        continue;
-      }
-      
       for (var h in hourData[cn]) {
         var hd = hourData[cn][h];
         if (hd.cost < minHourSpend || hd.clicks < minHourClicks) continue;
-        
         var hourCvr = hd.clicks > 0 ? hd.conversions / hd.clicks : 0;
-        
-        // Zero conversions with significant spend: reduce by 50-75%
-        if (hd.conversions === 0 && hd.cost >= minHourSpend * 2) {
-          _applyHourBidAdjustment(cn, parseInt(h), -75, results);
-        } else if (hd.conversions === 0) {
-          _applyHourBidAdjustment(cn, parseInt(h), -50, results);
-        }
-        // CVR less than 25% of average: reduce by 40%
-        else if (hourCvr < avgCvr * 0.25 && hd.cost >= minHourSpend) {
-          _applyHourBidAdjustment(cn, parseInt(h), -40, results);
+        var adj = 0;
+        if (hd.conversions === 0 && hd.cost >= minHourSpend * 2) adj = -75;
+        else if (hd.conversions === 0) adj = -50;
+        else if (hourCvr < avgCvr * 0.25 && hd.cost >= minHourSpend) adj = -40;
+        if (adj !== 0) {
+          _applyHourBidAdjustment(cn, parseInt(h), adj, results);
+          _logChange({ functionName: '_autoAdjustAdSchedule', entity: cn + '_H' + h, entityType: 'SCHEDULE_BID', campaign: cn, reason: 'Hour ' + h + ': ' + hd.conversions + ' conv | R' + hd.cost.toFixed(0) + ' | Adj: ' + adj + '%', spend: hd.cost, conversions: hd.conversions });
         }
       }
     }
@@ -838,33 +1345,20 @@ function _applyHourBidAdjustment(campaignName, hour, adjustment, results) {
   var hourLabel = (hour < 10 ? '0' : '') + hour + ':00-' + (hour < 9 ? '0' : '') + (hour + 1) + ':00';
   _log('INFO', 'SCHEDULE: "' + campaignName + '" | ' + hourLabel + ' | ' + adjustment + '%');
   results.scheduleAdjustments.push({ campaign: campaignName, hour: hour, hourLabel: hourLabel, adjustment: adjustment });
-  
   if (!CONFIG.PREVIEW_MODE) {
     try {
       var ci = AdsApp.campaigns().withCondition('campaign.name = "' + campaignName + '"').get();
       if (ci.hasNext()) {
         var campaign = ci.next();
-        // Create ad schedule for this hour, all days
         var days = ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY'];
         for (var d = 0; d < days.length; d++) {
           try {
-            campaign.addAdSchedule({
-              dayOfWeek: days[d],
-              startHour: hour,
-              startMinute: 0,
-              endHour: hour + 1,
-              endMinute: 0,
-              bidModifier: 1 + (adjustment / 100)
-            });
+            campaign.addAdSchedule({ dayOfWeek: days[d], startHour: hour, startMinute: 0, endHour: hour + 1, endMinute: 0, bidModifier: 1 + (adjustment / 100) });
           } catch (e2) {
-            // May already exist — try to update existing
             var schedules = campaign.targeting().adSchedules().get();
             while (schedules.hasNext()) {
               var sched = schedules.next();
-              if (sched.getStartHour() === hour && sched.getDayOfWeek() === days[d]) {
-                sched.setBidModifier(1 + (adjustment / 100));
-                break;
-              }
+              if (sched.getStartHour() === hour && sched.getDayOfWeek() === days[d]) { sched.setBidModifier(1 + (adjustment / 100)); break; }
             }
           }
         }
@@ -878,68 +1372,44 @@ function _applyHourBidAdjustment(campaignName, hour, adjustment, results) {
 // AUTO-OPTIMIZE: GEOGRAPHIC BID ADJUSTMENTS
 // ============================================
 
-/**
- * Analyzes location performance and auto-reduces bids for
- * underperforming regions, auto-increases for strong ones.
- */
 function _autoAdjustGeoBids(results) {
-  var query = 'SELECT campaign.name, campaign_criterion.location.geo_target_constant, ' +
-    'metrics.cost_micros, metrics.conversions, metrics.conversions_value, metrics.clicks ' +
-    'FROM location_view WHERE campaign.status = "ENABLED" AND segments.date DURING LAST_30_DAYS';
-  
+  var query = 'SELECT campaign.name, campaign_criterion.location.geo_target_constant, metrics.cost_micros, metrics.conversions, metrics.conversions_value, metrics.clicks FROM location_view WHERE campaign.status = "ENABLED" AND segments.date DURING LAST_30_DAYS';
   try {
-    var search = AdsApp.search(query);
-    var geoData = {}; // { campaignName: { locationId: { cost, conv, clicks } } }
-    
+    var search = AdsApp.search(query); var geoData = {};
     while (search.hasNext()) {
       var row = search.next();
-      var cn = row.campaign.name;
-      var locId = row.campaignCriterion.location.geoTargetConstant;
+      var cn = row.campaign.name, locId = row.campaignCriterion.location.geoTargetConstant;
       var cost = Number(row.metrics.costMicros) / 1000000;
       var conv = Number(row.metrics.conversions) || 0;
       var clicks = Number(row.metrics.clicks) || 0;
-      
       if (!geoData[cn]) geoData[cn] = {};
       if (!geoData[cn][locId]) geoData[cn][locId] = { cost: 0, conversions: 0, clicks: 0, locationId: locId };
-      geoData[cn][locId].cost += cost;
-      geoData[cn][locId].conversions += conv;
-      geoData[cn][locId].clicks += clicks;
+      geoData[cn][locId].cost += cost; geoData[cn][locId].conversions += conv; geoData[cn][locId].clicks += clicks;
     }
-    
     var minGeoSpend = CONFIG.GEO_MIN_SPEND || 500;
     var minGeoClicks = CONFIG.GEO_MIN_CLICKS || 30;
-    
     for (var cn in geoData) {
-      // Campaign totals for baseline
       var totalConv = 0, totalClicks = 0;
       for (var loc in geoData[cn]) { totalConv += geoData[cn][loc].conversions; totalClicks += geoData[cn][loc].clicks; }
-      var avgCvr = totalClicks > 0 ? totalConv / totalClicks : 0;
-      // Require minimum 10 conversions before geo bid decisions
       if (totalConv < 10) continue;
-      
+      var avgCvr = totalClicks > 0 ? totalConv / totalClicks : 0;
       for (var loc in geoData[cn]) {
         var gd = geoData[cn][loc];
         if (gd.cost < minGeoSpend || gd.clicks < minGeoClicks) continue;
-        
         var locCvr = gd.clicks > 0 ? gd.conversions / gd.clicks : 0;
-        
-        // Zero conversions: reduce 50%
         if (gd.conversions === 0 && gd.cost >= minGeoSpend) {
-          _log('INFO', 'GEO: "' + cn + '" | Location ' + loc + ' | 0 conv | ' + CONFIG.CURRENCY_SYMBOL + gd.cost.toFixed(0) + ' spend | -50%');
+          _log('INFO', 'GEO: "' + cn + '" | Loc ' + loc + ' | 0 conv | R' + gd.cost.toFixed(0) + ' | -50%');
           results.geoAdjustments.push({ campaign: cn, location: loc, spend: gd.cost, conversions: 0, adjustment: -50 });
           if (!CONFIG.PREVIEW_MODE) _setGeoBidModifier(cn, loc, 0.50);
-        }
-        // CVR < 30% of average: reduce 40%
-        else if (locCvr < avgCvr * 0.3) {
-          _log('INFO', 'GEO: "' + cn + '" | Location ' + loc + ' | Low CVR | -40%');
+          _logChange({ functionName: '_autoAdjustGeoBids', entity: cn + '_LOC_' + loc, entityType: 'GEO_BID', campaign: cn, reason: 'Location ' + loc + ': 0 conv | R' + gd.cost.toFixed(0), spend: gd.cost, conversions: 0 });
+        } else if (locCvr < avgCvr * 0.3) {
           results.geoAdjustments.push({ campaign: cn, location: loc, spend: gd.cost, conversions: gd.conversions, adjustment: -40 });
           if (!CONFIG.PREVIEW_MODE) _setGeoBidModifier(cn, loc, 0.60);
-        }
-        // CVR > 200% of average: increase 30%
-        else if (locCvr > avgCvr * 2 && gd.conversions >= 3) {
-          _log('INFO', 'GEO: "' + cn + '" | Location ' + loc + ' | High CVR | +30%');
+          _logChange({ functionName: '_autoAdjustGeoBids', entity: cn + '_LOC_' + loc, entityType: 'GEO_BID', campaign: cn, reason: 'Location CVR ' + (locCvr * 100).toFixed(1) + '% < 30% of avg', spend: gd.cost, conversions: gd.conversions });
+        } else if (locCvr > avgCvr * 2 && gd.conversions >= 3) {
           results.geoAdjustments.push({ campaign: cn, location: loc, spend: gd.cost, conversions: gd.conversions, adjustment: 30 });
           if (!CONFIG.PREVIEW_MODE) _setGeoBidModifier(cn, loc, 1.30);
+          _logChange({ functionName: '_autoAdjustGeoBids', entity: cn + '_LOC_' + loc, entityType: 'GEO_BID', campaign: cn, reason: 'Location CVR ' + (locCvr * 100).toFixed(1) + '% > 2x avg | High performer', spend: gd.cost, conversions: gd.conversions });
         }
       }
     }
@@ -953,10 +1423,7 @@ function _setGeoBidModifier(campaignName, locationConstant, modifier) {
       var locs = ci.next().targeting().targetedLocations().get();
       while (locs.hasNext()) {
         var loc = locs.next();
-        if (String(loc.getId()) === String(locationConstant).replace(/[^0-9]/g, '')) {
-          loc.setBidModifier(modifier);
-          break;
-        }
+        if (String(loc.getId()) === String(locationConstant).replace(/[^0-9]/g, '')) { loc.setBidModifier(modifier); break; }
       }
     }
   } catch (e) { _log('WARN', 'Geo bid modifier failed: ' + e.message); }
@@ -967,97 +1434,67 @@ function _setGeoBidModifier(campaignName, locationConstant, modifier) {
 // AUTO-OPTIMIZE: N-GRAM ANALYSIS
 // ============================================
 
-/**
- * Finds single words that appear across multiple search terms with zero
- * conversions and high cumulative spend. If a word appears in 3+ search
- * terms with combined spend > threshold, auto-negatives it.
- */
 function _autoNgramNegatives(results) {
-  var query = 'SELECT search_term_view.search_term, metrics.cost_micros, metrics.conversions, metrics.clicks ' +
-    'FROM search_term_view WHERE campaign.status = "ENABLED" AND campaign.advertising_channel_type = "SEARCH" ' +
-    'AND segments.date DURING LAST_30_DAYS';
-  
+  var query = 'SELECT search_term_view.search_term, metrics.cost_micros, metrics.conversions, metrics.clicks FROM search_term_view WHERE campaign.status = "ENABLED" AND campaign.advertising_channel_type = "SEARCH" AND segments.date DURING LAST_30_DAYS';
   try {
-    var search = AdsApp.search(query);
-    var wordStats = {}; // { word: { totalCost, totalConv, totalClicks, termCount, terms[] } }
-    
+    var search = AdsApp.search(query); var wordStats = {};
     while (search.hasNext()) {
       var row = search.next();
       var st = row.searchTermView.searchTerm.toLowerCase().trim();
       var cost = Number(row.metrics.costMicros) / 1000000;
       var conv = Number(row.metrics.conversions) || 0;
       var clicks = Number(row.metrics.clicks) || 0;
-      
-      // Split into words (1-grams)
-      var words = st.split(/\s+/);
-      var seen = {}; // avoid double-counting a word in the same term
+      var words = st.split(/\s+/); var seen = {};
       for (var i = 0; i < words.length; i++) {
         var word = words[i].replace(/[^a-z0-9]/g, '');
-        if (word.length < 3 || seen[word]) continue; // skip tiny words
+        if (word.length < 3 || seen[word]) continue;
         seen[word] = true;
-        
         if (!wordStats[word]) wordStats[word] = { totalCost: 0, totalConversions: 0, totalClicks: 0, termCount: 0, terms: [] };
         wordStats[word].totalCost += cost;
         wordStats[word].totalConversions += conv;
         wordStats[word].totalClicks += clicks;
         wordStats[word].termCount++;
-        if (wordStats[word].terms.length < 5) wordStats[word].terms.push(st); // keep sample
+        if (wordStats[word].terms.length < 5) wordStats[word].terms.push(st);
       }
     }
-    
-    // Also do 2-grams (bigrams)
-    // Reset search not possible, so we process from wordStats for now
-    
+
     var ngramSpendThreshold = CONFIG.NGRAM_SPEND_THRESHOLD || 1000;
     var ngramMinTerms = CONFIG.NGRAM_MIN_TERMS || 3;
     var negativeList = _getOrCreateNegativeList(CONFIG.NEGATIVE_LIST_NAME_SPEND);
     var existing = _getExistingNegatives(negativeList);
     var changeCount = 0;
-    
-    // CRITICAL: Build a set of words that appear in active bidded keywords.
-    // Never negate these — they'd block your own keywords.
+
+    // Build protected word set from active keywords
     var activeKeywordWords = {};
     try {
       var kwQuery = 'SELECT ad_group_criterion.keyword.text FROM keyword_view WHERE campaign.status = "ENABLED" AND ad_group.status = "ENABLED" AND ad_group_criterion.status = "ENABLED"';
       var kwSearch = AdsApp.search(kwQuery);
       while (kwSearch.hasNext()) {
         var kwText = kwSearch.next().adGroupCriterion.keyword.text.toLowerCase();
-        var kwWords = kwText.split(/\s+/);
-        for (var w = 0; w < kwWords.length; w++) {
-          var word = kwWords[w].replace(/[^a-z0-9]/g, '');
-          if (word.length >= 3) activeKeywordWords[word] = true;
-        }
+        kwText.split(/\s+/).forEach(function(w) { var word = w.replace(/[^a-z0-9]/g, ''); if (word.length >= 3) activeKeywordWords[word] = true; });
       }
     } catch (e) { _log('WARN', 'Could not load active keyword words: ' + e.message); }
     _log('INFO', 'Protected keyword words: ' + Object.keys(activeKeywordWords).length);
-    
-    // Sort by total wasted spend (zero conversion words first)
+
+    var stopWords = ['the', 'and', 'for', 'with', 'that', 'this', 'from', 'are', 'was', 'has', 'have', 'not', 'but', 'they', 'you', 'your', 'our', 'can', 'will'];
     var wasteWords = [];
     for (var word in wordStats) {
       var ws = wordStats[word];
       if (ws.totalConversions === 0 && ws.totalCost >= ngramSpendThreshold && ws.termCount >= ngramMinTerms) {
-        if (_isProtectedTerm(word) || existing[word]) continue;
-        // CRITICAL: Skip words that appear in active bidded keywords
-        if (activeKeywordWords[word]) {
-          _log('DEBUG', 'N-gram skip (in active keywords): "' + word + '" | ' + CONFIG.CURRENCY_SYMBOL + ws.totalCost.toFixed(0));
-          continue;
-        }
-        // Skip common stop words
-        if (['the', 'and', 'for', 'with', 'that', 'this', 'from', 'are', 'was', 'has', 'have', 'not', 'but', 'they', 'you', 'your', 'our', 'can', 'will'].indexOf(word) !== -1) continue;
+        if (_isProtectedTerm(word) || existing[word] || activeKeywordWords[word] || stopWords.indexOf(word) !== -1) continue;
         wasteWords.push({ word: word, stats: ws });
       }
     }
-    
     wasteWords.sort(function(a, b) { return b.stats.totalCost - a.stats.totalCost; });
-    
+
     for (var i = 0; i < wasteWords.length && changeCount < 20; i++) {
       var ww = wasteWords[i];
-      _log('INFO', 'NGRAM: "' + ww.word + '" | ' + CONFIG.CURRENCY_SYMBOL + ww.stats.totalCost.toFixed(0) + ' waste | ' + ww.stats.termCount + ' terms | 0 conv');
+      _log('INFO', 'NGRAM: "' + ww.word + '" | R' + ww.stats.totalCost.toFixed(0) + ' | ' + ww.stats.termCount + ' terms | 0 conv');
       results.ngramNegatives.push({ word: ww.word, totalCost: ww.stats.totalCost, termCount: ww.stats.termCount, sampleTerms: ww.stats.terms });
-      
-      if (!CONFIG.PREVIEW_MODE && negativeList) {
-        negativeList.addNegativeKeyword('"' + ww.word + '"');
-      }
+      if (!CONFIG.PREVIEW_MODE && negativeList) negativeList.addNegativeKeyword('"' + ww.word + '"');
+
+      _logChange({ functionName: '_autoNgramNegatives', entity: ww.word, entityType: 'NGRAM_NEGATIVE', reason: 'R' + ww.stats.totalCost.toFixed(0) + ' across ' + ww.stats.termCount + ' terms | 0 conv. Sample: ' + ww.stats.terms.slice(0, 3).join(', '), spend: ww.stats.totalCost, conversions: 0 });
+
       changeCount++;
     }
   } catch (e) { _log('ERROR', 'autoNgramNegatives: ' + e.message); results.errors.push(e.message); }
@@ -1069,29 +1506,13 @@ function _autoNgramNegatives(results) {
 // AUTO-OPTIMIZE: LOW QUALITY SCORE PAUSING
 // ============================================
 
-/**
- * Pauses keywords with Quality Score 1-3 that have spent above threshold
- * with no conversions. Low QS = inflated CPCs = wasting money.
- */
 function _pauseLowQualityScoreKeywords(results) {
   var dr = _getDateRange();
-  var qsThreshold = CONFIG.QS_PAUSE_THRESHOLD || 3; // Pause QS 1-3
+  var qsThreshold = CONFIG.QS_PAUSE_THRESHOLD || 3;
   var qsSpendThreshold = CONFIG.QS_SPEND_THRESHOLD || 300;
-  
-  var query = 'SELECT ad_group_criterion.keyword.text, ad_group_criterion.keyword.match_type, ' +
-    'ad_group_criterion.quality_info.quality_score, campaign.name, ad_group.name, ' +
-    'metrics.cost_micros, metrics.conversions, metrics.clicks, metrics.impressions ' +
-    'FROM keyword_view WHERE campaign.status = "ENABLED" AND ad_group.status = "ENABLED" ' +
-    'AND ad_group_criterion.status = "ENABLED" AND campaign.advertising_channel_type = "SEARCH" ' +
-    'AND ad_group_criterion.quality_info.quality_score <= ' + qsThreshold + ' ' +
-    'AND metrics.cost_micros > ' + (qsSpendThreshold * 1000000) + ' ' +
-    'AND metrics.conversions < 1 ' +
-    'AND segments.date BETWEEN "' + dr.startDate + '" AND "' + dr.endDate + '"';
-  
+  var query = 'SELECT ad_group_criterion.keyword.text, ad_group_criterion.keyword.match_type, ad_group_criterion.quality_info.quality_score, campaign.name, ad_group.name, metrics.cost_micros, metrics.conversions, metrics.clicks, metrics.impressions FROM keyword_view WHERE campaign.status = "ENABLED" AND ad_group.status = "ENABLED" AND ad_group_criterion.status = "ENABLED" AND campaign.advertising_channel_type = "SEARCH" AND ad_group_criterion.quality_info.quality_score <= ' + qsThreshold + ' AND metrics.cost_micros > ' + (qsSpendThreshold * 1000000) + ' AND metrics.conversions < 1 AND segments.date BETWEEN "' + dr.startDate + '" AND "' + dr.endDate + '"';
   try {
-    var search = AdsApp.search(query);
-    var changeCount = 0;
-    
+    var search = AdsApp.search(query); var changeCount = 0;
     while (search.hasNext() && changeCount < CONFIG.MAX_CHANGES_PER_RUN) {
       var row = search.next();
       var kw = row.adGroupCriterion.keyword.text;
@@ -1099,12 +1520,13 @@ function _pauseLowQualityScoreKeywords(results) {
       var cn = row.campaign.name, agn = row.adGroup.name;
       var cost = Number(row.metrics.costMicros) / 1000000;
       var clicks = Number(row.metrics.clicks) || 0;
-      
       if (_isProtectedTerm(kw)) continue;
-      
-      _log('INFO', 'LOW QS PAUSE: "' + kw + '" | QS: ' + qs + ' | ' + CONFIG.CURRENCY_SYMBOL + cost.toFixed(0) + ' | 0 conv');
+      var reason = 'QS ' + qs + ' | R' + cost.toFixed(0) + ' | 0 conv';
+      _log('INFO', 'LOW QS PAUSE: "' + kw + '" | ' + reason);
       results.lowQsPaused.push({ keyword: kw, qualityScore: qs, campaign: cn, adGroup: agn, spend: cost, clicks: clicks });
-      
+
+      _logChange({ functionName: '_pauseLowQualityScoreKeywords', entity: kw, entityType: 'KEYWORD', campaign: cn, adGroup: agn, reason: reason, spend: cost, conversions: 0 });
+
       if (!CONFIG.PREVIEW_MODE) {
         var ki = AdsApp.keywords().withCondition('ad_group.name = "' + agn + '"').withCondition('campaign.name = "' + cn + '"').withCondition('ad_group_criterion.keyword.text = "' + kw + '"').get();
         while (ki.hasNext()) ki.next().pause();
@@ -1120,60 +1542,40 @@ function _pauseLowQualityScoreKeywords(results) {
 // HEALTH CHECK: CONVERSION TRACKING
 // ============================================
 
-/**
- * Compares this week's conversions vs last week's. If conversions dropped
- * 50%+, sends an urgent alert. Catches broken tracking before it wastes thousands.
- */
 function _checkConversionHealth(results) {
   try {
-    // This week's conversions
     var q1 = 'SELECT metrics.conversions, metrics.cost_micros FROM campaign WHERE campaign.status = "ENABLED" AND segments.date DURING LAST_7_DAYS';
-    var s1 = AdsApp.search(q1);
-    var thisWeekConv = 0, thisWeekCost = 0;
+    var s1 = AdsApp.search(q1); var thisWeekConv = 0, thisWeekCost = 0;
     while (s1.hasNext()) { var r = s1.next(); thisWeekConv += Number(r.metrics.conversions) || 0; thisWeekCost += Number(r.metrics.costMicros) / 1000000; }
-    
-    // Last week's conversions (14 days ago to 7 days ago)
+
     var end = new Date(); end.setDate(end.getDate() - 7);
     var start = new Date(); start.setDate(start.getDate() - 14);
     var q2 = 'SELECT metrics.conversions FROM campaign WHERE campaign.status = "ENABLED" AND segments.date BETWEEN "' + _formatDate(start) + '" AND "' + _formatDate(end) + '"';
-    var s2 = AdsApp.search(q2);
-    var lastWeekConv = 0;
+    var s2 = AdsApp.search(q2); var lastWeekConv = 0;
     while (s2.hasNext()) { lastWeekConv += Number(s2.next().metrics.conversions) || 0; }
-    
+
     _log('INFO', 'Conversion health: This week=' + thisWeekConv.toFixed(0) + ' | Last week=' + lastWeekConv.toFixed(0));
-    
     results.conversionHealth = { thisWeek: thisWeekConv, lastWeek: lastWeekConv, thisWeekCost: thisWeekCost };
-    
-    // Alert if conversions dropped 50%+ and there was meaningful volume last week
+
     if (lastWeekConv >= 3 && thisWeekConv < lastWeekConv * 0.5) {
       var dropPct = ((1 - thisWeekConv / lastWeekConv) * 100).toFixed(0);
-      var alertMsg = 'URGENT: Conversions dropped ' + dropPct + '% (' + lastWeekConv.toFixed(0) + ' → ' + thisWeekConv.toFixed(0) + ') while spending ' + CONFIG.CURRENCY_SYMBOL + thisWeekCost.toFixed(0) + '. Check conversion tracking immediately.';
+      var alertMsg = 'URGENT: Conversions dropped ' + dropPct + '% (' + lastWeekConv.toFixed(0) + ' → ' + thisWeekConv.toFixed(0) + ') while spending R' + thisWeekCost.toFixed(0) + '. Check conversion tracking immediately.';
       _log('ERROR', alertMsg);
       results.conversionAlert = alertMsg;
-      
-      // Send immediate urgent email
       if (CONFIG.SEND_EMAIL !== false) {
         var recipients = CONFIG.EMAIL_ADDRESSES || [CONFIG.EMAIL_RECIPIENT || 'michaelh@syte.co.za'];
         if (typeof recipients === 'string') recipients = [recipients];
-        MailApp.sendEmail({
-          to: recipients.join(','),
-          subject: '🚨 URGENT: ' + CONFIG.CLIENT_NAME + ' — Conversions Dropped ' + dropPct + '%',
-          body: alertMsg + '\n\nThis could indicate broken conversion tracking, a landing page issue, or a significant market change.\n\nAction needed:\n1. Check conversion tags in GTM\n2. Test the conversion flow manually\n3. Check for landing page errors\n4. Review any recent website changes\n\n— Syte Optimization Script v3.2'
-        });
+        MailApp.sendEmail({ to: recipients.join(','), subject: '🚨 URGENT: ' + CONFIG.CLIENT_NAME + ' — Conversions Dropped ' + dropPct + '%', body: alertMsg + '\n\nAction needed:\n1. Check conversion tags in GTM\n2. Test the conversion flow manually\n3. Check for landing page errors\n4. Review any recent website changes\n\n— Syte Optimization Script v4.0' });
       }
     }
-    
-    // Also alert on zero conversions with significant spend
+
     if (thisWeekConv === 0 && thisWeekCost > (CONFIG.MONTHLY_BUDGET * 0.1)) {
-      var alertMsg = 'CRITICAL: ZERO conversions this week with ' + CONFIG.CURRENCY_SYMBOL + thisWeekCost.toFixed(0) + ' spent. Conversion tracking may be broken.';
-      _log('ERROR', alertMsg);
-      results.conversionAlert = alertMsg;
+      results.conversionAlert = 'CRITICAL: ZERO conversions this week with R' + thisWeekCost.toFixed(0) + ' spent. Conversion tracking may be broken.';
+      _log('ERROR', results.conversionAlert);
     }
-    
+
   } catch (e) { _log('ERROR', 'checkConversionHealth: ' + e.message); results.errors.push(e.message); }
 }
-
-
 
 
 // ============================================
@@ -1184,19 +1586,18 @@ function _sendReport(results, duration) {
   var mode = CONFIG.PREVIEW_MODE ? 'PREVIEW' : 'LIVE';
   var accountName = AdsApp.currentAccount().getName();
   var today = Utilities.formatDate(new Date(), AdsApp.currentAccount().getTimeZone(), 'yyyy-MM-dd HH:mm');
-  
+
   var email = '<html><body style="font-family:Arial,sans-serif;max-width:800px;margin:0 auto;color:#333;">';
   email += '<div style="background:linear-gradient(135deg,#1a1a2e,#16213e);color:white;padding:20px;border-radius:8px 8px 0 0;">';
-  email += '<h1 style="margin:0;font-size:20px;">Syte Optimization Report v3.2</h1>';
+  email += '<h1 style="margin:0;font-size:20px;">Syte Optimization Report v4.0</h1>';
   email += '<p style="margin:5px 0 0;opacity:0.8;">' + accountName + ' | ' + today + ' | ' + mode + ' | ' + CONFIG.ACCOUNT_MODE + '</p></div>';
-  
-  // Conversion health alert banner
+
   if (results.conversionAlert) {
     email += '<div style="background:#c62828;color:white;padding:14px 16px;font-weight:bold;font-size:14px;">🚨 ' + results.conversionAlert + '</div>';
   }
-  
+
   email += '<div style="background:#f8f9fa;padding:15px;"><h3>Summary</h3><table style="width:100%;border-collapse:collapse;">';
-  
+
   if (_isLeadGenMode()) {
     email += '<tr><td colspan="2" style="padding:8px;background:#e3f2fd;font-weight:bold;">Lead Gen</td></tr>';
     email += '<tr><td style="padding:4px 8px;">Keywords Paused</td><td style="text-align:right;font-weight:bold;">' + results.keywordsPaused.length + '</td></tr>';
@@ -1216,16 +1617,14 @@ function _sendReport(results, duration) {
     email += '<tr><td style="padding:4px 8px;">PMax Alerts</td><td style="text-align:right;font-weight:bold;">' + results.pmaxAlerts.length + '</td></tr>';
     email += '<tr><td style="padding:4px 8px;">PMax Search Terms</td><td style="text-align:right;font-weight:bold;">' + results.pmaxSearchTermsNegated.length + '</td></tr>';
   }
-  
-  // Auto-optimizations section
-  email += '<tr><td colspan="2" style="padding:8px;background:#e0f2f1;font-weight:bold;">Auto-Optimizations (v3.2)</td></tr>';
+
+  email += '<tr><td colspan="2" style="padding:8px;background:#e0f2f1;font-weight:bold;">Auto-Optimizations</td></tr>';
   email += '<tr><td style="padding:4px 8px;">Device Bid Adjustments</td><td style="text-align:right;font-weight:bold;">' + results.deviceAdjustments.length + '</td></tr>';
   email += '<tr><td style="padding:4px 8px;">Ad Schedule Adjustments</td><td style="text-align:right;font-weight:bold;">' + results.scheduleAdjustments.length + '</td></tr>';
   email += '<tr><td style="padding:4px 8px;">Geographic Bid Adjustments</td><td style="text-align:right;font-weight:bold;">' + results.geoAdjustments.length + '</td></tr>';
   email += '<tr><td style="padding:4px 8px;">N-gram Negatives</td><td style="text-align:right;font-weight:bold;">' + results.ngramNegatives.length + '</td></tr>';
   email += '<tr><td style="padding:4px 8px;">Low QS Keywords Paused</td><td style="text-align:right;font-weight:bold;">' + results.lowQsPaused.length + '</td></tr>';
-  
-  // Conversion health
+
   if (results.conversionHealth) {
     var ch = results.conversionHealth;
     var convColor = results.conversionAlert ? '#c62828' : '#2e7d32';
@@ -1233,20 +1632,18 @@ function _sendReport(results, duration) {
     email += '<tr><td style="padding:4px 8px;">This week</td><td style="text-align:right;font-weight:bold;color:' + convColor + ';">' + ch.thisWeek.toFixed(0) + ' conv</td></tr>';
     email += '<tr><td style="padding:4px 8px;">Last week</td><td style="text-align:right;font-weight:bold;">' + ch.lastWeek.toFixed(0) + ' conv</td></tr>';
   }
-  
+
   email += '<tr><td colspan="2" style="padding:8px;background:#fce4ec;font-weight:bold;">Cleanup</td></tr>';
   email += '<tr><td style="padding:4px 8px;">Informational Blocked</td><td style="text-align:right;font-weight:bold;">' + results.informationalBlocked.length + '</td></tr>';
   email += '<tr><td style="padding:4px 8px;">Irrelevant Blocked</td><td style="text-align:right;font-weight:bold;">' + results.irrelevantBlocked.length + '</td></tr>';
   email += '<tr><td style="padding:4px 8px;">Budget Alerts</td><td style="text-align:right;font-weight:bold;">' + results.budgetAlerts.length + '</td></tr>';
   email += '<tr><td style="padding:4px 8px;">Errors</td><td style="text-align:right;font-weight:bold;">' + results.errors.length + '</td></tr>';
   email += '</table></div>';
-  
-  email += '<div style="padding:15px;color:#666;font-size:12px;"><p>Completed in ' + duration.toFixed(1) + 's | Core v3.2 | Syte Digital Agency</p></div></body></html>';
-  
+  email += '<div style="padding:15px;color:#666;font-size:12px;"><p>Completed in ' + duration.toFixed(1) + 's | Core v4.0 | Syte Digital Agency</p></div></body></html>';
+
   var recipients = CONFIG.EMAIL_ADDRESSES || [CONFIG.EMAIL_RECIPIENT || 'michaelh@syte.co.za'];
   if (typeof recipients === 'string') recipients = [recipients];
-  
-  MailApp.sendEmail({ to: recipients.join(','), subject: mode + ' Syte v3.2 | ' + accountName + ' | ' + CONFIG.ACCOUNT_MODE, htmlBody: email });
+  MailApp.sendEmail({ to: recipients.join(','), subject: mode + ' Syte v4.0 | ' + accountName + ' | ' + CONFIG.ACCOUNT_MODE, htmlBody: email });
 }
 
 
@@ -1256,132 +1653,103 @@ function _sendReport(results, duration) {
 
 function runOptimization() {
   var startTime = new Date();
-  
+
   _log('INFO', '═══════════════════════════════════════════');
-  _log('INFO', 'SYTE OPTIMIZATION CORE v3.2');
+  _log('INFO', 'SYTE OPTIMIZATION CORE v4.0');
   _log('INFO', 'Client: ' + (CONFIG.CLIENT_NAME || AdsApp.currentAccount().getName()));
   _log('INFO', 'Mode: ' + CONFIG.ACCOUNT_MODE);
   _log('INFO', 'Run: ' + (CONFIG.PREVIEW_MODE ? 'PREVIEW (no changes)' : 'LIVE'));
   _log('INFO', '═══════════════════════════════════════════');
-  
+
   var results = {
     keywordsPaused: [], searchTermsNegated: [], informationalBlocked: [],
     irrelevantBlocked: [], winnersPromoted: [], budgetAlerts: [],
     shoppingProductsPaused: [], shoppingHeroProducts: [], shoppingLowROASProducts: [],
     pmaxAlerts: [], pmaxSearchTermsNegated: [],
     ecomKeywordsPaused: [], ecomSearchTermsNegated: [], ecomWinnersPromoted: [],
-    // v3.2 auto-optimizations
     deviceAdjustments: [], scheduleAdjustments: [], geoAdjustments: [],
     ngramNegatives: [], lowQsPaused: [],
     conversionHealth: null, conversionAlert: null,
     errors: []
   };
-  
+
   try {
-    // === HEALTH CHECK (runs first — urgent alerts) ===
+
+    // === OUTCOME BACKFILL (always runs — no data dependency) ===
+    _log('INFO', '\n=== OUTCOME BACKFILL ===');
+    _backfillOutcomes();
+
+    // === WEEKLY CLAUDE REVIEW (Sundays only) ===
+    _weeklyClaudeReview();
+
+    // === HEALTH CHECK (urgent alerts first) ===
     _log('INFO', '\n=== CONVERSION HEALTH CHECK ===');
     _checkConversionHealth(results);
-    
-    // === HALT if conversion tracking appears broken ===
-    // If zero conversions or 50%+ drop, skip ALL optimization tasks.
-    // Bad data = bad decisions. Only run non-conversion-dependent tasks.
+
+    // === HALT if conversion tracking broken ===
     if (results.conversionAlert) {
       _log('ERROR', '⛔ HALTING ALL OPTIMIZATION — conversion tracking may be broken');
-      _log('ERROR', 'No keywords will be paused, no negatives added, no bid adjustments made.');
-      _log('ERROR', 'Fix conversion tracking, then the script will resume on the next run.');
-      
-      // Still check budget pacing
+      _checkBudgetPacing(results);
+    } else {
+
+      // === LEAD GEN ===
+      if (_isLeadGenMode()) {
+        _log('INFO', '\n=== SEARCH (LEAD GEN) ===');
+        _pauseHighSpendKeywords_LeadGen(results);
+        _negativeHighSpendSearchTerms_LeadGen(results);
+        if (CONFIG.PROMOTION_ENABLED !== false) _promoteWinners_LeadGen(results);
+      }
+
+      // === ECOMMERCE ===
+      if (_isEcommerceMode()) {
+        _log('INFO', '\n=== SEARCH (ECOMMERCE) ===');
+        _pauseHighSpendKeywords_Ecommerce(results);
+        _negativeHighSpendSearchTerms_Ecommerce(results);
+        if (CONFIG.PROMOTION_ENABLED !== false) _promoteWinners_Ecommerce(results);
+      }
+
+      // === CLEANUP ===
+      _log('INFO', '\n=== CLEANUP ===');
+      _blockInformationalTerms(results);
+      _blockIrrelevantTerms(results);
+
+      // === SHOPPING & PMAX ===
+      if (_isEcommerceMode()) {
+        _log('INFO', '\n=== SHOPPING ===');
+        _analyzeShoppingProducts(results);
+        _analyzeShoppingSearchTerms(results);
+        _log('INFO', '\n=== PERFORMANCE MAX ===');
+        _monitorPMaxCampaigns(results);
+        _analyzePMaxSearchTerms(results);
+        _analyzePMaxAssetGroups(results);
+      }
+
+      // === AUTO-OPTIMIZATIONS ===
+      if (CONFIG.AUTO_DEVICE_BIDS !== false) { _log('INFO', '\n=== AUTO: DEVICE BIDS ==='); _autoAdjustDeviceBids(results); }
+      if (CONFIG.AUTO_AD_SCHEDULE !== false) { _log('INFO', '\n=== AUTO: AD SCHEDULE ==='); _autoAdjustAdSchedule(results); }
+      if (CONFIG.AUTO_GEO_BIDS !== false) { _log('INFO', '\n=== AUTO: GEOGRAPHIC BIDS ==='); _autoAdjustGeoBids(results); }
+      if (CONFIG.AUTO_NGRAM !== false) { _log('INFO', '\n=== AUTO: N-GRAM ANALYSIS ==='); _autoNgramNegatives(results); }
+      if (CONFIG.AUTO_QS_PAUSE !== false) { _log('INFO', '\n=== AUTO: LOW QUALITY SCORE ==='); _pauseLowQualityScoreKeywords(results); }
+
+      // === BUDGET PACING ===
       _log('INFO', '\n=== BUDGET PACING ===');
       _checkBudgetPacing(results);
-      
-    } else {
-    
-    // === NORMAL OPERATION — conversion tracking is healthy ===
-    
-    // === LEAD GEN TASKS ===
-    if (_isLeadGenMode()) {
-      _log('INFO', '\n=== SEARCH (LEAD GEN) ===');
-      _pauseHighSpendKeywords_LeadGen(results);
-      _negativeHighSpendSearchTerms_LeadGen(results);
-      if (CONFIG.PROMOTION_ENABLED !== false) _promoteWinners_LeadGen(results);
+
     }
-    
-    // === ECOMMERCE TASKS ===
-    if (_isEcommerceMode()) {
-      _log('INFO', '\n=== SEARCH (ECOMMERCE) ===');
-      _pauseHighSpendKeywords_Ecommerce(results);
-      _negativeHighSpendSearchTerms_Ecommerce(results);
-      if (CONFIG.PROMOTION_ENABLED !== false) _promoteWinners_Ecommerce(results);
-    }
-    
-    // === CLEANUP ===
-    _log('INFO', '\n=== CLEANUP ===');
-    _blockInformationalTerms(results);
-    _blockIrrelevantTerms(results);
-    
-    // === SHOPPING & PMAX ===
-    if (_isEcommerceMode()) {
-      _log('INFO', '\n=== SHOPPING ===');
-      _analyzeShoppingProducts(results);
-      _analyzeShoppingSearchTerms(results);
-      _log('INFO', '\n=== PERFORMANCE MAX ===');
-      _monitorPMaxCampaigns(results);
-      _analyzePMaxSearchTerms(results);
-      _analyzePMaxAssetGroups(results);
-    }
-    
-    // === AUTO-OPTIMIZATIONS (v3.2) ===
-    if (CONFIG.AUTO_DEVICE_BIDS !== false) {
-      _log('INFO', '\n=== AUTO: DEVICE BIDS ===');
-      _autoAdjustDeviceBids(results);
-    }
-    
-    if (CONFIG.AUTO_AD_SCHEDULE !== false) {
-      _log('INFO', '\n=== AUTO: AD SCHEDULE ===');
-      _autoAdjustAdSchedule(results);
-    }
-    
-    if (CONFIG.AUTO_GEO_BIDS !== false) {
-      _log('INFO', '\n=== AUTO: GEOGRAPHIC BIDS ===');
-      _autoAdjustGeoBids(results);
-    }
-    
-    if (CONFIG.AUTO_NGRAM !== false) {
-      _log('INFO', '\n=== AUTO: N-GRAM ANALYSIS ===');
-      _autoNgramNegatives(results);
-    }
-    
-    if (CONFIG.AUTO_QS_PAUSE !== false) {
-      _log('INFO', '\n=== AUTO: LOW QUALITY SCORE ===');
-      _pauseLowQualityScoreKeywords(results);
-    }
-    
-    // === BUDGET PACING ===
-    _log('INFO', '\n=== BUDGET PACING ===');
-    _checkBudgetPacing(results);
-    
-    } // end of else (normal operation — tracking healthy)
-    
+
   } catch (e) {
     _log('ERROR', 'Script error: ' + e.message);
     results.errors.push(e.message);
   }
-  
+
   var duration = (new Date() - startTime) / 1000;
   _log('INFO', 'Script completed in ' + duration.toFixed(1) + ' seconds');
-  
+
   if (CONFIG.SEND_EMAIL !== false) _sendReport(results, duration);
-  
-  // Log summary
+
   _log('INFO', '\n=== SUMMARY ===');
-  if (_isLeadGenMode()) {
-    _log('INFO', 'KW Paused: ' + results.keywordsPaused.length + ' | ST Negated: ' + results.searchTermsNegated.length + ' | Winners: ' + results.winnersPromoted.length);
-  }
-  if (_isEcommerceMode()) {
-    _log('INFO', 'Ecom KW: ' + results.ecomKeywordsPaused.length + ' | Ecom ST: ' + results.ecomSearchTermsNegated.length + ' | Ecom Winners: ' + results.ecomWinnersPromoted.length);
-    _log('INFO', 'Shopping Heroes: ' + results.shoppingHeroProducts.length + ' | Low ROAS: ' + results.shoppingLowROASProducts.length + ' | PMax Alerts: ' + results.pmaxAlerts.length);
-  }
+  if (_isLeadGenMode()) _log('INFO', 'KW Paused: ' + results.keywordsPaused.length + ' | ST Negated: ' + results.searchTermsNegated.length + ' | Winners: ' + results.winnersPromoted.length);
+  if (_isEcommerceMode()) _log('INFO', 'Ecom KW: ' + results.ecomKeywordsPaused.length + ' | Ecom ST: ' + results.ecomSearchTermsNegated.length + ' | Ecom Winners: ' + results.ecomWinnersPromoted.length);
   _log('INFO', 'Device: ' + results.deviceAdjustments.length + ' | Schedule: ' + results.scheduleAdjustments.length + ' | Geo: ' + results.geoAdjustments.length + ' | N-gram: ' + results.ngramNegatives.length + ' | Low QS: ' + results.lowQsPaused.length);
   _log('INFO', 'Informational: ' + results.informationalBlocked.length + ' | Irrelevant: ' + results.irrelevantBlocked.length + ' | Budget: ' + results.budgetAlerts.length + ' | Errors: ' + results.errors.length);
-
 }
