@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Syte Optimization Script — Client Configurator</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Segoe UI', Arial, sans-serif; background: #0f0f1a; color: #e0e0e0; min-height: 100vh; }
+    .header { background: linear-gradient(135deg, #1a1a2e, #16213e); padding: 32px 24px; text-align: center; border-bottom: 2px solid #2a2a4a; }
+    .header h1 { font-size: 26px; color: #fff; margin-bottom: 6px; }
+    .header p { color: #90caf9; font-size: 14px; }
+    .container { max-width: 860px; margin: 0 auto; padding: 24px; }
+    .section { background: #1a1a2e; border: 1px solid #2a2a4a; border-radius: 8px; padding: 20px; margin-bottom: 20px; }
+    .section h2 { font-size: 16px; color: #90caf9; margin-bottom: 14px; border-bottom: 1px solid #2a2a4a; padding-bottom: 8px; }
+    .field { margin-bottom: 14px; }
+    .field label { display: block; font-size: 13px; color: #aaa; margin-bottom: 4px; }
+    .field input, .field select, .field textarea { width: 100%; padding: 8px 12px; background: #0f0f1a; border: 1px solid #333; border-radius: 4px; color: #e0e0e0; font-size: 14px; font-family: inherit; }
+    .field input:focus, .field select:focus, .field textarea:focus { border-color: #90caf9; outline: none; }
+    .field .hint { font-size: 11px; color: #666; margin-top: 3px; }
+    .row { display: flex; gap: 14px; }
+    .row .field { flex: 1; }
+    textarea { resize: vertical; min-height: 60px; }
+    .btn { display: inline-block; padding: 12px 28px; background: linear-gradient(135deg, #1565c0, #0d47a1); color: #fff; border: none; border-radius: 6px; font-size: 15px; cursor: pointer; margin-top: 8px; }
+    .btn:hover { background: linear-gradient(135deg, #1976d2, #1565c0); }
+    .output-area { background: #0a0a14; border: 1px solid #333; border-radius: 6px; padding: 16px; margin-top: 16px; white-space: pre-wrap; font-family: 'Fira Code', 'Consolas', monospace; font-size: 12px; line-height: 1.6; color: #c5e1a5; max-height: 500px; overflow-y: auto; display: none; }
+    .copy-btn { background: #2e7d32; padding: 8px 18px; border: none; border-radius: 4px; color: #fff; cursor: pointer; font-size: 13px; margin-top: 10px; display: none; }
+    .copy-btn:hover { background: #388e3c; }
+    .toggle-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+    .toggle-row label { color: #ccc; font-size: 13px; margin-bottom: 0; }
+    .toggle-row input[type="checkbox"] { width: auto; }
+  </style>
+</head>
+<body>
+
+<div class="header">
+  <h1>Syte Optimization Script — Client Configurator</h1>
+  <p>Generate a loader script for a new Google Ads client account</p>
+</div>
+
+<div class="container">
+
+  <!-- CLIENT INFO -->
+  <div class="section">
+    <h2>Client Info</h2>
+    <div class="row">
+      <div class="field">
+        <label>Client Name</label>
+        <input type="text" id="clientName" placeholder="e.g. Acme Widgets">
+      </div>
+      <div class="field">
+        <label>Account Mode</label>
+        <select id="accountMode">
+          <option value="LEAD_GEN">Lead Gen</option>
+          <option value="ECOMMERCE">Ecommerce</option>
+          <option value="HYBRID">Hybrid (Lead Gen + Ecommerce)</option>
+        </select>
+      </div>
+    </div>
+    <div class="row">
+      <div class="field">
+        <label>Email Recipients (comma-separated)</label>
+        <input type="text" id="emailAddresses" placeholder="e.g. you@agency.com, client@co.za">
+      </div>
+      <div class="field">
+        <label>Monthly Budget (ZAR)</label>
+        <input type="number" id="monthlyBudget" value="30000">
+      </div>
+    </div>
+  </div>
+
+  <!-- CORE INFRASTRUCTURE -->
+  <div class="section">
+    <h2>Core Infrastructure</h2>
+    <div class="field">
+      <label>Master Sheet ID</label>
+      <input type="text" id="masterSheetId" value="1TDEpz--yxg-x1lO3twfJ2Y_VJ6988Y1vaB0BKe6IfJU">
+      <div class="hint">Shared Google Sheet for all client change logs. Pre-filled — should not need changing.</div>
+    </div>
+    <div class="field">
+      <label>Core Script URL</label>
+      <input type="text" id="coreScriptUrl" value="https://raw.githubusercontent.com/LeadsSyte/gads-scripts/refs/heads/main/syte_optimization_core.js">
+      <div class="hint">URL of the hosted syte_optimization_core.js. Pre-filled — only change if using a fork.</div>
+    </div>
+    <div class="field">
+      <label>Anthropic API Key</label>
+      <input type="text" id="anthropicApiKey" placeholder="sk-ant-...">
+      <div class="hint">Required for the weekly Claude self-improvement review (runs Sundays).</div>
+    </div>
+  </div>
+
+  <!-- LEAD GEN THRESHOLDS -->
+  <div class="section">
+    <h2>Lead Gen Thresholds</h2>
+    <div class="row">
+      <div class="field">
+        <label>Keyword Spend Threshold (ZAR)</label>
+        <input type="number" id="keywordSpendThreshold" value="500">
+        <div class="hint">Pause keywords spending more than this with 0 conversions</div>
+      </div>
+      <div class="field">
+        <label>Search Term Spend Threshold (ZAR)</label>
+        <input type="number" id="searchTermSpendThreshold" value="300">
+      </div>
+    </div>
+    <div class="row">
+      <div class="field">
+        <label>Min CTR to Protect (%)</label>
+        <input type="number" id="minCtrToProtect" value="2" step="0.1">
+      </div>
+      <div class="field">
+        <label>Conversion Lag Days</label>
+        <input type="number" id="conversionLagDays" value="3">
+      </div>
+    </div>
+    <div class="row">
+      <div class="field">
+        <label>Lookback Days</label>
+        <input type="number" id="lookbackDays" value="30">
+      </div>
+      <div class="field">
+        <label>Max Changes Per Run</label>
+        <input type="number" id="maxChangesPerRun" value="50">
+      </div>
+    </div>
+  </div>
+
+  <!-- ECOMMERCE THRESHOLDS -->
+  <div class="section">
+    <h2>Ecommerce Thresholds</h2>
+    <div class="row">
+      <div class="field">
+        <label>Ecom Keyword Spend Threshold (ZAR)</label>
+        <input type="number" id="ecomKeywordSpendThreshold" value="800">
+      </div>
+      <div class="field">
+        <label>Ecom Search Term Spend Threshold (ZAR)</label>
+        <input type="number" id="ecomSearchTermSpendThreshold" value="500">
+      </div>
+    </div>
+    <div class="row">
+      <div class="field">
+        <label>Min ROAS to Keep</label>
+        <input type="number" id="minRoasToKeep" value="2.0" step="0.1">
+      </div>
+      <div class="field">
+        <label>Shopping Min ROAS</label>
+        <input type="number" id="shoppingMinRoasThreshold" value="2.0" step="0.1">
+      </div>
+    </div>
+  </div>
+
+  <!-- WINNER PROMOTION -->
+  <div class="section">
+    <h2>Winner Promotion</h2>
+    <div class="row">
+      <div class="field">
+        <label>Min Conversions to Promote</label>
+        <input type="number" id="promotionMinConversions" value="3">
+      </div>
+      <div class="field">
+        <label>Min Clicks to Promote</label>
+        <input type="number" id="promotionMinClicks" value="10">
+      </div>
+    </div>
+    <div class="row">
+      <div class="field">
+        <label>Min CVR to Promote (%)</label>
+        <input type="number" id="promotionMinCvr" value="5" step="0.1">
+      </div>
+      <div class="field">
+        <label>Exact Winners Ad Group Name</label>
+        <input type="text" id="exactWinnersAdGroupName" value="[Exact Winners]">
+      </div>
+    </div>
+  </div>
+
+  <!-- NEGATIVE LISTS -->
+  <div class="section">
+    <h2>Negative Lists &amp; Terms</h2>
+    <div class="row">
+      <div class="field">
+        <label>Negative List — Spend</label>
+        <input type="text" id="negativeListNameSpend" value="[Syte] Waste — High Spend / No Conv">
+      </div>
+      <div class="field">
+        <label>Negative List — Informational</label>
+        <input type="text" id="negativeListNameInformational" value="[Syte] Informational Intent">
+      </div>
+    </div>
+    <div class="field">
+      <label>Negative List — Irrelevant</label>
+      <input type="text" id="negativeListNameIrrelevant" value="[Syte] Irrelevant Terms">
+    </div>
+    <div class="field">
+      <label>Protected Terms (comma-separated)</label>
+      <textarea id="protectedTerms" placeholder="brand name, product name, etc."></textarea>
+      <div class="hint">These terms will never be paused or negated</div>
+    </div>
+    <div class="field">
+      <label>Irrelevant Terms (comma-separated)</label>
+      <textarea id="irrelevantTerms" placeholder="competitor, unrelated, etc."></textarea>
+      <div class="hint">Custom terms to block as negatives</div>
+    </div>
+  </div>
+
+  <!-- AUTO-OPTIMIZATION TOGGLES -->
+  <div class="section">
+    <h2>Auto-Optimization Toggles</h2>
+    <div class="toggle-row"><input type="checkbox" id="autoDeviceBids" checked><label for="autoDeviceBids">Device bid adjustments</label></div>
+    <div class="toggle-row"><input type="checkbox" id="autoAdSchedule" checked><label for="autoAdSchedule">Ad schedule adjustments</label></div>
+    <div class="toggle-row"><input type="checkbox" id="autoGeoBids" checked><label for="autoGeoBids">Geographic bid adjustments</label></div>
+    <div class="toggle-row"><input type="checkbox" id="autoNgram" checked><label for="autoNgram">N-gram analysis</label></div>
+    <div class="toggle-row"><input type="checkbox" id="autoQsPause" checked><label for="autoQsPause">Low Quality Score pausing</label></div>
+    <div class="toggle-row"><input type="checkbox" id="promotionEnabled" checked><label for="promotionEnabled">Winner promotion to exact match</label></div>
+    <div class="toggle-row"><input type="checkbox" id="previewMode"><label for="previewMode">Preview mode (no changes — log only)</label></div>
+  </div>
+
+  <button class="btn" onclick="generateLoader()">Generate Loader Script</button>
+  <button class="copy-btn" id="copyBtn" onclick="copyToClipboard()">Copy to Clipboard</button>
+  <pre class="output-area" id="output"></pre>
+</div>
+
+<script>
+function generateLoader() {
+  var clientName = document.getElementById('clientName').value.trim() || 'Unnamed Client';
+  var accountMode = document.getElementById('accountMode').value;
+  var emailAddresses = document.getElementById('emailAddresses').value.trim();
+  var monthlyBudget = document.getElementById('monthlyBudget').value || '30000';
+  var masterSheetId = document.getElementById('masterSheetId').value.trim() || '1TDEpz--yxg-x1lO3twfJ2Y_VJ6988Y1vaB0BKe6IfJU';
+  var coreScriptUrl = document.getElementById('coreScriptUrl').value.trim() || 'https://raw.githubusercontent.com/LeadsSyte/gads-scripts/refs/heads/main/syte_optimization_core.js';
+  var anthropicApiKey = document.getElementById('anthropicApiKey').value.trim();
+
+  var keywordSpendThreshold = document.getElementById('keywordSpendThreshold').value || '500';
+  var searchTermSpendThreshold = document.getElementById('searchTermSpendThreshold').value || '300';
+  var minCtrToProtect = document.getElementById('minCtrToProtect').value || '2';
+  var conversionLagDays = document.getElementById('conversionLagDays').value || '3';
+  var lookbackDays = document.getElementById('lookbackDays').value || '30';
+  var maxChangesPerRun = document.getElementById('maxChangesPerRun').value || '50';
+
+  var ecomKeywordSpendThreshold = document.getElementById('ecomKeywordSpendThreshold').value || '800';
+  var ecomSearchTermSpendThreshold = document.getElementById('ecomSearchTermSpendThreshold').value || '500';
+  var minRoasToKeep = document.getElementById('minRoasToKeep').value || '2.0';
+  var shoppingMinRoasThreshold = document.getElementById('shoppingMinRoasThreshold').value || '2.0';
+
+  var promotionMinConversions = document.getElementById('promotionMinConversions').value || '3';
+  var promotionMinClicks = document.getElementById('promotionMinClicks').value || '10';
+  var promotionMinCvr = document.getElementById('promotionMinCvr').value || '5';
+  var exactWinnersAdGroupName = document.getElementById('exactWinnersAdGroupName').value.trim() || '[Exact Winners]';
+
+  var negativeListNameSpend = document.getElementById('negativeListNameSpend').value.trim();
+  var negativeListNameInformational = document.getElementById('negativeListNameInformational').value.trim();
+  var negativeListNameIrrelevant = document.getElementById('negativeListNameIrrelevant').value.trim();
+
+  var protectedTerms = document.getElementById('protectedTerms').value.trim();
+  var irrelevantTerms = document.getElementById('irrelevantTerms').value.trim();
+
+  var autoDeviceBids = document.getElementById('autoDeviceBids').checked;
+  var autoAdSchedule = document.getElementById('autoAdSchedule').checked;
+  var autoGeoBids = document.getElementById('autoGeoBids').checked;
+  var autoNgram = document.getElementById('autoNgram').checked;
+  var autoQsPause = document.getElementById('autoQsPause').checked;
+  var promotionEnabled = document.getElementById('promotionEnabled').checked;
+  var previewMode = document.getElementById('previewMode').checked;
+
+  var emailArray = emailAddresses ? emailAddresses.split(',').map(function(e) { return "'" + e.trim() + "'"; }).join(', ') : "'michaelh@syte.co.za'";
+  var protectedArray = protectedTerms ? protectedTerms.split(',').map(function(t) { return "'" + t.trim() + "'"; }).join(', ') : '';
+  var irrelevantArray = irrelevantTerms ? irrelevantTerms.split(',').map(function(t) { return "'" + t.trim() + "'"; }).join(', ') : '';
+
+  var script = '';
+  script += '/**\n';
+  script += ' * SYTE LOADER — ' + clientName + '\n';
+  script += ' * Generated: ' + new Date().toISOString().split('T')[0] + '\n';
+  script += ' * Paste this into Google Ads Scripts for this account.\n';
+  script += ' * The core engine is fetched from GitHub at runtime.\n';
+  script += ' */\n\n';
+  script += 'var CONFIG = {\n';
+  script += "  CLIENT_NAME: '" + clientName.replace(/'/g, "\\'") + "',\n";
+  script += "  ACCOUNT_MODE: '" + accountMode + "',\n";
+  script += '  PREVIEW_MODE: ' + previewMode + ',\n';
+  script += '  LOG_LEVEL: \'INFO\',\n';
+  script += '\n';
+  script += '  // Core infrastructure\n';
+  script += "  MASTER_SHEET_ID: '" + masterSheetId + "',\n";
+  script += "  CORE_SCRIPT_URL: '" + coreScriptUrl + "',\n";
+  script += "  ANTHROPIC_API_KEY: '" + anthropicApiKey + "',\n";
+  script += '  EMAIL_ADDRESSES: [' + emailArray + '],\n';
+  script += '  SEND_EMAIL: true,\n';
+  script += '  MONTHLY_BUDGET: ' + monthlyBudget + ',\n';
+  script += '\n';
+  script += '  // Lead gen thresholds\n';
+  script += '  KEYWORD_SPEND_THRESHOLD: ' + keywordSpendThreshold + ',\n';
+  script += '  SEARCH_TERM_SPEND_THRESHOLD: ' + searchTermSpendThreshold + ',\n';
+  script += '  MIN_CTR_TO_PROTECT: ' + minCtrToProtect + ',\n';
+  script += '  CONVERSION_LAG_DAYS: ' + conversionLagDays + ',\n';
+  script += '  LOOKBACK_DAYS: ' + lookbackDays + ',\n';
+  script += '  MAX_CHANGES_PER_RUN: ' + maxChangesPerRun + ',\n';
+  script += '\n';
+  script += '  // Ecommerce thresholds\n';
+  script += '  ECOM_KEYWORD_SPEND_THRESHOLD: ' + ecomKeywordSpendThreshold + ',\n';
+  script += '  ECOM_SEARCH_TERM_SPEND_THRESHOLD: ' + ecomSearchTermSpendThreshold + ',\n';
+  script += '  MIN_ROAS_TO_KEEP: ' + minRoasToKeep + ',\n';
+  script += '  SHOPPING_PRODUCT_SPEND_THRESHOLD: 500,\n';
+  script += '  SHOPPING_MIN_ROAS_THRESHOLD: ' + shoppingMinRoasThreshold + ',\n';
+  script += '  SHOPPING_HERO_PRODUCT_ROAS: 5.0,\n';
+  script += '  SHOPPING_HERO_MIN_CONVERSIONS: 3,\n';
+  script += '  PMAX_ASSET_GROUP_SPEND_THRESHOLD: 500,\n';
+  script += '  PMAX_MIN_ROAS_THRESHOLD: 2.0,\n';
+  script += '\n';
+  script += '  // Winner promotion\n';
+  script += '  PROMOTION_ENABLED: ' + promotionEnabled + ',\n';
+  script += '  PROMOTION_MIN_CONVERSIONS: ' + promotionMinConversions + ',\n';
+  script += '  PROMOTION_MIN_CLICKS: ' + promotionMinClicks + ',\n';
+  script += '  PROMOTION_MIN_CONVERSION_RATE: ' + promotionMinCvr + ',\n';
+  script += "  EXACT_WINNERS_AD_GROUP_NAME: '" + exactWinnersAdGroupName.replace(/'/g, "\\'") + "',\n";
+  script += '\n';
+  script += '  // Negative lists\n';
+  script += "  NEGATIVE_LIST_NAME_SPEND: '" + negativeListNameSpend.replace(/'/g, "\\'") + "',\n";
+  script += "  NEGATIVE_LIST_NAME_INFORMATIONAL: '" + negativeListNameInformational.replace(/'/g, "\\'") + "',\n";
+  script += "  NEGATIVE_LIST_NAME_IRRELEVANT: '" + negativeListNameIrrelevant.replace(/'/g, "\\'") + "',\n";
+  script += '  PROTECTED_TERMS: [' + protectedArray + '],\n';
+  script += '  IRRELEVANT_TERMS: [' + irrelevantArray + '],\n';
+  script += '\n';
+  script += '  // Auto-optimization toggles\n';
+  script += '  AUTO_DEVICE_BIDS: ' + autoDeviceBids + ',\n';
+  script += '  AUTO_AD_SCHEDULE: ' + autoAdSchedule + ',\n';
+  script += '  AUTO_GEO_BIDS: ' + autoGeoBids + ',\n';
+  script += '  AUTO_NGRAM: ' + autoNgram + ',\n';
+  script += '  AUTO_QS_PAUSE: ' + autoQsPause + '\n';
+  script += '};\n\n';
+  script += 'function main() {\n';
+  script += '  var response = UrlFetchApp.fetch(CONFIG.CORE_SCRIPT_URL, { muteHttpExceptions: true });\n';
+  script += '  if (response.getResponseCode() !== 200) {\n';
+  script += "    Logger.log('ERROR: Could not fetch core script: ' + response.getResponseCode());\n";
+  script += '    return;\n';
+  script += '  }\n';
+  script += '  eval(response.getContentText());\n';
+  script += '  runOptimization();\n';
+  script += '}\n';
+
+  var output = document.getElementById('output');
+  output.textContent = script;
+  output.style.display = 'block';
+  document.getElementById('copyBtn').style.display = 'inline-block';
+}
+
+function copyToClipboard() {
+  var text = document.getElementById('output').textContent;
+  navigator.clipboard.writeText(text).then(function() {
+    var btn = document.getElementById('copyBtn');
+    btn.textContent = 'Copied!';
+    setTimeout(function() { btn.textContent = 'Copy to Clipboard'; }, 2000);
+  });
+}
+</script>
+</body>
+</html>

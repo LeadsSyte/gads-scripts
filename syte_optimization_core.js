@@ -1,29 +1,43 @@
 /**
- * SYTE OPTIMIZATION CORE v4.0
+ * SYTE OPTIMIZATION CORE v4.1
  * ============================
  * This file is the CORE engine — hosted centrally and fetched by each client's loader script.
  * DO NOT paste this into Google Ads Scripts directly.
  * Host this file at a URL (GitHub raw URL recommended)
- * 
+ *
  * Each client account has a small "loader" script that:
  *   1. Defines their CONFIG
  *   2. Fetches this core via UrlFetchApp.fetch()
  *   3. Calls runOptimization()
- * 
+ *
  * When you improve this core, ALL client accounts get the update on their next scheduled run.
- * 
+ *
  * Author: Syte Digital Agency (syte.co.za)
- * Version: 4.0
- * 
+ * Version: 4.1
+ *
+ * CHANGELOG v4.1 — OUTCOME SCORING + RUN DELTAS:
+ * - NEW: Real outcome scoring for DEVICE_BID — compares device CVR before/after change
+ * - NEW: Real outcome scoring for GEO_BID — compares location-level CVR before/after
+ * - NEW: Real outcome scoring for SCHEDULE_BID — compares hour-of-day CVR before/after
+ * - NEW: RunLog sheet tab — records a performance snapshot every run
+ * - NEW: Run-over-run performance delta tracking (CPL, conversions, ROAS vs last run)
+ * - NEW: "Since Last Run" section in email report with directional arrows
+ * - NEW: Yellow warning if CPL worsened >15% after >10 changes in previous run
+ * - NEW: Weekly Claude review now receives last 8 RunLog rows for trend analysis
+ * - FIX: _sheetCache refactored to _sheetCacheMap (supports both ChangeLog and RunLog)
+ * - FIX: MASTER_SHEET_ID default hardcoded to Syte master sheet
+ * - FIX: Sunday gate uses account timezone via getDay() — correct for all timezones
+ * - FIX: Sheet initialisation handles first-run gracefully (no previous rows)
+ *
  * CHANGELOG v4.0 — SELF-IMPROVEMENT ENGINE:
  * - NEW: Change log — every action written to master Syte Google Sheet
  * - NEW: Outcome backfill — 14 days after each change, script revisits and scores it
  * - NEW: Weekly Claude review (runs Sunday) — reads change log + outcomes, critiques
  *        its own logic, and emails a full rewritten script ready to paste into GitHub
  * - Loader CONFIG additions required:
- *     MASTER_SHEET_ID: 'your-google-sheet-id-here'  (one master sheet for all clients)
+ *     MASTER_SHEET_ID: '1TDEpz--yxg-x1lO3twfJ2Y_VJ6988Y1vaB0BKe6IfJU'
  *     ANTHROPIC_API_KEY: 'sk-ant-...'
- * 
+ *
  * CHANGELOG v3.2 — AUTO-OPTIMIZATIONS:
  * - Device bid adjustments, hour-of-day scheduling, geographic bid adjustments
  * - Conversion tracking health check
@@ -184,35 +198,50 @@ function _getExistingNegatives(negativeList) {
  * O: script_version
  */
 
-var _sheetCache = null;
+var _sheetCacheMap = {};
 
-function _getChangeLogSheet() {
-  if (_sheetCache) return _sheetCache;
-  if (!CONFIG.MASTER_SHEET_ID) {
-    _log('WARN', 'No MASTER_SHEET_ID in CONFIG — change logging disabled');
+function _getSheet(sheetName, headerRow) {
+  if (_sheetCacheMap[sheetName]) return _sheetCacheMap[sheetName];
+  var sheetId = CONFIG.MASTER_SHEET_ID || '1TDEpz--yxg-x1lO3twfJ2Y_VJ6988Y1vaB0BKe6IfJU';
+  if (!sheetId) {
+    _log('WARN', 'No MASTER_SHEET_ID in CONFIG — ' + sheetName + ' disabled');
     return null;
   }
   try {
-    var ss = SpreadsheetApp.openById(CONFIG.MASTER_SHEET_ID);
-    var sheet = ss.getSheetByName('ChangeLog');
+    var ss = SpreadsheetApp.openById(sheetId);
+    var sheet = ss.getSheetByName(sheetName);
     if (!sheet) {
-      sheet = ss.insertSheet('ChangeLog');
-      sheet.getRange(1, 1, 1, 15).setValues([[
-        'change_id', 'timestamp', 'account_name', 'function_name',
-        'entity', 'entity_type', 'campaign', 'ad_group',
-        'reason', 'spend_at_change', 'conversions_at_change',
-        'outcome', 'outcome_checked_date', 'outcome_notes',
-        'script_version'
-      ]]);
-      sheet.getRange(1, 1, 1, 15).setFontWeight('bold');
+      sheet = ss.insertSheet(sheetName);
+      sheet.getRange(1, 1, 1, headerRow.length).setValues([headerRow]);
+      sheet.getRange(1, 1, 1, headerRow.length).setFontWeight('bold');
       sheet.setFrozenRows(1);
     }
-    _sheetCache = sheet;
+    _sheetCacheMap[sheetName] = sheet;
     return sheet;
   } catch (e) {
-    _log('ERROR', 'Cannot open change log sheet: ' + e.message);
+    _log('ERROR', 'Cannot open sheet "' + sheetName + '": ' + e.message);
     return null;
   }
+}
+
+function _getChangeLogSheet() {
+  return _getSheet('ChangeLog', [
+    'change_id', 'timestamp', 'account_name', 'function_name',
+    'entity', 'entity_type', 'campaign', 'ad_group',
+    'reason', 'spend_at_change', 'conversions_at_change',
+    'outcome', 'outcome_checked_date', 'outcome_notes',
+    'script_version'
+  ]);
+}
+
+function _getRunLogSheet() {
+  return _getSheet('RunLog', [
+    'run_id', 'timestamp', 'account_name', 'script_version',
+    'account_cpl', 'account_conversions', 'account_cost',
+    'account_roas', 'account_clicks', 'account_impressions',
+    'changes_made', 'delta_cpl_vs_last_run', 'delta_conversions_vs_last_run',
+    'delta_roas_vs_last_run', 'run_notes'
+  ]);
 }
 
 function _generateChangeId() {
@@ -248,7 +277,7 @@ function _logChange(change) {
       'PENDING',           // outcome — will be backfilled in 14 days
       '',                  // outcome_checked_date
       '',                  // outcome_notes
-      'v4.0'              // script_version
+      'v4.1'              // script_version
     ]);
   } catch (e) {
     _log('WARN', 'Change log write failed: ' + e.message);
@@ -390,8 +419,218 @@ function _backfillOutcomes() {
         }
 
         else if (entityType === 'DEVICE_BID') {
-          outcome = 'NEUTRAL';
-          outcomeNotes = 'Device bid adjustment — scoring requires segmented CVR comparison.';
+          // Compare device CVR 14 days before vs 14 days after the change
+          var deviceMatch = entity.match(/_([A-Z]+)$/);
+          var deviceName = deviceMatch ? deviceMatch[1] : '';
+          if (deviceName) {
+            var afterStartD = new Date(changeTimestamp);
+            var afterEndD = new Date(changeTimestamp);
+            afterEndD.setDate(afterEndD.getDate() + 14);
+            var beforeStartD2 = new Date(changeTimestamp);
+            beforeStartD2.setDate(beforeStartD2.getDate() - 14);
+
+            var deviceAfterQuery = 'SELECT segments.device, metrics.conversions, metrics.clicks, metrics.cost_micros ' +
+              'FROM campaign WHERE campaign.name = "' + campaign + '" AND campaign.status = "ENABLED" ' +
+              'AND segments.date BETWEEN "' + _formatDate(afterStartD) + '" AND "' + _formatDate(afterEndD) + '"';
+            var deviceBeforeQuery = 'SELECT segments.device, metrics.conversions, metrics.clicks, metrics.cost_micros ' +
+              'FROM campaign WHERE campaign.name = "' + campaign + '" AND campaign.status = "ENABLED" ' +
+              'AND segments.date BETWEEN "' + _formatDate(beforeStartD2) + '" AND "' + _formatDate(changeTimestamp) + '"';
+
+            var devAfterConv = 0, devAfterClicks = 0, devAfterCost = 0;
+            var devBeforeConv = 0, devBeforeClicks = 0, devBeforeCost = 0;
+            var acctAfterConv = 0, acctAfterCost = 0, acctBeforeConv = 0, acctBeforeCost = 0;
+
+            var ds1 = AdsApp.search(deviceAfterQuery);
+            while (ds1.hasNext()) {
+              var dr1 = ds1.next();
+              var dev = dr1.segments.device;
+              var c = Number(dr1.metrics.conversions) || 0;
+              var cl = Number(dr1.metrics.clicks) || 0;
+              var co = Number(dr1.metrics.costMicros) / 1000000;
+              acctAfterConv += c; acctAfterCost += co;
+              if (dev === deviceName) { devAfterConv += c; devAfterClicks += cl; devAfterCost += co; }
+            }
+            var ds2 = AdsApp.search(deviceBeforeQuery);
+            while (ds2.hasNext()) {
+              var dr2 = ds2.next();
+              var dev2 = dr2.segments.device;
+              var c2 = Number(dr2.metrics.conversions) || 0;
+              var cl2 = Number(dr2.metrics.clicks) || 0;
+              var co2 = Number(dr2.metrics.costMicros) / 1000000;
+              acctBeforeConv += c2; acctBeforeCost += co2;
+              if (dev2 === deviceName) { devBeforeConv += c2; devBeforeClicks += cl2; devBeforeCost += co2; }
+            }
+
+            var devCvrBefore = devBeforeClicks > 0 ? devBeforeConv / devBeforeClicks : 0;
+            var devCvrAfter = devAfterClicks > 0 ? devAfterConv / devAfterClicks : 0;
+            var acctCplBefore = acctBeforeConv > 0 ? acctBeforeCost / acctBeforeConv : 0;
+            var acctCplAfter = acctAfterConv > 0 ? acctAfterCost / acctAfterConv : 0;
+
+            if (devBeforeClicks >= 10 && devAfterClicks >= 10) {
+              if (devCvrAfter > devCvrBefore || (acctCplBefore > 0 && acctCplAfter < acctCplBefore * 0.95)) {
+                outcome = 'CORRECT';
+                outcomeNotes = deviceName + ' CVR ' + (devCvrBefore * 100).toFixed(1) + '% -> ' + (devCvrAfter * 100).toFixed(1) + '%. Account CPL R' + acctCplBefore.toFixed(0) + ' -> R' + acctCplAfter.toFixed(0);
+              } else if (devCvrAfter < devCvrBefore * 0.8) {
+                outcome = 'INCORRECT';
+                outcomeNotes = deviceName + ' CVR worsened ' + (devCvrBefore * 100).toFixed(1) + '% -> ' + (devCvrAfter * 100).toFixed(1) + '%. Bid adjustment may have been wrong.';
+              } else {
+                outcome = 'NEUTRAL';
+                outcomeNotes = deviceName + ' CVR change within noise range. Before: ' + (devCvrBefore * 100).toFixed(1) + '% After: ' + (devCvrAfter * 100).toFixed(1) + '%';
+              }
+            } else {
+              outcome = 'NEUTRAL';
+              outcomeNotes = 'Insufficient click volume on ' + deviceName + ' to score (before: ' + devBeforeClicks + ', after: ' + devAfterClicks + ' clicks).';
+            }
+          } else {
+            outcome = 'NEUTRAL';
+            outcomeNotes = 'Could not parse device name from entity.';
+          }
+        }
+
+        else if (entityType === 'GEO_BID') {
+          // Compare location-level CVR before vs after
+          var locMatch = entity.match(/_LOC_(.+)$/);
+          var locConstant = locMatch ? locMatch[1] : '';
+          if (locConstant) {
+            var geoAfterStart = new Date(changeTimestamp);
+            var geoAfterEnd = new Date(changeTimestamp);
+            geoAfterEnd.setDate(geoAfterEnd.getDate() + 14);
+            var geoBeforeStart = new Date(changeTimestamp);
+            geoBeforeStart.setDate(geoBeforeStart.getDate() - 14);
+
+            var geoAfterQ = 'SELECT metrics.conversions, metrics.clicks, metrics.cost_micros ' +
+              'FROM location_view WHERE campaign.name = "' + campaign + '" AND campaign.status = "ENABLED" ' +
+              'AND segments.date BETWEEN "' + _formatDate(geoAfterStart) + '" AND "' + _formatDate(geoAfterEnd) + '"';
+            var geoBeforeQ = 'SELECT metrics.conversions, metrics.clicks, metrics.cost_micros ' +
+              'FROM location_view WHERE campaign.name = "' + campaign + '" AND campaign.status = "ENABLED" ' +
+              'AND segments.date BETWEEN "' + _formatDate(geoBeforeStart) + '" AND "' + _formatDate(changeTimestamp) + '"';
+
+            var geoAfterConv = 0, geoAfterClicks = 0, geoAfterCost = 0;
+            var geoBeforeConv = 0, geoBeforeClicks = 0, geoBeforeCost = 0;
+
+            var gs1 = AdsApp.search(geoAfterQ);
+            while (gs1.hasNext()) { var gr1 = gs1.next(); geoAfterConv += Number(gr1.metrics.conversions) || 0; geoAfterClicks += Number(gr1.metrics.clicks) || 0; geoAfterCost += Number(gr1.metrics.costMicros) / 1000000; }
+            var gs2 = AdsApp.search(geoBeforeQ);
+            while (gs2.hasNext()) { var gr2 = gs2.next(); geoBeforeConv += Number(gr2.metrics.conversions) || 0; geoBeforeClicks += Number(gr2.metrics.clicks) || 0; geoBeforeCost += Number(gr2.metrics.costMicros) / 1000000; }
+
+            var geoCvrBefore = geoBeforeClicks > 0 ? geoBeforeConv / geoBeforeClicks : 0;
+            var geoCvrAfter = geoAfterClicks > 0 ? geoAfterConv / geoAfterClicks : 0;
+            var geoCplBefore = geoBeforeConv > 0 ? geoBeforeCost / geoBeforeConv : 0;
+            var geoCplAfter = geoAfterConv > 0 ? geoAfterCost / geoAfterConv : 0;
+
+            // Determine if bid was increased or reduced from the reason field
+            var wasReduction = (row[colIdx['reason']] || '').indexOf('-') !== -1 || (row[colIdx['reason']] || '').indexOf('0 conv') !== -1;
+
+            if (geoBeforeClicks >= 10 || geoAfterClicks >= 10) {
+              if (wasReduction) {
+                // For bid reductions: CORRECT if CPL stayed flat or improved
+                if (geoCplBefore > 0 && geoCplAfter <= geoCplBefore * 1.05) {
+                  outcome = 'CORRECT';
+                  outcomeNotes = 'Geo bid reduction: CPL held/improved. Before R' + geoCplBefore.toFixed(0) + ' -> After R' + geoCplAfter.toFixed(0);
+                } else if (geoCplAfter > geoCplBefore * 1.15) {
+                  outcome = 'INCORRECT';
+                  outcomeNotes = 'Geo bid reduction may have hurt: CPL R' + geoCplBefore.toFixed(0) + ' -> R' + geoCplAfter.toFixed(0);
+                } else {
+                  outcome = 'NEUTRAL';
+                  outcomeNotes = 'Geo bid reduction: CPL change within noise. R' + geoCplBefore.toFixed(0) + ' -> R' + geoCplAfter.toFixed(0);
+                }
+              } else {
+                // For bid increases: CORRECT if CVR lifted
+                if (geoCvrAfter > geoCvrBefore) {
+                  outcome = 'CORRECT';
+                  outcomeNotes = 'Geo bid increase: CVR improved ' + (geoCvrBefore * 100).toFixed(1) + '% -> ' + (geoCvrAfter * 100).toFixed(1) + '%';
+                } else if (geoCvrAfter < geoCvrBefore * 0.8) {
+                  outcome = 'INCORRECT';
+                  outcomeNotes = 'Geo bid increase: CVR dropped ' + (geoCvrBefore * 100).toFixed(1) + '% -> ' + (geoCvrAfter * 100).toFixed(1) + '%';
+                } else {
+                  outcome = 'NEUTRAL';
+                  outcomeNotes = 'Geo bid increase: CVR flat ' + (geoCvrBefore * 100).toFixed(1) + '% -> ' + (geoCvrAfter * 100).toFixed(1) + '%';
+                }
+              }
+            } else {
+              outcome = 'NEUTRAL';
+              outcomeNotes = 'Insufficient click volume for geo scoring.';
+            }
+          } else {
+            outcome = 'NEUTRAL';
+            outcomeNotes = 'Could not parse location from entity.';
+          }
+        }
+
+        else if (entityType === 'SCHEDULE_BID') {
+          // Compare hour-of-day CVR before vs after
+          var hourMatch = entity.match(/_H(\d+)$/);
+          var targetHour = hourMatch ? parseInt(hourMatch[1]) : -1;
+          if (targetHour >= 0) {
+            var schedAfterStart = new Date(changeTimestamp);
+            var schedAfterEnd = new Date(changeTimestamp);
+            schedAfterEnd.setDate(schedAfterEnd.getDate() + 14);
+            var schedBeforeStart = new Date(changeTimestamp);
+            schedBeforeStart.setDate(schedBeforeStart.getDate() - 14);
+
+            var schedAfterQ = 'SELECT segments.hour, metrics.conversions, metrics.clicks, metrics.cost_micros ' +
+              'FROM campaign WHERE campaign.name = "' + campaign + '" AND campaign.status = "ENABLED" ' +
+              'AND segments.date BETWEEN "' + _formatDate(schedAfterStart) + '" AND "' + _formatDate(schedAfterEnd) + '"';
+            var schedBeforeQ = 'SELECT segments.hour, metrics.conversions, metrics.clicks, metrics.cost_micros ' +
+              'FROM campaign WHERE campaign.name = "' + campaign + '" AND campaign.status = "ENABLED" ' +
+              'AND segments.date BETWEEN "' + _formatDate(schedBeforeStart) + '" AND "' + _formatDate(changeTimestamp) + '"';
+
+            var hourAfterConv = 0, hourAfterClicks = 0, hourAfterCost = 0;
+            var hourBeforeConv = 0, hourBeforeClicks = 0, hourBeforeCost = 0;
+            var acctSchedAfterConv = 0, acctSchedAfterCost = 0;
+            var acctSchedBeforeConv = 0, acctSchedBeforeCost = 0;
+
+            var ss1 = AdsApp.search(schedAfterQ);
+            while (ss1.hasNext()) {
+              var sr1 = ss1.next();
+              var h = Number(sr1.segments.hour);
+              var sc = Number(sr1.metrics.conversions) || 0;
+              var scl = Number(sr1.metrics.clicks) || 0;
+              var sco = Number(sr1.metrics.costMicros) / 1000000;
+              acctSchedAfterConv += sc; acctSchedAfterCost += sco;
+              if (h === targetHour) { hourAfterConv += sc; hourAfterClicks += scl; hourAfterCost += sco; }
+            }
+            var ss2 = AdsApp.search(schedBeforeQ);
+            while (ss2.hasNext()) {
+              var sr2 = ss2.next();
+              var h2 = Number(sr2.segments.hour);
+              var sc2 = Number(sr2.metrics.conversions) || 0;
+              var scl2 = Number(sr2.metrics.clicks) || 0;
+              var sco2 = Number(sr2.metrics.costMicros) / 1000000;
+              acctSchedBeforeConv += sc2; acctSchedBeforeCost += sco2;
+              if (h2 === targetHour) { hourBeforeConv += sc2; hourBeforeClicks += scl2; hourBeforeCost += sco2; }
+            }
+
+            var wasSchedReduction = (row[colIdx['reason']] || '').indexOf('-') !== -1;
+            var hourCvrBefore = hourBeforeClicks > 0 ? hourBeforeConv / hourBeforeClicks : 0;
+            var hourCvrAfter = hourAfterClicks > 0 ? hourAfterConv / hourAfterClicks : 0;
+            var acctSchedCplBefore = acctSchedBeforeConv > 0 ? acctSchedBeforeCost / acctSchedBeforeConv : 0;
+            var acctSchedCplAfter = acctSchedAfterConv > 0 ? acctSchedAfterCost / acctSchedAfterConv : 0;
+
+            if (wasSchedReduction) {
+              if (acctSchedCplBefore > 0 && acctSchedCplAfter <= acctSchedCplBefore * 1.05) {
+                outcome = 'CORRECT';
+                outcomeNotes = 'Hour ' + targetHour + ' bid reduced: CPL improved/held. R' + acctSchedCplBefore.toFixed(0) + ' -> R' + acctSchedCplAfter.toFixed(0);
+              } else if (hourAfterConv > hourBeforeConv && hourBeforeConv > 0) {
+                outcome = 'INCORRECT';
+                outcomeNotes = 'Hour ' + targetHour + ' bid reduced but conversions increased (' + hourBeforeConv + ' -> ' + hourAfterConv + '). May have blocked a converting hour.';
+              } else {
+                outcome = 'NEUTRAL';
+                outcomeNotes = 'Hour ' + targetHour + ' schedule change: insufficient signal. CPL R' + acctSchedCplBefore.toFixed(0) + ' -> R' + acctSchedCplAfter.toFixed(0);
+              }
+            } else {
+              if (hourCvrAfter > hourCvrBefore) {
+                outcome = 'CORRECT';
+                outcomeNotes = 'Hour ' + targetHour + ' bid increased: CVR ' + (hourCvrBefore * 100).toFixed(1) + '% -> ' + (hourCvrAfter * 100).toFixed(1) + '%';
+              } else {
+                outcome = 'NEUTRAL';
+                outcomeNotes = 'Hour ' + targetHour + ' bid increased: CVR flat/down ' + (hourCvrBefore * 100).toFixed(1) + '% -> ' + (hourCvrAfter * 100).toFixed(1) + '%';
+              }
+            }
+          } else {
+            outcome = 'NEUTRAL';
+            outcomeNotes = 'Could not parse hour from entity.';
+          }
         }
 
       } catch (innerE) {
@@ -415,6 +654,166 @@ function _backfillOutcomes() {
 
   } catch (e) {
     _log('ERROR', 'backfillOutcomes: ' + e.message);
+  }
+}
+
+
+// ============================================
+// RUN-OVER-RUN PERFORMANCE DELTA TRACKING
+// ============================================
+
+/**
+ * Captures a 7-day trailing performance snapshot for the account.
+ * Called at the start of each run before any optimizations.
+ */
+function _capturePerformanceSnapshot() {
+  try {
+    var query = 'SELECT metrics.cost_micros, metrics.conversions, metrics.conversions_value, ' +
+      'metrics.clicks, metrics.impressions FROM campaign WHERE campaign.status = "ENABLED" ' +
+      'AND segments.date DURING LAST_7_DAYS';
+    var search = AdsApp.search(query);
+    var cost = 0, conversions = 0, revenue = 0, clicks = 0, impressions = 0;
+    while (search.hasNext()) {
+      var row = search.next();
+      cost += Number(row.metrics.costMicros) / 1000000;
+      conversions += Number(row.metrics.conversions) || 0;
+      revenue += Number(row.metrics.conversionsValue) || 0;
+      clicks += Number(row.metrics.clicks) || 0;
+      impressions += Number(row.metrics.impressions) || 0;
+    }
+    var cpl = conversions > 0 ? cost / conversions : 0;
+    var roas = cost > 0 ? revenue / cost : 0;
+    return { cost: cost, conversions: conversions, revenue: revenue, clicks: clicks, impressions: impressions, cpl: cpl, roas: roas };
+  } catch (e) {
+    _log('WARN', 'Performance snapshot failed: ' + e.message);
+    return null;
+  }
+}
+
+/**
+ * Reads the last RunLog row for this account and returns it, or null if none.
+ */
+function _getLastRunLogRow() {
+  var sheet = _getRunLogSheet();
+  if (!sheet) return null;
+  try {
+    var data = sheet.getDataRange().getValues();
+    if (data.length < 2) return null; // Only header row
+    var headers = data[0];
+    var colIdx = {};
+    headers.forEach(function(h, i) { colIdx[h] = i; });
+    var accountName = AdsApp.currentAccount().getName();
+    // Search from bottom up for the most recent row for this account
+    for (var r = data.length - 1; r >= 1; r--) {
+      if (data[r][colIdx['account_name']] === accountName) {
+        return {
+          runId: data[r][colIdx['run_id']],
+          cpl: Number(data[r][colIdx['account_cpl']]) || 0,
+          conversions: Number(data[r][colIdx['account_conversions']]) || 0,
+          cost: Number(data[r][colIdx['account_cost']]) || 0,
+          roas: Number(data[r][colIdx['account_roas']]) || 0,
+          clicks: Number(data[r][colIdx['account_clicks']]) || 0,
+          impressions: Number(data[r][colIdx['account_impressions']]) || 0,
+          changesMade: Number(data[r][colIdx['changes_made']]) || 0
+        };
+      }
+    }
+    return null;
+  } catch (e) {
+    _log('WARN', 'Could not read last RunLog row: ' + e.message);
+    return null;
+  }
+}
+
+/**
+ * Writes a RunLog row with the current snapshot + deltas vs last run.
+ */
+function _writeRunLogRow(snapshot, totalChanges, lastRun) {
+  var sheet = _getRunLogSheet();
+  if (!sheet || !snapshot) return null;
+
+  var runId = _generateChangeId();
+  var accountName = AdsApp.currentAccount().getName();
+
+  var deltaCpl = '';
+  var deltaConv = '';
+  var deltaRoas = '';
+  var runNotes = '';
+
+  if (lastRun && lastRun.cpl > 0) {
+    var cplChange = ((snapshot.cpl - lastRun.cpl) / lastRun.cpl) * 100;
+    deltaCpl = cplChange.toFixed(1) + '%';
+    var convChange = snapshot.conversions - lastRun.conversions;
+    deltaConv = (convChange >= 0 ? '+' : '') + convChange.toFixed(1);
+    if (lastRun.roas > 0) {
+      var roasChange = ((snapshot.roas - lastRun.roas) / lastRun.roas) * 100;
+      deltaRoas = roasChange.toFixed(1) + '%';
+    }
+
+    // Flag if CPL worsened >15% and last run had >10 changes
+    if (cplChange > 15 && lastRun.changesMade > 10) {
+      runNotes = 'WARNING: CPL worsened ' + cplChange.toFixed(1) + '% since last run which made ' + lastRun.changesMade + ' changes. Review change log.';
+    }
+  }
+
+  try {
+    sheet.appendRow([
+      runId,
+      _formatDatetime(new Date()),
+      accountName,
+      'v4.1',
+      snapshot.cpl.toFixed(2),
+      snapshot.conversions.toFixed(1),
+      snapshot.cost.toFixed(2),
+      snapshot.roas.toFixed(2),
+      snapshot.clicks,
+      snapshot.impressions,
+      totalChanges,
+      deltaCpl,
+      deltaConv,
+      deltaRoas,
+      runNotes
+    ]);
+  } catch (e) {
+    _log('WARN', 'RunLog write failed: ' + e.message);
+  }
+
+  return {
+    snapshot: snapshot,
+    lastRun: lastRun,
+    deltaCpl: deltaCpl,
+    deltaConv: deltaConv,
+    deltaRoas: deltaRoas,
+    runNotes: runNotes,
+    totalChanges: totalChanges
+  };
+}
+
+/**
+ * Gets the last N RunLog rows for this account.
+ */
+function _getRecentRunLogRows(count) {
+  var sheet = _getRunLogSheet();
+  if (!sheet) return [];
+  try {
+    var data = sheet.getDataRange().getValues();
+    if (data.length < 2) return [];
+    var headers = data[0];
+    var colIdx = {};
+    headers.forEach(function(h, i) { colIdx[h] = i; });
+    var accountName = AdsApp.currentAccount().getName();
+    var rows = [];
+    for (var r = data.length - 1; r >= 1 && rows.length < count; r--) {
+      if (data[r][colIdx['account_name']] === accountName) {
+        var rowObj = {};
+        headers.forEach(function(h, i) { rowObj[h] = data[r][i]; });
+        rows.unshift(rowObj); // Keep chronological order
+      }
+    }
+    return rows;
+  } catch (e) {
+    _log('WARN', 'Could not read RunLog rows: ' + e.message);
+    return [];
   }
 }
 
@@ -634,6 +1033,33 @@ function _buildClaudeReviewPrompt(accountName, changeLogSummary, currentScript) 
   prompt += 'Add a CHANGELOG entry at the top listing every change you made and why.\n';
   prompt += 'Do not remove existing functionality. Only improve it.\n\n';
 
+  // Append RunLog trend data for Claude to analyze
+  var recentRuns = _getRecentRunLogRows(8);
+  if (recentRuns.length > 0) {
+    prompt += '4. PERFORMANCE TREND ANALYSIS\n';
+    prompt += 'Review the run-over-run performance data below and:\n';
+    prompt += '- Comment on whether the run-over-run performance trend is positive or negative\n';
+    prompt += '- Identify if any specific function in the change log correlates with performance drops\n';
+    prompt += '- Factor this into your threshold recommendations in the rewritten script\n\n';
+
+    prompt += '=== RUN LOG (last ' + recentRuns.length + ' runs) ===\n';
+    prompt += 'run_id | timestamp | cpl | conversions | cost | roas | changes_made | delta_cpl | delta_conv | delta_roas | notes\n';
+    recentRuns.forEach(function(row) {
+      prompt += (row['run_id'] || '') + ' | ' +
+        (row['timestamp'] || '') + ' | ' +
+        (row['account_cpl'] || '') + ' | ' +
+        (row['account_conversions'] || '') + ' | ' +
+        (row['account_cost'] || '') + ' | ' +
+        (row['account_roas'] || '') + ' | ' +
+        (row['changes_made'] || '0') + ' | ' +
+        (row['delta_cpl_vs_last_run'] || 'N/A') + ' | ' +
+        (row['delta_conversions_vs_last_run'] || 'N/A') + ' | ' +
+        (row['delta_roas_vs_last_run'] || 'N/A') + ' | ' +
+        (row['run_notes'] || '') + '\n';
+    });
+    prompt += '\n';
+  }
+
   if (currentScript) {
     prompt += '=== CURRENT SCRIPT CODE ===\n';
     prompt += currentScript;
@@ -643,12 +1069,11 @@ function _buildClaudeReviewPrompt(accountName, changeLogSummary, currentScript) 
 }
 
 function _getNextVersion() {
-  // Extract current version number and increment patch
-  var match = '4.0'.match(/(\d+)\.(\d+)/);
+  var match = '4.1'.match(/(\d+)\.(\d+)/);
   if (match) {
     return match[1] + '.' + (parseInt(match[2]) + 1);
   }
-  return '4.1';
+  return '4.2';
 }
 
 /**
@@ -714,7 +1139,7 @@ function _sendWeeklyReviewEmail(accountName, claudeResponse, changeLogSummary) {
   // Header
   email += '<div style="background:linear-gradient(135deg,#1a1a2e,#16213e);color:white;padding:24px;border-radius:8px 8px 0 0;">';
   email += '<h1 style="margin:0;font-size:22px;">🤖 Syte Script — Weekly Self-Improvement Report</h1>';
-  email += '<p style="margin:6px 0 0;opacity:0.8;">' + accountName + ' | ' + today + ' | Core v4.0</p>';
+  email += '<p style="margin:6px 0 0;opacity:0.8;">' + accountName + ' | ' + today + ' | Core v4.1</p>';
   email += '</div>';
 
   // Change log stats banner
@@ -1565,7 +1990,7 @@ function _checkConversionHealth(results) {
       if (CONFIG.SEND_EMAIL !== false) {
         var recipients = CONFIG.EMAIL_ADDRESSES || [CONFIG.EMAIL_RECIPIENT || 'michaelh@syte.co.za'];
         if (typeof recipients === 'string') recipients = [recipients];
-        MailApp.sendEmail({ to: recipients.join(','), subject: '🚨 URGENT: ' + CONFIG.CLIENT_NAME + ' — Conversions Dropped ' + dropPct + '%', body: alertMsg + '\n\nAction needed:\n1. Check conversion tags in GTM\n2. Test the conversion flow manually\n3. Check for landing page errors\n4. Review any recent website changes\n\n— Syte Optimization Script v4.0' });
+        MailApp.sendEmail({ to: recipients.join(','), subject: '🚨 URGENT: ' + CONFIG.CLIENT_NAME + ' — Conversions Dropped ' + dropPct + '%', body: alertMsg + '\n\nAction needed:\n1. Check conversion tags in GTM\n2. Test the conversion flow manually\n3. Check for landing page errors\n4. Review any recent website changes\n\n— Syte Optimization Script v4.1' });
       }
     }
 
@@ -1589,7 +2014,7 @@ function _sendReport(results, duration) {
 
   var email = '<html><body style="font-family:Arial,sans-serif;max-width:800px;margin:0 auto;color:#333;">';
   email += '<div style="background:linear-gradient(135deg,#1a1a2e,#16213e);color:white;padding:20px;border-radius:8px 8px 0 0;">';
-  email += '<h1 style="margin:0;font-size:20px;">Syte Optimization Report v4.0</h1>';
+  email += '<h1 style="margin:0;font-size:20px;">Syte Optimization Report v4.1</h1>';
   email += '<p style="margin:5px 0 0;opacity:0.8;">' + accountName + ' | ' + today + ' | ' + mode + ' | ' + CONFIG.ACCOUNT_MODE + '</p></div>';
 
   if (results.conversionAlert) {
@@ -1639,11 +2064,47 @@ function _sendReport(results, duration) {
   email += '<tr><td style="padding:4px 8px;">Budget Alerts</td><td style="text-align:right;font-weight:bold;">' + results.budgetAlerts.length + '</td></tr>';
   email += '<tr><td style="padding:4px 8px;">Errors</td><td style="text-align:right;font-weight:bold;">' + results.errors.length + '</td></tr>';
   email += '</table></div>';
-  email += '<div style="padding:15px;color:#666;font-size:12px;"><p>Completed in ' + duration.toFixed(1) + 's | Core v4.0 | Syte Digital Agency</p></div></body></html>';
+
+  // === SINCE LAST RUN section ===
+  if (results.performanceDelta && results.performanceDelta.lastRun) {
+    var pd = results.performanceDelta;
+    var snap = pd.snapshot;
+    var lr = pd.lastRun;
+
+    var cplPctNum = lr.cpl > 0 ? ((snap.cpl - lr.cpl) / lr.cpl) * 100 : 0;
+    var cplArrow = cplPctNum <= 0 ? '↓' : '↑';
+    var cplColor = cplPctNum <= 0 ? '#2e7d32' : '#c62828';
+    var convDiff = snap.conversions - lr.conversions;
+    var convArrow = convDiff >= 0 ? '↑' : '↓';
+    var convColor = convDiff >= 0 ? '#2e7d32' : '#c62828';
+    var roasPctNum = lr.roas > 0 ? ((snap.roas - lr.roas) / lr.roas) * 100 : 0;
+    var roasArrow = roasPctNum >= 0 ? '↑' : '↓';
+    var roasColor = roasPctNum >= 0 ? '#2e7d32' : '#c62828';
+
+    email += '<div style="background:#e3f2fd;padding:15px;border-left:4px solid #1565c0;margin-top:2px;">';
+    email += '<h3 style="margin:0 0 10px;color:#1565c0;">Since Last Run</h3>';
+    email += '<table style="width:100%;border-collapse:collapse;">';
+    email += '<tr><td style="padding:4px 8px;">CPL</td><td style="text-align:right;font-weight:bold;color:' + cplColor + ';">' + cplArrow + ' ' + Math.abs(cplPctNum).toFixed(1) + '% (R' + snap.cpl.toFixed(0) + ' vs R' + lr.cpl.toFixed(0) + ')</td></tr>';
+    email += '<tr><td style="padding:4px 8px;">Conversions</td><td style="text-align:right;font-weight:bold;color:' + convColor + ';">' + convArrow + ' ' + Math.abs(convDiff).toFixed(1) + ' (' + snap.conversions.toFixed(0) + ' vs ' + lr.conversions.toFixed(0) + ')</td></tr>';
+    email += '<tr><td style="padding:4px 8px;">ROAS</td><td style="text-align:right;font-weight:bold;color:' + roasColor + ';">' + roasArrow + ' ' + Math.abs(roasPctNum).toFixed(1) + '% (' + snap.roas.toFixed(2) + 'x vs ' + lr.roas.toFixed(2) + 'x)</td></tr>';
+    email += '<tr><td style="padding:4px 8px;">Changes this run</td><td style="text-align:right;font-weight:bold;">' + pd.totalChanges + '</td></tr>';
+    email += '<tr><td style="padding:4px 8px;">Changes last run</td><td style="text-align:right;">' + lr.changesMade + '</td></tr>';
+    email += '</table>';
+
+    if (pd.runNotes) {
+      email += '<div style="margin-top:10px;padding:10px 14px;background:#fff3e0;border-left:4px solid #f57c00;color:#e65100;font-size:13px;font-weight:bold;">';
+      email += '⚠️ ' + pd.runNotes;
+      email += '</div>';
+    }
+
+    email += '</div>';
+  }
+
+  email += '<div style="padding:15px;color:#666;font-size:12px;"><p>Completed in ' + duration.toFixed(1) + 's | Core v4.1 | Syte Digital Agency</p></div></body></html>';
 
   var recipients = CONFIG.EMAIL_ADDRESSES || [CONFIG.EMAIL_RECIPIENT || 'michaelh@syte.co.za'];
   if (typeof recipients === 'string') recipients = [recipients];
-  MailApp.sendEmail({ to: recipients.join(','), subject: mode + ' Syte v4.0 | ' + accountName + ' | ' + CONFIG.ACCOUNT_MODE, htmlBody: email });
+  MailApp.sendEmail({ to: recipients.join(','), subject: mode + ' Syte v4.1 | ' + accountName + ' | ' + CONFIG.ACCOUNT_MODE, htmlBody: email });
 }
 
 
@@ -1655,11 +2116,24 @@ function runOptimization() {
   var startTime = new Date();
 
   _log('INFO', '═══════════════════════════════════════════');
-  _log('INFO', 'SYTE OPTIMIZATION CORE v4.0');
+  _log('INFO', 'SYTE OPTIMIZATION CORE v4.1');
   _log('INFO', 'Client: ' + (CONFIG.CLIENT_NAME || AdsApp.currentAccount().getName()));
   _log('INFO', 'Mode: ' + CONFIG.ACCOUNT_MODE);
   _log('INFO', 'Run: ' + (CONFIG.PREVIEW_MODE ? 'PREVIEW (no changes)' : 'LIVE'));
   _log('INFO', '═══════════════════════════════════════════');
+
+  // === PERFORMANCE SNAPSHOT (before any optimizations) ===
+  _log('INFO', '\n=== PERFORMANCE SNAPSHOT ===');
+  var performanceSnapshot = _capturePerformanceSnapshot();
+  var lastRun = _getLastRunLogRow();
+  if (performanceSnapshot) {
+    _log('INFO', 'Snapshot: CPL R' + performanceSnapshot.cpl.toFixed(0) + ' | Conv ' + performanceSnapshot.conversions.toFixed(0) + ' | ROAS ' + performanceSnapshot.roas.toFixed(2) + 'x');
+    if (lastRun) {
+      _log('INFO', 'Last run: CPL R' + lastRun.cpl.toFixed(0) + ' | Conv ' + lastRun.conversions.toFixed(0) + ' | Changes: ' + lastRun.changesMade);
+    } else {
+      _log('INFO', 'No previous run found — first run for this account.');
+    }
+  }
 
   var results = {
     keywordsPaused: [], searchTermsNegated: [], informationalBlocked: [],
@@ -1670,6 +2144,7 @@ function runOptimization() {
     deviceAdjustments: [], scheduleAdjustments: [], geoAdjustments: [],
     ngramNegatives: [], lowQsPaused: [],
     conversionHealth: null, conversionAlert: null,
+    performanceDelta: null,
     errors: []
   };
 
@@ -1744,6 +2219,23 @@ function runOptimization() {
 
   var duration = (new Date() - startTime) / 1000;
   _log('INFO', 'Script completed in ' + duration.toFixed(1) + ' seconds');
+
+  // === WRITE RUNLOG ROW ===
+  var totalChanges = results.keywordsPaused.length + results.searchTermsNegated.length +
+    results.winnersPromoted.length + results.ecomKeywordsPaused.length +
+    results.ecomSearchTermsNegated.length + results.ecomWinnersPromoted.length +
+    results.deviceAdjustments.length + results.scheduleAdjustments.length +
+    results.geoAdjustments.length + results.ngramNegatives.length +
+    results.lowQsPaused.length + results.informationalBlocked.length +
+    results.irrelevantBlocked.length;
+
+  if (performanceSnapshot) {
+    results.performanceDelta = _writeRunLogRow(performanceSnapshot, totalChanges, lastRun);
+    if (results.performanceDelta) {
+      _log('INFO', 'RunLog written. Delta CPL: ' + (results.performanceDelta.deltaCpl || 'N/A') +
+        ' | Delta Conv: ' + (results.performanceDelta.deltaConv || 'N/A'));
+    }
+  }
 
   if (CONFIG.SEND_EMAIL !== false) _sendReport(results, duration);
 
