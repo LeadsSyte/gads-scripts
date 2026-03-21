@@ -31,7 +31,7 @@
  *
  * CHANGELOG v4.0 — SELF-IMPROVEMENT ENGINE:
  * - NEW: Change log — every action written to master Syte Google Sheet
- * - NEW: Outcome backfill — 14 days after each change, script revisits and scores it
+ * - NEW: Outcome backfill — 7 days after each change, script revisits and scores it
  * - NEW: Weekly Claude review (runs Sunday) — reads change log + outcomes, critiques
  *        its own logic, and emails a full rewritten script ready to paste into GitHub
  * - Loader CONFIG additions required:
@@ -274,7 +274,7 @@ function _logChange(change) {
       change.reason || '',
       change.spend || 0,
       change.conversions || 0,
-      'PENDING',           // outcome — will be backfilled in 14 days
+      'PENDING',           // outcome — will be backfilled in 7 days
       '',                  // outcome_checked_date
       '',                  // outcome_notes
       'v4.1'              // script_version
@@ -292,7 +292,7 @@ function _logChange(change) {
 // ============================================
 
 /**
- * Runs on every execution. Finds rows logged ~14 days ago that still have
+ * Runs on every execution. Finds rows logged ~7 days ago that still have
  * outcome = 'PENDING', then checks the current performance of that entity
  * to score whether the decision was correct.
  *
@@ -319,7 +319,7 @@ function _backfillOutcomes() {
     var accountName = AdsApp.currentAccount().getName();
     var checkDate = new Date();
     var cutoffDate = new Date();
-    cutoffDate.setDate(cutoffDate.getDate() - 14); // Only check rows 14+ days old
+    cutoffDate.setDate(cutoffDate.getDate() - 7); // Only check rows 7+ days old
 
     var rowsChecked = 0;
 
@@ -348,7 +348,7 @@ function _backfillOutcomes() {
             'metrics.conversions, metrics.cost_micros ' +
             'FROM keyword_view WHERE ad_group_criterion.keyword.text = "' + entity + '" ' +
             'AND campaign.name = "' + campaign + '" AND ad_group.name = "' + adGroup + '" ' +
-            'AND segments.date DURING LAST_14_DAYS';
+            'AND segments.date DURING LAST_7_DAYS';
           var kwSearch = AdsApp.search(kwQuery);
           if (kwSearch.hasNext()) {
             var kw = kwSearch.next();
@@ -356,7 +356,7 @@ function _backfillOutcomes() {
             var status = kw.adGroupCriterion.status;
             if (postConv > 0) {
               outcome = 'INCORRECT';
-              outcomeNotes = 'Keyword had ' + postConv + ' conversions in 14 days after pause. Should not have been paused.';
+              outcomeNotes = 'Keyword had ' + postConv + ' conversions in 7 days after pause. Should not have been paused.';
             } else if (status === 'PAUSED') {
               outcome = 'CORRECT';
               outcomeNotes = 'Keyword remains paused. No conversions observed post-pause.';
@@ -372,12 +372,12 @@ function _backfillOutcomes() {
 
         else if (entityType === 'SEARCH_TERM_NEGATIVE') {
           // For negated search terms — check if the account CPL changed after the date of the change
-          // We compare account CPL the week before vs the 14 days after
+          // We compare account CPL the week before vs the 7 days after
           var afterStart = _formatDate(changeTimestamp);
           var afterEnd = _formatDate(checkDate);
           var beforeEnd = _formatDate(changeTimestamp);
           var beforeStartD = new Date(changeTimestamp);
-          beforeStartD.setDate(beforeStartD.getDate() - 14);
+          beforeStartD.setDate(beforeStartD.getDate() - 7);
           var beforeStart = _formatDate(beforeStartD);
 
           var afterQuery = 'SELECT metrics.conversions, metrics.cost_micros FROM campaign ' +
@@ -419,15 +419,15 @@ function _backfillOutcomes() {
         }
 
         else if (entityType === 'DEVICE_BID') {
-          // Compare device CVR 14 days before vs 14 days after the change
+          // Compare device CVR 7 days before vs 7 days after the change
           var deviceMatch = entity.match(/_([A-Z]+)$/);
           var deviceName = deviceMatch ? deviceMatch[1] : '';
           if (deviceName) {
             var afterStartD = new Date(changeTimestamp);
             var afterEndD = new Date(changeTimestamp);
-            afterEndD.setDate(afterEndD.getDate() + 14);
+            afterEndD.setDate(afterEndD.getDate() + 7);
             var beforeStartD2 = new Date(changeTimestamp);
-            beforeStartD2.setDate(beforeStartD2.getDate() - 14);
+            beforeStartD2.setDate(beforeStartD2.getDate() - 7);
 
             var deviceAfterQuery = 'SELECT segments.device, metrics.conversions, metrics.clicks, metrics.cost_micros ' +
               'FROM campaign WHERE campaign.name = "' + campaign + '" AND campaign.status = "ENABLED" ' +
@@ -494,9 +494,9 @@ function _backfillOutcomes() {
           if (locConstant) {
             var geoAfterStart = new Date(changeTimestamp);
             var geoAfterEnd = new Date(changeTimestamp);
-            geoAfterEnd.setDate(geoAfterEnd.getDate() + 14);
+            geoAfterEnd.setDate(geoAfterEnd.getDate() + 7);
             var geoBeforeStart = new Date(changeTimestamp);
-            geoBeforeStart.setDate(geoBeforeStart.getDate() - 14);
+            geoBeforeStart.setDate(geoBeforeStart.getDate() - 7);
 
             var geoAfterQ = 'SELECT metrics.conversions, metrics.clicks, metrics.cost_micros ' +
               'FROM location_view WHERE campaign.name = "' + campaign + '" AND campaign.status = "ENABLED" ' +
@@ -564,9 +564,9 @@ function _backfillOutcomes() {
           if (targetHour >= 0) {
             var schedAfterStart = new Date(changeTimestamp);
             var schedAfterEnd = new Date(changeTimestamp);
-            schedAfterEnd.setDate(schedAfterEnd.getDate() + 14);
+            schedAfterEnd.setDate(schedAfterEnd.getDate() + 7);
             var schedBeforeStart = new Date(changeTimestamp);
-            schedBeforeStart.setDate(schedBeforeStart.getDate() - 14);
+            schedBeforeStart.setDate(schedBeforeStart.getDate() - 7);
 
             var schedAfterQ = 'SELECT segments.hour, metrics.conversions, metrics.clicks, metrics.cost_micros ' +
               'FROM campaign WHERE campaign.name = "' + campaign + '" AND campaign.status = "ENABLED" ' +
