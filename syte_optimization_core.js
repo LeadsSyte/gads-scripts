@@ -1,5 +1,5 @@
 /**
- * SYTE OPTIMIZATION CORE v4.1
+ * SYTE OPTIMIZATION CORE v4.1.1
  * ============================
  * This file is the CORE engine — hosted centrally and fetched by each client's loader script.
  * DO NOT paste this into Google Ads Scripts directly.
@@ -13,7 +13,16 @@
  * When you improve this core, ALL client accounts get the update on their next scheduled run.
  * 
  * Author: Syte Digital Agency (syte.co.za)
- * Version: 4.1
+ * Version: 4.1.1
+ *
+ * CHANGELOG v4.1.1 — AI CONTEXT FIX + SHEET ERROR REPORTING:
+ * - FIX: AI prompt now understands agency/service-provider business model
+ *   "[industry] + [client's service]" patterns correctly identified as leads
+ *   (e.g. "plastic surgeon seo" = surgeon wants to BUY seo = KEEP)
+ * - FIX: "near me" queries for South African accounts default to "keep"
+ * - FIX: Sheet write failures now surface as errors in email report
+ *   (previously silently swallowed by try/catch)
+ * - Sheet errors tracked via _sheetErrors global, merged into results.errors
  *
  * CHANGELOG v4.1 — SMART AI SEARCH TERM NEGATION:
  * - NEW: _smartSearchTermReview() — AI-powered proactive search term negation
@@ -319,10 +328,14 @@ function _smartSearchTermReview(results) {
       return '- "' + t + '" (clicks: ' + d.clicks + ', cost: R' + d.cost.toFixed(0) + ')';
     }).join('\n');
 
+    var isSouthAfrican = (CONFIG.CURRENCY_SYMBOL === 'R') ||
+      (CONFIG.TARGET_LOCATIONS && JSON.stringify(CONFIG.TARGET_LOCATIONS).toLowerCase().indexOf('south africa') !== -1);
+
     var prompt = 'You are a Google Ads search term relevance analyst.\n' +
       'The client is: ' + (CONFIG.CLIENT_NAME || AdsApp.currentAccount().getName()) + '\n' +
       'Their website: ' + (CONFIG.CLIENT_WEBSITE || 'N/A') + '\n' +
-      'Account mode: ' + (CONFIG.ACCOUNT_MODE || 'LEAD_GEN') + '\n\n' +
+      'Account mode: ' + (CONFIG.ACCOUNT_MODE || 'LEAD_GEN') + '\n' +
+      (isSouthAfrican ? 'Market: South Africa\n' : '') + '\n' +
       'Below is a list of search terms that triggered their Google Ads.\n' +
       'For each search term, respond with ONLY a JSON array. Each item:\n' +
       '{"term": "the search term", "verdict": "keep" | "negate" | "review", "reason": "brief reason"}\n\n' +
@@ -331,7 +344,32 @@ function _smartSearchTermReview(results) {
       '- "negate" = clearly irrelevant. Competitor tool names, wrong industry, wrong geography, spam, ' +
       'navigational searches for other brands, academic/research queries, job seekers.\n' +
       '- "review" = ambiguous. Could go either way. Don\'t negate automatically.\n\n' +
-      'Be CONSERVATIVE with "negate" — only negate things that are obviously wrong. When in doubt, use "review".\n\n' +
+      'CRITICAL RULE — AGENCY / SERVICE PROVIDER LOGIC:\n' +
+      'If the client\'s website describes a service business (agency, consultancy, firm, provider, company ' +
+      'that SELLS a service to other businesses or consumers), then the pattern "[any industry/profession] + ' +
+      '[service the client sells]" is ALWAYS a qualified lead. The searcher is someone FROM that industry ' +
+      'looking to BUY the client\'s service. They are a potential customer, NOT the wrong audience.\n' +
+      'Examples:\n' +
+      '- Client sells SEO → "dentist seo", "plastic surgeon seo", "plumber seo" = those professionals want to HIRE an SEO agency = KEEP\n' +
+      '- Client sells marketing → "mining company marketing", "lawn care marketing" = those businesses want marketing help = KEEP\n' +
+      '- Client sells web design → "law firm web design", "gym website design" = they want a website built = KEEP\n' +
+      'This applies to ANY service business. NEVER flag a search term as irrelevant just because it mentions ' +
+      'a specific industry or profession. If someone searches "[profession] + [service the client sells]", ' +
+      'that person is looking to BUY that service.\n\n' +
+      'When the client is an agency or service provider, almost any "[modifier] + [core service]" query is a ' +
+      'potential lead. Only negate terms that are clearly:\n' +
+      '- Competitor brand names or software tool names (e.g. "HubSpot", "Semrush")\n' +
+      '- Job/career searches (e.g. "seo jobs", "marketing salary")\n' +
+      '- Academic/educational queries (e.g. "seo course", "marketing degree")\n' +
+      '- DIY/how-to queries (e.g. "how to do seo yourself")\n' +
+      '- Completely unrelated services the client does NOT sell\n\n' +
+      (isSouthAfrican ?
+        '"NEAR ME" RULE FOR SOUTH AFRICAN ACCOUNTS:\n' +
+        'South Africa is a small market. "Near me" queries combined with the client\'s core services ' +
+        '(e.g. "seo near me", "marketing agency near me", "seo companies near me") are legitimate local ' +
+        'searches from potential customers. These should be "keep", not "review" or "negate". Only negate ' +
+        '"near me" if the search is clearly for a service the client does NOT offer.\n\n' : '') +
+      'Be CONSERVATIVE with "negate" — only negate things that are obviously wrong. When in doubt, use "keep" or "review".\n\n' +
       'Search terms:\n' + termList;
 
     var response = _callClaude(prompt, 4000);
@@ -450,11 +488,14 @@ function _smartSearchTermReview(results) {
  */
 
 var _sheetCache = null;
+var _sheetErrors = []; // Track sheet errors for surfacing in email report
 
 function _getChangeLogSheet() {
   if (_sheetCache) return _sheetCache;
   if (!CONFIG.MASTER_SHEET_ID) {
-    _log('WARN', 'No MASTER_SHEET_ID in CONFIG — change logging disabled');
+    var msg = 'No MASTER_SHEET_ID in CONFIG — change logging disabled';
+    _log('WARN', msg);
+    if (_sheetErrors.indexOf(msg) === -1) _sheetErrors.push(msg);
     return null;
   }
   try {
@@ -475,7 +516,9 @@ function _getChangeLogSheet() {
     _sheetCache = sheet;
     return sheet;
   } catch (e) {
-    _log('ERROR', 'Cannot open change log sheet: ' + e.message);
+    var errMsg = 'Cannot open change log sheet: ' + e.message;
+    _log('ERROR', errMsg);
+    if (_sheetErrors.indexOf(errMsg) === -1) _sheetErrors.push(errMsg);
     return null;
   }
 }
@@ -513,10 +556,12 @@ function _logChange(change) {
       'PENDING',           // outcome — will be backfilled in 14 days
       '',                  // outcome_checked_date
       '',                  // outcome_notes
-      'v4.1'              // script_version
+      'v4.1.1'            // script_version
     ]);
   } catch (e) {
-    _log('WARN', 'Change log write failed: ' + e.message);
+    var writeErr = 'Change log write failed: ' + e.message;
+    _log('ERROR', writeErr);
+    if (_sheetErrors.indexOf(writeErr) === -1) _sheetErrors.push(writeErr);
   }
 
   return changeId;
@@ -979,7 +1024,7 @@ function _sendWeeklyReviewEmail(accountName, claudeResponse, changeLogSummary) {
   // Header
   email += '<div style="background:linear-gradient(135deg,#1a1a2e,#16213e);color:white;padding:24px;border-radius:8px 8px 0 0;">';
   email += '<h1 style="margin:0;font-size:22px;">🤖 Syte Script — Weekly Self-Improvement Report</h1>';
-  email += '<p style="margin:6px 0 0;opacity:0.8;">' + accountName + ' | ' + today + ' | Core v4.1</p>';
+  email += '<p style="margin:6px 0 0;opacity:0.8;">' + accountName + ' | ' + today + ' | Core v4.1.1</p>';
   email += '</div>';
 
   // Change log stats banner
@@ -1830,7 +1875,7 @@ function _checkConversionHealth(results) {
       if (CONFIG.SEND_EMAIL !== false) {
         var recipients = CONFIG.EMAIL_ADDRESSES || [CONFIG.EMAIL_RECIPIENT || 'michaelh@syte.co.za'];
         if (typeof recipients === 'string') recipients = [recipients];
-        MailApp.sendEmail({ to: recipients.join(','), subject: '🚨 URGENT: ' + CONFIG.CLIENT_NAME + ' — Conversions Dropped ' + dropPct + '%', body: alertMsg + '\n\nAction needed:\n1. Check conversion tags in GTM\n2. Test the conversion flow manually\n3. Check for landing page errors\n4. Review any recent website changes\n\n— Syte Optimization Script v4.1' });
+        MailApp.sendEmail({ to: recipients.join(','), subject: '🚨 URGENT: ' + CONFIG.CLIENT_NAME + ' — Conversions Dropped ' + dropPct + '%', body: alertMsg + '\n\nAction needed:\n1. Check conversion tags in GTM\n2. Test the conversion flow manually\n3. Check for landing page errors\n4. Review any recent website changes\n\n— Syte Optimization Script v4.1.1' });
       }
     }
 
@@ -1854,7 +1899,7 @@ function _sendReport(results, duration) {
 
   var email = '<html><body style="font-family:Arial,sans-serif;max-width:800px;margin:0 auto;color:#333;">';
   email += '<div style="background:linear-gradient(135deg,#1a1a2e,#16213e);color:white;padding:20px;border-radius:8px 8px 0 0;">';
-  email += '<h1 style="margin:0;font-size:20px;">Syte Optimization Report v4.1</h1>';
+  email += '<h1 style="margin:0;font-size:20px;">Syte Optimization Report v4.1.1</h1>';
   email += '<p style="margin:5px 0 0;opacity:0.8;">' + accountName + ' | ' + today + ' | ' + mode + ' | ' + CONFIG.ACCOUNT_MODE + '</p></div>';
 
   if (results.conversionAlert) {
@@ -1898,7 +1943,7 @@ function _sendReport(results, duration) {
     email += '<tr><td style="padding:4px 8px;">Last week</td><td style="text-align:right;font-weight:bold;">' + ch.lastWeek.toFixed(0) + ' conv</td></tr>';
   }
 
-  email += '<tr><td colspan="2" style="padding:8px;background:#e8eaf6;font-weight:bold;">AI Smart Negation (v4.1)</td></tr>';
+  email += '<tr><td colspan="2" style="padding:8px;background:#e8eaf6;font-weight:bold;">AI Smart Negation (v4.1.1)</td></tr>';
   email += '<tr><td style="padding:4px 8px;">AI Auto-Negated</td><td style="text-align:right;font-weight:bold;color:#c62828;">' + results.smartNegated.length + '</td></tr>';
   email += '<tr><td style="padding:4px 8px;">AI Flagged for Review</td><td style="text-align:right;font-weight:bold;color:#e65100;">' + results.smartReviewTerms.length + '</td></tr>';
 
@@ -1934,11 +1979,11 @@ function _sendReport(results, duration) {
     email += '</table></div>';
   }
 
-  email += '<div style="padding:15px;color:#666;font-size:12px;"><p>Completed in ' + duration.toFixed(1) + 's | Core v4.1 | Syte Digital Agency</p></div></body></html>';
+  email += '<div style="padding:15px;color:#666;font-size:12px;"><p>Completed in ' + duration.toFixed(1) + 's | Core v4.1.1 | Syte Digital Agency</p></div></body></html>';
 
   var recipients = CONFIG.EMAIL_ADDRESSES || [CONFIG.EMAIL_RECIPIENT || 'michaelh@syte.co.za'];
   if (typeof recipients === 'string') recipients = [recipients];
-  MailApp.sendEmail({ to: recipients.join(','), subject: mode + ' Syte v4.1 | ' + accountName + ' | ' + CONFIG.ACCOUNT_MODE, htmlBody: email });
+  MailApp.sendEmail({ to: recipients.join(','), subject: mode + ' Syte v4.1.1 | ' + accountName + ' | ' + CONFIG.ACCOUNT_MODE, htmlBody: email });
 }
 
 
@@ -1950,7 +1995,7 @@ function runOptimization() {
   var startTime = new Date();
 
   _log('INFO', '═══════════════════════════════════════════');
-  _log('INFO', 'SYTE OPTIMIZATION CORE v4.1');
+  _log('INFO', 'SYTE OPTIMIZATION CORE v4.1.1');
   _log('INFO', 'Client: ' + (CONFIG.CLIENT_NAME || AdsApp.currentAccount().getName()));
   _log('INFO', 'Mode: ' + CONFIG.ACCOUNT_MODE);
   _log('INFO', 'Run: ' + (CONFIG.PREVIEW_MODE ? 'PREVIEW (no changes)' : 'LIVE'));
@@ -2040,6 +2085,14 @@ function runOptimization() {
   } catch (e) {
     _log('ERROR', 'Script error: ' + e.message);
     results.errors.push(e.message);
+  }
+
+  // Surface any sheet errors so they appear in the email report
+  if (_sheetErrors.length > 0) {
+    for (var se = 0; se < _sheetErrors.length; se++) {
+      results.errors.push('SHEET: ' + _sheetErrors[se]);
+    }
+    _log('ERROR', 'Sheet errors: ' + _sheetErrors.length + ' — see email report for details');
   }
 
   var duration = (new Date() - startTime) / 1000;
