@@ -1577,10 +1577,12 @@ function _analyzePMaxAssetGroups(results) {
 // ============================================
 
 function _blockInformationalTerms(results) {
+  var zeroTolerance = CONFIG.ZERO_TOLERANCE_PATTERNS !== false; // default true
   var changeCount = 0;
   var negativeList = _getOrCreateNegativeList(CONFIG.NEGATIVE_LIST_NAME_INFORMATIONAL);
   var existing = _getExistingNegatives(negativeList);
-  var query = 'SELECT search_term_view.search_term, metrics.cost_micros FROM search_term_view WHERE campaign.status = "ENABLED" AND segments.date DURING LAST_7_DAYS';
+  var dateRange = zeroTolerance ? 'LAST_30_DAYS' : 'LAST_7_DAYS';
+  var query = 'SELECT search_term_view.search_term, metrics.cost_micros FROM search_term_view WHERE campaign.status = "ENABLED" AND segments.date DURING ' + dateRange;
   try {
     var search = AdsApp.search(query); var added = {};
     while (search.hasNext() && changeCount < CONFIG.MAX_CHANGES_PER_RUN) {
@@ -1590,8 +1592,11 @@ function _blockInformationalTerms(results) {
       for (var i = 0; i < INFORMATIONAL_PATTERNS.length; i++) {
         var p = INFORMATIONAL_PATTERNS[i];
         if (p.pattern.test(st) && !added[p.negativePhrase] && !existing[p.negativePhrase]) {
-          _log('INFO', 'INFORMATIONAL: "' + st + '" -> "' + p.negativePhrase + '"');
-          results.informationalBlocked.push({ phrase: p.negativePhrase, matchedTerm: st });
+          var category = _classifyInformationalPattern(p.negativePhrase);
+          var spend = Number(row.metrics.costMicros) / 1000000;
+          _log('INFO', 'INFORMATIONAL [' + category + ']: "' + st + '" -> "' + p.negativePhrase + '" | R' + spend.toFixed(0));
+          results.informationalBlocked.push({ phrase: p.negativePhrase, matchedTerm: st, category: category, spend: spend });
+          if (zeroTolerance) results.zeroToleranceNegatives.push({ term: st, pattern: p.negativePhrase, category: category, type: 'informational', spend: spend });
           if (!CONFIG.PREVIEW_MODE && negativeList) negativeList.addNegativeKeyword('"' + p.negativePhrase + '"');
           added[p.negativePhrase] = true;
           changeCount++;
@@ -1602,13 +1607,24 @@ function _blockInformationalTerms(results) {
   } catch (e) { _log('ERROR', 'blockInformationalTerms: ' + e.message); results.errors.push(e.message); }
 }
 
+function _classifyInformationalPattern(phrase) {
+  if (/^(job|career|salary|salaries|hiring|vacancy|vacancies|internship)$/i.test(phrase)) return 'job_seeker';
+  if (/^(how to|what is|what are|what does|why|when|where|who|can i|can you|should i|is it|does work|explain|definition|meaning)/.test(phrase)) return 'informational';
+  if (/^(tutorial|guide|course|training|learn|examples|templates|pdf|download|free|diy|do it yourself|list of)$/i.test(phrase)) return 'informational';
+  if (/^(reddit|forum|quora|youtube|video)$/i.test(phrase)) return 'navigational';
+  if (/^(vs|versus|compare|comparison)$/i.test(phrase)) return 'comparison';
+  return 'informational';
+}
+
 function _blockIrrelevantTerms(results) {
   var irrelevantTerms = CONFIG.IRRELEVANT_TERMS || [];
   if (irrelevantTerms.length === 0) return;
+  var zeroTolerance = CONFIG.ZERO_TOLERANCE_PATTERNS !== false; // default true
   var changeCount = 0;
   var negativeList = _getOrCreateNegativeList(CONFIG.NEGATIVE_LIST_NAME_IRRELEVANT);
   var existing = _getExistingNegatives(negativeList);
-  var query = 'SELECT search_term_view.search_term, metrics.cost_micros FROM search_term_view WHERE campaign.status = "ENABLED" AND segments.date DURING LAST_7_DAYS';
+  var dateRange = zeroTolerance ? 'LAST_30_DAYS' : 'LAST_7_DAYS';
+  var query = 'SELECT search_term_view.search_term, metrics.cost_micros FROM search_term_view WHERE campaign.status = "ENABLED" AND segments.date DURING ' + dateRange;
   try {
     var search = AdsApp.search(query); var added = {};
     while (search.hasNext() && changeCount < CONFIG.MAX_CHANGES_PER_RUN) {
@@ -1618,8 +1634,11 @@ function _blockIrrelevantTerms(results) {
       for (var i = 0; i < irrelevantTerms.length; i++) {
         var term = irrelevantTerms[i];
         if (st.indexOf(term.toLowerCase()) !== -1 && !added[term] && !existing[term]) {
-          _log('INFO', 'IRRELEVANT: "' + st + '" -> "' + term + '"');
-          results.irrelevantBlocked.push({ phrase: term, matchedTerm: st });
+          var spend = Number(row.metrics.costMicros) / 1000000;
+          var category = _classifyIrrelevantTerm(term);
+          _log('INFO', 'IRRELEVANT [' + category + ']: "' + st + '" -> "' + term + '" | R' + spend.toFixed(0));
+          results.irrelevantBlocked.push({ phrase: term, matchedTerm: st, category: category, spend: spend });
+          if (zeroTolerance) results.zeroToleranceNegatives.push({ term: st, pattern: term, category: category, type: 'irrelevant', spend: spend });
           if (!CONFIG.PREVIEW_MODE && negativeList) negativeList.addNegativeKeyword('"' + term + '"');
           added[term] = true;
           changeCount++;
@@ -1628,6 +1647,13 @@ function _blockIrrelevantTerms(results) {
       }
     }
   } catch (e) { _log('ERROR', 'blockIrrelevantTerms: ' + e.message); results.errors.push(e.message); }
+}
+
+function _classifyIrrelevantTerm(term) {
+  var t = term.toLowerCase();
+  if (/job|career|salary|hiring|vacancy|intern|recruit/.test(t)) return 'job_seeker';
+  if (/competitor|brand/.test(t)) return 'competitor';
+  return 'irrelevant';
 }
 
 function _checkBudgetPacing(results) {
@@ -2069,6 +2095,23 @@ function _sendReport(results, duration) {
   email += '<tr><td style="padding:4px 8px;">Errors</td><td style="text-align:right;font-weight:bold;">' + results.errors.length + '</td></tr>';
   email += '</table></div>';
 
+  // === ZERO-TOLERANCE PATTERN NEGATIVES DETAIL ===
+  if (results.zeroToleranceNegatives.length > 0) {
+    email += '<div style="background:#fff8e1;padding:15px;border-left:4px solid #f9a825;margin-top:2px;">';
+    email += '<h3 style="margin:0 0 10px;color:#f57f17;">Zero-Tolerance Pattern Negatives (' + results.zeroToleranceNegatives.length + ')</h3>';
+    email += '<table style="width:100%;border-collapse:collapse;font-size:13px;">';
+    email += '<tr style="background:#f9a825;color:white;"><th style="padding:6px 8px;text-align:left;">Search Term</th><th style="padding:6px 8px;text-align:left;">Pattern</th><th style="padding:6px 8px;text-align:left;">Category</th><th style="padding:6px 8px;text-align:left;">Type</th><th style="padding:6px 8px;text-align:right;">Spend</th></tr>';
+    for (var zt = 0; zt < results.zeroToleranceNegatives.length && zt < 50; zt++) {
+      var zn = results.zeroToleranceNegatives[zt];
+      var bgColor = zt % 2 === 0 ? '#fff' : '#fffde7';
+      email += '<tr style="background:' + bgColor + ';"><td style="padding:4px 8px;">' + zn.term + '</td><td style="padding:4px 8px;">' + zn.pattern + '</td><td style="padding:4px 8px;">' + zn.category + '</td><td style="padding:4px 8px;">' + zn.type + '</td><td style="padding:4px 8px;text-align:right;">R' + zn.spend.toFixed(0) + '</td></tr>';
+    }
+    if (results.zeroToleranceNegatives.length > 50) {
+      email += '<tr><td colspan="5" style="padding:6px 8px;color:#999;">...and ' + (results.zeroToleranceNegatives.length - 50) + ' more</td></tr>';
+    }
+    email += '</table></div>';
+  }
+
   // === SINCE LAST RUN section ===
   if (results.performanceDelta && results.performanceDelta.lastRun) {
     var pd = results.performanceDelta;
@@ -2147,6 +2190,7 @@ function runOptimization() {
     ecomKeywordsPaused: [], ecomSearchTermsNegated: [], ecomWinnersPromoted: [],
     deviceAdjustments: [], scheduleAdjustments: [], geoAdjustments: [],
     ngramNegatives: [], lowQsPaused: [],
+    zeroToleranceNegatives: [],
     conversionHealth: null, conversionAlert: null,
     performanceDelta: null,
     errors: []
