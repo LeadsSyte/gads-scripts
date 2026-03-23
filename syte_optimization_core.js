@@ -1,5 +1,5 @@
 /**
- * SYTE OPTIMIZATION CORE v4.0
+ * SYTE OPTIMIZATION CORE v4.1
  * ============================
  * This file is the CORE engine — hosted centrally and fetched by each client's loader script.
  * DO NOT paste this into Google Ads Scripts directly.
@@ -13,8 +13,22 @@
  * When you improve this core, ALL client accounts get the update on their next scheduled run.
  * 
  * Author: Syte Digital Agency (syte.co.za)
- * Version: 4.0
- * 
+ * Version: 4.1
+ *
+ * CHANGELOG v4.1 — SMART AI SEARCH TERM NEGATION:
+ * - NEW: _smartSearchTermReview() — AI-powered proactive search term negation
+ *   Collects search terms with clicks but no conversions (last 7 days),
+ *   sends them to Claude Haiku for relevance scoring, and auto-negates
+ *   terms that are clearly irrelevant BEFORE they hit the spend threshold.
+ * - NEW: _callClaude() — lightweight Claude Haiku API helper for fast AI tasks
+ * - NEW: Email report section "AI Flagged for Review" for ambiguous terms
+ * - NEW: CONFIG options: SMART_NEGATION, SMART_NEGATION_MIN_CLICKS, SMART_NEGATION_MAX_SPEND
+ * - Safety: Protected terms never negated, 30-term cap per run, graceful API failure handling
+ * - Loader CONFIG additions (optional — defaults apply):
+ *     SMART_NEGATION: true          (master toggle)
+ *     SMART_NEGATION_MIN_CLICKS: 1  (minimum clicks before reviewing)
+ *     SMART_NEGATION_MAX_SPEND: 500 (above this, flag for manual review)
+ *
  * CHANGELOG v4.0 — SELF-IMPROVEMENT ENGINE:
  * - NEW: Change log — every action written to master Syte Google Sheet
  * - NEW: Outcome backfill — 14 days after each change, script revisits and scores it
@@ -172,6 +186,257 @@ function _getExistingNegatives(negativeList) {
 
 
 // ============================================
+// SMART SEARCH TERM REVIEW (v4.1)
+// ============================================
+
+/**
+ * Calls Claude Haiku for lightweight, fast AI tasks (smart negation, etc.)
+ * Separate from _callClaudeAPI which uses Sonnet for the weekly review.
+ */
+function _callClaude(prompt, maxTokens) {
+  try {
+    var response = UrlFetchApp.fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': CONFIG.ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01'
+      },
+      payload: JSON.stringify({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: maxTokens || 4000,
+        messages: [{ role: 'user', content: prompt }]
+      }),
+      muteHttpExceptions: true
+    });
+
+    var code = response.getResponseCode();
+    if (code !== 200) {
+      _log('WARN', 'Claude Haiku API error ' + code + ': ' + response.getContentText().substring(0, 200));
+      return null;
+    }
+
+    var json = JSON.parse(response.getContentText());
+    if (json.content && json.content[0] && json.content[0].text) {
+      return json.content[0].text;
+    }
+
+    _log('WARN', 'Unexpected Claude Haiku response structure');
+    return null;
+  } catch (e) {
+    _log('WARN', 'callClaude error: ' + e.message);
+    return null;
+  }
+}
+
+/**
+ * Smart Search Term Review — runs BEFORE spend-threshold logic.
+ * Collects recent search terms with clicks but no conversions,
+ * sends them to Claude Haiku for relevance scoring, and auto-negates
+ * terms that are clearly irrelevant.
+ */
+function _smartSearchTermReview(results) {
+  if (CONFIG.SMART_NEGATION === false) {
+    _log('INFO', 'Smart negation disabled — skipping');
+    return;
+  }
+
+  if (!CONFIG.ANTHROPIC_API_KEY) {
+    _log('WARN', 'No ANTHROPIC_API_KEY — smart negation skipped');
+    return;
+  }
+
+  _log('INFO', 'Running smart search term review...');
+
+  var minClicks = CONFIG.SMART_NEGATION_MIN_CLICKS || 1;
+  var maxSpendForAuto = CONFIG.SMART_NEGATION_MAX_SPEND || 500;
+  var smartNegationCap = 30;
+
+  // Step 1: Collect search terms from last 7 days with clicks, no conversions, not already excluded
+  var query = 'SELECT search_term_view.search_term, search_term_view.status, campaign.name, ' +
+    'metrics.cost_micros, metrics.clicks, metrics.conversions ' +
+    'FROM search_term_view ' +
+    'WHERE campaign.status = "ENABLED" ' +
+    'AND metrics.clicks >= ' + minClicks + ' ' +
+    'AND metrics.conversions = 0 ' +
+    'AND search_term_view.status = "NONE" ' +
+    'AND segments.date DURING LAST_7_DAYS';
+
+  var terms = [];
+  var termData = {};
+  try {
+    var search = AdsApp.search(query);
+    var processed = {};
+    while (search.hasNext()) {
+      var row = search.next();
+      var st = row.searchTermView.searchTerm.toLowerCase().trim();
+      if (processed[st]) {
+        // Aggregate cost/clicks across campaigns
+        termData[st].cost += Number(row.metrics.costMicros) / 1000000;
+        termData[st].clicks += Number(row.metrics.clicks) || 0;
+        continue;
+      }
+      if (_isProtectedTerm(st)) continue;
+      processed[st] = true;
+      var cost = Number(row.metrics.costMicros) / 1000000;
+      var clicks = Number(row.metrics.clicks) || 0;
+      termData[st] = { term: st, cost: cost, clicks: clicks, campaign: row.campaign.name };
+      terms.push(st);
+    }
+  } catch (e) {
+    _log('WARN', 'Smart negation query failed: ' + e.message);
+    results.errors.push('Smart negation query: ' + e.message);
+    return;
+  }
+
+  if (terms.length === 0) {
+    _log('INFO', 'Smart negation: no qualifying search terms found');
+    return;
+  }
+
+  _log('INFO', 'Smart negation: ' + terms.length + ' terms to review');
+
+  // Check existing negatives to avoid duplicates
+  var negativeList = _getOrCreateNegativeList(CONFIG.NEGATIVE_LIST_NAME_IRRELEVANT);
+  var existingNegatives = _getExistingNegatives(negativeList);
+
+  // Filter out terms already in negative lists
+  terms = terms.filter(function(t) { return !existingNegatives[t]; });
+  if (terms.length === 0) {
+    _log('INFO', 'Smart negation: all terms already negated');
+    return;
+  }
+
+  // Step 2: Send to Claude in batches of 100
+  var batchSize = 100;
+  var allVerdicts = [];
+
+  for (var batchStart = 0; batchStart < terms.length; batchStart += batchSize) {
+    var batch = terms.slice(batchStart, batchStart + batchSize);
+
+    var termList = batch.map(function(t) {
+      var d = termData[t];
+      return '- "' + t + '" (clicks: ' + d.clicks + ', cost: R' + d.cost.toFixed(0) + ')';
+    }).join('\n');
+
+    var prompt = 'You are a Google Ads search term relevance analyst.\n' +
+      'The client is: ' + (CONFIG.CLIENT_NAME || AdsApp.currentAccount().getName()) + '\n' +
+      'Their website: ' + (CONFIG.CLIENT_WEBSITE || 'N/A') + '\n' +
+      'Account mode: ' + (CONFIG.ACCOUNT_MODE || 'LEAD_GEN') + '\n\n' +
+      'Below is a list of search terms that triggered their Google Ads.\n' +
+      'For each search term, respond with ONLY a JSON array. Each item:\n' +
+      '{"term": "the search term", "verdict": "keep" | "negate" | "review", "reason": "brief reason"}\n\n' +
+      'Rules:\n' +
+      '- "keep" = clearly relevant to the client\'s actual services. Could be a potential customer.\n' +
+      '- "negate" = clearly irrelevant. Competitor tool names, wrong industry, wrong geography, spam, ' +
+      'navigational searches for other brands, academic/research queries, job seekers.\n' +
+      '- "review" = ambiguous. Could go either way. Don\'t negate automatically.\n\n' +
+      'Be CONSERVATIVE with "negate" — only negate things that are obviously wrong. When in doubt, use "review".\n\n' +
+      'Search terms:\n' + termList;
+
+    var response = _callClaude(prompt, 4000);
+    if (!response) {
+      _log('WARN', 'Smart negation: API call failed for batch starting at ' + batchStart);
+      continue;
+    }
+
+    // Parse JSON from response — handle markdown code blocks
+    try {
+      var jsonStr = response;
+      // Strip markdown code fences if present
+      var codeBlockMatch = jsonStr.match(/```(?:json)?\s*([\s\S]*?)```/);
+      if (codeBlockMatch) {
+        jsonStr = codeBlockMatch[1].trim();
+      }
+      // Find the JSON array
+      var arrayMatch = jsonStr.match(/\[[\s\S]*\]/);
+      if (arrayMatch) {
+        var verdicts = JSON.parse(arrayMatch[0]);
+        allVerdicts = allVerdicts.concat(verdicts);
+      } else {
+        _log('WARN', 'Smart negation: no JSON array found in response');
+      }
+    } catch (parseErr) {
+      _log('WARN', 'Smart negation: JSON parse error: ' + parseErr.message);
+    }
+  }
+
+  if (allVerdicts.length === 0) {
+    _log('INFO', 'Smart negation: no verdicts returned from AI');
+    return;
+  }
+
+  _log('INFO', 'Smart negation: ' + allVerdicts.length + ' verdicts received');
+
+  // Step 3: Process verdicts
+  var negateCount = 0;
+
+  for (var i = 0; i < allVerdicts.length; i++) {
+    var v = allVerdicts[i];
+    if (!v || !v.term || !v.verdict) continue;
+
+    var termKey = v.term.toLowerCase().trim();
+    var data = termData[termKey];
+    if (!data) continue;
+
+    if (v.verdict === 'negate') {
+      // Safety: never negate protected terms regardless of AI verdict
+      if (_isProtectedTerm(termKey)) {
+        _log('WARN', 'Smart negation: AI said negate protected term "' + termKey + '" — SKIPPED');
+        continue;
+      }
+
+      // Safety: if spend is above max, flag for review instead
+      if (data.cost > maxSpendForAuto) {
+        _log('INFO', 'Smart negation: "' + termKey + '" spend R' + data.cost.toFixed(0) + ' > max R' + maxSpendForAuto + ' — flagged for review');
+        results.smartReviewTerms.push({ term: termKey, cost: data.cost, clicks: data.clicks, reason: v.reason + ' (high spend — needs manual review)', verdict: 'review' });
+        continue;
+      }
+
+      // Safety: cap auto-negations
+      if (negateCount >= smartNegationCap) {
+        _log('INFO', 'Smart negation: cap of ' + smartNegationCap + ' reached — remaining flagged for review');
+        results.smartReviewTerms.push({ term: termKey, cost: data.cost, clicks: data.clicks, reason: v.reason + ' (cap reached)', verdict: 'review' });
+        continue;
+      }
+
+      // Respect MAX_CHANGES_PER_RUN across all change types
+      if (negateCount >= CONFIG.MAX_CHANGES_PER_RUN) {
+        _log('INFO', 'Smart negation: MAX_CHANGES_PER_RUN reached');
+        break;
+      }
+
+      _log('INFO', 'AI NEGATE: "' + termKey + '" | R' + data.cost.toFixed(0) + ' | Reason: ' + v.reason);
+      results.smartNegated.push({ term: termKey, cost: data.cost, clicks: data.clicks, reason: v.reason });
+
+      // Log to master sheet
+      _logChange({
+        functionName: '_smartSearchTermReview',
+        entity: termKey,
+        entityType: 'SEARCH_TERM_NEGATIVE',
+        campaign: data.campaign,
+        reason: 'AI Smart Negate: ' + v.reason,
+        spend: data.cost,
+        conversions: 0
+      });
+
+      // Add to negative list
+      if (!CONFIG.PREVIEW_MODE && negativeList) {
+        negativeList.addNegativeKeyword('[' + termKey + ']');
+      }
+
+      negateCount++;
+    } else if (v.verdict === 'review') {
+      results.smartReviewTerms.push({ term: termKey, cost: data.cost, clicks: data.clicks, reason: v.reason, verdict: 'review' });
+    }
+    // 'keep' verdicts are simply ignored — term stays active
+  }
+
+  _log('INFO', 'Smart negation complete: ' + negateCount + ' negated, ' + results.smartReviewTerms.length + ' flagged for review');
+}
+
+
+// ============================================
 // CHANGE LOG — MASTER GOOGLE SHEET
 // ============================================
 
@@ -248,7 +513,7 @@ function _logChange(change) {
       'PENDING',           // outcome — will be backfilled in 14 days
       '',                  // outcome_checked_date
       '',                  // outcome_notes
-      'v4.0'              // script_version
+      'v4.1'              // script_version
     ]);
   } catch (e) {
     _log('WARN', 'Change log write failed: ' + e.message);
@@ -644,11 +909,11 @@ function _buildClaudeReviewPrompt(accountName, changeLogSummary, currentScript) 
 
 function _getNextVersion() {
   // Extract current version number and increment patch
-  var match = '4.0'.match(/(\d+)\.(\d+)/);
+  var match = '4.1'.match(/(\d+)\.(\d+)/);
   if (match) {
     return match[1] + '.' + (parseInt(match[2]) + 1);
   }
-  return '4.1';
+  return '4.2';
 }
 
 /**
@@ -714,7 +979,7 @@ function _sendWeeklyReviewEmail(accountName, claudeResponse, changeLogSummary) {
   // Header
   email += '<div style="background:linear-gradient(135deg,#1a1a2e,#16213e);color:white;padding:24px;border-radius:8px 8px 0 0;">';
   email += '<h1 style="margin:0;font-size:22px;">🤖 Syte Script — Weekly Self-Improvement Report</h1>';
-  email += '<p style="margin:6px 0 0;opacity:0.8;">' + accountName + ' | ' + today + ' | Core v4.0</p>';
+  email += '<p style="margin:6px 0 0;opacity:0.8;">' + accountName + ' | ' + today + ' | Core v4.1</p>';
   email += '</div>';
 
   // Change log stats banner
@@ -1565,7 +1830,7 @@ function _checkConversionHealth(results) {
       if (CONFIG.SEND_EMAIL !== false) {
         var recipients = CONFIG.EMAIL_ADDRESSES || [CONFIG.EMAIL_RECIPIENT || 'michaelh@syte.co.za'];
         if (typeof recipients === 'string') recipients = [recipients];
-        MailApp.sendEmail({ to: recipients.join(','), subject: '🚨 URGENT: ' + CONFIG.CLIENT_NAME + ' — Conversions Dropped ' + dropPct + '%', body: alertMsg + '\n\nAction needed:\n1. Check conversion tags in GTM\n2. Test the conversion flow manually\n3. Check for landing page errors\n4. Review any recent website changes\n\n— Syte Optimization Script v4.0' });
+        MailApp.sendEmail({ to: recipients.join(','), subject: '🚨 URGENT: ' + CONFIG.CLIENT_NAME + ' — Conversions Dropped ' + dropPct + '%', body: alertMsg + '\n\nAction needed:\n1. Check conversion tags in GTM\n2. Test the conversion flow manually\n3. Check for landing page errors\n4. Review any recent website changes\n\n— Syte Optimization Script v4.1' });
       }
     }
 
@@ -1589,7 +1854,7 @@ function _sendReport(results, duration) {
 
   var email = '<html><body style="font-family:Arial,sans-serif;max-width:800px;margin:0 auto;color:#333;">';
   email += '<div style="background:linear-gradient(135deg,#1a1a2e,#16213e);color:white;padding:20px;border-radius:8px 8px 0 0;">';
-  email += '<h1 style="margin:0;font-size:20px;">Syte Optimization Report v4.0</h1>';
+  email += '<h1 style="margin:0;font-size:20px;">Syte Optimization Report v4.1</h1>';
   email += '<p style="margin:5px 0 0;opacity:0.8;">' + accountName + ' | ' + today + ' | ' + mode + ' | ' + CONFIG.ACCOUNT_MODE + '</p></div>';
 
   if (results.conversionAlert) {
@@ -1633,17 +1898,47 @@ function _sendReport(results, duration) {
     email += '<tr><td style="padding:4px 8px;">Last week</td><td style="text-align:right;font-weight:bold;">' + ch.lastWeek.toFixed(0) + ' conv</td></tr>';
   }
 
+  email += '<tr><td colspan="2" style="padding:8px;background:#e8eaf6;font-weight:bold;">AI Smart Negation (v4.1)</td></tr>';
+  email += '<tr><td style="padding:4px 8px;">AI Auto-Negated</td><td style="text-align:right;font-weight:bold;color:#c62828;">' + results.smartNegated.length + '</td></tr>';
+  email += '<tr><td style="padding:4px 8px;">AI Flagged for Review</td><td style="text-align:right;font-weight:bold;color:#e65100;">' + results.smartReviewTerms.length + '</td></tr>';
+
   email += '<tr><td colspan="2" style="padding:8px;background:#fce4ec;font-weight:bold;">Cleanup</td></tr>';
   email += '<tr><td style="padding:4px 8px;">Informational Blocked</td><td style="text-align:right;font-weight:bold;">' + results.informationalBlocked.length + '</td></tr>';
   email += '<tr><td style="padding:4px 8px;">Irrelevant Blocked</td><td style="text-align:right;font-weight:bold;">' + results.irrelevantBlocked.length + '</td></tr>';
   email += '<tr><td style="padding:4px 8px;">Budget Alerts</td><td style="text-align:right;font-weight:bold;">' + results.budgetAlerts.length + '</td></tr>';
   email += '<tr><td style="padding:4px 8px;">Errors</td><td style="text-align:right;font-weight:bold;">' + results.errors.length + '</td></tr>';
   email += '</table></div>';
-  email += '<div style="padding:15px;color:#666;font-size:12px;"><p>Completed in ' + duration.toFixed(1) + 's | Core v4.0 | Syte Digital Agency</p></div></body></html>';
+
+  // AI Smart Negation details
+  if (results.smartNegated.length > 0) {
+    email += '<div style="padding:15px;"><h3 style="color:#c62828;">AI Auto-Negated Search Terms</h3>';
+    email += '<table style="width:100%;border-collapse:collapse;font-size:13px;">';
+    email += '<tr style="background:#fce4ec;"><th style="padding:6px;text-align:left;">Search Term</th><th style="padding:6px;text-align:right;">Cost</th><th style="padding:6px;text-align:right;">Clicks</th><th style="padding:6px;text-align:left;">Reason</th></tr>';
+    for (var sn = 0; sn < results.smartNegated.length; sn++) {
+      var item = results.smartNegated[sn];
+      email += '<tr style="border-bottom:1px solid #eee;"><td style="padding:4px 6px;">' + item.term + '</td><td style="padding:4px 6px;text-align:right;">R' + item.cost.toFixed(0) + '</td><td style="padding:4px 6px;text-align:right;">' + item.clicks + '</td><td style="padding:4px 6px;color:#666;">' + item.reason + '</td></tr>';
+    }
+    email += '</table></div>';
+  }
+
+  // AI Flagged for Review section
+  if (results.smartReviewTerms.length > 0) {
+    email += '<div style="padding:15px;background:#fff8e1;"><h3 style="color:#e65100;">AI Flagged for Review</h3>';
+    email += '<p style="font-size:12px;color:#666;">These terms were flagged as ambiguous by the AI. Please review and manually negate or keep.</p>';
+    email += '<table style="width:100%;border-collapse:collapse;font-size:13px;">';
+    email += '<tr style="background:#fff3e0;"><th style="padding:6px;text-align:left;">Search Term</th><th style="padding:6px;text-align:right;">Cost</th><th style="padding:6px;text-align:right;">Clicks</th><th style="padding:6px;text-align:left;">Reason</th></tr>';
+    for (var sr = 0; sr < results.smartReviewTerms.length; sr++) {
+      var rItem = results.smartReviewTerms[sr];
+      email += '<tr style="border-bottom:1px solid #eee;"><td style="padding:4px 6px;">' + rItem.term + '</td><td style="padding:4px 6px;text-align:right;">R' + rItem.cost.toFixed(0) + '</td><td style="padding:4px 6px;text-align:right;">' + rItem.clicks + '</td><td style="padding:4px 6px;color:#666;">' + rItem.reason + '</td></tr>';
+    }
+    email += '</table></div>';
+  }
+
+  email += '<div style="padding:15px;color:#666;font-size:12px;"><p>Completed in ' + duration.toFixed(1) + 's | Core v4.1 | Syte Digital Agency</p></div></body></html>';
 
   var recipients = CONFIG.EMAIL_ADDRESSES || [CONFIG.EMAIL_RECIPIENT || 'michaelh@syte.co.za'];
   if (typeof recipients === 'string') recipients = [recipients];
-  MailApp.sendEmail({ to: recipients.join(','), subject: mode + ' Syte v4.0 | ' + accountName + ' | ' + CONFIG.ACCOUNT_MODE, htmlBody: email });
+  MailApp.sendEmail({ to: recipients.join(','), subject: mode + ' Syte v4.1 | ' + accountName + ' | ' + CONFIG.ACCOUNT_MODE, htmlBody: email });
 }
 
 
@@ -1655,7 +1950,7 @@ function runOptimization() {
   var startTime = new Date();
 
   _log('INFO', '═══════════════════════════════════════════');
-  _log('INFO', 'SYTE OPTIMIZATION CORE v4.0');
+  _log('INFO', 'SYTE OPTIMIZATION CORE v4.1');
   _log('INFO', 'Client: ' + (CONFIG.CLIENT_NAME || AdsApp.currentAccount().getName()));
   _log('INFO', 'Mode: ' + CONFIG.ACCOUNT_MODE);
   _log('INFO', 'Run: ' + (CONFIG.PREVIEW_MODE ? 'PREVIEW (no changes)' : 'LIVE'));
@@ -1669,6 +1964,7 @@ function runOptimization() {
     ecomKeywordsPaused: [], ecomSearchTermsNegated: [], ecomWinnersPromoted: [],
     deviceAdjustments: [], scheduleAdjustments: [], geoAdjustments: [],
     ngramNegatives: [], lowQsPaused: [],
+    smartNegated: [], smartReviewTerms: [],
     conversionHealth: null, conversionAlert: null,
     errors: []
   };
@@ -1691,6 +1987,10 @@ function runOptimization() {
       _log('ERROR', '⛔ HALTING ALL OPTIMIZATION — conversion tracking may be broken');
       _checkBudgetPacing(results);
     } else {
+
+      // === SMART AI SEARCH TERM REVIEW (v4.1 — runs before spend-threshold logic) ===
+      _log('INFO', '\n=== SMART AI SEARCH TERM REVIEW ===');
+      _smartSearchTermReview(results);
 
       // === LEAD GEN ===
       if (_isLeadGenMode()) {
@@ -1751,5 +2051,6 @@ function runOptimization() {
   if (_isLeadGenMode()) _log('INFO', 'KW Paused: ' + results.keywordsPaused.length + ' | ST Negated: ' + results.searchTermsNegated.length + ' | Winners: ' + results.winnersPromoted.length);
   if (_isEcommerceMode()) _log('INFO', 'Ecom KW: ' + results.ecomKeywordsPaused.length + ' | Ecom ST: ' + results.ecomSearchTermsNegated.length + ' | Ecom Winners: ' + results.ecomWinnersPromoted.length);
   _log('INFO', 'Device: ' + results.deviceAdjustments.length + ' | Schedule: ' + results.scheduleAdjustments.length + ' | Geo: ' + results.geoAdjustments.length + ' | N-gram: ' + results.ngramNegatives.length + ' | Low QS: ' + results.lowQsPaused.length);
+  _log('INFO', 'AI Negated: ' + results.smartNegated.length + ' | AI Review: ' + results.smartReviewTerms.length);
   _log('INFO', 'Informational: ' + results.informationalBlocked.length + ' | Irrelevant: ' + results.irrelevantBlocked.length + ' | Budget: ' + results.budgetAlerts.length + ' | Errors: ' + results.errors.length);
 }
