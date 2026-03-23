@@ -1278,7 +1278,7 @@ function _getAdGroupFinalUrl(campaignName, adGroupName) {
 
 function _pauseHighSpendKeywords_LeadGen(results) {
   var dr = _getDateRange(); var changeCount = 0;
-  var query = 'SELECT ad_group_criterion.keyword.text, ad_group_criterion.keyword.match_type, campaign.name, ad_group.name, metrics.cost_micros, metrics.conversions, metrics.clicks, metrics.ctr FROM keyword_view WHERE metrics.cost_micros > ' + (CONFIG.KEYWORD_SPEND_THRESHOLD * 1000000) + ' AND metrics.conversions < 1 AND campaign.status = "ENABLED" AND ad_group.status = "ENABLED" AND ad_group_criterion.status = "ENABLED" AND campaign.advertising_channel_type = "SEARCH" AND segments.date BETWEEN "' + _getDateRange().startDate + '" AND "' + _getDateRange().endDate + '"';
+  var query = 'SELECT ad_group_criterion.keyword.text, ad_group_criterion.keyword.match_type, campaign.name, ad_group.name, metrics.cost_micros, metrics.conversions, metrics.clicks, metrics.ctr FROM keyword_view WHERE metrics.cost_micros > ' + (CONFIG.KEYWORD_SPEND_THRESHOLD * 1000000) + ' AND metrics.conversions < 0.1 AND campaign.status = "ENABLED" AND ad_group.status = "ENABLED" AND ad_group_criterion.status = "ENABLED" AND campaign.advertising_channel_type = "SEARCH" AND segments.date BETWEEN "' + _getDateRange().startDate + '" AND "' + _getDateRange().endDate + '"';
   try {
     var search = AdsApp.search(query);
     while (search.hasNext() && changeCount < CONFIG.MAX_CHANGES_PER_RUN) {
@@ -1286,7 +1286,9 @@ function _pauseHighSpendKeywords_LeadGen(results) {
       var kw = row.adGroupCriterion.keyword.text;
       var cn = row.campaign.name, agn = row.adGroup.name;
       var cost = Number(row.metrics.costMicros) / 1000000;
+      var conversions = Number(row.metrics.conversions) || 0;
       var ctr = Number(row.metrics.ctr) * 100;
+      if (conversions > 0) continue; // Safety: skip fractional conversions from DDA
       if (_isProtectedTerm(kw)) continue;
       if (ctr > CONFIG.MIN_CTR_TO_PROTECT && !_isInformational(kw)) continue;
       var reason = 'Spend R' + cost.toFixed(0) + ' | 0 conv | CTR ' + ctr.toFixed(1) + '%';
@@ -1935,7 +1937,7 @@ function _pauseLowQualityScoreKeywords(results) {
   var dr = _getDateRange();
   var qsThreshold = CONFIG.QS_PAUSE_THRESHOLD || 3;
   var qsSpendThreshold = CONFIG.QS_SPEND_THRESHOLD || 300;
-  var query = 'SELECT ad_group_criterion.keyword.text, ad_group_criterion.keyword.match_type, ad_group_criterion.quality_info.quality_score, campaign.name, ad_group.name, metrics.cost_micros, metrics.conversions, metrics.clicks, metrics.impressions FROM keyword_view WHERE campaign.status = "ENABLED" AND ad_group.status = "ENABLED" AND ad_group_criterion.status = "ENABLED" AND campaign.advertising_channel_type = "SEARCH" AND ad_group_criterion.quality_info.quality_score <= ' + qsThreshold + ' AND metrics.cost_micros > ' + (qsSpendThreshold * 1000000) + ' AND metrics.conversions < 1 AND segments.date BETWEEN "' + dr.startDate + '" AND "' + dr.endDate + '"';
+  var query = 'SELECT ad_group_criterion.keyword.text, ad_group_criterion.keyword.match_type, ad_group_criterion.quality_info.quality_score, campaign.name, ad_group.name, metrics.cost_micros, metrics.conversions, metrics.clicks, metrics.impressions FROM keyword_view WHERE campaign.status = "ENABLED" AND ad_group.status = "ENABLED" AND ad_group_criterion.status = "ENABLED" AND campaign.advertising_channel_type = "SEARCH" AND ad_group_criterion.quality_info.quality_score <= ' + qsThreshold + ' AND metrics.cost_micros > ' + (qsSpendThreshold * 1000000) + ' AND metrics.conversions < 0.1 AND segments.date BETWEEN "' + dr.startDate + '" AND "' + dr.endDate + '"';
   try {
     var search = AdsApp.search(query); var changeCount = 0;
     while (search.hasNext() && changeCount < CONFIG.MAX_CHANGES_PER_RUN) {
@@ -1944,13 +1946,15 @@ function _pauseLowQualityScoreKeywords(results) {
       var qs = row.adGroupCriterion.qualityInfo.qualityScore;
       var cn = row.campaign.name, agn = row.adGroup.name;
       var cost = Number(row.metrics.costMicros) / 1000000;
+      var conversions = Number(row.metrics.conversions) || 0;
       var clicks = Number(row.metrics.clicks) || 0;
+      if (conversions > 0) continue; // Safety: skip fractional conversions from DDA
       if (_isProtectedTerm(kw)) continue;
-      var reason = 'QS ' + qs + ' | R' + cost.toFixed(0) + ' | 0 conv';
+      var reason = 'QS ' + qs + ' | R' + cost.toFixed(0) + ' | ' + conversions.toFixed(2) + ' conv';
       _log('INFO', 'LOW QS PAUSE: "' + kw + '" | ' + reason);
-      results.lowQsPaused.push({ keyword: kw, qualityScore: qs, campaign: cn, adGroup: agn, spend: cost, clicks: clicks });
+      results.lowQsPaused.push({ keyword: kw, qualityScore: qs, campaign: cn, adGroup: agn, spend: cost, clicks: clicks, conversions: conversions });
 
-      _logChange({ functionName: '_pauseLowQualityScoreKeywords', entity: kw, entityType: 'KEYWORD', campaign: cn, adGroup: agn, reason: reason, spend: cost, conversions: 0 });
+      _logChange({ functionName: '_pauseLowQualityScoreKeywords', entity: kw, entityType: 'KEYWORD', campaign: cn, adGroup: agn, reason: reason, spend: cost, conversions: conversions });
 
       if (!CONFIG.PREVIEW_MODE) {
         var ki = AdsApp.keywords().withCondition('ad_group.name = "' + agn + '"').withCondition('campaign.name = "' + cn + '"').withCondition('ad_group_criterion.keyword.text = "' + kw + '"').get();
