@@ -18,15 +18,11 @@ export default async function handler(request) {
   try {
     const { system, user, useSearch } = await request.json()
 
-    const result = await callAnthropic({ system, user, useSearch, apiKey })
+    let result = await callAnthropicStreaming({ system, user, useSearch, apiKey })
 
     // If search was used but got empty result, retry without search
     if (!result && useSearch) {
-      const fallbackResult = await callAnthropic({ system, user, useSearch: false, apiKey })
-      return new Response(
-        JSON.stringify({ result: fallbackResult || '' }),
-        { status: 200, headers: corsHeaders() }
-      )
+      result = await callAnthropicStreaming({ system, user, useSearch: false, apiKey })
     }
 
     return new Response(
@@ -42,10 +38,11 @@ export default async function handler(request) {
   }
 }
 
-async function callAnthropic({ system, user, useSearch, apiKey }) {
+async function callAnthropicStreaming({ system, user, useSearch, apiKey }) {
   const body = {
     model: 'claude-sonnet-4-20250514',
     max_tokens: 16000,
+    stream: true,
     system,
     messages: [{ role: 'user', content: user }],
   }
@@ -69,11 +66,41 @@ async function callAnthropic({ system, user, useSearch, apiKey }) {
     throw new Error(`Anthropic API error (${response.status}): ${errorText}`)
   }
 
-  const data = await response.json()
+  // Read the SSE stream and collect text blocks
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let fullText = ''
 
-  // Extract text from response content blocks
-  const textBlocks = (data.content || []).filter((block) => block.type === 'text')
-  return textBlocks.map((block) => block.text).join('\n')
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+
+    buffer += decoder.decode(value, { stream: true })
+
+    // Process complete SSE lines
+    const lines = buffer.split('\n')
+    buffer = lines.pop() // Keep incomplete line in buffer
+
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue
+      const data = line.slice(6).trim()
+      if (data === '[DONE]') continue
+
+      try {
+        const event = JSON.parse(data)
+
+        // content_block_delta with text
+        if (event.type === 'content_block_delta' && event.delta?.type === 'text_delta') {
+          fullText += event.delta.text
+        }
+      } catch {
+        // Skip unparseable lines
+      }
+    }
+  }
+
+  return fullText
 }
 
 function corsHeaders() {
