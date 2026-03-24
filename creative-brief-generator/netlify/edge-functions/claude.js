@@ -1,48 +1,44 @@
-export const handler = async (event) => {
-  if (event.httpMethod === 'OPTIONS') {
-    return { statusCode: 204, headers: corsHeaders(), body: '' }
+export default async function handler(request) {
+  if (request.method === 'OPTIONS') {
+    return new Response(null, { status: 204, headers: corsHeaders() })
   }
 
-  if (event.httpMethod !== 'POST') {
-    return { statusCode: 405, headers: corsHeaders(), body: 'Method not allowed' }
+  if (request.method !== 'POST') {
+    return new Response('Method not allowed', { status: 405, headers: corsHeaders() })
   }
 
-  const apiKey = process.env.ANTHROPIC_API_KEY
+  const apiKey = Netlify.env.get('ANTHROPIC_API_KEY')
   if (!apiKey) {
-    return {
-      statusCode: 500,
-      headers: corsHeaders(),
-      body: JSON.stringify({ error: 'ANTHROPIC_API_KEY not configured' }),
-    }
+    return new Response(
+      JSON.stringify({ error: 'ANTHROPIC_API_KEY not configured' }),
+      { status: 500, headers: corsHeaders() }
+    )
   }
 
   try {
-    const { system, user, useSearch } = JSON.parse(event.body)
+    const { system, user, useSearch } = await request.json()
 
     const result = await callAnthropic({ system, user, useSearch, apiKey })
 
     // If search was used but got empty result, retry without search
     if (!result && useSearch) {
       const fallbackResult = await callAnthropic({ system, user, useSearch: false, apiKey })
-      return {
-        statusCode: 200,
-        headers: corsHeaders(),
-        body: JSON.stringify({ result: fallbackResult || '' }),
-      }
+      return new Response(
+        JSON.stringify({ result: fallbackResult || '' }),
+        { status: 200, headers: corsHeaders() }
+      )
     }
 
-    return {
-      statusCode: 200,
-      headers: corsHeaders(),
-      body: JSON.stringify({ result: result || '' }),
-    }
+    return new Response(
+      JSON.stringify({ result: result || '' }),
+      { status: 200, headers: corsHeaders() }
+    )
   } catch (err) {
     console.error('Claude API error:', err)
-    return {
-      statusCode: 500,
-      headers: corsHeaders(),
-      body: JSON.stringify({ error: err.message || 'Internal server error' }),
-    }
+    return new Response(
+      JSON.stringify({ error: err.message || 'Internal server error' }),
+      { status: 500, headers: corsHeaders() }
+    )
   }
 }
 
@@ -87,4 +83,8 @@ function corsHeaders() {
     'Access-Control-Allow-Headers': 'Content-Type',
     'Access-Control-Allow-Methods': 'POST, OPTIONS',
   }
+}
+
+export const config = {
+  path: '/api/claude',
 }
