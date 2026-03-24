@@ -16,8 +16,17 @@ export async function callClaude({ system, user, useSearch = false, timeoutMs })
       throw new Error(`API error (${res.status}): ${errorText}`)
     }
 
-    // Read the SSE stream from the edge function
-    const result = await readSSEStream(res)
+    const contentType = res.headers.get('content-type') || ''
+
+    let result
+    if (contentType.includes('text/event-stream')) {
+      // Streaming SSE response — read and extract text deltas
+      result = await readSSEStream(res)
+    } else {
+      // Regular JSON response (error fallback from edge function)
+      const data = await res.json()
+      result = data.result || ''
+    }
 
     // If search was used but got empty response, retry without search
     if (!result && useSearch) {
@@ -36,34 +45,22 @@ export async function callClaude({ system, user, useSearch = false, timeoutMs })
 }
 
 async function readSSEStream(response) {
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
+  const text = await response.text()
   let fullText = ''
 
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
+  const lines = text.split('\n')
+  for (const line of lines) {
+    if (!line.startsWith('data: ')) continue
+    const data = line.slice(6).trim()
+    if (!data || data === '[DONE]') continue
 
-    buffer += decoder.decode(value, { stream: true })
-
-    // Process complete SSE lines
-    const lines = buffer.split('\n')
-    buffer = lines.pop() // Keep incomplete line in buffer
-
-    for (const line of lines) {
-      if (!line.startsWith('data: ')) continue
-      const data = line.slice(6).trim()
-      if (data === '[DONE]') continue
-
-      try {
-        const event = JSON.parse(data)
-        if (event.type === 'content_block_delta' && event.delta?.type === 'text_delta') {
-          fullText += event.delta.text
-        }
-      } catch {
-        // Skip unparseable lines
+    try {
+      const event = JSON.parse(data)
+      if (event.type === 'content_block_delta' && event.delta?.type === 'text_delta') {
+        fullText += event.delta.text
       }
+    } catch {
+      // Skip unparseable lines
     }
   }
 
