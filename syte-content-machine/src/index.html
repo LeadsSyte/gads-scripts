@@ -1,0 +1,650 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Syte Content Machine</title>
+<style>
+:root {
+  --bg: #0a0a0f;
+  --bg-card: #12121a;
+  --bg-input: #1a1a2e;
+  --border: #2a2a3e;
+  --text: #e0e0e0;
+  --text-muted: #888;
+  --accent: #6c5ce7;
+  --accent-hover: #7c6cf7;
+  --success: #00b894;
+  --danger: #e74c3c;
+  --warning: #f39c12;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+a { color: var(--accent); }
+
+/* Auth */
+.auth-screen { display: flex; align-items: center; justify-content: center; min-height: 100vh; }
+.auth-box { background: var(--bg-card); border: 1px solid var(--border); border-radius: 16px; padding: 48px; max-width: 400px; width: 100%; text-align: center; }
+.auth-box h1 { font-size: 24px; margin-bottom: 8px; }
+.auth-box .subtitle { color: var(--text-muted); margin-bottom: 32px; font-size: 14px; }
+.auth-box input { width: 100%; padding: 12px 16px; background: var(--bg-input); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font-size: 15px; margin-bottom: 16px; outline: none; }
+.auth-box input:focus { border-color: var(--accent); }
+
+/* Layout */
+.app { display: none; }
+.app.active { display: flex; min-height: 100vh; }
+.sidebar { width: 220px; background: var(--bg-card); border-right: 1px solid var(--border); padding: 24px 0; flex-shrink: 0; }
+.sidebar h2 { padding: 0 20px; font-size: 16px; margin-bottom: 24px; color: var(--accent); }
+.sidebar nav a { display: block; padding: 10px 20px; color: var(--text-muted); text-decoration: none; font-size: 14px; border-left: 3px solid transparent; transition: all .2s; }
+.sidebar nav a:hover, .sidebar nav a.active { color: var(--text); background: rgba(108,92,231,.08); border-left-color: var(--accent); }
+.main { flex: 1; padding: 32px; overflow-y: auto; max-height: 100vh; }
+.main h2 { font-size: 22px; margin-bottom: 20px; }
+
+/* Buttons */
+.btn { display: inline-flex; align-items: center; gap: 6px; padding: 10px 20px; border: none; border-radius: 8px; font-size: 14px; cursor: pointer; font-weight: 500; transition: all .2s; }
+.btn-primary { background: var(--accent); color: #fff; }
+.btn-primary:hover { background: var(--accent-hover); }
+.btn-success { background: var(--success); color: #fff; }
+.btn-danger { background: var(--danger); color: #fff; }
+.btn-danger:hover { background: #c0392b; }
+.btn-outline { background: transparent; border: 1px solid var(--border); color: var(--text); }
+.btn-outline:hover { border-color: var(--accent); color: var(--accent); }
+.btn-sm { padding: 6px 12px; font-size: 12px; }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+
+/* Cards */
+.card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin-bottom: 16px; }
+.card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+.card-header h3 { font-size: 16px; }
+.card-meta { color: var(--text-muted); font-size: 13px; }
+.card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 16px; }
+
+/* Forms */
+.form-group { margin-bottom: 16px; }
+.form-group label { display: block; font-size: 13px; color: var(--text-muted); margin-bottom: 4px; }
+.form-group input, .form-group textarea, .form-group select {
+  width: 100%; padding: 10px 14px; background: var(--bg-input); border: 1px solid var(--border);
+  border-radius: 8px; color: var(--text); font-size: 14px; outline: none; font-family: inherit;
+}
+.form-group input:focus, .form-group textarea:focus, .form-group select:focus { border-color: var(--accent); }
+.form-group textarea { min-height: 80px; resize: vertical; }
+.form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.toggle-row { display: flex; align-items: center; gap: 10px; }
+.toggle { width: 44px; height: 24px; background: var(--border); border-radius: 12px; position: relative; cursor: pointer; transition: .2s; }
+.toggle.on { background: var(--accent); }
+.toggle::after { content: ''; position: absolute; top: 2px; left: 2px; width: 20px; height: 20px; background: #fff; border-radius: 50%; transition: .2s; }
+.toggle.on::after { left: 22px; }
+
+/* Modal */
+.modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.6); z-index: 100; align-items: center; justify-content: center; }
+.modal-overlay.active { display: flex; }
+.modal { background: var(--bg-card); border: 1px solid var(--border); border-radius: 16px; padding: 32px; max-width: 640px; width: 95%; max-height: 90vh; overflow-y: auto; }
+.modal h3 { font-size: 18px; margin-bottom: 20px; }
+.modal-actions { display: flex; gap: 12px; justify-content: flex-end; margin-top: 24px; }
+
+/* Progress */
+.progress-bar { height: 8px; background: var(--bg-input); border-radius: 4px; overflow: hidden; margin: 12px 0; }
+.progress-fill { height: 100%; background: var(--accent); border-radius: 4px; transition: width .5s; }
+
+/* Badge */
+.badge { display: inline-block; padding: 3px 10px; border-radius: 20px; font-size: 11px; font-weight: 600; text-transform: uppercase; }
+.badge-pending { background: rgba(243,156,18,.15); color: var(--warning); }
+.badge-generating { background: rgba(108,92,231,.15); color: var(--accent); }
+.badge-complete { background: rgba(0,184,148,.15); color: var(--success); }
+.badge-failed { background: rgba(231,76,60,.15); color: var(--danger); }
+
+/* Article content */
+.article-content { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 20px; margin-top: 12px; font-size: 14px; line-height: 1.7; display: none; }
+.article-content.open { display: block; }
+.article-content h1 { font-size: 22px; margin: 16px 0 8px; }
+.article-content h2 { font-size: 18px; margin: 14px 0 6px; }
+.article-content h3 { font-size: 15px; margin: 12px 0 4px; }
+.article-content p { margin-bottom: 10px; }
+.article-content ul, .article-content ol { margin: 8px 0 8px 24px; }
+.article-content code { background: var(--bg-input); padding: 2px 6px; border-radius: 4px; font-size: 13px; }
+.article-content pre { background: var(--bg-input); padding: 14px; border-radius: 8px; overflow-x: auto; margin: 10px 0; }
+
+/* Toast */
+.toast-container { position: fixed; bottom: 20px; right: 20px; z-index: 200; display: flex; flex-direction: column; gap: 8px; }
+.toast { padding: 12px 20px; border-radius: 8px; font-size: 14px; color: #fff; animation: slideIn .3s; min-width: 280px; }
+.toast-success { background: var(--success); }
+.toast-error { background: var(--danger); }
+.toast-info { background: var(--accent); }
+@keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+
+/* Loading */
+.spinner { display: inline-block; width: 20px; height: 20px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .6s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.loading-msg { display: flex; align-items: center; gap: 10px; color: var(--text-muted); padding: 20px 0; }
+.empty-state { text-align: center; padding: 48px 20px; color: var(--text-muted); }
+
+/* Table */
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--border); font-size: 14px; }
+th { color: var(--text-muted); font-size: 12px; text-transform: uppercase; letter-spacing: .5px; }
+
+/* Responsive */
+@media (max-width: 768px) {
+  .sidebar { width: 60px; }
+  .sidebar h2 { display: none; }
+  .sidebar nav a { padding: 12px; text-align: center; font-size: 0; }
+  .sidebar nav a::before { font-size: 18px; }
+  .main { padding: 16px; }
+  .form-row { grid-template-columns: 1fr; }
+  .card-grid { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+
+<!-- Auth Screen -->
+<div id="authScreen" class="auth-screen">
+  <div class="auth-box">
+    <h1>Syte Content Machine</h1>
+    <p class="subtitle">Enter your password to unlock</p>
+    <input type="password" id="authPassword" placeholder="Password" autocomplete="current-password">
+    <button class="btn btn-primary" style="width:100%" onclick="doLogin()">Unlock</button>
+  </div>
+</div>
+
+<!-- App -->
+<div id="app" class="app">
+  <aside class="sidebar">
+    <h2>Content Machine</h2>
+    <nav>
+      <a href="#" data-section="clients" class="active" onclick="showSection('clients')">Clients</a>
+      <a href="#" data-section="generate" onclick="showSection('generate')">Generate</a>
+      <a href="#" data-section="articles" onclick="showSection('articles')">Articles</a>
+      <a href="#" data-section="history" onclick="showSection('history')">History</a>
+    </nav>
+  </aside>
+  <main class="main">
+    <!-- Clients Section -->
+    <section id="sec-clients">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">
+        <h2>Clients</h2>
+        <button class="btn btn-primary" onclick="openClientModal()">+ Add Client</button>
+      </div>
+      <div id="clientsList" class="card-grid"></div>
+    </section>
+
+    <!-- Generate Section -->
+    <section id="sec-generate" style="display:none">
+      <h2>Generate Content</h2>
+      <div class="card" style="max-width:600px">
+        <div class="form-group">
+          <label>Select Client</label>
+          <select id="genClient" onchange="onGenClientChange()"><option value="">-- Select --</option></select>
+        </div>
+        <div class="form-group">
+          <label>Number of Articles</label>
+          <input type="number" id="genCount" min="1" max="20" value="4">
+        </div>
+        <button class="btn btn-primary" id="genBtn" onclick="startGeneration()">Generate Content</button>
+      </div>
+      <div id="genProgress" style="display:none;margin-top:24px">
+        <div class="card">
+          <h3>Generation Progress</h3>
+          <p id="genStatusText" style="margin:8px 0;color:var(--text-muted)">Starting...</p>
+          <div class="progress-bar"><div class="progress-fill" id="genProgressBar" style="width:0%"></div></div>
+          <p id="genArticleCount" style="font-size:13px;color:var(--text-muted)"></p>
+          <div id="genActions" style="display:none;margin-top:16px;display:flex;gap:12px"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Articles Section -->
+    <section id="sec-articles" style="display:none">
+      <h2>Articles</h2>
+      <div style="display:flex;gap:12px;margin-bottom:20px;flex-wrap:wrap">
+        <select id="artClient" onchange="loadArticles()" style="padding:8px 12px;background:var(--bg-input);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:14px">
+          <option value="">All Clients</option>
+        </select>
+        <input type="month" id="artMonth" onchange="loadArticles()" style="padding:8px 12px;background:var(--bg-input);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:14px">
+      </div>
+      <div id="articlesList"></div>
+    </section>
+
+    <!-- History Section -->
+    <section id="sec-history" style="display:none">
+      <h2>Generation History</h2>
+      <div id="historyList"></div>
+    </section>
+  </main>
+</div>
+
+<!-- Client Modal -->
+<div id="clientModal" class="modal-overlay" onclick="if(event.target===this)closeClientModal()">
+  <div class="modal">
+    <h3 id="clientModalTitle">Add Client</h3>
+    <input type="hidden" id="editClientId">
+    <div class="form-row">
+      <div class="form-group"><label>Client Name *</label><input id="cName" placeholder="Business name"></div>
+      <div class="form-group"><label>Industry</label><input id="cIndustry" placeholder="e.g. ecommerce, gambling, healthcare"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label>Website URL</label><input id="cUrl" placeholder="https://..."></div>
+      <div class="form-group"><label>Location / Market</label><input id="cLocation" placeholder="e.g. South Africa"></div>
+    </div>
+    <div class="form-group"><label>Target Audience</label><input id="cAudience" placeholder="e.g. Small business owners aged 25-45"></div>
+    <div class="form-group"><label>Brand Voice / Tone</label><input id="cVoice" placeholder="e.g. Professional, friendly, authoritative"></div>
+    <div class="form-group"><label>Business Description</label><textarea id="cContext" placeholder="Describe what this business does, its key services/products..."></textarea></div>
+    <div class="form-group"><label>Client-Specific Rules</label><textarea id="cRules" placeholder="Any specific rules or requirements for content..."></textarea></div>
+    <div class="form-row">
+      <div class="form-group"><label>Articles Per Month</label><input type="number" id="cArticles" value="4" min="1" max="20"></div>
+      <div class="form-group"><label>Word Count Range</label><input id="cWordcount" value="800-1200" placeholder="e.g. 800-1200"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Content Focus</label>
+        <select id="cFocus">
+          <option value="mixed">Mixed</option>
+          <option value="transactional">Transactional</option>
+          <option value="informational">Informational</option>
+        </select>
+      </div>
+      <div class="form-group"><label>Recipient Email</label><input type="email" id="cEmail" placeholder="content@client.com"></div>
+    </div>
+    <div class="form-group">
+      <label>Sitemap XML</label>
+      <textarea id="cSitemap" rows="4" placeholder="Paste raw sitemap XML here..."></textarea>
+      <div style="display:flex;align-items:center;gap:12px;margin-top:8px">
+        <button class="btn btn-outline btn-sm" onclick="parseSitemapPreview()">Parse Sitemap</button>
+        <span id="sitemapCount" style="font-size:13px;color:var(--text-muted)"></span>
+      </div>
+    </div>
+    <div class="toggle-row">
+      <div class="toggle" id="cAutoGen" onclick="this.classList.toggle('on')"></div>
+      <span style="font-size:14px">Auto-generate on 1st of each month</span>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-outline" onclick="closeClientModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="saveClient()">Save Client</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast Container -->
+<div class="toast-container" id="toasts"></div>
+
+<script>
+// ─── API Helper ─────────────────────────────────────────
+const API = {
+  base: '/.netlify/functions',
+  getToken() { return sessionStorage.getItem('scm_token'); },
+  setToken(t) { sessionStorage.setItem('scm_token', t); },
+  clearToken() { sessionStorage.removeItem('scm_token'); },
+
+  async request(path, opts = {}) {
+    const url = this.base + path;
+    const headers = { 'Content-Type': 'application/json' };
+    const token = this.getToken();
+    if (token) headers['Authorization'] = 'Bearer ' + token;
+    try {
+      const res = await fetch(url, { ...opts, headers: { ...headers, ...opts.headers } });
+      if (res.status === 401) { this.clearToken(); location.reload(); return; }
+      const contentType = res.headers.get('content-type') || '';
+      if (contentType.includes('application/json')) {
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        return data;
+      }
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res;
+    } catch (err) {
+      toast(err.message, 'error');
+      throw err;
+    }
+  },
+
+  get(path) { return this.request(path); },
+  post(path, body) { return this.request(path, { method: 'POST', body: JSON.stringify(body) }); },
+  put(path, body) { return this.request(path, { method: 'PUT', body: JSON.stringify(body) }); },
+  del(path) { return this.request(path, { method: 'DELETE' }); },
+};
+
+// ─── State ──────────────────────────────────────────────
+let clients = [];
+let currentGenId = null;
+let pollTimer = null;
+
+// ─── Auth ───────────────────────────────────────────────
+async function doLogin() {
+  const pw = document.getElementById('authPassword').value.trim();
+  if (!pw) return;
+  try {
+    const { token } = await API.post('/auth', { password: pw });
+    API.setToken(token);
+    document.getElementById('authScreen').style.display = 'none';
+    document.getElementById('app').classList.add('active');
+    loadClients();
+  } catch {
+    toast('Invalid password', 'error');
+  }
+}
+document.getElementById('authPassword').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+
+// Check existing session
+if (API.getToken()) {
+  document.getElementById('authScreen').style.display = 'none';
+  document.getElementById('app').classList.add('active');
+  loadClients();
+}
+
+// ─── Navigation ─────────────────────────────────────────
+function showSection(name) {
+  document.querySelectorAll('.main > section').forEach(s => s.style.display = 'none');
+  document.getElementById('sec-' + name).style.display = '';
+  document.querySelectorAll('.sidebar nav a').forEach(a => a.classList.toggle('active', a.dataset.section === name));
+  if (name === 'clients') loadClients();
+  if (name === 'generate') populateGenDropdown();
+  if (name === 'articles') { populateArtDropdown(); loadArticles(); }
+  if (name === 'history') loadHistory();
+}
+
+// ─── Clients ────────────────────────────────────────────
+async function loadClients() {
+  const el = document.getElementById('clientsList');
+  el.innerHTML = '<div class="loading-msg"><div class="spinner"></div>Loading clients...</div>';
+  try {
+    clients = await API.get('/clients');
+    if (clients.length === 0) {
+      el.innerHTML = '<div class="empty-state">No clients yet. Add your first client above.</div>';
+      return;
+    }
+    el.innerHTML = clients.map(c => `
+      <div class="card">
+        <div class="card-header">
+          <h3>${esc(c.name)}</h3>
+          <div style="display:flex;gap:6px">
+            <button class="btn btn-outline btn-sm" onclick="openClientModal('${c.id}')">Edit</button>
+            <button class="btn btn-danger btn-sm" onclick="deleteClientConfirm('${c.id}','${esc(c.name)}')">Delete</button>
+          </div>
+        </div>
+        <div class="card-meta">
+          ${c.industry ? c.industry + ' &middot; ' : ''}${c.articles_per_month || 4} articles/mo &middot; ${c.focus || 'mixed'}
+          ${c.auto_generate ? ' &middot; <span style="color:var(--success)">Auto</span>' : ''}
+        </div>
+        ${c.url ? '<div class="card-meta" style="margin-top:4px">' + esc(c.url) + '</div>' : ''}
+        ${c.email ? '<div class="card-meta" style="margin-top:2px">' + esc(c.email) + '</div>' : ''}
+      </div>
+    `).join('');
+  } catch { el.innerHTML = '<div class="empty-state">Failed to load clients.</div>'; }
+}
+
+function openClientModal(id) {
+  const modal = document.getElementById('clientModal');
+  document.getElementById('clientModalTitle').textContent = id ? 'Edit Client' : 'Add Client';
+  document.getElementById('editClientId').value = id || '';
+  if (id) {
+    const c = clients.find(x => x.id === id);
+    if (!c) return;
+    document.getElementById('cName').value = c.name || '';
+    document.getElementById('cIndustry').value = c.industry || '';
+    document.getElementById('cUrl').value = c.url || '';
+    document.getElementById('cLocation').value = c.location || '';
+    document.getElementById('cAudience').value = c.audience || '';
+    document.getElementById('cVoice').value = c.voice || '';
+    document.getElementById('cContext').value = c.context || '';
+    document.getElementById('cRules').value = c.rules || '';
+    document.getElementById('cArticles').value = c.articles_per_month || 4;
+    document.getElementById('cWordcount').value = c.wordcount || '800-1200';
+    document.getElementById('cFocus').value = c.focus || 'mixed';
+    document.getElementById('cEmail').value = c.email || '';
+    document.getElementById('cSitemap').value = c.sitemap_raw || '';
+    document.getElementById('cAutoGen').classList.toggle('on', !!c.auto_generate);
+    const urls = c.sitemap_urls || [];
+    document.getElementById('sitemapCount').textContent = urls.length ? urls.length + ' URLs parsed' : '';
+  } else {
+    ['cName','cIndustry','cUrl','cLocation','cAudience','cVoice','cContext','cRules','cEmail','cSitemap'].forEach(id => document.getElementById(id).value = '');
+    document.getElementById('cArticles').value = 4;
+    document.getElementById('cWordcount').value = '800-1200';
+    document.getElementById('cFocus').value = 'mixed';
+    document.getElementById('cAutoGen').classList.remove('on');
+    document.getElementById('sitemapCount').textContent = '';
+  }
+  modal.classList.add('active');
+}
+
+function closeClientModal() { document.getElementById('clientModal').classList.remove('active'); }
+
+function parseSitemapPreview() {
+  const xml = document.getElementById('cSitemap').value;
+  const urls = parseSitemapXml(xml);
+  document.getElementById('sitemapCount').textContent = urls.length + ' URLs found';
+}
+
+function parseSitemapXml(xml) {
+  if (!xml) return [];
+  const urls = [];
+  const re = /<loc>\s*(.*?)\s*<\/loc>/gi;
+  let m;
+  while ((m = re.exec(xml)) !== null) urls.push(m[1].trim());
+  return urls;
+}
+
+async function saveClient() {
+  const id = document.getElementById('editClientId').value;
+  const sitemapRaw = document.getElementById('cSitemap').value;
+  const sitemapUrls = parseSitemapXml(sitemapRaw);
+  const data = {
+    name: document.getElementById('cName').value.trim(),
+    industry: document.getElementById('cIndustry').value.trim(),
+    url: document.getElementById('cUrl').value.trim(),
+    location: document.getElementById('cLocation').value.trim(),
+    audience: document.getElementById('cAudience').value.trim(),
+    voice: document.getElementById('cVoice').value.trim(),
+    context: document.getElementById('cContext').value.trim(),
+    rules: document.getElementById('cRules').value.trim(),
+    articles_per_month: parseInt(document.getElementById('cArticles').value) || 4,
+    wordcount: document.getElementById('cWordcount').value.trim() || '800-1200',
+    focus: document.getElementById('cFocus').value,
+    email: document.getElementById('cEmail').value.trim(),
+    sitemap_raw: sitemapRaw,
+    sitemap_urls: sitemapUrls,
+    auto_generate: document.getElementById('cAutoGen').classList.contains('on'),
+  };
+  if (!data.name) { toast('Client name is required', 'error'); return; }
+  try {
+    if (id) { await API.put('/clients/' + id, data); toast('Client updated'); }
+    else { await API.post('/clients', data); toast('Client created'); }
+    closeClientModal();
+    loadClients();
+  } catch {}
+}
+
+async function deleteClientConfirm(id, name) {
+  if (!confirm(`Delete client "${name}"? This will remove all their articles and history.`)) return;
+  try {
+    await API.del('/clients/' + id);
+    toast('Client deleted');
+    loadClients();
+  } catch {}
+}
+
+// ─── Generate ───────────────────────────────────────────
+function populateGenDropdown() {
+  const sel = document.getElementById('genClient');
+  sel.innerHTML = '<option value="">-- Select Client --</option>' +
+    clients.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('');
+}
+
+function onGenClientChange() {
+  const c = clients.find(x => x.id === document.getElementById('genClient').value);
+  if (c) document.getElementById('genCount').value = c.articles_per_month || 4;
+}
+
+async function startGeneration() {
+  const clientId = document.getElementById('genClient').value;
+  const articleCount = parseInt(document.getElementById('genCount').value) || 4;
+  if (!clientId) { toast('Select a client first', 'error'); return; }
+
+  document.getElementById('genBtn').disabled = true;
+  try {
+    const { generationId } = await API.post('/generate', { clientId, articleCount });
+    currentGenId = generationId;
+    document.getElementById('genProgress').style.display = '';
+    document.getElementById('genStatusText').textContent = 'Generation started...';
+    document.getElementById('genProgressBar').style.width = '5%';
+    document.getElementById('genArticleCount').textContent = '';
+    document.getElementById('genActions').style.display = 'none';
+    document.getElementById('genActions').innerHTML = '';
+    pollGeneration(generationId, articleCount);
+  } catch {
+    document.getElementById('genBtn').disabled = false;
+  }
+}
+
+function pollGeneration(genId, total) {
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = setInterval(async () => {
+    try {
+      const s = await API.get('/generate-status?generationId=' + genId);
+      const completed = s.completedArticles || 0;
+      const pct = s.status === 'complete' ? 100 : Math.max(5, Math.round((completed / total) * 100));
+      document.getElementById('genProgressBar').style.width = pct + '%';
+      document.getElementById('genArticleCount').textContent = `${completed} / ${total} articles`;
+
+      if (s.status === 'complete') {
+        clearInterval(pollTimer);
+        document.getElementById('genStatusText').textContent = 'Generation complete!';
+        document.getElementById('genStatusText').style.color = 'var(--success)';
+        document.getElementById('genBtn').disabled = false;
+        const actions = document.getElementById('genActions');
+        actions.style.display = 'flex';
+        actions.innerHTML = `
+          <a class="btn btn-primary" href="/.netlify/functions/download/${genId}" target="_blank">Download All (.zip)</a>
+          <button class="btn btn-success" onclick="sendEmail('${genId}')">Send Email</button>
+        `;
+      } else if (s.status === 'failed') {
+        clearInterval(pollTimer);
+        document.getElementById('genStatusText').textContent = 'Generation failed.';
+        document.getElementById('genStatusText').style.color = 'var(--danger)';
+        document.getElementById('genBtn').disabled = false;
+      } else {
+        document.getElementById('genStatusText').textContent = 'Generating articles...';
+        document.getElementById('genStatusText').style.color = 'var(--text-muted)';
+      }
+    } catch { /* keep polling */ }
+  }, 5000);
+}
+
+async function sendEmail(genId) {
+  const clientId = document.getElementById('genClient').value;
+  const c = clients.find(x => x.id === clientId);
+  const email = c?.email || prompt('Enter recipient email:');
+  if (!email) return;
+  try {
+    await API.post('/email', { generationId: genId, recipientEmail: email });
+    toast('Email sent successfully!', 'success');
+  } catch {}
+}
+
+// ─── Articles ───────────────────────────────────────────
+function populateArtDropdown() {
+  const sel = document.getElementById('artClient');
+  sel.innerHTML = '<option value="">All Clients</option>' +
+    clients.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('');
+}
+
+async function loadArticles() {
+  const el = document.getElementById('articlesList');
+  el.innerHTML = '<div class="loading-msg"><div class="spinner"></div>Loading articles...</div>';
+  const clientId = document.getElementById('artClient').value;
+  const month = document.getElementById('artMonth').value;
+  let qs = '?';
+  if (clientId) qs += 'clientId=' + clientId + '&';
+  if (month) qs += 'month=' + month;
+  try {
+    const articles = await API.get('/articles' + qs);
+    if (!articles || articles.length === 0) {
+      el.innerHTML = '<div class="empty-state">No articles found.</div>';
+      return;
+    }
+    el.innerHTML = articles.map(a => `
+      <div class="card">
+        <div class="card-header" style="cursor:pointer" onclick="toggleArticle('${a.id}')">
+          <div>
+            <h3>${esc(a.title)}</h3>
+            <div class="card-meta">${esc(a.primary_keyword)} &middot; ${a.word_count} words &middot; ${a.search_intent || 'mixed'}</div>
+          </div>
+          <a class="btn btn-outline btn-sm" href="/.netlify/functions/download/${a.id}/docx" target="_blank" onclick="event.stopPropagation()">Download .docx</a>
+        </div>
+        <div class="article-content" id="art-${a.id}">${renderMarkdown(a.content)}</div>
+      </div>
+    `).join('');
+  } catch { el.innerHTML = '<div class="empty-state">Failed to load articles.</div>'; }
+}
+
+function toggleArticle(id) {
+  document.getElementById('art-' + id).classList.toggle('open');
+}
+
+// ─── History ────────────────────────────────────────────
+async function loadHistory() {
+  const el = document.getElementById('historyList');
+  el.innerHTML = '<div class="loading-msg"><div class="spinner"></div>Loading history...</div>';
+  try {
+    const gens = await API.get('/history');
+    if (!gens || gens.length === 0) {
+      el.innerHTML = '<div class="empty-state">No generation history yet.</div>';
+      return;
+    }
+    el.innerHTML = `<div class="table-wrap"><table>
+      <thead><tr><th>Client</th><th>Month</th><th>Status</th><th>Articles</th><th>Date</th><th></th></tr></thead>
+      <tbody>${gens.map(g => `<tr>
+        <td>${esc(g.clients?.name || g.client_id)}</td>
+        <td>${g.month}</td>
+        <td><span class="badge badge-${g.status}">${g.status}</span></td>
+        <td>${g.article_count}</td>
+        <td>${new Date(g.created_at).toLocaleDateString()}</td>
+        <td>
+          ${g.status === 'complete' ? `<a class="btn btn-outline btn-sm" href="/.netlify/functions/download/${g.id}" target="_blank">Download</a>` : ''}
+          <button class="btn btn-danger btn-sm" onclick="deleteHistory('${g.id}')">Delete</button>
+        </td>
+      </tr>`).join('')}</tbody>
+    </table></div>`;
+  } catch { el.innerHTML = '<div class="empty-state">Failed to load history.</div>'; }
+}
+
+async function deleteHistory(id) {
+  if (!confirm('Delete this generation and all its articles?')) return;
+  try {
+    await API.del('/history/' + id);
+    toast('History entry deleted');
+    loadHistory();
+  } catch {}
+}
+
+// ─── Helpers ────────────────────────────────────────────
+function esc(s) { if (!s) return ''; const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+function renderMarkdown(md) {
+  if (!md) return '';
+  return md
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/^### (.+)$/gm, '<h3>$1</h3>')
+    .replace(/^## (.+)$/gm, '<h2>$1</h2>')
+    .replace(/^# (.+)$/gm, '<h1>$1</h1>')
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*(.+?)\*/g, '<em>$1</em>')
+    .replace(/^[-*] (.+)$/gm, '<li>$1</li>')
+    .replace(/(<li>.*<\/li>)/s, '<ul>$1</ul>')
+    .replace(/```[\s\S]*?```/g, m => '<pre><code>' + m.slice(3, -3).trim() + '</code></pre>')
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\n\n/g, '</p><p>')
+    .replace(/^(?!<[hluop])(.+)$/gm, '<p>$1</p>');
+}
+
+function toast(msg, type = 'info') {
+  const c = document.getElementById('toasts');
+  const t = document.createElement('div');
+  t.className = 'toast toast-' + (type === 'info' ? 'info' : type === 'error' ? 'error' : 'success');
+  t.textContent = msg;
+  c.appendChild(t);
+  setTimeout(() => { t.remove(); }, 4000);
+}
+</script>
+</body>
+</html>
