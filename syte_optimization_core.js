@@ -427,14 +427,14 @@ function _smartSearchTermReview(results) {
       // Safety: if spend is above max, flag for review instead
       if (data.cost > maxSpendForAuto) {
         _log('INFO', 'Smart negation: "' + termKey + '" spend R' + data.cost.toFixed(0) + ' > max R' + maxSpendForAuto + ' — flagged for review');
-        results.smartReviewTerms.push({ term: termKey, cost: data.cost, clicks: data.clicks, reason: v.reason + ' (high spend — needs manual review)', verdict: 'review' });
+        results.smartReviewTerms.push({ term: termKey, cost: data.cost, clicks: data.clicks, reason: v.reason + ' (high spend — needs manual review)', verdict: 'review', campaign: data.campaign });
         continue;
       }
 
       // Safety: cap auto-negations
       if (negateCount >= smartNegationCap) {
         _log('INFO', 'Smart negation: cap of ' + smartNegationCap + ' reached — remaining flagged for review');
-        results.smartReviewTerms.push({ term: termKey, cost: data.cost, clicks: data.clicks, reason: v.reason + ' (cap reached)', verdict: 'review' });
+        results.smartReviewTerms.push({ term: termKey, cost: data.cost, clicks: data.clicks, reason: v.reason + ' (cap reached)', verdict: 'review', campaign: data.campaign });
         continue;
       }
 
@@ -445,7 +445,7 @@ function _smartSearchTermReview(results) {
       }
 
       _log('INFO', 'AI NEGATE: "' + termKey + '" | R' + data.cost.toFixed(0) + ' | Reason: ' + v.reason);
-      results.smartNegated.push({ term: termKey, cost: data.cost, clicks: data.clicks, reason: v.reason });
+      results.smartNegated.push({ term: termKey, cost: data.cost, clicks: data.clicks, reason: v.reason, campaign: data.campaign });
 
       // Log to master sheet
       _logChange({
@@ -465,7 +465,7 @@ function _smartSearchTermReview(results) {
 
       negateCount++;
     } else if (v.verdict === 'review') {
-      results.smartReviewTerms.push({ term: termKey, cost: data.cost, clicks: data.clicks, reason: v.reason, verdict: 'review' });
+      results.smartReviewTerms.push({ term: termKey, cost: data.cost, clicks: data.clicks, reason: v.reason, verdict: 'review', campaign: data.campaign });
     }
     // 'keep' verdicts are simply ignored — term stays active
   }
@@ -1206,7 +1206,8 @@ function _negativeHighSpendSearchTerms_LeadGen(results) {
       var cost = Number(row.metrics.costMicros) / 1000000;
       var reason = 'Spend R' + cost.toFixed(0) + ' | 0 conv';
       _log('INFO', 'NEGATIVE: "' + st + '" | ' + reason);
-      results.searchTermsNegated.push({ searchTerm: st, campaign: row.campaign.name, spend: cost });
+      var clicks = Number(row.metrics.clicks) || 0;
+      results.searchTermsNegated.push({ searchTerm: st, campaign: row.campaign.name, spend: cost, clicks: clicks, reason: reason });
 
       // LOG CHANGE
       _logChange({ functionName: '_negativeHighSpendSearchTerms_LeadGen', entity: st, entityType: 'SEARCH_TERM_NEGATIVE', campaign: row.campaign.name, reason: reason, spend: cost, conversions: 0 });
@@ -1282,7 +1283,7 @@ function _negativeHighSpendSearchTerms_Ecommerce(results) {
   var changeCount = 0;
   var negativeList = _getOrCreateNegativeList(CONFIG.NEGATIVE_LIST_NAME_SPEND);
   var existing = _getExistingNegatives(negativeList);
-  var query = 'SELECT search_term_view.search_term, campaign.name, metrics.cost_micros, metrics.conversions_value FROM search_term_view WHERE metrics.cost_micros > ' + (CONFIG.ECOM_SEARCH_TERM_SPEND_THRESHOLD * 1000000) + ' AND campaign.status = "ENABLED" AND campaign.advertising_channel_type = "SEARCH" AND segments.date DURING LAST_30_DAYS';
+  var query = 'SELECT search_term_view.search_term, campaign.name, metrics.cost_micros, metrics.conversions_value, metrics.clicks FROM search_term_view WHERE metrics.cost_micros > ' + (CONFIG.ECOM_SEARCH_TERM_SPEND_THRESHOLD * 1000000) + ' AND campaign.status = "ENABLED" AND campaign.advertising_channel_type = "SEARCH" AND segments.date DURING LAST_30_DAYS';
   try {
     var search = AdsApp.search(query); var processed = {};
     while (search.hasNext() && changeCount < CONFIG.MAX_CHANGES_PER_RUN) {
@@ -1295,7 +1296,8 @@ function _negativeHighSpendSearchTerms_Ecommerce(results) {
       var roas = _calculateROAS(revenue, cost);
       if (roas >= CONFIG.MIN_ROAS_TO_KEEP) continue;
       var reason = 'ROAS ' + roas.toFixed(2) + 'x | Spend R' + cost.toFixed(0);
-      results.ecomSearchTermsNegated.push({ searchTerm: st, campaign: row.campaign.name, spend: cost, revenue: revenue, roas: roas });
+      var clicks = Number(row.metrics.clicks) || 0;
+      results.ecomSearchTermsNegated.push({ searchTerm: st, campaign: row.campaign.name, spend: cost, revenue: revenue, roas: roas, clicks: clicks, reason: reason });
 
       // LOG CHANGE
       _logChange({ functionName: '_negativeHighSpendSearchTerms_Ecommerce', entity: st, entityType: 'SEARCH_TERM_NEGATIVE', campaign: row.campaign.name, reason: reason, spend: cost, conversions: revenue });
@@ -1412,7 +1414,7 @@ function _monitorPMaxCampaigns(results) {
 
 function _analyzePMaxSearchTerms(results) {
   var changeCount = 0;
-  var query = 'SELECT search_term_view.search_term, campaign.name, metrics.cost_micros, metrics.conversions_value FROM search_term_view WHERE campaign.status = "ENABLED" AND campaign.advertising_channel_type = "PERFORMANCE_MAX" AND segments.date DURING LAST_30_DAYS';
+  var query = 'SELECT search_term_view.search_term, campaign.name, metrics.cost_micros, metrics.conversions_value, metrics.clicks FROM search_term_view WHERE campaign.status = "ENABLED" AND campaign.advertising_channel_type = "PERFORMANCE_MAX" AND segments.date DURING LAST_30_DAYS';
   try {
     var search = AdsApp.search(query); var processed = {};
     while (search.hasNext() && changeCount < CONFIG.MAX_CHANGES_PER_RUN) {
@@ -1423,10 +1425,12 @@ function _analyzePMaxSearchTerms(results) {
       var cost = Number(row.metrics.costMicros) / 1000000;
       var revenue = Number(row.metrics.conversionsValue) || 0;
       var roas = _calculateROAS(revenue, cost);
+      var pmaxClicks = Number(row.metrics.clicks) || 0;
       var isInfo = _isInformational(st);
       var isIrr = (CONFIG.IRRELEVANT_TERMS || []).some(function(t) { return st.indexOf(t.toLowerCase()) !== -1; });
       if (isInfo || isIrr || (cost > CONFIG.ECOM_SEARCH_TERM_SPEND_THRESHOLD && roas < CONFIG.MIN_ROAS_TO_KEEP)) {
-        results.pmaxSearchTermsNegated.push({ searchTerm: st, campaign: row.campaign.name, spend: cost });
+        var pmaxReason = isInfo ? 'PMax informational' : (isIrr ? 'PMax irrelevant' : 'PMax ROAS ' + roas.toFixed(2) + 'x | Spend R' + cost.toFixed(0));
+        results.pmaxSearchTermsNegated.push({ searchTerm: st, campaign: row.campaign.name, spend: cost, clicks: pmaxClicks, reason: pmaxReason });
         if (!CONFIG.PREVIEW_MODE) {
           var nl = _getOrCreateNegativeList(CONFIG.NEGATIVE_LIST_NAME_SPEND);
           if (nl) nl.addNegativeKeyword('[' + st + ']');
@@ -1470,11 +1474,12 @@ function _blockInformationalTerms(results) {
       var row = search.next();
       var st = row.searchTermView.searchTerm.toLowerCase().trim();
       if (_isProtectedTerm(st)) continue;
+      var infoCost = Number(row.metrics.costMicros) / 1000000;
       for (var i = 0; i < INFORMATIONAL_PATTERNS.length; i++) {
         var p = INFORMATIONAL_PATTERNS[i];
         if (p.pattern.test(st) && !added[p.negativePhrase] && !existing[p.negativePhrase]) {
           _log('INFO', 'INFORMATIONAL: "' + st + '" -> "' + p.negativePhrase + '"');
-          results.informationalBlocked.push({ phrase: p.negativePhrase, matchedTerm: st });
+          results.informationalBlocked.push({ phrase: p.negativePhrase, matchedTerm: st, cost: infoCost });
           if (!CONFIG.PREVIEW_MODE && negativeList) negativeList.addNegativeKeyword('"' + p.negativePhrase + '"');
           added[p.negativePhrase] = true;
           changeCount++;
@@ -1498,11 +1503,12 @@ function _blockIrrelevantTerms(results) {
       var row = search.next();
       var st = row.searchTermView.searchTerm.toLowerCase().trim();
       if (_isProtectedTerm(st)) continue;
+      var irrCost = Number(row.metrics.costMicros) / 1000000;
       for (var i = 0; i < irrelevantTerms.length; i++) {
         var term = irrelevantTerms[i];
         if (st.indexOf(term.toLowerCase()) !== -1 && !added[term] && !existing[term]) {
           _log('INFO', 'IRRELEVANT: "' + st + '" -> "' + term + '"');
-          results.irrelevantBlocked.push({ phrase: term, matchedTerm: st });
+          results.irrelevantBlocked.push({ phrase: term, matchedTerm: st, cost: irrCost });
           if (!CONFIG.PREVIEW_MODE && negativeList) negativeList.addNegativeKeyword('"' + term + '"');
           added[term] = true;
           changeCount++;
@@ -1800,7 +1806,7 @@ function _autoNgramNegatives(results) {
     for (var i = 0; i < wasteWords.length && changeCount < 20; i++) {
       var ww = wasteWords[i];
       _log('INFO', 'NGRAM: "' + ww.word + '" | R' + ww.stats.totalCost.toFixed(0) + ' | ' + ww.stats.termCount + ' terms | 0 conv');
-      results.ngramNegatives.push({ word: ww.word, totalCost: ww.stats.totalCost, termCount: ww.stats.termCount, sampleTerms: ww.stats.terms });
+      results.ngramNegatives.push({ word: ww.word, totalCost: ww.stats.totalCost, termCount: ww.stats.termCount, sampleTerms: ww.stats.terms, reason: 'N-gram: R' + ww.stats.totalCost.toFixed(0) + ' across ' + ww.stats.termCount + ' terms, 0 conv' });
       if (!CONFIG.PREVIEW_MODE && negativeList) negativeList.addNegativeKeyword('"' + ww.word + '"');
 
       _logChange({ functionName: '_autoNgramNegatives', entity: ww.word, entityType: 'NGRAM_NEGATIVE', reason: 'R' + ww.stats.totalCost.toFixed(0) + ' across ' + ww.stats.termCount + ' terms | 0 conv. Sample: ' + ww.stats.terms.slice(0, 3).join(', '), spend: ww.stats.totalCost, conversions: 0 });
@@ -1954,27 +1960,57 @@ function _sendReport(results, duration) {
   email += '<tr><td style="padding:4px 8px;">Errors</td><td style="text-align:right;font-weight:bold;">' + results.errors.length + '</td></tr>';
   email += '</table></div>';
 
-  // AI Smart Negation details
-  if (results.smartNegated.length > 0) {
-    email += '<div style="padding:15px;"><h3 style="color:#c62828;">AI Auto-Negated Search Terms</h3>';
-    email += '<table style="width:100%;border-collapse:collapse;font-size:13px;">';
-    email += '<tr style="background:#fce4ec;"><th style="padding:6px;text-align:left;">Search Term</th><th style="padding:6px;text-align:right;">Cost</th><th style="padding:6px;text-align:right;">Clicks</th><th style="padding:6px;text-align:left;">Reason</th></tr>';
-    for (var sn = 0; sn < results.smartNegated.length; sn++) {
-      var item = results.smartNegated[sn];
-      email += '<tr style="border-bottom:1px solid #eee;"><td style="padding:4px 6px;">' + item.term + '</td><td style="padding:4px 6px;text-align:right;">R' + item.cost.toFixed(0) + '</td><td style="padding:4px 6px;text-align:right;">' + item.clicks + '</td><td style="padding:4px 6px;color:#666;">' + item.reason + '</td></tr>';
+  // Negated Search Terms Detail — consolidated table of ALL negated terms
+  var negatedDetails = [];
+  for (var nd1 = 0; nd1 < results.searchTermsNegated.length; nd1++) {
+    var n1 = results.searchTermsNegated[nd1];
+    negatedDetails.push({ term: n1.searchTerm, campaign: n1.campaign || '—', clicks: n1.clicks || 0, cost: n1.spend || 0, reason: n1.reason || 'High cost no conversions' });
+  }
+  for (var nd2 = 0; nd2 < results.ecomSearchTermsNegated.length; nd2++) {
+    var n2 = results.ecomSearchTermsNegated[nd2];
+    negatedDetails.push({ term: n2.searchTerm, campaign: n2.campaign || '—', clicks: n2.clicks || 0, cost: n2.spend || 0, reason: n2.reason || 'Low ROAS' });
+  }
+  for (var nd3 = 0; nd3 < results.pmaxSearchTermsNegated.length; nd3++) {
+    var n3 = results.pmaxSearchTermsNegated[nd3];
+    negatedDetails.push({ term: n3.searchTerm, campaign: n3.campaign || '—', clicks: n3.clicks || 0, cost: n3.spend || 0, reason: n3.reason || 'PMax negated' });
+  }
+  for (var nd4 = 0; nd4 < results.smartNegated.length; nd4++) {
+    var n4 = results.smartNegated[nd4];
+    negatedDetails.push({ term: n4.term, campaign: n4.campaign || '—', clicks: n4.clicks || 0, cost: n4.cost || 0, reason: 'AI: ' + (n4.reason || 'negated') });
+  }
+  for (var nd5 = 0; nd5 < results.ngramNegatives.length; nd5++) {
+    var n5 = results.ngramNegatives[nd5];
+    negatedDetails.push({ term: '"' + n5.word + '"', campaign: '—', clicks: 0, cost: n5.totalCost || 0, reason: n5.reason || 'N-gram negative' });
+  }
+  for (var nd6 = 0; nd6 < results.informationalBlocked.length; nd6++) {
+    var n6 = results.informationalBlocked[nd6];
+    negatedDetails.push({ term: n6.matchedTerm, campaign: '—', clicks: 0, cost: n6.cost || 0, reason: 'Informational: "' + n6.phrase + '"' });
+  }
+  for (var nd7 = 0; nd7 < results.irrelevantBlocked.length; nd7++) {
+    var n7 = results.irrelevantBlocked[nd7];
+    negatedDetails.push({ term: n7.matchedTerm, campaign: '—', clicks: 0, cost: n7.cost || 0, reason: 'Irrelevant: "' + n7.phrase + '"' });
+  }
+
+  if (negatedDetails.length > 0) {
+    email += '<div style="padding:15px;"><h3 style="color:#c62828;">Negated Search Terms Detail (' + negatedDetails.length + ')</h3>';
+    email += '<table style="width:100%;border-collapse:collapse;font-size:12px;">';
+    email += '<tr style="background:#fce4ec;"><th style="padding:6px;text-align:left;">Search Term</th><th style="padding:6px;text-align:left;">Campaign</th><th style="padding:6px;text-align:right;">Clicks</th><th style="padding:6px;text-align:right;">Cost</th><th style="padding:6px;text-align:left;">Reason</th></tr>';
+    for (var ndi = 0; ndi < negatedDetails.length; ndi++) {
+      var nd = negatedDetails[ndi];
+      email += '<tr style="border-bottom:1px solid #eee;"><td style="padding:4px 6px;">' + nd.term + '</td><td style="padding:4px 6px;font-size:11px;color:#555;">' + nd.campaign + '</td><td style="padding:4px 6px;text-align:right;">' + nd.clicks + '</td><td style="padding:4px 6px;text-align:right;">R' + nd.cost.toFixed(0) + '</td><td style="padding:4px 6px;color:#666;font-size:11px;">' + nd.reason + '</td></tr>';
     }
     email += '</table></div>';
   }
 
-  // AI Flagged for Review section
+  // AI Flagged for Review detail section
   if (results.smartReviewTerms.length > 0) {
-    email += '<div style="padding:15px;background:#fff8e1;"><h3 style="color:#e65100;">AI Flagged for Review</h3>';
+    email += '<div style="padding:15px;background:#fff8e1;"><h3 style="color:#e65100;">AI Flagged for Review (' + results.smartReviewTerms.length + ')</h3>';
     email += '<p style="font-size:12px;color:#666;">These terms were flagged as ambiguous by the AI. Please review and manually negate or keep.</p>';
-    email += '<table style="width:100%;border-collapse:collapse;font-size:13px;">';
-    email += '<tr style="background:#fff3e0;"><th style="padding:6px;text-align:left;">Search Term</th><th style="padding:6px;text-align:right;">Cost</th><th style="padding:6px;text-align:right;">Clicks</th><th style="padding:6px;text-align:left;">Reason</th></tr>';
+    email += '<table style="width:100%;border-collapse:collapse;font-size:12px;">';
+    email += '<tr style="background:#fff3e0;"><th style="padding:6px;text-align:left;">Search Term</th><th style="padding:6px;text-align:left;">Campaign</th><th style="padding:6px;text-align:right;">Clicks</th><th style="padding:6px;text-align:right;">Cost</th><th style="padding:6px;text-align:left;">Reason</th></tr>';
     for (var sr = 0; sr < results.smartReviewTerms.length; sr++) {
       var rItem = results.smartReviewTerms[sr];
-      email += '<tr style="border-bottom:1px solid #eee;"><td style="padding:4px 6px;">' + rItem.term + '</td><td style="padding:4px 6px;text-align:right;">R' + rItem.cost.toFixed(0) + '</td><td style="padding:4px 6px;text-align:right;">' + rItem.clicks + '</td><td style="padding:4px 6px;color:#666;">' + rItem.reason + '</td></tr>';
+      email += '<tr style="border-bottom:1px solid #eee;"><td style="padding:4px 6px;">' + rItem.term + '</td><td style="padding:4px 6px;font-size:11px;color:#555;">' + (rItem.campaign || '—') + '</td><td style="padding:4px 6px;text-align:right;">' + rItem.clicks + '</td><td style="padding:4px 6px;text-align:right;">R' + rItem.cost.toFixed(0) + '</td><td style="padding:4px 6px;color:#666;font-size:11px;">' + rItem.reason + '</td></tr>';
     }
     email += '</table></div>';
   }
