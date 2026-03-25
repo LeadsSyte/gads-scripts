@@ -1892,6 +1892,26 @@ function _checkConversionHealth(results) {
 // EMAIL REPORT
 // ============================================
 
+function _buildDetailTable(title, bgColor, headers, rows, formatRow) {
+  if (!rows || rows.length === 0) return '';
+  var html = '<div style="padding:15px;"><h3 style="color:#333;font-size:15px;margin:0 0 8px;">' + title + '</h3>';
+  html += '<table style="width:100%;border-collapse:collapse;font-size:13px;">';
+  html += '<tr style="background:' + bgColor + ';">';
+  for (var h = 0; h < headers.length; h++) {
+    var align = h === 0 ? 'left' : 'right';
+    html += '<th style="padding:6px;text-align:' + align + ';">' + headers[h] + '</th>';
+  }
+  html += '</tr>';
+  for (var r = 0; r < rows.length; r++) {
+    html += '<tr style="border-bottom:1px solid #eee;">' + formatRow(rows[r]) + '</tr>';
+  }
+  html += '</table></div>';
+  return html;
+}
+
+function _tdL(v) { return '<td style="padding:4px 6px;">' + v + '</td>'; }
+function _tdR(v) { return '<td style="padding:4px 6px;text-align:right;">' + v + '</td>'; }
+
 function _sendReport(results, duration) {
   var mode = CONFIG.PREVIEW_MODE ? 'PREVIEW' : 'LIVE';
   var accountName = AdsApp.currentAccount().getName();
@@ -1953,6 +1973,74 @@ function _sendReport(results, duration) {
   email += '<tr><td style="padding:4px 8px;">Budget Alerts</td><td style="text-align:right;font-weight:bold;">' + results.budgetAlerts.length + '</td></tr>';
   email += '<tr><td style="padding:4px 8px;">Errors</td><td style="text-align:right;font-weight:bold;">' + results.errors.length + '</td></tr>';
   email += '</table></div>';
+
+  // === ACTION DETAIL TABLES ===
+
+  // Lead Gen details
+  email += _buildDetailTable('Keywords Paused', '#e3f2fd',
+    ['Keyword', 'Campaign', 'Ad Group', 'Spend'],
+    results.keywordsPaused, function(i) {
+      return _tdL(i.keyword) + _tdL(i.campaign) + _tdL(i.adGroup) + _tdR('R' + i.spend.toFixed(0));
+    });
+
+  email += _buildDetailTable('Search Terms Negated', '#e3f2fd',
+    ['Search Term', 'Campaign', 'Spend'],
+    results.searchTermsNegated, function(i) {
+      return _tdL(i.searchTerm) + _tdL(i.campaign) + _tdR('R' + i.spend.toFixed(0));
+    });
+
+  email += _buildDetailTable('Winners Promoted to Exact Match', '#e3f2fd',
+    ['Search Term', 'Campaign', 'Conversions', 'CVR'],
+    results.winnersPromoted, function(i) {
+      return _tdL(i.searchTerm) + _tdL(i.campaign) + _tdR(i.conversions) + _tdR((i.cvr * 100).toFixed(1) + '%');
+    });
+
+  // Ecommerce details
+  email += _buildDetailTable('Ecom Keywords Paused (ROAS)', '#e8f5e9',
+    ['Keyword', 'Campaign', 'Spend', 'Revenue', 'ROAS'],
+    results.ecomKeywordsPaused, function(i) {
+      return _tdL(i.keyword) + _tdL(i.campaign) + _tdR('R' + i.spend.toFixed(0)) + _tdR('R' + i.revenue.toFixed(0)) + _tdR(i.roas.toFixed(2));
+    });
+
+  email += _buildDetailTable('Ecom Search Terms Negated', '#e8f5e9',
+    ['Search Term', 'Campaign', 'Spend', 'Revenue', 'ROAS'],
+    results.ecomSearchTermsNegated, function(i) {
+      return _tdL(i.searchTerm) + _tdL(i.campaign) + _tdR('R' + i.spend.toFixed(0)) + _tdR('R' + i.revenue.toFixed(0)) + _tdR(i.roas.toFixed(2));
+    });
+
+  email += _buildDetailTable('Ecom Winners Promoted', '#e8f5e9',
+    ['Search Term', 'Campaign', 'Revenue', 'ROAS'],
+    results.ecomWinnersPromoted, function(i) {
+      return _tdL(i.searchTerm) + _tdL(i.campaign) + _tdR('R' + i.revenue.toFixed(0)) + _tdR(i.roas.toFixed(2));
+    });
+
+  // Low QS details
+  email += _buildDetailTable('Low Quality Score Keywords Paused', '#e0f2f1',
+    ['Keyword', 'QS', 'Campaign', 'Ad Group', 'Spend'],
+    results.lowQsPaused, function(i) {
+      return _tdL(i.keyword) + _tdR(i.qualityScore) + _tdL(i.campaign) + _tdL(i.adGroup) + _tdR('R' + i.spend.toFixed(0));
+    });
+
+  // N-gram details
+  email += _buildDetailTable('N-gram Negatives', '#e0f2f1',
+    ['Word', 'Total Cost', 'Term Count', 'Sample Terms'],
+    results.ngramNegatives, function(i) {
+      var samples = (i.sampleTerms || []).slice(0, 3).join(', ');
+      return _tdL(i.word) + _tdR('R' + i.totalCost.toFixed(0)) + _tdR(i.termCount) + _tdL(samples);
+    });
+
+  // Informational & Irrelevant details
+  email += _buildDetailTable('Informational Search Terms Blocked', '#fce4ec',
+    ['Negative Phrase Added', 'Matched Search Term'],
+    results.informationalBlocked, function(i) {
+      return _tdL(i.phrase) + _tdL(i.matchedTerm);
+    });
+
+  email += _buildDetailTable('Irrelevant Search Terms Blocked', '#fce4ec',
+    ['Blocked Term', 'Matched Search Term'],
+    results.irrelevantBlocked, function(i) {
+      return _tdL(i.phrase) + _tdL(i.matchedTerm);
+    });
 
   // AI Smart Negation details
   if (results.smartNegated.length > 0) {
