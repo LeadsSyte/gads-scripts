@@ -1,4 +1,4 @@
-import { createClient } from '@supabase/supabase-js';
+import { createClient as createSupabaseClient } from '@supabase/supabase-js';
 
 let supabase = null;
 
@@ -9,7 +9,7 @@ export function getDb() {
     if (!url || !key) {
       throw new Error('Missing SUPABASE_URL or SUPABASE_SERVICE_KEY environment variables');
     }
-    supabase = createClient(url, key);
+    supabase = createSupabaseClient(url, key);
   }
   return supabase;
 }
