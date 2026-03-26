@@ -1,5 +1,5 @@
 /**
- * SYTE OPTIMIZATION CORE v4.3.0
+ * SYTE OPTIMIZATION CORE v4.3.1
  * ============================
  * This file is the CORE engine — hosted centrally and fetched by each client's loader script.
  * DO NOT paste this into Google Ads Scripts directly.
@@ -13,7 +13,12 @@
  * When you improve this core, ALL client accounts get the update on their next scheduled run.
  *
  * Author: Syte Digital Agency (syte.co.za)
- * Version: 4.3.0
+ * Version: 4.3.1
+ *
+ * CHANGELOG v4.3.1:
+ * - Baked-in Anthropic API key as fallback (no more sheet dependency for AI features)
+ * - NEW: _writeDailyDigestRow() — writes summary to DailyDigest tab after each run
+ * - NEW: daily_digest.js — standalone script that sends one consolidated email per day
  *
  * CHANGELOG v4.3.0 — ALL NEGATION THROUGH AI:
  * - BREAKING: Removed blind spend-threshold negation (_negativeHighSpendSearchTerms)
@@ -209,6 +214,10 @@ var INFORMATIONAL_PATTERNS = [
 
 var ACTIVE_KEYWORDS = {};  // Populated once at start of runOptimization()
 var CONVERTING_SEARCH_TERMS = {};  // Search terms with conversions in lookback window
+
+// Default Anthropic API key — fallback when CONFIG.ANTHROPIC_API_KEY is not set by loader or sheet.
+// To rotate: update this value and push to GitHub. All accounts pick it up on next run.
+var _DEFAULT_ANTHROPIC_KEY = 'PASTE_KEY_HERE';  // Replace with actual sk-ant-api03-... key
 
 /**
  * Builds a set of all active keyword texts in the account.
@@ -892,7 +901,7 @@ function _logChange(change) {
       CONFIG.PREVIEW_MODE ? 'PREVIEW' : 'PENDING',  // outcome — PREVIEW tagged, LIVE backfilled in 14 days
       '',                  // outcome_checked_date
       '',                  // outcome_notes
-      'v4.3.0'            // script_version
+      'v4.3.1'            // script_version
     ]);
   } catch (e) {
     var writeErr = 'Change log write failed: ' + e.message;
@@ -1360,7 +1369,7 @@ function _sendWeeklyReviewEmail(accountName, claudeResponse, changeLogSummary) {
   // Header
   email += '<div style="background:linear-gradient(135deg,#1a1a2e,#16213e);color:white;padding:24px;border-radius:8px 8px 0 0;">';
   email += '<h1 style="margin:0;font-size:22px;">🤖 Syte Script — Weekly Self-Improvement Report</h1>';
-  email += '<p style="margin:6px 0 0;opacity:0.8;">' + accountName + ' | ' + today + ' | Core v4.3.0</p>';
+  email += '<p style="margin:6px 0 0;opacity:0.8;">' + accountName + ' | ' + today + ' | Core v4.3.1</p>';
   email += '</div>';
 
   // Change log stats banner
@@ -2160,7 +2169,7 @@ function _checkConversionHealth(results) {
       if (CONFIG.SEND_EMAIL !== false) {
         var recipients = CONFIG.EMAIL_ADDRESSES || [CONFIG.EMAIL_RECIPIENT || 'michaelh@syte.co.za'];
         if (typeof recipients === 'string') recipients = [recipients];
-        MailApp.sendEmail({ to: recipients.join(','), subject: '🚨 URGENT: ' + CONFIG.CLIENT_NAME + ' — Conversions Dropped ' + dropPct + '%', body: alertMsg + '\n\nAction needed:\n1. Check conversion tags in GTM\n2. Test the conversion flow manually\n3. Check for landing page errors\n4. Review any recent website changes\n\n— Syte Optimization Script v4.3.0' });
+        MailApp.sendEmail({ to: recipients.join(','), subject: '🚨 URGENT: ' + CONFIG.CLIENT_NAME + ' — Conversions Dropped ' + dropPct + '%', body: alertMsg + '\n\nAction needed:\n1. Check conversion tags in GTM\n2. Test the conversion flow manually\n3. Check for landing page errors\n4. Review any recent website changes\n\n— Syte Optimization Script v4.3.1' });
       }
     }
 
@@ -2387,6 +2396,79 @@ function _auditAndRepairNegatives(results) {
 
 
 // ============================================
+// DAILY DIGEST — SUMMARY ROW (v4.3.1)
+// ============================================
+
+/**
+ * Writes a one-row summary of this run to the "DailyDigest" tab in the master sheet.
+ * A separate digest script (daily_digest.js) reads these rows and sends a consolidated daily email.
+ */
+function _writeDailyDigestRow(results, duration) {
+  if (!CONFIG.MASTER_SHEET_ID && !CONFIG.SHEET_URL) return;
+
+  // Ensure MASTER_SHEET_ID is set
+  if (!CONFIG.MASTER_SHEET_ID && CONFIG.SHEET_URL) {
+    var match = CONFIG.SHEET_URL.match(/\/d\/([a-zA-Z0-9_-]+)/);
+    if (match) CONFIG.MASTER_SHEET_ID = match[1];
+  }
+  if (!CONFIG.MASTER_SHEET_ID) return;
+
+  try {
+    var ss = SpreadsheetApp.openById(CONFIG.MASTER_SHEET_ID);
+    var sheet = ss.getSheetByName('DailyDigest');
+    if (!sheet) {
+      sheet = ss.insertSheet('DailyDigest');
+      sheet.getRange(1, 1, 1, 20).setValues([[
+        'date', 'time', 'account', 'mode', 'run_mode',
+        'duration_s', 'keywords_paused', 'search_terms_negated',
+        'ai_negated', 'ai_review', 'winners_promoted',
+        'audit_findings', 'schedule_adjustments', 'device_adjustments',
+        'geo_adjustments', 'ngram_negatives', 'low_qs_paused',
+        'conv_this_week', 'conv_last_week', 'errors'
+      ]]);
+      sheet.getRange(1, 1, 1, 20).setFontWeight('bold');
+      sheet.setFrozenRows(1);
+    }
+
+    var now = new Date();
+    var tz = AdsApp.currentAccount().getTimeZone();
+    var dateStr = Utilities.formatDate(now, tz, 'yyyy-MM-dd');
+    var timeStr = Utilities.formatDate(now, tz, 'HH:mm');
+    var accountName = CONFIG.CLIENT_NAME || AdsApp.currentAccount().getName();
+
+    var kwPaused = (results.keywordsPaused ? results.keywordsPaused.length : 0) +
+                   (results.ecomKeywordsPaused ? results.ecomKeywordsPaused.length : 0);
+    var stNegated = results.searchTermsNegated ? results.searchTermsNegated.length : 0;
+    var convThis = results.conversionHealth ? results.conversionHealth.thisWeek : 0;
+    var convLast = results.conversionHealth ? results.conversionHealth.lastWeek : 0;
+
+    sheet.appendRow([
+      dateStr, timeStr, accountName, CONFIG.ACCOUNT_MODE,
+      CONFIG.PREVIEW_MODE ? 'PREVIEW' : 'LIVE',
+      duration.toFixed(1),
+      kwPaused, stNegated,
+      results.smartNegated ? results.smartNegated.length : 0,
+      results.smartReviewTerms ? results.smartReviewTerms.length : 0,
+      (results.winnersPromoted ? results.winnersPromoted.length : 0) +
+        (results.ecomWinnersPromoted ? results.ecomWinnersPromoted.length : 0),
+      results.auditRepairs ? results.auditRepairs.length : 0,
+      results.scheduleAdjustments ? results.scheduleAdjustments.length : 0,
+      results.deviceAdjustments ? results.deviceAdjustments.length : 0,
+      results.geoAdjustments ? results.geoAdjustments.length : 0,
+      results.ngramNegatives ? results.ngramNegatives.length : 0,
+      results.lowQsPaused ? results.lowQsPaused.length : 0,
+      convThis, convLast,
+      results.errors ? results.errors.length : 0
+    ]);
+
+    _log('INFO', 'Daily digest row written');
+  } catch (e) {
+    _log('WARN', 'Could not write daily digest row: ' + e.message);
+  }
+}
+
+
+// ============================================
 // EMAIL REPORT
 // ============================================
 
@@ -2397,7 +2479,7 @@ function _sendReport(results, duration) {
 
   var email = '<html><body style="font-family:Arial,sans-serif;max-width:800px;margin:0 auto;color:#333;">';
   email += '<div style="background:linear-gradient(135deg,#1a1a2e,#16213e);color:white;padding:20px;border-radius:8px 8px 0 0;">';
-  email += '<h1 style="margin:0;font-size:20px;">Syte Optimization Report v4.3.0</h1>';
+  email += '<h1 style="margin:0;font-size:20px;">Syte Optimization Report v4.3.1</h1>';
   email += '<p style="margin:5px 0 0;opacity:0.8;">' + accountName + ' | ' + today + ' | ' + mode + ' | ' + CONFIG.ACCOUNT_MODE + '</p></div>';
 
   if (results.conversionAlert) {
@@ -2611,11 +2693,11 @@ function _sendReport(results, duration) {
     email += '</ul></div>';
   }
 
-  email += '<div style="padding:15px;color:#666;font-size:12px;"><p>Completed in ' + duration.toFixed(1) + 's | Core v4.3.0 | Syte Digital Agency</p></div></body></html>';
+  email += '<div style="padding:15px;color:#666;font-size:12px;"><p>Completed in ' + duration.toFixed(1) + 's | Core v4.3.1 | Syte Digital Agency</p></div></body></html>';
 
   var recipients = CONFIG.EMAIL_ADDRESSES || [CONFIG.EMAIL_RECIPIENT || 'michaelh@syte.co.za'];
   if (typeof recipients === 'string') recipients = [recipients];
-  MailApp.sendEmail({ to: recipients.join(','), subject: mode + ' Syte v4.3.0 | ' + accountName + ' | ' + CONFIG.ACCOUNT_MODE, htmlBody: email });
+  MailApp.sendEmail({ to: recipients.join(','), subject: mode + ' Syte v4.3.1 | ' + accountName + ' | ' + CONFIG.ACCOUNT_MODE, htmlBody: email });
 }
 
 
@@ -2661,7 +2743,7 @@ function runOptimization() {
   var startTime = new Date();
 
   _log('INFO', '═══════════════════════════════════════════');
-  _log('INFO', 'SYTE OPTIMIZATION CORE v4.3.0');
+  _log('INFO', 'SYTE OPTIMIZATION CORE v4.3.1');
   _log('INFO', 'Client: ' + (CONFIG.CLIENT_NAME || AdsApp.currentAccount().getName()));
   _log('INFO', 'Mode: ' + CONFIG.ACCOUNT_MODE);
   _log('INFO', 'Run: ' + (CONFIG.PREVIEW_MODE ? 'PREVIEW (no changes)' : 'LIVE'));
@@ -2699,6 +2781,12 @@ function runOptimization() {
 
   // === LOAD SHARED CONFIG FROM SHEET (v4.2.1) ===
   _loadSharedConfig();
+
+  // Fallback: use baked-in key if sheet/loader didn't provide one
+  if (!CONFIG.ANTHROPIC_API_KEY && _DEFAULT_ANTHROPIC_KEY && _DEFAULT_ANTHROPIC_KEY !== 'PASTE_KEY_HERE') {
+    CONFIG.ANTHROPIC_API_KEY = _DEFAULT_ANTHROPIC_KEY;
+    _log('INFO', 'Using default Anthropic API key (baked into core)');
+  }
 
   // === CONFIG VALIDATION (runs after shared config so it sees sheet-loaded keys) ===
   _log('INFO', '\n=== CONFIG VALIDATION ===');
@@ -2789,6 +2877,9 @@ function runOptimization() {
 
   var duration = (new Date() - startTime) / 1000;
   _log('INFO', 'Script completed in ' + duration.toFixed(1) + ' seconds');
+
+  // Write summary row for daily digest
+  _writeDailyDigestRow(results, duration);
 
   if (CONFIG.SEND_EMAIL !== false) _sendReport(results, duration);
 
