@@ -2187,8 +2187,8 @@ function _auditAndRepairNegatives(results) {
           }
         }
 
-        // Check 3: Matches a converting search term
-        if (!removalReason && CONVERTING_SEARCH_TERMS[nkText]) {
+        // Check 3: Matches a converting search term (require 2+ conversions for safety)
+        if (!removalReason && CONVERTING_SEARCH_TERMS[nkText] && CONVERTING_SEARCH_TERMS[nkText] >= 2) {
           removalReason = 'Matches converting search term (' + CONVERTING_SEARCH_TERMS[nkText] + ' conversions in lookback)';
         }
 
@@ -2224,6 +2224,10 @@ function _auditAndRepairNegatives(results) {
   }
 
   // === 7b: Audit ad-group level negatives ===
+  // CRITICAL: ONLY remove ad-group negatives that directly conflict with a
+  // POSITIVE keyword in the SAME ad group. Do NOT remove negatives just because
+  // they match an active keyword in a DIFFERENT ad group — those are intentional
+  // exclusions (informational, job seekers, DIY, brand protection, etc.)
   try {
     var agNegQuery = 'SELECT ad_group_criterion.keyword.text, ad_group_criterion.keyword.match_type, ' +
       'campaign.name, ad_group.name ' +
@@ -2234,9 +2238,9 @@ function _auditAndRepairNegatives(results) {
       'AND ad_group.status = "ENABLED"';
     var agNegSearch = AdsApp.search(agNegQuery);
     var agNegCount = 0;
-    var winnersAdGroupName = CONFIG.EXACT_WINNERS_AD_GROUP_NAME || '[Exact Winners]';
+    var winnersAdGroupName = (CONFIG.EXACT_WINNERS_AD_GROUP_NAME || '[Exact Winners]').toLowerCase();
 
-    while (agNegSearch.hasNext() && agNegCount < 1000) {
+    while (agNegSearch.hasNext() && agNegCount < 500) {
       var agRow = agNegSearch.next();
       var agNegText = agRow.adGroupCriterion.keyword.text.toLowerCase().replace(/[\[\]"]/g, '').trim();
       var agCampaign = agRow.campaign.name;
@@ -2244,59 +2248,56 @@ function _auditAndRepairNegatives(results) {
       agNegCount++;
 
       // Skip exact winner sculpting negatives — these are intentional
-      if (agName !== winnersAdGroupName) {
-        // Check: ad-group negative that matches an active keyword AND has converted
-        var shouldRemove = false;
-        var agRemovalReason = null;
+      if (agName.toLowerCase() === winnersAdGroupName) continue;
 
-        // Direct conflict: negative cancels out a positive keyword in the same ad group
-        if (ACTIVE_KEYWORDS[agNegText]) {
-          agRemovalReason = 'Conflicts with active keyword "' + agNegText + '"';
-          shouldRemove = true;
-        }
+      // ONLY remove if there's a POSITIVE keyword with the exact same text in the SAME ad group
+      var isDirectConflict = false;
+      try {
+        var posCheck = AdsApp.keywords()
+          .withCondition('campaign.name = "' + agCampaign + '"')
+          .withCondition('ad_group.name = "' + agName + '"')
+          .withCondition('ad_group_criterion.keyword.text = "' + agNegText + '"')
+          .withCondition('ad_group_criterion.status = "ENABLED"').get();
+        if (posCheck.hasNext()) isDirectConflict = true;
+      } catch (e) { /* skip */ }
 
-        // Cross-ad-group: blocks a converting search term
-        if (!shouldRemove && CONVERTING_SEARCH_TERMS[agNegText]) {
-          agRemovalReason = 'Blocks converting search term (' + CONVERTING_SEARCH_TERMS[agNegText] + ' conversions)';
-          shouldRemove = true;
-        }
+      if (isDirectConflict) {
+        var agRemovalReason = 'Conflicts with positive keyword "' + agNegText + '" in same ad group';
+        _log('INFO', 'AUDIT REPAIR (AG): "' + agNegText + '" in "' + agCampaign + ' > ' + agName + '" — ' + agRemovalReason);
+        results.auditRepairs.push({
+          action: 'REMOVED_AG_NEGATIVE',
+          entity: agNegText,
+          location: agCampaign + ' > ' + agName,
+          reason: agRemovalReason
+        });
 
-        if (shouldRemove) {
-          _log('INFO', 'AUDIT REPAIR (AG): "' + agNegText + '" in "' + agCampaign + ' > ' + agName + '" — ' + agRemovalReason);
-          results.auditRepairs.push({
-            action: 'REMOVED_AG_NEGATIVE',
-            entity: agNegText,
-            location: agCampaign + ' > ' + agName,
-            reason: agRemovalReason
-          });
+        _logChange({
+          functionName: '_auditAndRepairNegatives',
+          entity: agNegText,
+          entityType: 'AUDIT_REPAIR',
+          campaign: agCampaign,
+          adGroup: agName,
+          reason: 'Removed AG negative: ' + agRemovalReason,
+          spend: 0,
+          conversions: 0
+        });
 
-          _logChange({
-            functionName: '_auditAndRepairNegatives',
-            entity: agNegText,
-            entityType: 'AUDIT_REPAIR',
-            campaign: agCampaign,
-            adGroup: agName,
-            reason: 'Removed AG negative: ' + agRemovalReason,
-            spend: 0,
-            conversions: 0
-          });
-
-          if (isLive) {
-            try {
-              var agIter = AdsApp.adGroups()
-                .withCondition('campaign.name = "' + agCampaign + '"')
-                .withCondition('ad_group.name = "' + agName + '"').get();
-              if (agIter.hasNext()) {
-                var ag = agIter.next();
-                var negKws = ag.negativeKeywords().get();
-                while (negKws.hasNext()) {
-                  var negKw = negKws.next();
-                  if (negKw.getText().toLowerCase().replace(/[\[\]"]/g, '').trim() === agNegText) {
-                    negKw.remove();
-                    break;
-                  }
+        if (isLive) {
+          try {
+            var agIter = AdsApp.adGroups()
+              .withCondition('campaign.name = "' + agCampaign + '"')
+              .withCondition('ad_group.name = "' + agName + '"').get();
+            if (agIter.hasNext()) {
+              var ag = agIter.next();
+              var negKws = ag.negativeKeywords().get();
+              while (negKws.hasNext()) {
+                var negKw = negKws.next();
+                if (negKw.getText().toLowerCase().replace(/[\[\]"]/g, '').trim() === agNegText) {
+                  negKw.remove();
+                  break;
                 }
               }
+            }
             } catch (removeErr) {
               _log('WARN', 'Failed to remove AG negative "' + agNegText + '": ' + removeErr.message);
             }
