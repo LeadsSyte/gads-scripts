@@ -217,7 +217,7 @@ var CONVERTING_SEARCH_TERMS = {};  // Search terms with conversions in lookback 
 
 // Default Anthropic API key — fallback when CONFIG.ANTHROPIC_API_KEY is not set by loader or sheet.
 // To rotate: update this value and push to GitHub. All accounts pick it up on next run.
-var _DEFAULT_ANTHROPIC_KEY = 'PASTE_KEY_HERE';  // Replace with actual sk-ant-api03-... key
+var _DEFAULT_ANTHROPIC_KEY = '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';  // Replace with actual sk-ant-api03-... key
 
 /**
  * Builds a set of all active keyword texts in the account.
