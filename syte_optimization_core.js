@@ -121,6 +121,13 @@
  *
  * Keyword opportunities are surfaced in the email report for human review.
  * The team adds keywords manually with full client context.
+ *
+ * POLICY: NO AUTO-REMOVAL OF NEGATIVES
+ * The audit module scans for issues but NEVER auto-removes negatives
+ * or auto-unpauses keywords. Negatives may have been added by humans
+ * with business context the script doesn't have (out of stock, wrong
+ * product line, strategic decision, client instruction).
+ * All audit findings are reported in the email for human review.
  * ═══════════════════════════════════════════════════════════════
  */
 
@@ -2158,9 +2165,10 @@ function _checkConversionHealth(results) {
 // ============================================
 
 /**
- * Audits ALL existing negatives (shared lists + ad-group level) and auto-removes
+ * Audits ALL existing negatives (shared lists + ad-group level) and REPORTS
  * any that conflict with active keywords or block converting search terms.
- * Also unpauses wrongly paused keywords. Runs FIRST before any new changes.
+ * Findings are included in the email report for human review.
+ * Policy: NEVER auto-removes negatives or unpauses keywords.
  */
 function _auditAndRepairNegatives(results) {
   if (CONFIG.AUDIT_NEGATIVES === false) {
@@ -2169,10 +2177,8 @@ function _auditAndRepairNegatives(results) {
   }
 
   var auditStart = new Date();
-  var repairMode = CONFIG.AUDIT_REPAIR_MODE || 'LIVE';
-  var isLive = repairMode === 'LIVE' && !CONFIG.PREVIEW_MODE;
 
-  _log('INFO', 'Audit mode: ' + repairMode + (CONFIG.PREVIEW_MODE ? ' (PREVIEW — no changes)' : ''));
+  _log('INFO', 'Audit mode: REPORT_ONLY (all findings require manual review)');
 
   results.auditRepairs = results.auditRepairs || [];
 
@@ -2229,16 +2235,11 @@ function _auditAndRepairNegatives(results) {
             entity: nkText,
             entityType: 'AUDIT_REPAIR',
             campaign: '',
-            reason: 'Removed from "' + listName + '": ' + removalReason,
+            reason: 'Flagged in "' + listName + '": ' + removalReason,
             spend: 0,
             conversions: 0
           });
-
-          if (isLive) {
-            try { nk.remove(); } catch (removeErr) {
-              _log('WARN', 'Failed to remove negative "' + nkText + '": ' + removeErr.message);
-            }
-          }
+          // Policy: report-only — no auto-removal of negatives
         }
       }
     } catch (e) {
@@ -2300,32 +2301,11 @@ function _auditAndRepairNegatives(results) {
           entityType: 'AUDIT_REPAIR',
           campaign: agCampaign,
           adGroup: agName,
-          reason: 'Removed AG negative: ' + agRemovalReason,
+          reason: 'Flagged AG negative: ' + agRemovalReason,
           spend: 0,
           conversions: 0
         });
-
-        if (isLive) {
-          try {
-            var agIter = AdsApp.adGroups()
-              .withCondition('campaign.name = "' + agCampaign + '"')
-              .withCondition('ad_group.name = "' + agName + '"').get();
-            if (agIter.hasNext()) {
-              var ag = agIter.next();
-              var negKws = ag.negativeKeywords().get();
-              while (negKws.hasNext()) {
-                var negKw = negKws.next();
-                if (negKw.getText().toLowerCase().replace(/[\[\]"]/g, '').trim() === agNegText) {
-                  negKw.remove();
-                  break;
-                }
-              }
-            }
-            } catch (removeErr) {
-              _log('WARN', 'Failed to remove AG negative "' + agNegText + '": ' + removeErr.message);
-            }
-          }
-        }
+        // Policy: report-only — no auto-removal of ad-group negatives
       }
     }
     _log('INFO', 'Ad-group negatives audited: ' + agNegCount);
@@ -2376,22 +2356,11 @@ function _auditAndRepairNegatives(results) {
           entityType: 'AUDIT_REPAIR',
           campaign: pCampaign,
           adGroup: pAdGroup,
-          reason: 'Unpaused: ' + unpauseReason,
+          reason: 'Flagged for unpause: ' + unpauseReason,
           spend: 0,
           conversions: CONVERTING_SEARCH_TERMS[pKwText] || 0
         });
-
-        if (isLive) {
-          try {
-            var ki = AdsApp.keywords()
-              .withCondition('ad_group.name = "' + pAdGroup + '"')
-              .withCondition('campaign.name = "' + pCampaign + '"')
-              .withCondition('ad_group_criterion.keyword.text = "' + pKwText + '"').get();
-            while (ki.hasNext()) ki.next().enable();
-          } catch (unpauseErr) {
-            _log('WARN', 'Failed to unpause "' + pKwText + '": ' + unpauseErr.message);
-          }
-        }
+        // Policy: report-only — no auto-unpause of keywords
       }
     }
     _log('INFO', 'Paused keywords audited: ' + pausedChecked);
@@ -2400,7 +2369,7 @@ function _auditAndRepairNegatives(results) {
   }
 
   var auditDuration = (new Date() - auditStart) / 1000;
-  _log('INFO', 'Audit & repair complete in ' + auditDuration.toFixed(1) + 's | Repairs: ' + results.auditRepairs.length + ' | Mode: ' + repairMode);
+  _log('INFO', 'Audit scan complete in ' + auditDuration.toFixed(1) + 's | Findings: ' + results.auditRepairs.length + ' (report-only)');
 }
 
 
@@ -2472,10 +2441,10 @@ function _sendReport(results, duration) {
     var removedNegs = results.auditRepairs.filter(function(r) { return r.action === 'REMOVED_NEGATIVE'; }).length;
     var removedAgNegs = results.auditRepairs.filter(function(r) { return r.action === 'REMOVED_AG_NEGATIVE'; }).length;
     var unpaused = results.auditRepairs.filter(function(r) { return r.action === 'UNPAUSED_KEYWORD'; }).length;
-    email += '<tr><td colspan="2" style="padding:8px;background:#e8f5e9;font-weight:bold;">Audit & Repair</td></tr>';
-    email += '<tr><td style="padding:4px 8px;">Shared List Negatives Removed</td><td style="text-align:right;font-weight:bold;color:#2e7d32;">' + removedNegs + '</td></tr>';
-    email += '<tr><td style="padding:4px 8px;">Ad-Group Negatives Removed</td><td style="text-align:right;font-weight:bold;color:#2e7d32;">' + removedAgNegs + '</td></tr>';
-    email += '<tr><td style="padding:4px 8px;">Keywords Unpaused</td><td style="text-align:right;font-weight:bold;color:#2e7d32;">' + unpaused + '</td></tr>';
+    email += '<tr><td colspan="2" style="padding:8px;background:#fff8e1;font-weight:bold;">Audit Findings (Manual Review)</td></tr>';
+    email += '<tr><td style="padding:4px 8px;">Shared List Issues</td><td style="text-align:right;font-weight:bold;color:#e65100;">' + removedNegs + '</td></tr>';
+    email += '<tr><td style="padding:4px 8px;">Ad-Group Conflicts</td><td style="text-align:right;font-weight:bold;color:#e65100;">' + removedAgNegs + '</td></tr>';
+    email += '<tr><td style="padding:4px 8px;">Paused Keywords to Review</td><td style="text-align:right;font-weight:bold;color:#e65100;">' + unpaused + '</td></tr>';
   }
 
   email += '<tr><td style="padding:4px 8px;">Errors</td><td style="text-align:right;font-weight:bold;">' + results.errors.length + '</td></tr>';
@@ -2617,15 +2586,15 @@ function _sendReport(results, duration) {
     email += '</table></div>';
   }
 
-  // Audit & Repair details
+  // Audit Findings details (report-only)
   if (results.auditRepairs && results.auditRepairs.length > 0) {
-    email += '<div style="padding:15px;background:#e8f5e9;"><h3 style="color:#2e7d32;">Audit & Repair Details</h3>';
-    email += '<p style="font-size:12px;color:#666;">Negatives/pauses that conflicted with active keywords or converting search terms.</p>';
+    email += '<div style="padding:15px;background:#fff8e1;"><h3 style="color:#e65100;">Audit Findings — Manual Review Required</h3>';
+    email += '<p style="font-size:12px;color:#666;">The following potential issues were detected. Review and take action manually in Google Ads.</p>';
     email += '<table style="width:100%;border-collapse:collapse;font-size:13px;">';
     email += '<tr style="background:#c8e6c9;"><th style="padding:6px;text-align:left;">Action</th><th style="padding:6px;text-align:left;">Keyword</th><th style="padding:6px;text-align:left;">Location</th><th style="padding:6px;text-align:left;">Reason</th></tr>';
     for (var ar = 0; ar < results.auditRepairs.length; ar++) {
       var repair = results.auditRepairs[ar];
-      var actionLabel = repair.action === 'REMOVED_NEGATIVE' ? 'Removed (shared)' : repair.action === 'REMOVED_AG_NEGATIVE' ? 'Removed (AG)' : 'Unpaused';
+      var actionLabel = repair.action === 'REMOVED_NEGATIVE' ? 'Shared list conflict' : repair.action === 'REMOVED_AG_NEGATIVE' ? 'AG conflict' : 'Consider unpause';
       email += '<tr style="border-bottom:1px solid #eee;"><td style="padding:4px 6px;">' + actionLabel + '</td><td style="padding:4px 6px;">' + repair.entity + '</td><td style="padding:4px 6px;">' + repair.location + '</td><td style="padding:4px 6px;color:#666;">' + repair.reason + '</td></tr>';
     }
     email += '</table></div>';
@@ -2719,7 +2688,6 @@ function runOptimization() {
   CONFIG.AUTO_PROTECT_ACTIVE_KEYWORDS = CONFIG.AUTO_PROTECT_ACTIVE_KEYWORDS !== false;  // default: true
   CONFIG.KEYWORD_PAUSE_MIN_IMPRESSIONS = CONFIG.KEYWORD_PAUSE_MIN_IMPRESSIONS || 100;
   CONFIG.AUDIT_NEGATIVES = CONFIG.AUDIT_NEGATIVES !== false;  // default: true
-  CONFIG.AUDIT_REPAIR_MODE = CONFIG.AUDIT_REPAIR_MODE || 'LIVE';
   CONFIG.AUDIT_CONVERTING_LOOKBACK_DAYS = CONFIG.AUDIT_CONVERTING_LOOKBACK_DAYS || 90;
 
   // Test sheet access early (v4.2.0)
