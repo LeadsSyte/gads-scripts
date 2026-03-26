@@ -95,7 +95,6 @@ var CONFIG = {
 
   // --- AUDIT & REPAIR (v4.2.0) ---
   AUDIT_NEGATIVES: true,                 // Enable negative keyword audit each run
-  AUDIT_REPAIR_MODE: 'LIVE',             // 'LIVE' = auto-fix, 'REPORT_ONLY' = just flag in email
   AUDIT_CONVERTING_LOOKBACK_DAYS: 90,    // How far back to check for conversions
 
   // --- AUTO-OPTIMIZATIONS ---
