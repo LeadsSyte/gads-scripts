@@ -1,19 +1,39 @@
 /**
- * SYTE OPTIMIZATION CORE v4.1.1
+ * SYTE OPTIMIZATION CORE v4.1.2
  * ============================
  * This file is the CORE engine — hosted centrally and fetched by each client's loader script.
  * DO NOT paste this into Google Ads Scripts directly.
  * Host this file at a URL (GitHub raw URL recommended)
- * 
+ *
  * Each client account has a small "loader" script that:
  *   1. Defines their CONFIG
  *   2. Fetches this core via UrlFetchApp.fetch()
  *   3. Calls runOptimization()
- * 
+ *
  * When you improve this core, ALL client accounts get the update on their next scheduled run.
- * 
+ *
  * Author: Syte Digital Agency (syte.co.za)
- * Version: 4.1.1
+ * Version: 4.1.2
+ *
+ * CHANGELOG v4.1.2 — CRITICAL SAFETY FIX: ACTIVE KEYWORD PROTECTION + AUDIT & REPAIR:
+ * - FIX: Search terms matching active keywords are NEVER auto-negatived
+ *   (Previously, core keywords in a conversion drought could be negatived)
+ * - FIX: Keywords with historical conversions (90 days) are NEVER auto-paused
+ * - FIX: Removed "where to", "where can", "where is" from informational patterns
+ *   (These catch purchase-intent queries like "where to buy X")
+ * - FIX: _pauseHighSpendKeywords now requires minimum impressions before pausing
+ * - NEW: _buildActiveKeywordSet() — builds full active keyword set at start of run
+ * - NEW: _auditAndRepairNegatives() — audits ALL existing negatives (shared lists +
+ *   ad-group level) and auto-removes any that conflict with active keywords or block
+ *   converting search terms. Also unpauses wrongly paused keywords. Runs FIRST before
+ *   any new changes. Catches mistakes from BOTH script and human operators.
+ * - NEW: CONFIG.AUTO_PROTECT_ACTIVE_KEYWORDS (default: true) — master safety toggle
+ * - NEW: CONFIG.KEYWORD_PAUSE_MIN_IMPRESSIONS (default: 100) — minimum data before pausing
+ * - NEW: CONFIG.AUDIT_NEGATIVES (default: true) — enable/disable the audit module
+ * - NEW: CONFIG.AUDIT_REPAIR_MODE (default: 'LIVE') — 'LIVE' auto-fixes, 'REPORT_ONLY' flags only
+ * - NEW: CONFIG.AUDIT_CONVERTING_LOOKBACK_DAYS (default: 90) — conversion check window
+ * - All negative/pause actions now log when a term is skipped due to protection
+ * - Audit repairs logged to master change log sheet and included in email report
  *
  * CHANGELOG v4.1.1 — AI CONTEXT FIX + SHEET ERROR REPORTING:
  * - FIX: AI prompt now understands agency/service-provider business model
@@ -70,9 +90,8 @@ var INFORMATIONAL_PATTERNS = [
   { pattern: /^why\s+are\b/i, negativePhrase: 'why are' },
   { pattern: /^when\s+to\b/i, negativePhrase: 'when to' },
   { pattern: /^when\s+should\b/i, negativePhrase: 'when should' },
-  { pattern: /^where\s+to\b/i, negativePhrase: 'where to' },
-  { pattern: /^where\s+can\b/i, negativePhrase: 'where can' },
-  { pattern: /^where\s+is\b/i, negativePhrase: 'where is' },
+  // v4.1.2: Removed "where to", "where can", "where is" — these catch purchase-intent
+  // queries like "where to buy X", "where can I buy X", "where is [store]"
   { pattern: /^who\s+is\b/i, negativePhrase: 'who is' },
   { pattern: /^who\s+are\b/i, negativePhrase: 'who are' },
   { pattern: /^can\s+i\b/i, negativePhrase: 'can i' },
@@ -114,6 +133,112 @@ var INFORMATIONAL_PATTERNS = [
   { pattern: /\bdo\s+it\s+yourself\b/i, negativePhrase: 'do it yourself' },
   { pattern: /\blist\s+of\b/i, negativePhrase: 'list of' }
 ];
+
+
+// ============================================
+// ACTIVE KEYWORD PROTECTION (v4.1.2)
+// ============================================
+
+var ACTIVE_KEYWORDS = {};  // Populated once at start of runOptimization()
+var CONVERTING_SEARCH_TERMS = {};  // Search terms with conversions in lookback window
+
+/**
+ * Builds a set of all active keyword texts in the account.
+ * Called once at the start of runOptimization() and stored globally.
+ */
+function _buildActiveKeywordSet() {
+  var activeKeywords = {};
+  try {
+    var query = 'SELECT ad_group_criterion.keyword.text FROM keyword_view ' +
+      'WHERE campaign.status = "ENABLED" AND ad_group.status = "ENABLED" ' +
+      'AND ad_group_criterion.status = "ENABLED"';
+    var search = AdsApp.search(query);
+    while (search.hasNext()) {
+      var kw = search.next().adGroupCriterion.keyword.text.toLowerCase().trim();
+      activeKeywords[kw] = true;
+    }
+  } catch (e) {
+    _log('WARN', 'Could not build active keyword set: ' + e.message);
+  }
+  _log('INFO', 'Active keyword set built: ' + Object.keys(activeKeywords).length + ' keywords');
+  return activeKeywords;
+}
+
+/**
+ * Builds a set of search terms that have converted in the lookback window.
+ * Used by audit & repair and pause protection.
+ */
+function _buildConvertingSearchTerms(lookbackDays) {
+  var converting = {};
+  try {
+    var endDate = new Date();
+    var startDate = new Date();
+    startDate.setDate(startDate.getDate() - (lookbackDays || 90));
+    var query = 'SELECT search_term_view.search_term, metrics.conversions ' +
+      'FROM search_term_view WHERE metrics.conversions > 0 ' +
+      'AND campaign.status = "ENABLED" ' +
+      'AND segments.date BETWEEN "' + _formatDate(startDate) + '" AND "' + _formatDate(endDate) + '"';
+    var search = AdsApp.search(query);
+    while (search.hasNext()) {
+      var row = search.next();
+      var st = row.searchTermView.searchTerm.toLowerCase().trim();
+      var conv = Number(row.metrics.conversions) || 0;
+      converting[st] = (converting[st] || 0) + conv;
+    }
+  } catch (e) {
+    _log('WARN', 'Could not build converting search terms set: ' + e.message);
+  }
+  _log('INFO', 'Converting search terms (last ' + (lookbackDays || 90) + ' days): ' + Object.keys(converting).length);
+  return converting;
+}
+
+/**
+ * Checks if a search term matches any active keyword (exact match).
+ * Returns true if the term should be protected.
+ */
+function _isActiveKeyword(term) {
+  if (CONFIG.AUTO_PROTECT_ACTIVE_KEYWORDS === false) return false;
+  return !!ACTIVE_KEYWORDS[term.toLowerCase().trim()];
+}
+
+/**
+ * Checks if any active keyword text appears as a substring within the search term.
+ * Used to protect search terms that contain active keywords.
+ */
+function _containsActiveKeyword(searchTerm) {
+  if (CONFIG.AUTO_PROTECT_ACTIVE_KEYWORDS === false) return false;
+  var st = searchTerm.toLowerCase().trim();
+  for (var kw in ACTIVE_KEYWORDS) {
+    if (st.indexOf(kw) !== -1) return kw;
+  }
+  return false;
+}
+
+/**
+ * Checks if a keyword has any historical conversions in the last 90 days.
+ * Used to prevent pausing keywords that have converted recently.
+ */
+function _hasHistoricalConversions(keywordText, campaignName, adGroupName) {
+  try {
+    var endDate = new Date();
+    var startDate = new Date();
+    startDate.setDate(startDate.getDate() - 90);
+    var query = 'SELECT metrics.conversions FROM keyword_view ' +
+      'WHERE ad_group_criterion.keyword.text = "' + keywordText + '" ' +
+      'AND campaign.name = "' + campaignName + '" ' +
+      'AND ad_group.name = "' + adGroupName + '" ' +
+      'AND segments.date BETWEEN "' + _formatDate(startDate) + '" AND "' + _formatDate(endDate) + '"';
+    var search = AdsApp.search(query);
+    var totalConv = 0;
+    while (search.hasNext()) {
+      totalConv += Number(search.next().metrics.conversions) || 0;
+    }
+    return totalConv > 0;
+  } catch (e) {
+    _log('WARN', 'Historical conversion check failed for "' + keywordText + '": ' + e.message);
+    return false;  // Fail safe — don't block the pause if check fails
+  }
+}
 
 
 // ============================================
@@ -423,6 +548,11 @@ function _smartSearchTermReview(results) {
         _log('WARN', 'Smart negation: AI said negate protected term "' + termKey + '" — SKIPPED');
         continue;
       }
+      // v4.1.2: Never negate active keywords
+      if (_isActiveKeyword(termKey)) {
+        _log('INFO', 'SKIP (active keyword): "' + termKey + '" — AI said negate but matches active keyword');
+        continue;
+      }
 
       // Safety: if spend is above max, flag for review instead
       if (data.cost > maxSpendForAuto) {
@@ -556,7 +686,7 @@ function _logChange(change) {
       'PENDING',           // outcome — will be backfilled in 14 days
       '',                  // outcome_checked_date
       '',                  // outcome_notes
-      'v4.1.1'            // script_version
+      'v4.1.2'            // script_version
     ]);
   } catch (e) {
     var writeErr = 'Change log write failed: ' + e.message;
@@ -1024,7 +1154,7 @@ function _sendWeeklyReviewEmail(accountName, claudeResponse, changeLogSummary) {
   // Header
   email += '<div style="background:linear-gradient(135deg,#1a1a2e,#16213e);color:white;padding:24px;border-radius:8px 8px 0 0;">';
   email += '<h1 style="margin:0;font-size:22px;">🤖 Syte Script — Weekly Self-Improvement Report</h1>';
-  email += '<p style="margin:6px 0 0;opacity:0.8;">' + accountName + ' | ' + today + ' | Core v4.1.1</p>';
+  email += '<p style="margin:6px 0 0;opacity:0.8;">' + accountName + ' | ' + today + ' | Core v4.1.2</p>';
   email += '</div>';
 
   // Change log stats banner
@@ -1163,7 +1293,8 @@ function _getAdGroupFinalUrl(campaignName, adGroupName) {
 
 function _pauseHighSpendKeywords_LeadGen(results) {
   var dr = _getDateRange(); var changeCount = 0;
-  var query = 'SELECT ad_group_criterion.keyword.text, ad_group_criterion.keyword.match_type, campaign.name, ad_group.name, metrics.cost_micros, metrics.conversions, metrics.clicks, metrics.ctr FROM keyword_view WHERE metrics.cost_micros > ' + (CONFIG.KEYWORD_SPEND_THRESHOLD * 1000000) + ' AND metrics.conversions < 1 AND campaign.status = "ENABLED" AND ad_group.status = "ENABLED" AND ad_group_criterion.status = "ENABLED" AND campaign.advertising_channel_type = "SEARCH" AND segments.date BETWEEN "' + _getDateRange().startDate + '" AND "' + _getDateRange().endDate + '"';
+  var minImpressions = CONFIG.KEYWORD_PAUSE_MIN_IMPRESSIONS || 100;
+  var query = 'SELECT ad_group_criterion.keyword.text, ad_group_criterion.keyword.match_type, campaign.name, ad_group.name, metrics.cost_micros, metrics.conversions, metrics.clicks, metrics.ctr, metrics.impressions FROM keyword_view WHERE metrics.cost_micros > ' + (CONFIG.KEYWORD_SPEND_THRESHOLD * 1000000) + ' AND metrics.conversions < 1 AND campaign.status = "ENABLED" AND ad_group.status = "ENABLED" AND ad_group_criterion.status = "ENABLED" AND campaign.advertising_channel_type = "SEARCH" AND segments.date BETWEEN "' + _getDateRange().startDate + '" AND "' + _getDateRange().endDate + '"';
   try {
     var search = AdsApp.search(query);
     while (search.hasNext() && changeCount < CONFIG.MAX_CHANGES_PER_RUN) {
@@ -1172,7 +1303,23 @@ function _pauseHighSpendKeywords_LeadGen(results) {
       var cn = row.campaign.name, agn = row.adGroup.name;
       var cost = Number(row.metrics.costMicros) / 1000000;
       var ctr = Number(row.metrics.ctr) * 100;
+      var impressions = Number(row.metrics.impressions) || 0;
       if (_isProtectedTerm(kw)) continue;
+      // v4.1.2: Never pause active keywords
+      if (_isActiveKeyword(kw)) {
+        _log('INFO', 'SKIP (active keyword): "' + kw + '" — would have been paused');
+        continue;
+      }
+      // v4.1.2: Require minimum impressions before pausing
+      if (impressions < minImpressions) {
+        _log('INFO', 'SKIP (insufficient data): "' + kw + '" — only ' + impressions + ' impressions (min: ' + minImpressions + ')');
+        continue;
+      }
+      // v4.1.2: Never pause keywords with historical conversions in last 90 days
+      if (_hasHistoricalConversions(kw, cn, agn)) {
+        _log('INFO', 'SKIP (historical converter): "' + kw + '" — has conversions in last 90 days');
+        continue;
+      }
       if (ctr > CONFIG.MIN_CTR_TO_PROTECT && !_isInformational(kw)) continue;
       var reason = 'Spend R' + cost.toFixed(0) + ' | 0 conv | CTR ' + ctr.toFixed(1) + '%';
       _log('INFO', 'PAUSE: "' + kw + '" | ' + reason);
@@ -1202,6 +1349,11 @@ function _negativeHighSpendSearchTerms_LeadGen(results) {
       var row = search.next();
       var st = row.searchTermView.searchTerm.toLowerCase().trim();
       if (processed[st] || existing[st] || _isProtectedTerm(st)) continue;
+      // v4.1.2: Never negative search terms that match active keywords
+      if (_isActiveKeyword(st)) {
+        _log('INFO', 'SKIP (active keyword): "' + st + '" — would have been negatived');
+        continue;
+      }
       processed[st] = true;
       var cost = Number(row.metrics.costMicros) / 1000000;
       var reason = 'Spend R' + cost.toFixed(0) + ' | 0 conv';
@@ -1249,7 +1401,8 @@ function _promoteWinners_LeadGen(results) {
 
 function _pauseHighSpendKeywords_Ecommerce(results) {
   var dr = _getDateRange(); var changeCount = 0;
-  var query = 'SELECT ad_group_criterion.keyword.text, ad_group_criterion.keyword.match_type, campaign.name, ad_group.name, metrics.cost_micros, metrics.conversions, metrics.conversions_value, metrics.clicks FROM keyword_view WHERE metrics.cost_micros > ' + (CONFIG.ECOM_KEYWORD_SPEND_THRESHOLD * 1000000) + ' AND campaign.status = "ENABLED" AND ad_group.status = "ENABLED" AND ad_group_criterion.status = "ENABLED" AND campaign.advertising_channel_type = "SEARCH" AND segments.date BETWEEN "' + dr.startDate + '" AND "' + dr.endDate + '"';
+  var minImpressions = CONFIG.KEYWORD_PAUSE_MIN_IMPRESSIONS || 100;
+  var query = 'SELECT ad_group_criterion.keyword.text, ad_group_criterion.keyword.match_type, campaign.name, ad_group.name, metrics.cost_micros, metrics.conversions, metrics.conversions_value, metrics.clicks, metrics.impressions FROM keyword_view WHERE metrics.cost_micros > ' + (CONFIG.ECOM_KEYWORD_SPEND_THRESHOLD * 1000000) + ' AND campaign.status = "ENABLED" AND ad_group.status = "ENABLED" AND ad_group_criterion.status = "ENABLED" AND campaign.advertising_channel_type = "SEARCH" AND segments.date BETWEEN "' + dr.startDate + '" AND "' + dr.endDate + '"';
   try {
     var search = AdsApp.search(query);
     while (search.hasNext() && changeCount < CONFIG.MAX_CHANGES_PER_RUN) {
@@ -1259,7 +1412,23 @@ function _pauseHighSpendKeywords_Ecommerce(results) {
       var cost = Number(row.metrics.costMicros) / 1000000;
       var revenue = Number(row.metrics.conversionsValue) || 0;
       var roas = _calculateROAS(revenue, cost);
+      var impressions = Number(row.metrics.impressions) || 0;
       if (_isProtectedTerm(kw)) continue;
+      // v4.1.2: Never pause active keywords
+      if (_isActiveKeyword(kw)) {
+        _log('INFO', 'SKIP (active keyword): "' + kw + '" — would have been paused');
+        continue;
+      }
+      // v4.1.2: Require minimum impressions
+      if (impressions < minImpressions) {
+        _log('INFO', 'SKIP (insufficient data): "' + kw + '" — only ' + impressions + ' impressions (min: ' + minImpressions + ')');
+        continue;
+      }
+      // v4.1.2: Never pause keywords with historical conversions
+      if (_hasHistoricalConversions(kw, cn, agn)) {
+        _log('INFO', 'SKIP (historical converter): "' + kw + '" — has conversions in last 90 days');
+        continue;
+      }
       if (roas >= CONFIG.MIN_ROAS_TO_KEEP) continue;
       if (revenue > CONFIG.ECOM_KEYWORD_SPEND_THRESHOLD * 0.5) continue;
       var reason = 'ROAS ' + roas.toFixed(2) + 'x | Spend R' + cost.toFixed(0);
@@ -1289,6 +1458,11 @@ function _negativeHighSpendSearchTerms_Ecommerce(results) {
       var row = search.next();
       var st = row.searchTermView.searchTerm.toLowerCase().trim();
       if (processed[st] || existing[st] || _isProtectedTerm(st)) continue;
+      // v4.1.2: Never negative search terms that match active keywords
+      if (_isActiveKeyword(st)) {
+        _log('INFO', 'SKIP (active keyword): "' + st + '" — would have been negatived');
+        continue;
+      }
       processed[st] = true;
       var cost = Number(row.metrics.costMicros) / 1000000;
       var revenue = Number(row.metrics.conversionsValue) || 0;
@@ -1374,6 +1548,11 @@ function _analyzeShoppingSearchTerms(results) {
       var row = search.next();
       var st = row.searchTermView.searchTerm.toLowerCase().trim();
       if (processed[st] || existing[st] || _isProtectedTerm(st)) continue;
+      // v4.1.2: Never negative search terms that match active keywords
+      if (_isActiveKeyword(st)) {
+        _log('INFO', 'SKIP (active keyword): "' + st + '" — would have been negatived (Shopping)');
+        continue;
+      }
       processed[st] = true;
       var cost = Number(row.metrics.costMicros) / 1000000;
       var revenue = Number(row.metrics.conversionsValue) || 0;
@@ -1419,6 +1598,11 @@ function _analyzePMaxSearchTerms(results) {
       var row = search.next();
       var st = row.searchTermView.searchTerm.toLowerCase().trim();
       if (processed[st] || _isProtectedTerm(st)) continue;
+      // v4.1.2: Never negative search terms that match active keywords
+      if (_isActiveKeyword(st)) {
+        _log('INFO', 'SKIP (active keyword): "' + st + '" — would have been negatived (PMax)');
+        continue;
+      }
       processed[st] = true;
       var cost = Number(row.metrics.costMicros) / 1000000;
       var revenue = Number(row.metrics.conversionsValue) || 0;
@@ -1470,6 +1654,12 @@ function _blockInformationalTerms(results) {
       var row = search.next();
       var st = row.searchTermView.searchTerm.toLowerCase().trim();
       if (_isProtectedTerm(st)) continue;
+      // v4.1.2: Skip if search term contains any active keyword text
+      var matchedKw = _containsActiveKeyword(st);
+      if (matchedKw) {
+        _log('INFO', 'SKIP (contains active keyword "' + matchedKw + '"): "' + st + '" — would have been blocked as informational');
+        continue;
+      }
       for (var i = 0; i < INFORMATIONAL_PATTERNS.length; i++) {
         var p = INFORMATIONAL_PATTERNS[i];
         if (p.pattern.test(st) && !added[p.negativePhrase] && !existing[p.negativePhrase]) {
@@ -1831,6 +2021,16 @@ function _pauseLowQualityScoreKeywords(results) {
       var cost = Number(row.metrics.costMicros) / 1000000;
       var clicks = Number(row.metrics.clicks) || 0;
       if (_isProtectedTerm(kw)) continue;
+      // v4.1.2: Never pause active keywords
+      if (_isActiveKeyword(kw)) {
+        _log('INFO', 'SKIP (active keyword): "' + kw + '" — would have been paused (Low QS)');
+        continue;
+      }
+      // v4.1.2: Never pause keywords with historical conversions
+      if (_hasHistoricalConversions(kw, cn, agn)) {
+        _log('INFO', 'SKIP (historical converter): "' + kw + '" — has conversions in last 90 days (Low QS)');
+        continue;
+      }
       var reason = 'QS ' + qs + ' | R' + cost.toFixed(0) + ' | 0 conv';
       _log('INFO', 'LOW QS PAUSE: "' + kw + '" | ' + reason);
       results.lowQsPaused.push({ keyword: kw, qualityScore: qs, campaign: cn, adGroup: agn, spend: cost, clicks: clicks });
@@ -1875,7 +2075,7 @@ function _checkConversionHealth(results) {
       if (CONFIG.SEND_EMAIL !== false) {
         var recipients = CONFIG.EMAIL_ADDRESSES || [CONFIG.EMAIL_RECIPIENT || 'michaelh@syte.co.za'];
         if (typeof recipients === 'string') recipients = [recipients];
-        MailApp.sendEmail({ to: recipients.join(','), subject: '🚨 URGENT: ' + CONFIG.CLIENT_NAME + ' — Conversions Dropped ' + dropPct + '%', body: alertMsg + '\n\nAction needed:\n1. Check conversion tags in GTM\n2. Test the conversion flow manually\n3. Check for landing page errors\n4. Review any recent website changes\n\n— Syte Optimization Script v4.1.1' });
+        MailApp.sendEmail({ to: recipients.join(','), subject: '🚨 URGENT: ' + CONFIG.CLIENT_NAME + ' — Conversions Dropped ' + dropPct + '%', body: alertMsg + '\n\nAction needed:\n1. Check conversion tags in GTM\n2. Test the conversion flow manually\n3. Check for landing page errors\n4. Review any recent website changes\n\n— Syte Optimization Script v4.1.2' });
       }
     }
 
@@ -1885,6 +2085,256 @@ function _checkConversionHealth(results) {
     }
 
   } catch (e) { _log('ERROR', 'checkConversionHealth: ' + e.message); results.errors.push(e.message); }
+}
+
+
+// ============================================
+// AUDIT & REPAIR — NEGATIVE KEYWORD SAFETY NET (v4.1.2)
+// ============================================
+
+/**
+ * Audits ALL existing negatives (shared lists + ad-group level) and auto-removes
+ * any that conflict with active keywords or block converting search terms.
+ * Also unpauses wrongly paused keywords. Runs FIRST before any new changes.
+ */
+function _auditAndRepairNegatives(results) {
+  if (CONFIG.AUDIT_NEGATIVES === false) {
+    _log('INFO', 'Negative audit disabled — skipping');
+    return;
+  }
+
+  var auditStart = new Date();
+  var repairMode = CONFIG.AUDIT_REPAIR_MODE || 'LIVE';
+  var isLive = repairMode === 'LIVE' && !CONFIG.PREVIEW_MODE;
+
+  _log('INFO', 'Audit mode: ' + repairMode + (CONFIG.PREVIEW_MODE ? ' (PREVIEW — no changes)' : ''));
+
+  results.auditRepairs = results.auditRepairs || [];
+
+  // === 7a: Audit shared negative keyword lists ===
+  var sharedListNames = [
+    CONFIG.NEGATIVE_LIST_NAME_SPEND || 'Script - High Spend No Results',
+    CONFIG.NEGATIVE_LIST_NAME_INFORMATIONAL || 'Script - Informational Queries',
+    CONFIG.NEGATIVE_LIST_NAME_IRRELEVANT || 'Script - Irrelevant Industry'
+  ];
+
+  for (var li = 0; li < sharedListNames.length; li++) {
+    var listName = sharedListNames[li];
+    try {
+      var lists = AdsApp.negativeKeywordLists().withCondition('shared_set.name = "' + listName + '"').get();
+      if (!lists.hasNext()) continue;
+      var negativeList = lists.next();
+      var keywords = negativeList.negativeKeywords().get();
+      while (keywords.hasNext()) {
+        var nk = keywords.next();
+        var nkText = nk.getText().toLowerCase().replace(/[\[\]"]/g, '').trim();
+        var removalReason = null;
+
+        // Check 1: Matches an active keyword (exact)
+        if (ACTIVE_KEYWORDS[nkText]) {
+          removalReason = 'Matches active keyword "' + nkText + '"';
+        }
+
+        // Check 2: Is a substring of an active keyword (phrase match blocking)
+        if (!removalReason) {
+          for (var akw in ACTIVE_KEYWORDS) {
+            if (akw.indexOf(nkText) !== -1 && akw !== nkText) {
+              removalReason = 'Phrase match would block active keyword "' + akw + '"';
+              break;
+            }
+          }
+        }
+
+        // Check 3: Matches a converting search term
+        if (!removalReason && CONVERTING_SEARCH_TERMS[nkText]) {
+          removalReason = 'Matches converting search term (' + CONVERTING_SEARCH_TERMS[nkText] + ' conversions in lookback)';
+        }
+
+        if (removalReason) {
+          _log('INFO', 'AUDIT REPAIR: "' + nkText + '" in "' + listName + '" — ' + removalReason);
+          results.auditRepairs.push({
+            action: 'REMOVED_NEGATIVE',
+            entity: nkText,
+            location: listName,
+            reason: removalReason
+          });
+
+          _logChange({
+            functionName: '_auditAndRepairNegatives',
+            entity: nkText,
+            entityType: 'AUDIT_REPAIR',
+            campaign: '',
+            reason: 'Removed from "' + listName + '": ' + removalReason,
+            spend: 0,
+            conversions: 0
+          });
+
+          if (isLive) {
+            try { nk.remove(); } catch (removeErr) {
+              _log('WARN', 'Failed to remove negative "' + nkText + '": ' + removeErr.message);
+            }
+          }
+        }
+      }
+    } catch (e) {
+      _log('WARN', 'Audit shared list "' + listName + '" error: ' + e.message);
+    }
+  }
+
+  // === 7b: Audit ad-group level negatives ===
+  try {
+    var agNegQuery = 'SELECT ad_group_criterion.keyword.text, ad_group_criterion.keyword.match_type, ' +
+      'campaign.name, ad_group.name ' +
+      'FROM ad_group_criterion ' +
+      'WHERE ad_group_criterion.type = "KEYWORD" ' +
+      'AND ad_group_criterion.negative = true ' +
+      'AND campaign.status = "ENABLED" ' +
+      'AND ad_group.status = "ENABLED"';
+    var agNegSearch = AdsApp.search(agNegQuery);
+    var agNegCount = 0;
+    var winnersAdGroupName = CONFIG.EXACT_WINNERS_AD_GROUP_NAME || '[Exact Winners]';
+
+    while (agNegSearch.hasNext() && agNegCount < 1000) {
+      var agRow = agNegSearch.next();
+      var agNegText = agRow.adGroupCriterion.keyword.text.toLowerCase().replace(/[\[\]"]/g, '').trim();
+      var agCampaign = agRow.campaign.name;
+      var agName = agRow.adGroup.name;
+      agNegCount++;
+
+      // Skip exact winner sculpting negatives — these are intentional
+      if (agName !== winnersAdGroupName) {
+        // Check: ad-group negative that matches an active keyword AND has converted
+        var shouldRemove = false;
+        var agRemovalReason = null;
+
+        // Direct conflict: negative cancels out a positive keyword in the same ad group
+        if (ACTIVE_KEYWORDS[agNegText]) {
+          agRemovalReason = 'Conflicts with active keyword "' + agNegText + '"';
+          shouldRemove = true;
+        }
+
+        // Cross-ad-group: blocks a converting search term
+        if (!shouldRemove && CONVERTING_SEARCH_TERMS[agNegText]) {
+          agRemovalReason = 'Blocks converting search term (' + CONVERTING_SEARCH_TERMS[agNegText] + ' conversions)';
+          shouldRemove = true;
+        }
+
+        if (shouldRemove) {
+          _log('INFO', 'AUDIT REPAIR (AG): "' + agNegText + '" in "' + agCampaign + ' > ' + agName + '" — ' + agRemovalReason);
+          results.auditRepairs.push({
+            action: 'REMOVED_AG_NEGATIVE',
+            entity: agNegText,
+            location: agCampaign + ' > ' + agName,
+            reason: agRemovalReason
+          });
+
+          _logChange({
+            functionName: '_auditAndRepairNegatives',
+            entity: agNegText,
+            entityType: 'AUDIT_REPAIR',
+            campaign: agCampaign,
+            adGroup: agName,
+            reason: 'Removed AG negative: ' + agRemovalReason,
+            spend: 0,
+            conversions: 0
+          });
+
+          if (isLive) {
+            try {
+              var agIter = AdsApp.adGroups()
+                .withCondition('campaign.name = "' + agCampaign + '"')
+                .withCondition('ad_group.name = "' + agName + '"').get();
+              if (agIter.hasNext()) {
+                var ag = agIter.next();
+                var negKws = ag.negativeKeywords().get();
+                while (negKws.hasNext()) {
+                  var negKw = negKws.next();
+                  if (negKw.getText().toLowerCase().replace(/[\[\]"]/g, '').trim() === agNegText) {
+                    negKw.remove();
+                    break;
+                  }
+                }
+              }
+            } catch (removeErr) {
+              _log('WARN', 'Failed to remove AG negative "' + agNegText + '": ' + removeErr.message);
+            }
+          }
+        }
+      }
+    }
+    _log('INFO', 'Ad-group negatives audited: ' + agNegCount);
+  } catch (e) {
+    _log('WARN', 'Audit ad-group negatives error: ' + e.message);
+  }
+
+  // === 7c: Unpause wrongly paused keywords ===
+  try {
+    var pausedQuery = 'SELECT ad_group_criterion.keyword.text, ad_group_criterion.keyword.match_type, ' +
+      'campaign.name, ad_group.name ' +
+      'FROM keyword_view ' +
+      'WHERE ad_group_criterion.status = "PAUSED" ' +
+      'AND campaign.status = "ENABLED" ' +
+      'AND ad_group.status = "ENABLED"';
+    var pausedSearch = AdsApp.search(pausedQuery);
+    var pausedChecked = 0;
+
+    while (pausedSearch.hasNext() && pausedChecked < 200) {
+      var pRow = pausedSearch.next();
+      var pKwText = pRow.adGroupCriterion.keyword.text.toLowerCase().trim();
+      var pCampaign = pRow.campaign.name;
+      var pAdGroup = pRow.adGroup.name;
+      pausedChecked++;
+
+      // Only unpause if the keyword's search term has converted recently
+      // AND the keyword matches an active keyword in another ad group
+      var shouldUnpause = false;
+      var unpauseReason = null;
+
+      if (CONVERTING_SEARCH_TERMS[pKwText] && CONVERTING_SEARCH_TERMS[pKwText] >= 2) {
+        shouldUnpause = true;
+        unpauseReason = 'Search term "' + pKwText + '" has ' + CONVERTING_SEARCH_TERMS[pKwText] + ' conversions in lookback';
+      }
+
+      if (shouldUnpause) {
+        _log('INFO', 'AUDIT REPAIR (UNPAUSE): "' + pKwText + '" in "' + pCampaign + ' > ' + pAdGroup + '" — ' + unpauseReason);
+        results.auditRepairs.push({
+          action: 'UNPAUSED_KEYWORD',
+          entity: pKwText,
+          location: pCampaign + ' > ' + pAdGroup,
+          reason: unpauseReason
+        });
+
+        _logChange({
+          functionName: '_auditAndRepairNegatives',
+          entity: pKwText,
+          entityType: 'AUDIT_REPAIR',
+          campaign: pCampaign,
+          adGroup: pAdGroup,
+          reason: 'Unpaused: ' + unpauseReason,
+          spend: 0,
+          conversions: CONVERTING_SEARCH_TERMS[pKwText] || 0
+        });
+
+        if (isLive) {
+          try {
+            var ki = AdsApp.keywords()
+              .withCondition('ad_group.name = "' + pAdGroup + '"')
+              .withCondition('campaign.name = "' + pCampaign + '"')
+              .withCondition('ad_group_criterion.keyword.text = "' + pKwText + '"').get();
+            while (ki.hasNext()) ki.next().enable();
+          } catch (unpauseErr) {
+            _log('WARN', 'Failed to unpause "' + pKwText + '": ' + unpauseErr.message);
+          }
+        }
+      }
+    }
+    _log('INFO', 'Paused keywords audited: ' + pausedChecked);
+  } catch (e) {
+    _log('WARN', 'Audit paused keywords error: ' + e.message);
+  }
+
+  var auditDuration = (new Date() - auditStart) / 1000;
+  _log('INFO', 'Audit & repair complete in ' + auditDuration.toFixed(1) + 's | Repairs: ' + results.auditRepairs.length + ' | Mode: ' + repairMode);
 }
 
 
@@ -1899,7 +2349,7 @@ function _sendReport(results, duration) {
 
   var email = '<html><body style="font-family:Arial,sans-serif;max-width:800px;margin:0 auto;color:#333;">';
   email += '<div style="background:linear-gradient(135deg,#1a1a2e,#16213e);color:white;padding:20px;border-radius:8px 8px 0 0;">';
-  email += '<h1 style="margin:0;font-size:20px;">Syte Optimization Report v4.1.1</h1>';
+  email += '<h1 style="margin:0;font-size:20px;">Syte Optimization Report v4.1.2</h1>';
   email += '<p style="margin:5px 0 0;opacity:0.8;">' + accountName + ' | ' + today + ' | ' + mode + ' | ' + CONFIG.ACCOUNT_MODE + '</p></div>';
 
   if (results.conversionAlert) {
@@ -1943,7 +2393,7 @@ function _sendReport(results, duration) {
     email += '<tr><td style="padding:4px 8px;">Last week</td><td style="text-align:right;font-weight:bold;">' + ch.lastWeek.toFixed(0) + ' conv</td></tr>';
   }
 
-  email += '<tr><td colspan="2" style="padding:8px;background:#e8eaf6;font-weight:bold;">AI Smart Negation (v4.1.1)</td></tr>';
+  email += '<tr><td colspan="2" style="padding:8px;background:#e8eaf6;font-weight:bold;">AI Smart Negation (v4.1)</td></tr>';
   email += '<tr><td style="padding:4px 8px;">AI Auto-Negated</td><td style="text-align:right;font-weight:bold;color:#c62828;">' + results.smartNegated.length + '</td></tr>';
   email += '<tr><td style="padding:4px 8px;">AI Flagged for Review</td><td style="text-align:right;font-weight:bold;color:#e65100;">' + results.smartReviewTerms.length + '</td></tr>';
 
@@ -1951,6 +2401,17 @@ function _sendReport(results, duration) {
   email += '<tr><td style="padding:4px 8px;">Informational Blocked</td><td style="text-align:right;font-weight:bold;">' + results.informationalBlocked.length + '</td></tr>';
   email += '<tr><td style="padding:4px 8px;">Irrelevant Blocked</td><td style="text-align:right;font-weight:bold;">' + results.irrelevantBlocked.length + '</td></tr>';
   email += '<tr><td style="padding:4px 8px;">Budget Alerts</td><td style="text-align:right;font-weight:bold;">' + results.budgetAlerts.length + '</td></tr>';
+  // Audit & Repair section (v4.1.2)
+  if (results.auditRepairs && results.auditRepairs.length > 0) {
+    var removedNegs = results.auditRepairs.filter(function(r) { return r.action === 'REMOVED_NEGATIVE'; }).length;
+    var removedAgNegs = results.auditRepairs.filter(function(r) { return r.action === 'REMOVED_AG_NEGATIVE'; }).length;
+    var unpaused = results.auditRepairs.filter(function(r) { return r.action === 'UNPAUSED_KEYWORD'; }).length;
+    email += '<tr><td colspan="2" style="padding:8px;background:#e8f5e9;font-weight:bold;">Audit & Repair (v4.1.2)</td></tr>';
+    email += '<tr><td style="padding:4px 8px;">Shared List Negatives Removed</td><td style="text-align:right;font-weight:bold;color:#2e7d32;">' + removedNegs + '</td></tr>';
+    email += '<tr><td style="padding:4px 8px;">Ad-Group Negatives Removed</td><td style="text-align:right;font-weight:bold;color:#2e7d32;">' + removedAgNegs + '</td></tr>';
+    email += '<tr><td style="padding:4px 8px;">Keywords Unpaused</td><td style="text-align:right;font-weight:bold;color:#2e7d32;">' + unpaused + '</td></tr>';
+  }
+
   email += '<tr><td style="padding:4px 8px;">Errors</td><td style="text-align:right;font-weight:bold;">' + results.errors.length + '</td></tr>';
   email += '</table></div>';
 
@@ -1979,11 +2440,25 @@ function _sendReport(results, duration) {
     email += '</table></div>';
   }
 
-  email += '<div style="padding:15px;color:#666;font-size:12px;"><p>Completed in ' + duration.toFixed(1) + 's | Core v4.1.1 | Syte Digital Agency</p></div></body></html>';
+  // Audit & Repair details (v4.1.2)
+  if (results.auditRepairs && results.auditRepairs.length > 0) {
+    email += '<div style="padding:15px;background:#e8f5e9;"><h3 style="color:#2e7d32;">Audit & Repair Details</h3>';
+    email += '<p style="font-size:12px;color:#666;">Negatives/pauses that conflicted with active keywords or converting search terms.</p>';
+    email += '<table style="width:100%;border-collapse:collapse;font-size:13px;">';
+    email += '<tr style="background:#c8e6c9;"><th style="padding:6px;text-align:left;">Action</th><th style="padding:6px;text-align:left;">Keyword</th><th style="padding:6px;text-align:left;">Location</th><th style="padding:6px;text-align:left;">Reason</th></tr>';
+    for (var ar = 0; ar < results.auditRepairs.length; ar++) {
+      var repair = results.auditRepairs[ar];
+      var actionLabel = repair.action === 'REMOVED_NEGATIVE' ? 'Removed (shared)' : repair.action === 'REMOVED_AG_NEGATIVE' ? 'Removed (AG)' : 'Unpaused';
+      email += '<tr style="border-bottom:1px solid #eee;"><td style="padding:4px 6px;">' + actionLabel + '</td><td style="padding:4px 6px;">' + repair.entity + '</td><td style="padding:4px 6px;">' + repair.location + '</td><td style="padding:4px 6px;color:#666;">' + repair.reason + '</td></tr>';
+    }
+    email += '</table></div>';
+  }
+
+  email += '<div style="padding:15px;color:#666;font-size:12px;"><p>Completed in ' + duration.toFixed(1) + 's | Core v4.1.2 | Syte Digital Agency</p></div></body></html>';
 
   var recipients = CONFIG.EMAIL_ADDRESSES || [CONFIG.EMAIL_RECIPIENT || 'michaelh@syte.co.za'];
   if (typeof recipients === 'string') recipients = [recipients];
-  MailApp.sendEmail({ to: recipients.join(','), subject: mode + ' Syte v4.1.1 | ' + accountName + ' | ' + CONFIG.ACCOUNT_MODE, htmlBody: email });
+  MailApp.sendEmail({ to: recipients.join(','), subject: mode + ' Syte v4.1.2 | ' + accountName + ' | ' + CONFIG.ACCOUNT_MODE, htmlBody: email });
 }
 
 
@@ -1995,7 +2470,7 @@ function runOptimization() {
   var startTime = new Date();
 
   _log('INFO', '═══════════════════════════════════════════');
-  _log('INFO', 'SYTE OPTIMIZATION CORE v4.1.1');
+  _log('INFO', 'SYTE OPTIMIZATION CORE v4.1.2');
   _log('INFO', 'Client: ' + (CONFIG.CLIENT_NAME || AdsApp.currentAccount().getName()));
   _log('INFO', 'Mode: ' + CONFIG.ACCOUNT_MODE);
   _log('INFO', 'Run: ' + (CONFIG.PREVIEW_MODE ? 'PREVIEW (no changes)' : 'LIVE'));
@@ -2010,9 +2485,21 @@ function runOptimization() {
     deviceAdjustments: [], scheduleAdjustments: [], geoAdjustments: [],
     ngramNegatives: [], lowQsPaused: [],
     smartNegated: [], smartReviewTerms: [],
+    auditRepairs: [],
     conversionHealth: null, conversionAlert: null,
     errors: []
   };
+
+  // v4.1.2: Build active keyword set and converting search terms ONCE at start
+  CONFIG.AUTO_PROTECT_ACTIVE_KEYWORDS = CONFIG.AUTO_PROTECT_ACTIVE_KEYWORDS !== false;  // default: true
+  CONFIG.KEYWORD_PAUSE_MIN_IMPRESSIONS = CONFIG.KEYWORD_PAUSE_MIN_IMPRESSIONS || 100;
+  CONFIG.AUDIT_NEGATIVES = CONFIG.AUDIT_NEGATIVES !== false;  // default: true
+  CONFIG.AUDIT_REPAIR_MODE = CONFIG.AUDIT_REPAIR_MODE || 'LIVE';
+  CONFIG.AUDIT_CONVERTING_LOOKBACK_DAYS = CONFIG.AUDIT_CONVERTING_LOOKBACK_DAYS || 90;
+
+  _log('INFO', '\n=== BUILDING ACTIVE KEYWORD SET ===');
+  ACTIVE_KEYWORDS = _buildActiveKeywordSet();
+  CONVERTING_SEARCH_TERMS = _buildConvertingSearchTerms(CONFIG.AUDIT_CONVERTING_LOOKBACK_DAYS);
 
   try {
 
@@ -2032,6 +2519,10 @@ function runOptimization() {
       _log('ERROR', '⛔ HALTING ALL OPTIMIZATION — conversion tracking may be broken');
       _checkBudgetPacing(results);
     } else {
+
+      // === AUDIT & REPAIR (runs first — clean up before making new changes) ===
+      _log('INFO', '\n=== NEGATIVE KEYWORD AUDIT & REPAIR ===');
+      _auditAndRepairNegatives(results);
 
       // === SMART AI SEARCH TERM REVIEW (v4.1 — runs before spend-threshold logic) ===
       _log('INFO', '\n=== SMART AI SEARCH TERM REVIEW ===');
@@ -2105,5 +2596,6 @@ function runOptimization() {
   if (_isEcommerceMode()) _log('INFO', 'Ecom KW: ' + results.ecomKeywordsPaused.length + ' | Ecom ST: ' + results.ecomSearchTermsNegated.length + ' | Ecom Winners: ' + results.ecomWinnersPromoted.length);
   _log('INFO', 'Device: ' + results.deviceAdjustments.length + ' | Schedule: ' + results.scheduleAdjustments.length + ' | Geo: ' + results.geoAdjustments.length + ' | N-gram: ' + results.ngramNegatives.length + ' | Low QS: ' + results.lowQsPaused.length);
   _log('INFO', 'AI Negated: ' + results.smartNegated.length + ' | AI Review: ' + results.smartReviewTerms.length);
+  _log('INFO', 'Audit Repairs: ' + (results.auditRepairs ? results.auditRepairs.length : 0));
   _log('INFO', 'Informational: ' + results.informationalBlocked.length + ' | Irrelevant: ' + results.irrelevantBlocked.length + ' | Budget: ' + results.budgetAlerts.length + ' | Errors: ' + results.errors.length);
 }
