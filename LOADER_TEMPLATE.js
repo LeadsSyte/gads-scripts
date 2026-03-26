@@ -4,22 +4,28 @@
  * This is the CLIENT-SIDE loader script. Paste this into Google Ads Scripts.
  * It defines your client-specific CONFIG, then fetches and runs the shared core.
  *
- * The core script is hosted at GitHub and updated centrally.
- * All clients automatically get updates on their next scheduled run.
+ * The core script is hosted in a PRIVATE GitHub repo.
+ * Authentication uses a GitHub PAT stored in the master Google Sheet "Config" tab.
+ * The Anthropic API key is also read from the sheet — no secrets in this file.
  *
  * Setup:
  * 1. Copy this template
  * 2. Replace all [PLACEHOLDER] values with client-specific settings
- * 3. Paste into Google Ads Scripts > Scripts > New Script
- * 4. Authorize and schedule (recommended: every 3 days)
+ * 3. Set SHEET_URL to the master Google Sheet (must have a "Config" tab with GITHUB_PAT and ANTHROPIC_API_KEY)
+ * 4. Paste into Google Ads Scripts > Scripts > New Script
+ * 5. Authorize and schedule (recommended: every 3 days)
  *
- * Version: Loader v4.2.0
+ * Version: Loader v4.2.1
  */
 
 // ============================================
 // CORE SCRIPT URL — DO NOT CHANGE
 // ============================================
 var CORE_URL = 'https://raw.githubusercontent.com/LeadsSyte/gads-scripts/main/syte_optimization_core.js';
+
+// Optional: hardcoded GitHub PAT fallback (if sheet read fails)
+// Prefer storing this in the master sheet "Config" tab instead.
+// var GITHUB_PAT = '';
 
 
 // ============================================
@@ -33,14 +39,15 @@ var CONFIG = {
   ACCOUNT_MODE: 'LEAD_GEN',  // 'LEAD_GEN', 'ECOMMERCE', or 'HYBRID'
   PREVIEW_MODE: false,        // true = dry run (no changes), false = live
 
-  // --- GOOGLE SHEET (change logging + outcome tracking) ---
-  // Option A: Full Google Sheets URL (the script extracts the ID automatically)
+  // --- GOOGLE SHEET (change logging + shared secrets) ---
+  // The master sheet's "Config" tab holds ANTHROPIC_API_KEY and GITHUB_PAT.
+  // Use the full URL — the core script extracts the sheet ID automatically.
   SHEET_URL: '[https://docs.google.com/spreadsheets/d/YOUR_SHEET_ID/edit]',
-  // Option B: Just the sheet ID (from the URL between /d/ and /edit)
-  // MASTER_SHEET_ID: 'YOUR_SHEET_ID',
 
   // --- AI FEATURES ---
-  ANTHROPIC_API_KEY: '',  // sk-ant-... (required for AI smart negation + weekly review)
+  // ANTHROPIC_API_KEY is loaded from the master sheet "Config" tab.
+  // Only set here if you need a client-specific key (overrides the sheet value).
+  // ANTHROPIC_API_KEY: '',
 
   // --- EMAIL ---
   EMAIL_ADDRESSES: ['[you@agency.com]'],  // Array of recipient emails
@@ -67,7 +74,6 @@ var CONFIG = {
   EXACT_WINNERS_AD_GROUP_NAME: '[Exact Winners]',
 
   // --- PROTECTED TERMS (never paused/negatived regardless of performance) ---
-  // Add your client's core brand terms and money keywords here
   PROTECTED_TERMS: [
     // '[brand name]',
     // '[core service keyword]',
@@ -93,8 +99,8 @@ var CONFIG = {
   AUTO_PROTECT_ACTIVE_KEYWORDS: true,    // Master toggle — active keywords never auto-negatived
   KEYWORD_PAUSE_MIN_IMPRESSIONS: 100,    // Min impressions before a keyword can be paused
 
-  // --- AUDIT & REPAIR (v4.2.0) ---
-  AUDIT_NEGATIVES: true,                 // Enable negative keyword audit each run
+  // --- AUDIT (v4.2.0) ---
+  AUDIT_NEGATIVES: true,                 // Enable negative keyword audit scan each run
   AUDIT_CONVERTING_LOOKBACK_DAYS: 90,    // How far back to check for conversions
 
   // --- AUTO-OPTIMIZATIONS ---
@@ -118,13 +124,63 @@ var CONFIG = {
 // ============================================
 
 function main() {
-  // Cache-bust to ensure we always get the latest version from GitHub
+  var githubPat = '';
+
+  // Try to read GitHub PAT from master sheet Config tab
+  if (CONFIG.SHEET_URL || CONFIG.MASTER_SHEET_ID) {
+    try {
+      var sheetId = CONFIG.MASTER_SHEET_ID;
+      if (!sheetId && CONFIG.SHEET_URL) {
+        var match = CONFIG.SHEET_URL.match(/\/d\/([a-zA-Z0-9_-]+)/);
+        if (match) sheetId = match[1];
+      }
+      if (sheetId) {
+        var ss = SpreadsheetApp.openById(sheetId);
+        var configSheet = ss.getSheetByName('Config');
+        if (configSheet) {
+          var data = configSheet.getDataRange().getValues();
+          for (var i = 0; i < data.length; i++) {
+            if (String(data[i][0]).trim() === 'GITHUB_PAT') {
+              githubPat = String(data[i][1]).trim();
+              break;
+            }
+          }
+        }
+      }
+    } catch (e) {
+      Logger.log('WARN: Could not read GitHub PAT from sheet: ' + e.message);
+    }
+  }
+
+  // Fall back to hardcoded PAT if sheet read failed
+  if (!githubPat && typeof GITHUB_PAT !== 'undefined' && GITHUB_PAT) {
+    githubPat = GITHUB_PAT;
+  }
+
+  var fetchOptions = { muteHttpExceptions: true };
+  if (githubPat) {
+    fetchOptions.headers = { 'Authorization': 'token ' + githubPat };
+  }
+
   var cacheBuster = '?cb=' + new Date().getTime();
-  var response = UrlFetchApp.fetch(CORE_URL + cacheBuster, { muteHttpExceptions: true });
+  var response = UrlFetchApp.fetch(CORE_URL + cacheBuster, fetchOptions);
 
   if (response.getResponseCode() !== 200) {
     Logger.log('ERROR: Could not fetch core script. HTTP ' + response.getResponseCode());
     Logger.log(response.getContentText().substring(0, 500));
+    if (CONFIG.SEND_EMAIL) {
+      try {
+        var recipients = CONFIG.EMAIL_ADDRESSES || ['[you@agency.com]'];
+        MailApp.sendEmail({
+          to: recipients.join(','),
+          subject: 'ERROR: Syte Script Core Fetch Failed | ' + CONFIG.CLIENT_NAME,
+          body: 'Could not fetch core script from: ' + CORE_URL +
+            '\nHTTP Status: ' + response.getResponseCode() +
+            '\nCheck: Is the GitHub PAT valid? Is the repo accessible?' +
+            '\nPAT source: ' + (githubPat ? 'loaded' : 'MISSING — add GITHUB_PAT to master sheet Config tab')
+        });
+      } catch (mailErr) { Logger.log('Could not send error email: ' + mailErr.message); }
+    }
     return;
   }
 
@@ -133,7 +189,7 @@ function main() {
 
   // Verify we got a real script (not a GitHub error page)
   if (scriptContent.indexOf('runOptimization') === -1) {
-    Logger.log('ERROR: Fetched content does not contain runOptimization — possible GitHub error');
+    Logger.log('ERROR: Fetched content does not contain runOptimization — possible GitHub error or auth failure');
     return;
   }
 
