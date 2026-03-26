@@ -1,5 +1,5 @@
 /**
- * SYTE OPTIMIZATION CORE v4.1.2
+ * SYTE OPTIMIZATION CORE v4.2.0
  * ============================
  * This file is the CORE engine — hosted centrally and fetched by each client's loader script.
  * DO NOT paste this into Google Ads Scripts directly.
@@ -13,7 +13,33 @@
  * When you improve this core, ALL client accounts get the update on their next scheduled run.
  *
  * Author: Syte Digital Agency (syte.co.za)
- * Version: 4.1.2
+ * Version: 4.2.0
+ *
+ * CHANGELOG v4.2.0 — CRITICAL SAFETY + AUDIT & REPAIR + SHEET FIX:
+ * - FIX: Google Sheet logging now works with CONFIG.SHEET_URL (extracts ID automatically)
+ * - FIX: Sheet logging now works in PREVIEW_MODE (tags rows as "PREVIEW")
+ * - FIX: Sheet access validated at startup with clear error messages
+ * - FIX: Search terms matching active keywords NEVER auto-negatived
+ * - FIX: Keywords with historical conversions (90 days) NEVER auto-paused
+ * - FIX: Removed "where to", "where can", "where is" from informational patterns
+ * - FIX: Email report now shows DETAIL for every action (which keywords, not just counts)
+ * - FIX: Error messages now shown in full in email report
+ * - NEW: _buildActiveKeywordSet() — global active keyword protection
+ * - NEW: _isActiveKeyword() / _containsActiveKeyword() — protection helpers
+ * - NEW: _hasHistoricalConversions() — 90-day conversion check before pausing
+ * - NEW: _auditAndRepairNegatives() — audits ALL negatives and auto-repairs conflicts
+ *        Removes shared list negatives that match active keywords or converting terms
+ *        Removes ad-group negatives that conflict with positive keywords
+ *        Unpauses keywords that have converting search terms (requires 2+ conversions)
+ *        Skips Exact Winners sculpting negatives (intentional)
+ * - NEW: _validateConfig() — checks for missing/misconfigured loader settings
+ * - NEW: CONFIG.AUDIT_NEGATIVES (default: true)
+ * - NEW: CONFIG.AUDIT_REPAIR_MODE (default: 'LIVE') — 'REPORT_ONLY' to preview
+ * - NEW: CONFIG.AUDIT_CONVERTING_LOOKBACK_DAYS (default: 90)
+ * - NEW: CONFIG.AUTO_PROTECT_ACTIVE_KEYWORDS (default: true)
+ * - NEW: CONFIG.KEYWORD_PAUSE_MIN_IMPRESSIONS (default: 100)
+ * - NEW: results.auditRepairs tracked and shown in email report
+ * - NEW: LOADER_TEMPLATE.js with cache-busting for raw GitHub URL
  *
  * CHANGELOG v4.1.2 — CRITICAL SAFETY FIX: ACTIVE KEYWORD PROTECTION + AUDIT & REPAIR:
  * - FIX: Search terms matching active keywords are NEVER auto-negatived
@@ -622,8 +648,18 @@ var _sheetErrors = []; // Track sheet errors for surfacing in email report
 
 function _getChangeLogSheet() {
   if (_sheetCache) return _sheetCache;
+
+  // Backwards compatibility: extract MASTER_SHEET_ID from SHEET_URL if not set
+  if (!CONFIG.MASTER_SHEET_ID && CONFIG.SHEET_URL) {
+    var urlMatch = CONFIG.SHEET_URL.match(/\/d\/([a-zA-Z0-9_-]+)/);
+    if (urlMatch) {
+      CONFIG.MASTER_SHEET_ID = urlMatch[1];
+      _log('INFO', 'Extracted MASTER_SHEET_ID from SHEET_URL');
+    }
+  }
+
   if (!CONFIG.MASTER_SHEET_ID) {
-    var msg = 'No MASTER_SHEET_ID in CONFIG — change logging disabled';
+    var msg = 'No MASTER_SHEET_ID or SHEET_URL in CONFIG — change logging disabled';
     _log('WARN', msg);
     if (_sheetErrors.indexOf(msg) === -1) _sheetErrors.push(msg);
     return null;
@@ -665,7 +701,7 @@ function _generateChangeId() {
  */
 function _logChange(change) {
   var sheet = _getChangeLogSheet();
-  if (!sheet || CONFIG.PREVIEW_MODE) return null;
+  if (!sheet) return null;
 
   var changeId = _generateChangeId();
   var accountName = AdsApp.currentAccount().getName();
@@ -683,10 +719,10 @@ function _logChange(change) {
       change.reason || '',
       change.spend || 0,
       change.conversions || 0,
-      'PENDING',           // outcome — will be backfilled in 14 days
+      CONFIG.PREVIEW_MODE ? 'PREVIEW' : 'PENDING',  // outcome — PREVIEW tagged, LIVE backfilled in 14 days
       '',                  // outcome_checked_date
       '',                  // outcome_notes
-      'v4.1.2'            // script_version
+      'v4.2.0'            // script_version
     ]);
   } catch (e) {
     var writeErr = 'Change log write failed: ' + e.message;
@@ -1154,7 +1190,7 @@ function _sendWeeklyReviewEmail(accountName, claudeResponse, changeLogSummary) {
   // Header
   email += '<div style="background:linear-gradient(135deg,#1a1a2e,#16213e);color:white;padding:24px;border-radius:8px 8px 0 0;">';
   email += '<h1 style="margin:0;font-size:22px;">🤖 Syte Script — Weekly Self-Improvement Report</h1>';
-  email += '<p style="margin:6px 0 0;opacity:0.8;">' + accountName + ' | ' + today + ' | Core v4.1.2</p>';
+  email += '<p style="margin:6px 0 0;opacity:0.8;">' + accountName + ' | ' + today + ' | Core v4.2.0</p>';
   email += '</div>';
 
   // Change log stats banner
@@ -1688,6 +1724,12 @@ function _blockIrrelevantTerms(results) {
       var row = search.next();
       var st = row.searchTermView.searchTerm.toLowerCase().trim();
       if (_isProtectedTerm(st)) continue;
+      // v4.2.0: Skip if search term contains any active keyword
+      var irrMatchedKw = _containsActiveKeyword(st);
+      if (irrMatchedKw) {
+        _log('INFO', 'SKIP (contains active keyword "' + irrMatchedKw + '"): "' + st + '" — would have been blocked as irrelevant');
+        continue;
+      }
       for (var i = 0; i < irrelevantTerms.length; i++) {
         var term = irrelevantTerms[i];
         if (st.indexOf(term.toLowerCase()) !== -1 && !added[term] && !existing[term]) {
@@ -2075,7 +2117,7 @@ function _checkConversionHealth(results) {
       if (CONFIG.SEND_EMAIL !== false) {
         var recipients = CONFIG.EMAIL_ADDRESSES || [CONFIG.EMAIL_RECIPIENT || 'michaelh@syte.co.za'];
         if (typeof recipients === 'string') recipients = [recipients];
-        MailApp.sendEmail({ to: recipients.join(','), subject: '🚨 URGENT: ' + CONFIG.CLIENT_NAME + ' — Conversions Dropped ' + dropPct + '%', body: alertMsg + '\n\nAction needed:\n1. Check conversion tags in GTM\n2. Test the conversion flow manually\n3. Check for landing page errors\n4. Review any recent website changes\n\n— Syte Optimization Script v4.1.2' });
+        MailApp.sendEmail({ to: recipients.join(','), subject: '🚨 URGENT: ' + CONFIG.CLIENT_NAME + ' — Conversions Dropped ' + dropPct + '%', body: alertMsg + '\n\nAction needed:\n1. Check conversion tags in GTM\n2. Test the conversion flow manually\n3. Check for landing page errors\n4. Review any recent website changes\n\n— Syte Optimization Script v4.2.0' });
       }
     }
 
@@ -2349,7 +2391,7 @@ function _sendReport(results, duration) {
 
   var email = '<html><body style="font-family:Arial,sans-serif;max-width:800px;margin:0 auto;color:#333;">';
   email += '<div style="background:linear-gradient(135deg,#1a1a2e,#16213e);color:white;padding:20px;border-radius:8px 8px 0 0;">';
-  email += '<h1 style="margin:0;font-size:20px;">Syte Optimization Report v4.1.2</h1>';
+  email += '<h1 style="margin:0;font-size:20px;">Syte Optimization Report v4.2.0</h1>';
   email += '<p style="margin:5px 0 0;opacity:0.8;">' + accountName + ' | ' + today + ' | ' + mode + ' | ' + CONFIG.ACCOUNT_MODE + '</p></div>';
 
   if (results.conversionAlert) {
@@ -2406,7 +2448,7 @@ function _sendReport(results, duration) {
     var removedNegs = results.auditRepairs.filter(function(r) { return r.action === 'REMOVED_NEGATIVE'; }).length;
     var removedAgNegs = results.auditRepairs.filter(function(r) { return r.action === 'REMOVED_AG_NEGATIVE'; }).length;
     var unpaused = results.auditRepairs.filter(function(r) { return r.action === 'UNPAUSED_KEYWORD'; }).length;
-    email += '<tr><td colspan="2" style="padding:8px;background:#e8f5e9;font-weight:bold;">Audit & Repair (v4.1.2)</td></tr>';
+    email += '<tr><td colspan="2" style="padding:8px;background:#e8f5e9;font-weight:bold;">Audit & Repair</td></tr>';
     email += '<tr><td style="padding:4px 8px;">Shared List Negatives Removed</td><td style="text-align:right;font-weight:bold;color:#2e7d32;">' + removedNegs + '</td></tr>';
     email += '<tr><td style="padding:4px 8px;">Ad-Group Negatives Removed</td><td style="text-align:right;font-weight:bold;color:#2e7d32;">' + removedAgNegs + '</td></tr>';
     email += '<tr><td style="padding:4px 8px;">Keywords Unpaused</td><td style="text-align:right;font-weight:bold;color:#2e7d32;">' + unpaused + '</td></tr>';
@@ -2415,6 +2457,117 @@ function _sendReport(results, duration) {
   email += '<tr><td style="padding:4px 8px;">Errors</td><td style="text-align:right;font-weight:bold;">' + results.errors.length + '</td></tr>';
   email += '</table></div>';
 
+  // === DETAIL SECTIONS (v4.2.0) ===
+  var cs = CONFIG.CURRENCY_SYMBOL || 'R';
+
+  // Keywords Paused detail
+  if (results.keywordsPaused.length > 0) {
+    email += '<div style="padding:15px;"><h3>Keywords Paused</h3>';
+    email += '<table style="width:100%;border-collapse:collapse;font-size:13px;">';
+    email += '<tr style="background:#e3f2fd;"><th style="padding:6px;text-align:left;">Keyword</th><th style="padding:6px;text-align:left;">Campaign</th><th style="padding:6px;text-align:left;">Ad Group</th><th style="padding:6px;text-align:right;">Spend</th></tr>';
+    for (var kp = 0; kp < results.keywordsPaused.length; kp++) {
+      var kpItem = results.keywordsPaused[kp];
+      email += '<tr style="border-bottom:1px solid #eee;"><td style="padding:4px 6px;">' + kpItem.keyword + '</td><td style="padding:4px 6px;">' + kpItem.campaign + '</td><td style="padding:4px 6px;">' + kpItem.adGroup + '</td><td style="padding:4px 6px;text-align:right;">' + cs + (kpItem.spend || 0).toFixed(0) + '</td></tr>';
+    }
+    email += '</table></div>';
+  }
+
+  // Search Terms Negated detail
+  if (results.searchTermsNegated.length > 0) {
+    email += '<div style="padding:15px;"><h3>Search Terms Negated</h3>';
+    email += '<table style="width:100%;border-collapse:collapse;font-size:13px;">';
+    email += '<tr style="background:#ffecb3;"><th style="padding:6px;text-align:left;">Search Term</th><th style="padding:6px;text-align:left;">Campaign</th><th style="padding:6px;text-align:right;">Spend</th></tr>';
+    for (var stn = 0; stn < results.searchTermsNegated.length; stn++) {
+      var snItem = results.searchTermsNegated[stn];
+      email += '<tr style="border-bottom:1px solid #eee;"><td style="padding:4px 6px;">' + snItem.searchTerm + '</td><td style="padding:4px 6px;">' + snItem.campaign + '</td><td style="padding:4px 6px;text-align:right;">' + cs + (snItem.spend || 0).toFixed(0) + '</td></tr>';
+    }
+    email += '</table></div>';
+  }
+
+  // Winners Promoted detail
+  if (results.winnersPromoted.length > 0) {
+    email += '<div style="padding:15px;"><h3 style="color:#2e7d32;">Winners Promoted</h3>';
+    email += '<table style="width:100%;border-collapse:collapse;font-size:13px;">';
+    email += '<tr style="background:#e8f5e9;"><th style="padding:6px;text-align:left;">Search Term</th><th style="padding:6px;text-align:left;">Campaign</th><th style="padding:6px;text-align:right;">Conversions</th><th style="padding:6px;text-align:right;">CVR</th></tr>';
+    for (var wp = 0; wp < results.winnersPromoted.length; wp++) {
+      var wpItem = results.winnersPromoted[wp];
+      email += '<tr style="border-bottom:1px solid #eee;"><td style="padding:4px 6px;">[' + wpItem.searchTerm + ']</td><td style="padding:4px 6px;">' + wpItem.campaign + '</td><td style="padding:4px 6px;text-align:right;">' + (wpItem.conversions || 0) + '</td><td style="padding:4px 6px;text-align:right;">' + (wpItem.cvr || 0).toFixed(1) + '%</td></tr>';
+    }
+    email += '</table></div>';
+  }
+
+  // Ecommerce Keywords Paused detail
+  if (results.ecomKeywordsPaused.length > 0) {
+    email += '<div style="padding:15px;"><h3>Ecom Keywords Paused</h3>';
+    email += '<table style="width:100%;border-collapse:collapse;font-size:13px;">';
+    email += '<tr style="background:#e8f5e9;"><th style="padding:6px;text-align:left;">Keyword</th><th style="padding:6px;text-align:left;">Campaign</th><th style="padding:6px;text-align:right;">Spend</th><th style="padding:6px;text-align:right;">ROAS</th></tr>';
+    for (var ek = 0; ek < results.ecomKeywordsPaused.length; ek++) {
+      var ekItem = results.ecomKeywordsPaused[ek];
+      email += '<tr style="border-bottom:1px solid #eee;"><td style="padding:4px 6px;">' + ekItem.keyword + '</td><td style="padding:4px 6px;">' + ekItem.campaign + '</td><td style="padding:4px 6px;text-align:right;">' + cs + (ekItem.spend || 0).toFixed(0) + '</td><td style="padding:4px 6px;text-align:right;">' + (ekItem.roas || 0).toFixed(2) + 'x</td></tr>';
+    }
+    email += '</table></div>';
+  }
+
+  // Ecommerce Search Terms Negated detail
+  if (results.ecomSearchTermsNegated.length > 0) {
+    email += '<div style="padding:15px;"><h3>Ecom Search Terms Negated</h3>';
+    email += '<table style="width:100%;border-collapse:collapse;font-size:13px;">';
+    email += '<tr style="background:#ffecb3;"><th style="padding:6px;text-align:left;">Search Term</th><th style="padding:6px;text-align:left;">Campaign</th><th style="padding:6px;text-align:right;">Spend</th><th style="padding:6px;text-align:right;">ROAS</th></tr>';
+    for (var es = 0; es < results.ecomSearchTermsNegated.length; es++) {
+      var esItem = results.ecomSearchTermsNegated[es];
+      email += '<tr style="border-bottom:1px solid #eee;"><td style="padding:4px 6px;">' + esItem.searchTerm + '</td><td style="padding:4px 6px;">' + esItem.campaign + '</td><td style="padding:4px 6px;text-align:right;">' + cs + (esItem.spend || 0).toFixed(0) + '</td><td style="padding:4px 6px;text-align:right;">' + (esItem.roas || 0).toFixed(2) + 'x</td></tr>';
+    }
+    email += '</table></div>';
+  }
+
+  // Informational Blocked detail
+  if (results.informationalBlocked.length > 0) {
+    email += '<div style="padding:15px;"><h3>Informational Terms Blocked</h3>';
+    email += '<table style="width:100%;border-collapse:collapse;font-size:13px;">';
+    email += '<tr style="background:#f3e5f5;"><th style="padding:6px;text-align:left;">Negative Phrase Added</th><th style="padding:6px;text-align:left;">Triggered By</th></tr>';
+    for (var ib = 0; ib < results.informationalBlocked.length; ib++) {
+      var ibItem = results.informationalBlocked[ib];
+      email += '<tr style="border-bottom:1px solid #eee;"><td style="padding:4px 6px;">"' + ibItem.phrase + '"</td><td style="padding:4px 6px;">' + ibItem.matchedTerm + '</td></tr>';
+    }
+    email += '</table></div>';
+  }
+
+  // N-gram Negatives detail
+  if (results.ngramNegatives.length > 0) {
+    email += '<div style="padding:15px;"><h3>N-gram Negatives</h3>';
+    email += '<table style="width:100%;border-collapse:collapse;font-size:13px;">';
+    email += '<tr style="background:#e0f2f1;"><th style="padding:6px;text-align:left;">Word</th><th style="padding:6px;text-align:right;">Total Spend</th><th style="padding:6px;text-align:right;">Terms</th><th style="padding:6px;text-align:left;">Samples</th></tr>';
+    for (var ng = 0; ng < results.ngramNegatives.length; ng++) {
+      var ngItem = results.ngramNegatives[ng];
+      email += '<tr style="border-bottom:1px solid #eee;"><td style="padding:4px 6px;">"' + ngItem.word + '"</td><td style="padding:4px 6px;text-align:right;">' + cs + (ngItem.totalCost || 0).toFixed(0) + '</td><td style="padding:4px 6px;text-align:right;">' + ngItem.termCount + '</td><td style="padding:4px 6px;color:#666;">' + (ngItem.sampleTerms || []).slice(0, 3).join(', ') + '</td></tr>';
+    }
+    email += '</table></div>';
+  }
+
+  // Low QS Keywords detail
+  if (results.lowQsPaused.length > 0) {
+    email += '<div style="padding:15px;"><h3>Low Quality Score Keywords Paused</h3>';
+    email += '<table style="width:100%;border-collapse:collapse;font-size:13px;">';
+    email += '<tr style="background:#fff3e0;"><th style="padding:6px;text-align:left;">Keyword</th><th style="padding:6px;text-align:left;">Campaign</th><th style="padding:6px;text-align:right;">QS</th><th style="padding:6px;text-align:right;">Spend</th></tr>';
+    for (var lq = 0; lq < results.lowQsPaused.length; lq++) {
+      var lqItem = results.lowQsPaused[lq];
+      email += '<tr style="border-bottom:1px solid #eee;"><td style="padding:4px 6px;">' + lqItem.keyword + '</td><td style="padding:4px 6px;">' + lqItem.campaign + '</td><td style="padding:4px 6px;text-align:right;">' + lqItem.qualityScore + '</td><td style="padding:4px 6px;text-align:right;">' + cs + (lqItem.spend || 0).toFixed(0) + '</td></tr>';
+    }
+    email += '</table></div>';
+  }
+
+  // Schedule Adjustments detail
+  if (results.scheduleAdjustments.length > 0) {
+    email += '<div style="padding:15px;"><h3>Ad Schedule Adjustments</h3>';
+    email += '<table style="width:100%;border-collapse:collapse;font-size:13px;">';
+    email += '<tr style="background:#e0f2f1;"><th style="padding:6px;text-align:left;">Campaign</th><th style="padding:6px;text-align:left;">Hour</th><th style="padding:6px;text-align:right;">Adjustment</th></tr>';
+    for (var sa = 0; sa < results.scheduleAdjustments.length; sa++) {
+      var saItem = results.scheduleAdjustments[sa];
+      email += '<tr style="border-bottom:1px solid #eee;"><td style="padding:4px 6px;">' + saItem.campaign + '</td><td style="padding:4px 6px;">' + saItem.hourLabel + '</td><td style="padding:4px 6px;text-align:right;">' + saItem.adjustment + '%</td></tr>';
+    }
+    email += '</table></div>';
+  }
+
   // AI Smart Negation details
   if (results.smartNegated.length > 0) {
     email += '<div style="padding:15px;"><h3 style="color:#c62828;">AI Auto-Negated Search Terms</h3>';
@@ -2422,7 +2575,7 @@ function _sendReport(results, duration) {
     email += '<tr style="background:#fce4ec;"><th style="padding:6px;text-align:left;">Search Term</th><th style="padding:6px;text-align:right;">Cost</th><th style="padding:6px;text-align:right;">Clicks</th><th style="padding:6px;text-align:left;">Reason</th></tr>';
     for (var sn = 0; sn < results.smartNegated.length; sn++) {
       var item = results.smartNegated[sn];
-      email += '<tr style="border-bottom:1px solid #eee;"><td style="padding:4px 6px;">' + item.term + '</td><td style="padding:4px 6px;text-align:right;">R' + item.cost.toFixed(0) + '</td><td style="padding:4px 6px;text-align:right;">' + item.clicks + '</td><td style="padding:4px 6px;color:#666;">' + item.reason + '</td></tr>';
+      email += '<tr style="border-bottom:1px solid #eee;"><td style="padding:4px 6px;">' + item.term + '</td><td style="padding:4px 6px;text-align:right;">' + cs + item.cost.toFixed(0) + '</td><td style="padding:4px 6px;text-align:right;">' + item.clicks + '</td><td style="padding:4px 6px;color:#666;">' + item.reason + '</td></tr>';
     }
     email += '</table></div>';
   }
@@ -2435,12 +2588,12 @@ function _sendReport(results, duration) {
     email += '<tr style="background:#fff3e0;"><th style="padding:6px;text-align:left;">Search Term</th><th style="padding:6px;text-align:right;">Cost</th><th style="padding:6px;text-align:right;">Clicks</th><th style="padding:6px;text-align:left;">Reason</th></tr>';
     for (var sr = 0; sr < results.smartReviewTerms.length; sr++) {
       var rItem = results.smartReviewTerms[sr];
-      email += '<tr style="border-bottom:1px solid #eee;"><td style="padding:4px 6px;">' + rItem.term + '</td><td style="padding:4px 6px;text-align:right;">R' + rItem.cost.toFixed(0) + '</td><td style="padding:4px 6px;text-align:right;">' + rItem.clicks + '</td><td style="padding:4px 6px;color:#666;">' + rItem.reason + '</td></tr>';
+      email += '<tr style="border-bottom:1px solid #eee;"><td style="padding:4px 6px;">' + rItem.term + '</td><td style="padding:4px 6px;text-align:right;">' + cs + rItem.cost.toFixed(0) + '</td><td style="padding:4px 6px;text-align:right;">' + rItem.clicks + '</td><td style="padding:4px 6px;color:#666;">' + rItem.reason + '</td></tr>';
     }
     email += '</table></div>';
   }
 
-  // Audit & Repair details (v4.1.2)
+  // Audit & Repair details
   if (results.auditRepairs && results.auditRepairs.length > 0) {
     email += '<div style="padding:15px;background:#e8f5e9;"><h3 style="color:#2e7d32;">Audit & Repair Details</h3>';
     email += '<p style="font-size:12px;color:#666;">Negatives/pauses that conflicted with active keywords or converting search terms.</p>';
@@ -2454,11 +2607,55 @@ function _sendReport(results, duration) {
     email += '</table></div>';
   }
 
-  email += '<div style="padding:15px;color:#666;font-size:12px;"><p>Completed in ' + duration.toFixed(1) + 's | Core v4.1.2 | Syte Digital Agency</p></div></body></html>';
+  // Errors detail (v4.2.0)
+  if (results.errors.length > 0) {
+    email += '<div style="padding:15px;background:#ffebee;"><h3 style="color:#c62828;">Errors</h3>';
+    email += '<ul style="font-size:13px;">';
+    for (var ei = 0; ei < results.errors.length; ei++) {
+      email += '<li>' + results.errors[ei] + '</li>';
+    }
+    email += '</ul></div>';
+  }
+
+  email += '<div style="padding:15px;color:#666;font-size:12px;"><p>Completed in ' + duration.toFixed(1) + 's | Core v4.2.0 | Syte Digital Agency</p></div></body></html>';
 
   var recipients = CONFIG.EMAIL_ADDRESSES || [CONFIG.EMAIL_RECIPIENT || 'michaelh@syte.co.za'];
   if (typeof recipients === 'string') recipients = [recipients];
-  MailApp.sendEmail({ to: recipients.join(','), subject: mode + ' Syte v4.1.2 | ' + accountName + ' | ' + CONFIG.ACCOUNT_MODE, htmlBody: email });
+  MailApp.sendEmail({ to: recipients.join(','), subject: mode + ' Syte v4.2.0 | ' + accountName + ' | ' + CONFIG.ACCOUNT_MODE, htmlBody: email });
+}
+
+
+// ============================================
+// CONFIG VALIDATION (v4.2.0)
+// ============================================
+
+function _validateConfig() {
+  var warnings = [];
+
+  if (!CONFIG.MASTER_SHEET_ID && !CONFIG.SHEET_URL) {
+    warnings.push('No MASTER_SHEET_ID or SHEET_URL — change logging disabled');
+  }
+  if (!CONFIG.ANTHROPIC_API_KEY) {
+    warnings.push('No ANTHROPIC_API_KEY — AI features disabled');
+  }
+  if (!CONFIG.PROTECTED_TERMS || CONFIG.PROTECTED_TERMS.length === 0) {
+    warnings.push('PROTECTED_TERMS empty — core keywords have NO manual protection');
+  }
+  if (CONFIG.PROTECTED_TERMS) {
+    var seen = {};
+    CONFIG.PROTECTED_TERMS.forEach(function(t) {
+      var lower = t.toLowerCase();
+      if (seen[lower]) warnings.push('Duplicate in PROTECTED_TERMS: "' + t + '"');
+      seen[lower] = true;
+    });
+  }
+  if (!CONFIG.CLIENT_NAME) warnings.push('CLIENT_NAME not set');
+  if (!CONFIG.CLIENT_WEBSITE) warnings.push('CLIENT_WEBSITE not set — AI has less context');
+
+  for (var i = 0; i < warnings.length; i++) {
+    _log('WARN', 'CONFIG: ' + warnings[i]);
+  }
+  return warnings;
 }
 
 
@@ -2470,7 +2667,7 @@ function runOptimization() {
   var startTime = new Date();
 
   _log('INFO', '═══════════════════════════════════════════');
-  _log('INFO', 'SYTE OPTIMIZATION CORE v4.1.2');
+  _log('INFO', 'SYTE OPTIMIZATION CORE v4.2.0');
   _log('INFO', 'Client: ' + (CONFIG.CLIENT_NAME || AdsApp.currentAccount().getName()));
   _log('INFO', 'Mode: ' + CONFIG.ACCOUNT_MODE);
   _log('INFO', 'Run: ' + (CONFIG.PREVIEW_MODE ? 'PREVIEW (no changes)' : 'LIVE'));
@@ -2490,13 +2687,28 @@ function runOptimization() {
     errors: []
   };
 
-  // v4.1.2: Build active keyword set and converting search terms ONCE at start
+  // === CONFIG VALIDATION (v4.2.0) ===
+  _log('INFO', '\n=== CONFIG VALIDATION ===');
+  _validateConfig();
+
+  // Config defaults
   CONFIG.AUTO_PROTECT_ACTIVE_KEYWORDS = CONFIG.AUTO_PROTECT_ACTIVE_KEYWORDS !== false;  // default: true
   CONFIG.KEYWORD_PAUSE_MIN_IMPRESSIONS = CONFIG.KEYWORD_PAUSE_MIN_IMPRESSIONS || 100;
   CONFIG.AUDIT_NEGATIVES = CONFIG.AUDIT_NEGATIVES !== false;  // default: true
   CONFIG.AUDIT_REPAIR_MODE = CONFIG.AUDIT_REPAIR_MODE || 'LIVE';
   CONFIG.AUDIT_CONVERTING_LOOKBACK_DAYS = CONFIG.AUDIT_CONVERTING_LOOKBACK_DAYS || 90;
 
+  // Test sheet access early (v4.2.0)
+  var testSheet = _getChangeLogSheet();
+  if (testSheet) {
+    _log('INFO', 'Master sheet connected: ' + CONFIG.MASTER_SHEET_ID);
+  } else if (CONFIG.MASTER_SHEET_ID || CONFIG.SHEET_URL) {
+    _log('ERROR', 'Master sheet configured but NOT accessible — check sharing permissions');
+  } else {
+    _log('WARN', 'No MASTER_SHEET_ID or SHEET_URL — change logging disabled');
+  }
+
+  // Build active keyword set and converting search terms ONCE at start
   _log('INFO', '\n=== BUILDING ACTIVE KEYWORD SET ===');
   ACTIVE_KEYWORDS = _buildActiveKeywordSet();
   CONVERTING_SEARCH_TERMS = _buildConvertingSearchTerms(CONFIG.AUDIT_CONVERTING_LOOKBACK_DAYS);
