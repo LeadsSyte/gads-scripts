@@ -98,7 +98,30 @@
  * - Conversion tracking health check
  * - N-gram analysis
  * - Low Quality Score keyword pausing
- * - Keyword Opportunity Scanner
+ * - Keyword Opportunity Scanner (removed — see POLICY note below)
+ */
+
+/**
+ * ═══════════════════════════════════════════════════════════════
+ * POLICY: NO AUTO KEYWORD ADDITION
+ * ═══════════════════════════════════════════════════════════════
+ * This script does NOT add new keywords to the account.
+ *
+ * Exact match promotion (_promoteWinners / _createExactMatchWinner)
+ * is allowed because it promotes EXISTING converting traffic to
+ * exact match — it doesn't introduce new search terms.
+ *
+ * Adding genuinely new keywords requires business context the script
+ * doesn't have:
+ *   - What does the client actually sell? (e.g. plastic jungle gyms but not wooden)
+ *   - What's in stock? (client may have told us to stop bidding on X)
+ *   - What are the margins? (a product may convert at a loss)
+ *   - What's the strategic direction? (client wants to push premium, not budget)
+ *   - Is there a landing page? (no LP = bad QS = wasted spend)
+ *
+ * Keyword opportunities are surfaced in the email report for human review.
+ * The team adds keywords manually with full client context.
+ * ═══════════════════════════════════════════════════════════════
  */
 
 // ============================================
