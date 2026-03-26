@@ -1,5 +1,5 @@
 /**
- * SYTE OPTIMIZATION CORE v4.2.0
+ * SYTE OPTIMIZATION CORE v4.3.0
  * ============================
  * This file is the CORE engine — hosted centrally and fetched by each client's loader script.
  * DO NOT paste this into Google Ads Scripts directly.
@@ -13,7 +13,19 @@
  * When you improve this core, ALL client accounts get the update on their next scheduled run.
  *
  * Author: Syte Digital Agency (syte.co.za)
- * Version: 4.2.0
+ * Version: 4.3.0
+ *
+ * CHANGELOG v4.3.0 — ALL NEGATION THROUGH AI:
+ * - BREAKING: Removed blind spend-threshold negation (_negativeHighSpendSearchTerms)
+ * - BREAKING: Removed blind informational pattern negation (_blockInformationalTerms)
+ * - BREAKING: Removed blind irrelevant term negation (_blockIrrelevantTerms)
+ * - ALL negation decisions now routed through Claude Haiku with full client context
+ * - AI receives: client name, website, industry, active keywords, informational/irrelevant flags
+ * - AI prompt has strict "never negate product terms" safety rules
+ * - Without ANTHROPIC_API_KEY: zero auto-negation, all candidates flagged for manual review
+ * - INFORMATIONAL_PATTERNS and IRRELEVANT_TERMS now serve as AI hints, not auto-triggers
+ * - Unified email report section for all negation activity
+ * - Negatives routed to correct shared list based on AI reasoning (spend/info/irrelevant)
  *
  * CHANGELOG v4.2.0 — CRITICAL SAFETY + AUDIT & REPAIR + SHEET FIX:
  * - FIX: Google Sheet logging now works with CONFIG.SHEET_URL (extracts ID automatically)
@@ -431,167 +443,244 @@ function _smartSearchTermReview(results) {
     return;
   }
 
-  if (!CONFIG.ANTHROPIC_API_KEY) {
-    _log('WARN', 'No ANTHROPIC_API_KEY — smart negation skipped');
-    return;
-  }
+  _log('INFO', 'Running unified AI search term review...');
 
-  _log('INFO', 'Running smart search term review...');
-
-  var minClicks = CONFIG.SMART_NEGATION_MIN_CLICKS || 1;
   var maxSpendForAuto = CONFIG.SMART_NEGATION_MAX_SPEND || 500;
   var smartNegationCap = 30;
 
-  // Step 1: Collect search terms from last 7 days with clicks, no conversions, not already excluded
-  var query = 'SELECT search_term_view.search_term, search_term_view.status, campaign.name, ' +
-    'metrics.cost_micros, metrics.clicks, metrics.conversions ' +
-    'FROM search_term_view ' +
-    'WHERE campaign.status = "ENABLED" ' +
-    'AND metrics.clicks >= ' + minClicks + ' ' +
-    'AND metrics.conversions = 0 ' +
-    'AND search_term_view.status = "NONE" ' +
-    'AND segments.date DURING LAST_7_DAYS';
+  // === STEP 1: Collect candidates from ALL sources ===
+  var candidates = {};  // keyed by search term text
 
-  var terms = [];
-  var termData = {};
-  try {
-    var search = AdsApp.search(query);
-    var processed = {};
-    while (search.hasNext()) {
-      var row = search.next();
-      var st = row.searchTermView.searchTerm.toLowerCase().trim();
-      if (processed[st]) {
-        // Aggregate cost/clicks across campaigns
-        termData[st].cost += Number(row.metrics.costMicros) / 1000000;
-        termData[st].clicks += Number(row.metrics.clicks) || 0;
-        continue;
+  // SOURCE 1: High spend, zero conversions (last 30 days) — lead gen
+  if (_isLeadGenMode()) {
+    var spendThreshold = CONFIG.SEARCH_TERM_SPEND_THRESHOLD || 100;
+    try {
+      var q1 = 'SELECT search_term_view.search_term, campaign.name, metrics.cost_micros, metrics.conversions, metrics.clicks ' +
+        'FROM search_term_view WHERE metrics.cost_micros > ' + (spendThreshold * 1000000) +
+        ' AND metrics.conversions < 1 AND campaign.status = "ENABLED" ' +
+        'AND campaign.advertising_channel_type = "SEARCH" AND segments.date DURING LAST_30_DAYS';
+      var s1 = AdsApp.search(q1);
+      while (s1.hasNext()) {
+        var r1 = s1.next();
+        var st1 = r1.searchTermView.searchTerm.toLowerCase().trim();
+        if (!candidates[st1]) candidates[st1] = { term: st1, cost: 0, clicks: 0, campaign: r1.campaign.name, sources: [] };
+        candidates[st1].cost += Number(r1.metrics.costMicros) / 1000000;
+        candidates[st1].clicks += Number(r1.metrics.clicks) || 0;
+        if (candidates[st1].sources.indexOf('HIGH_SPEND_LEAD_GEN') === -1) candidates[st1].sources.push('HIGH_SPEND_LEAD_GEN');
       }
-      if (_isProtectedTerm(st)) continue;
-      processed[st] = true;
-      var cost = Number(row.metrics.costMicros) / 1000000;
-      var clicks = Number(row.metrics.clicks) || 0;
-      termData[st] = { term: st, cost: cost, clicks: clicks, campaign: row.campaign.name };
-      terms.push(st);
+    } catch (e) { _log('WARN', 'Candidate collection (lead gen spend) failed: ' + e.message); }
+  }
+
+  // SOURCE 2: High spend, low ROAS (last 30 days) — ecommerce
+  if (_isEcommerceMode()) {
+    var ecomThreshold = CONFIG.ECOM_SEARCH_TERM_SPEND_THRESHOLD || 800;
+    try {
+      var q2 = 'SELECT search_term_view.search_term, campaign.name, metrics.cost_micros, metrics.conversions_value, metrics.clicks ' +
+        'FROM search_term_view WHERE metrics.cost_micros > ' + (ecomThreshold * 1000000) +
+        ' AND campaign.status = "ENABLED" AND campaign.advertising_channel_type = "SEARCH" ' +
+        'AND segments.date DURING LAST_30_DAYS';
+      var s2 = AdsApp.search(q2);
+      while (s2.hasNext()) {
+        var r2 = s2.next();
+        var st2 = r2.searchTermView.searchTerm.toLowerCase().trim();
+        var cost2 = Number(r2.metrics.costMicros) / 1000000;
+        var revenue2 = Number(r2.metrics.conversionsValue) || 0;
+        var roas2 = cost2 > 0 ? revenue2 / cost2 : 0;
+        if (roas2 >= (CONFIG.MIN_ROAS_TO_KEEP || 1.5)) continue;
+        if (!candidates[st2]) candidates[st2] = { term: st2, cost: 0, clicks: 0, campaign: r2.campaign.name, sources: [], revenue: 0 };
+        candidates[st2].cost += cost2;
+        candidates[st2].clicks += Number(r2.metrics.clicks) || 0;
+        candidates[st2].revenue = (candidates[st2].revenue || 0) + revenue2;
+        if (candidates[st2].sources.indexOf('LOW_ROAS_ECOM') === -1) candidates[st2].sources.push('LOW_ROAS_ECOM');
+      }
+    } catch (e) { _log('WARN', 'Candidate collection (ecom spend) failed: ' + e.message); }
+  }
+
+  // SOURCE 3: Early detection — clicks but no conversions, last 7 days
+  var minClicks = CONFIG.SMART_NEGATION_MIN_CLICKS || 1;
+  try {
+    var q3 = 'SELECT search_term_view.search_term, search_term_view.status, campaign.name, ' +
+      'metrics.cost_micros, metrics.clicks, metrics.conversions ' +
+      'FROM search_term_view WHERE campaign.status = "ENABLED" ' +
+      'AND metrics.clicks >= ' + minClicks + ' AND metrics.conversions = 0 ' +
+      'AND search_term_view.status = "NONE" AND segments.date DURING LAST_7_DAYS';
+    var s3 = AdsApp.search(q3);
+    while (s3.hasNext()) {
+      var r3 = s3.next();
+      var st3 = r3.searchTermView.searchTerm.toLowerCase().trim();
+      if (!candidates[st3]) candidates[st3] = { term: st3, cost: 0, clicks: 0, campaign: r3.campaign.name, sources: [] };
+      candidates[st3].cost += Number(r3.metrics.costMicros) / 1000000;
+      candidates[st3].clicks += Number(r3.metrics.clicks) || 0;
+      if (candidates[st3].sources.indexOf('EARLY_DETECTION') === -1) candidates[st3].sources.push('EARLY_DETECTION');
     }
-  } catch (e) {
-    _log('WARN', 'Smart negation query failed: ' + e.message);
-    results.errors.push('Smart negation query: ' + e.message);
+  } catch (e) { _log('WARN', 'Candidate collection (early detection) failed: ' + e.message); }
+
+  // === STEP 2: Filter out protected terms, active keywords, existing negatives ===
+  var negativeListSpend = _getOrCreateNegativeList(CONFIG.NEGATIVE_LIST_NAME_SPEND);
+  var negativeListInfo = _getOrCreateNegativeList(CONFIG.NEGATIVE_LIST_NAME_INFORMATIONAL);
+  var negativeListIrr = _getOrCreateNegativeList(CONFIG.NEGATIVE_LIST_NAME_IRRELEVANT);
+  var existingNegs = {};
+  var allLists = [negativeListSpend, negativeListInfo, negativeListIrr];
+  for (var li = 0; li < allLists.length; li++) {
+    if (!allLists[li]) continue;
+    var ex = _getExistingNegatives(allLists[li]);
+    for (var k in ex) existingNegs[k] = true;
+  }
+
+  var filtered = [];
+  var termData = {};
+  for (var st in candidates) {
+    if (_isProtectedTerm(st)) continue;
+    if (_isActiveKeyword(st)) continue;
+    if (existingNegs[st]) continue;
+    filtered.push(candidates[st]);
+    termData[st] = candidates[st];
+  }
+
+  _log('INFO', 'AI review: ' + Object.keys(candidates).length + ' raw candidates -> ' + filtered.length + ' after filtering');
+
+  if (filtered.length === 0) {
+    _log('INFO', 'No candidates for AI review');
     return;
   }
 
-  if (terms.length === 0) {
-    _log('INFO', 'Smart negation: no qualifying search terms found');
+  // === STEP 3: If no API key, flag everything for manual review ===
+  if (!CONFIG.ANTHROPIC_API_KEY) {
+    _log('WARN', 'No ANTHROPIC_API_KEY — ALL candidates flagged for manual review (no auto-negation)');
+    for (var fi = 0; fi < filtered.length; fi++) {
+      var fc = filtered[fi];
+      results.smartReviewTerms.push({
+        term: fc.term, cost: fc.cost, clicks: fc.clicks,
+        reason: 'No AI key — manual review required. Sources: ' + fc.sources.join(', '),
+        verdict: 'review'
+      });
+    }
     return;
   }
 
-  _log('INFO', 'Smart negation: ' + terms.length + ' terms to review');
+  // === STEP 4: Build term list with flags for AI context ===
+  var isSouthAfrican = (CONFIG.CURRENCY_SYMBOL === 'R') ||
+    (CONFIG.TARGET_LOCATIONS && JSON.stringify(CONFIG.TARGET_LOCATIONS).toLowerCase().indexOf('south africa') !== -1);
 
-  // Check existing negatives to avoid duplicates
-  var negativeList = _getOrCreateNegativeList(CONFIG.NEGATIVE_LIST_NAME_IRRELEVANT);
-  var existingNegatives = _getExistingNegatives(negativeList);
-
-  // Filter out terms already in negative lists
-  terms = terms.filter(function(t) { return !existingNegatives[t]; });
-  if (terms.length === 0) {
-    _log('INFO', 'Smart negation: all terms already negated');
-    return;
-  }
-
-  // Step 2: Send to Claude in batches of 100
   var batchSize = 100;
   var allVerdicts = [];
+  var termKeys = filtered.map(function(c) { return c.term; });
 
-  for (var batchStart = 0; batchStart < terms.length; batchStart += batchSize) {
-    var batch = terms.slice(batchStart, batchStart + batchSize);
+  for (var batchStart = 0; batchStart < termKeys.length; batchStart += batchSize) {
+    var batch = termKeys.slice(batchStart, batchStart + batchSize);
 
     var termList = batch.map(function(t) {
       var d = termData[t];
-      return '- "' + t + '" (clicks: ' + d.clicks + ', cost: R' + d.cost.toFixed(0) + ')';
+      var tags = d.sources.join(', ');
+      // Tag informational pattern matches
+      for (var pi = 0; pi < INFORMATIONAL_PATTERNS.length; pi++) {
+        if (INFORMATIONAL_PATTERNS[pi].pattern.test(t)) { tags += ', INFORMATIONAL_PATTERN'; break; }
+      }
+      // Tag irrelevant term matches
+      var irrTerms = CONFIG.IRRELEVANT_TERMS || [];
+      for (var ii = 0; ii < irrTerms.length; ii++) {
+        if (t.indexOf(irrTerms[ii].toLowerCase()) !== -1) { tags += ', CLIENT_IRRELEVANT_LIST'; break; }
+      }
+      return '- "' + t + '" (cost: ' + (CONFIG.CURRENCY_SYMBOL || 'R') + d.cost.toFixed(0) + ', clicks: ' + d.clicks + ', flags: ' + tags + ')';
     }).join('\n');
 
-    var isSouthAfrican = (CONFIG.CURRENCY_SYMBOL === 'R') ||
-      (CONFIG.TARGET_LOCATIONS && JSON.stringify(CONFIG.TARGET_LOCATIONS).toLowerCase().indexOf('south africa') !== -1);
+    // Build the active keywords sample for context
+    var activeKwSample = Object.keys(ACTIVE_KEYWORDS).slice(0, 50).join(', ');
 
-    var prompt = 'You are a Google Ads search term relevance analyst.\n' +
-      'The client is: ' + (CONFIG.CLIENT_NAME || AdsApp.currentAccount().getName()) + '\n' +
-      'Their website: ' + (CONFIG.CLIENT_WEBSITE || 'N/A') + '\n' +
+    var prompt = 'You are a Google Ads search term relevance analyst.\n\n' +
+      'CLIENT CONTEXT:\n' +
+      'Name: ' + (CONFIG.CLIENT_NAME || AdsApp.currentAccount().getName()) + '\n' +
+      'Website: ' + (CONFIG.CLIENT_WEBSITE || 'N/A') + '\n' +
+      'Industry: ' + (CONFIG.CLIENT_INDUSTRY || 'N/A') + '\n' +
       'Account mode: ' + (CONFIG.ACCOUNT_MODE || 'LEAD_GEN') + '\n' +
+      'Active keywords in this account include: ' + activeKwSample + '\n' +
       (isSouthAfrican ? 'Market: South Africa\n' : '') + '\n' +
-      'Below is a list of search terms that triggered their Google Ads.\n' +
-      'For each search term, respond with ONLY a JSON array. Each item:\n' +
+      'TASK: Review these search terms and decide whether to negate each one.\n' +
+      'Respond with ONLY a JSON array. Each item:\n' +
       '{"term": "the search term", "verdict": "keep" | "negate" | "review", "reason": "brief reason"}\n\n' +
-      'Rules:\n' +
-      '- "keep" = clearly relevant to the client\'s actual services. Could be a potential customer.\n' +
-      '- "negate" = clearly irrelevant. Competitor tool names, wrong industry, wrong geography, spam, ' +
-      'navigational searches for other brands, academic/research queries, job seekers.\n' +
-      '- "review" = ambiguous. Could go either way. Don\'t negate automatically.\n\n' +
-      'CRITICAL RULE — AGENCY / SERVICE PROVIDER LOGIC:\n' +
-      'If the client\'s website describes a service business (agency, consultancy, firm, provider, company ' +
-      'that SELLS a service to other businesses or consumers), then the pattern "[any industry/profession] + ' +
-      '[service the client sells]" is ALWAYS a qualified lead. The searcher is someone FROM that industry ' +
-      'looking to BUY the client\'s service. They are a potential customer, NOT the wrong audience.\n' +
-      'Examples:\n' +
-      '- Client sells SEO → "dentist seo", "plastic surgeon seo", "plumber seo" = those professionals want to HIRE an SEO agency = KEEP\n' +
-      '- Client sells marketing → "mining company marketing", "lawn care marketing" = those businesses want marketing help = KEEP\n' +
-      '- Client sells web design → "law firm web design", "gym website design" = they want a website built = KEEP\n' +
-      'This applies to ANY service business. NEVER flag a search term as irrelevant just because it mentions ' +
-      'a specific industry or profession. If someone searches "[profession] + [service the client sells]", ' +
-      'that person is looking to BUY that service.\n\n' +
-      'When the client is an agency or service provider, almost any "[modifier] + [core service]" query is a ' +
-      'potential lead. Only negate terms that are clearly:\n' +
-      '- Competitor brand names or software tool names (e.g. "HubSpot", "Semrush")\n' +
-      '- Job/career searches (e.g. "seo jobs", "marketing salary")\n' +
-      '- Academic/educational queries (e.g. "seo course", "marketing degree")\n' +
-      '- DIY/how-to queries (e.g. "how to do seo yourself")\n' +
-      '- Completely unrelated services the client does NOT sell\n\n' +
+
+      'VERDICT RULES:\n\n' +
+
+      '"keep" = The searcher could plausibly be a customer of this client:\n' +
+      '- The term relates to products/services the client likely offers\n' +
+      '- The term contains words that appear in the client\'s active keywords\n' +
+      '- Product variations, sizes, colors, or modifiers of core products\n' +
+      '- Location-specific searches for the client\'s products\n' +
+      '- "for sale", "buy", "price", "near me", "supplier", "quote" + product = ALWAYS keep\n' +
+      '- Children\'s/kids versions of products the client sells = keep\n\n' +
+
+      '"negate" = The searcher is CLEARLY not a potential customer:\n' +
+      '- Competitor brand names (specific company names, not generic product terms)\n' +
+      '- Job/career searches: jobs, salary, vacancy, hiring, career, internship\n' +
+      '- Academic: course, degree, university, certification, tutorial, how to build/make\n' +
+      '- DIY intent: diy, homemade, handmade, build your own, plans, blueprints\n' +
+      '- Wrong product category entirely (not even adjacent to what the client sells)\n' +
+      '- Image/media searches: pictures of, images, photos, video, gif, png, pdf\n' +
+      '- Research: wikipedia, reddit, forum, review, comparison, vs, what is, definition\n\n' +
+
+      '"review" = You\'re not sure. Use when:\n' +
+      '- The term MIGHT relate to the client\'s products but you\'re unsure\n' +
+      '- The term has commercial intent but for a slightly different product\n' +
+      '- You would need to check the client\'s website to be sure\n\n' +
+
+      'CRITICAL SAFETY RULES:\n' +
+      '1. If a search term contains ANY words from the client\'s active keywords, default to "keep" or "review" — NEVER "negate"\n' +
+      '2. Product + modifier (size, color, material, age group, location) = "keep"\n' +
+      '3. Product + "for sale" / "buy" / "price" / "near me" / "supplier" / "quote" / "cost" / "cheap" / "best" = ALWAYS "keep"\n' +
+      '4. When in doubt between "negate" and "review", ALWAYS choose "review"\n' +
+      '5. You are the LAST line of defense. If you say "negate", the term is blocked permanently. Be conservative.\n\n' +
+
+      (CONFIG.ACCOUNT_MODE === 'LEAD_GEN' ?
+        'AGENCY/SERVICE PROVIDER RULE:\n' +
+        'If the client sells a service, "[industry] + [service]" = a qualified lead (KEEP).\n\n' : '') +
+
       (isSouthAfrican ?
-        '"NEAR ME" RULE FOR SOUTH AFRICAN ACCOUNTS:\n' +
-        'South Africa is a small market. "Near me" queries combined with the client\'s core services ' +
-        '(e.g. "seo near me", "marketing agency near me", "seo companies near me") are legitimate local ' +
-        'searches from potential customers. These should be "keep", not "review" or "negate". Only negate ' +
-        '"near me" if the search is clearly for a service the client does NOT offer.\n\n' : '') +
-      'Be CONSERVATIVE with "negate" — only negate things that are obviously wrong. When in doubt, use "keep" or "review".\n\n' +
+        'SOUTH AFRICA RULE: "Near me" + core product/service = legitimate local search = KEEP.\n\n' : '') +
+
+      'FLAG CONTEXT (hints, not verdicts):\n' +
+      '- HIGH_SPEND_LEAD_GEN: Spent above cost threshold with 0 conversions\n' +
+      '- LOW_ROAS_ECOM: Spent above threshold with low ROAS\n' +
+      '- EARLY_DETECTION: Low spend, clicked, no conversions yet\n' +
+      '- INFORMATIONAL_PATTERN: Matches informational regex (how to, tutorial, etc.)\n' +
+      '- CLIENT_IRRELEVANT_LIST: Contains a term the client flagged as irrelevant\n' +
+      'These flags are HINTS. Use them alongside your judgment.\n\n' +
+
       'Search terms:\n' + termList;
 
-    var response = _callClaude(prompt, 4000);
-    if (!response) {
-      _log('WARN', 'Smart negation: API call failed for batch starting at ' + batchStart);
+    var aiResponse = _callClaude(prompt, 4000);
+    if (!aiResponse) {
+      _log('WARN', 'AI review: API call failed for batch starting at ' + batchStart);
       continue;
     }
 
-    // Parse JSON from response — handle markdown code blocks
+    // Parse JSON from response
     try {
-      var jsonStr = response;
-      // Strip markdown code fences if present
+      var jsonStr = aiResponse;
       var codeBlockMatch = jsonStr.match(/```(?:json)?\s*([\s\S]*?)```/);
-      if (codeBlockMatch) {
-        jsonStr = codeBlockMatch[1].trim();
-      }
-      // Find the JSON array
+      if (codeBlockMatch) jsonStr = codeBlockMatch[1].trim();
       var arrayMatch = jsonStr.match(/\[[\s\S]*\]/);
       if (arrayMatch) {
-        var verdicts = JSON.parse(arrayMatch[0]);
-        allVerdicts = allVerdicts.concat(verdicts);
+        allVerdicts = allVerdicts.concat(JSON.parse(arrayMatch[0]));
       } else {
-        _log('WARN', 'Smart negation: no JSON array found in response');
+        _log('WARN', 'AI review: no JSON array found in response');
       }
     } catch (parseErr) {
-      _log('WARN', 'Smart negation: JSON parse error: ' + parseErr.message);
+      _log('WARN', 'AI review: JSON parse error: ' + parseErr.message);
     }
   }
 
   if (allVerdicts.length === 0) {
-    _log('INFO', 'Smart negation: no verdicts returned from AI');
+    _log('INFO', 'AI review: no verdicts returned');
     return;
   }
 
-  _log('INFO', 'Smart negation: ' + allVerdicts.length + ' verdicts received');
+  _log('INFO', 'AI review: ' + allVerdicts.length + ' verdicts received');
 
-  // Step 3: Process verdicts
+  // === STEP 5: Process verdicts ===
   var negateCount = 0;
 
-  for (var i = 0; i < allVerdicts.length; i++) {
-    var v = allVerdicts[i];
+  for (var vi = 0; vi < allVerdicts.length; vi++) {
+    var v = allVerdicts[vi];
     if (!v || !v.term || !v.verdict) continue;
 
     var termKey = v.term.toLowerCase().trim();
@@ -601,52 +690,57 @@ function _smartSearchTermReview(results) {
     if (v.verdict === 'negate') {
       // Safety: never negate protected terms regardless of AI verdict
       if (_isProtectedTerm(termKey)) {
-        _log('WARN', 'Smart negation: AI said negate protected term "' + termKey + '" — SKIPPED');
+        _log('WARN', 'AI review: AI said negate protected term "' + termKey + '" — SKIPPED');
         continue;
       }
-      // v4.1.2: Never negate active keywords
+      // Never negate active keywords
       if (_isActiveKeyword(termKey)) {
         _log('INFO', 'SKIP (active keyword): "' + termKey + '" — AI said negate but matches active keyword');
         continue;
       }
 
-      // Safety: if spend is above max, flag for review instead
+      // If spend is above max threshold, flag for manual review
       if (data.cost > maxSpendForAuto) {
-        _log('INFO', 'Smart negation: "' + termKey + '" spend R' + data.cost.toFixed(0) + ' > max R' + maxSpendForAuto + ' — flagged for review');
         results.smartReviewTerms.push({ term: termKey, cost: data.cost, clicks: data.clicks, reason: v.reason + ' (high spend — needs manual review)', verdict: 'review' });
         continue;
       }
 
-      // Safety: cap auto-negations
-      if (negateCount >= smartNegationCap) {
-        _log('INFO', 'Smart negation: cap of ' + smartNegationCap + ' reached — remaining flagged for review');
+      // Cap auto-negations per run
+      if (negateCount >= smartNegationCap || negateCount >= CONFIG.MAX_CHANGES_PER_RUN) {
         results.smartReviewTerms.push({ term: termKey, cost: data.cost, clicks: data.clicks, reason: v.reason + ' (cap reached)', verdict: 'review' });
         continue;
       }
 
-      // Respect MAX_CHANGES_PER_RUN across all change types
-      if (negateCount >= CONFIG.MAX_CHANGES_PER_RUN) {
-        _log('INFO', 'Smart negation: MAX_CHANGES_PER_RUN reached');
-        break;
-      }
-
-      _log('INFO', 'AI NEGATE: "' + termKey + '" | R' + data.cost.toFixed(0) + ' | Reason: ' + v.reason);
+      _log('INFO', 'AI NEGATE: "' + termKey + '" | ' + (CONFIG.CURRENCY_SYMBOL || 'R') + data.cost.toFixed(0) + ' | Reason: ' + v.reason);
       results.smartNegated.push({ term: termKey, cost: data.cost, clicks: data.clicks, reason: v.reason });
 
-      // Log to master sheet
+      // Also populate searchTermsNegated for backwards compat
+      results.searchTermsNegated.push({ searchTerm: termKey, campaign: data.campaign, spend: data.cost });
+
       _logChange({
         functionName: '_smartSearchTermReview',
         entity: termKey,
         entityType: 'SEARCH_TERM_NEGATIVE',
         campaign: data.campaign,
-        reason: 'AI Smart Negate: ' + v.reason,
+        reason: 'AI Negate: ' + v.reason,
         spend: data.cost,
         conversions: 0
       });
 
-      // Add to negative list
-      if (!CONFIG.PREVIEW_MODE && negativeList) {
-        negativeList.addNegativeKeyword('[' + termKey + ']');
+      // Route to appropriate negative list based on AI reasoning
+      if (!CONFIG.PREVIEW_MODE) {
+        var reason = (v.reason || '').toLowerCase();
+        var targetList = negativeListSpend;  // default
+        if (reason.indexOf('competitor') !== -1 || reason.indexOf('brand') !== -1 ||
+            reason.indexOf('wrong industry') !== -1 || reason.indexOf('irrelevant') !== -1) {
+          targetList = negativeListIrr;
+        } else if (reason.indexOf('job') !== -1 || reason.indexOf('career') !== -1 ||
+                   reason.indexOf('academic') !== -1 || reason.indexOf('educational') !== -1 ||
+                   reason.indexOf('informational') !== -1 || reason.indexOf('diy') !== -1 ||
+                   reason.indexOf('tutorial') !== -1 || reason.indexOf('how to') !== -1) {
+          targetList = negativeListInfo;
+        }
+        if (targetList) targetList.addNegativeKeyword('[' + termKey + ']');
       }
 
       negateCount++;
@@ -656,7 +750,7 @@ function _smartSearchTermReview(results) {
     // 'keep' verdicts are simply ignored — term stays active
   }
 
-  _log('INFO', 'Smart negation complete: ' + negateCount + ' negated, ' + results.smartReviewTerms.length + ' flagged for review');
+  _log('INFO', 'AI review complete: ' + negateCount + ' negated, ' + results.smartReviewTerms.length + ' flagged for review');
 }
 
 
@@ -798,7 +892,7 @@ function _logChange(change) {
       CONFIG.PREVIEW_MODE ? 'PREVIEW' : 'PENDING',  // outcome — PREVIEW tagged, LIVE backfilled in 14 days
       '',                  // outcome_checked_date
       '',                  // outcome_notes
-      'v4.2.0'            // script_version
+      'v4.3.0'            // script_version
     ]);
   } catch (e) {
     var writeErr = 'Change log write failed: ' + e.message;
@@ -1266,7 +1360,7 @@ function _sendWeeklyReviewEmail(accountName, claudeResponse, changeLogSummary) {
   // Header
   email += '<div style="background:linear-gradient(135deg,#1a1a2e,#16213e);color:white;padding:24px;border-radius:8px 8px 0 0;">';
   email += '<h1 style="margin:0;font-size:22px;">🤖 Syte Script — Weekly Self-Improvement Report</h1>';
-  email += '<p style="margin:6px 0 0;opacity:0.8;">' + accountName + ' | ' + today + ' | Core v4.2.0</p>';
+  email += '<p style="margin:6px 0 0;opacity:0.8;">' + accountName + ' | ' + today + ' | Core v4.3.0</p>';
   email += '</div>';
 
   // Change log stats banner
@@ -1450,36 +1544,7 @@ function _pauseHighSpendKeywords_LeadGen(results) {
   _log('INFO', 'Lead gen keywords paused: ' + results.keywordsPaused.length);
 }
 
-function _negativeHighSpendSearchTerms_LeadGen(results) {
-  var dr = _getDateRange(); var changeCount = 0;
-  var negativeList = _getOrCreateNegativeList(CONFIG.NEGATIVE_LIST_NAME_SPEND);
-  var existing = _getExistingNegatives(negativeList);
-  var query = 'SELECT search_term_view.search_term, campaign.name, metrics.cost_micros, metrics.conversions, metrics.clicks FROM search_term_view WHERE metrics.cost_micros > ' + (CONFIG.SEARCH_TERM_SPEND_THRESHOLD * 1000000) + ' AND metrics.conversions < 1 AND campaign.status = "ENABLED" AND campaign.advertising_channel_type = "SEARCH" AND segments.date DURING LAST_30_DAYS';
-  try {
-    var search = AdsApp.search(query); var processed = {};
-    while (search.hasNext() && changeCount < CONFIG.MAX_CHANGES_PER_RUN) {
-      var row = search.next();
-      var st = row.searchTermView.searchTerm.toLowerCase().trim();
-      if (processed[st] || existing[st] || _isProtectedTerm(st)) continue;
-      // v4.1.2: Never negative search terms that match active keywords
-      if (_isActiveKeyword(st)) {
-        _log('INFO', 'SKIP (active keyword): "' + st + '" — would have been negatived');
-        continue;
-      }
-      processed[st] = true;
-      var cost = Number(row.metrics.costMicros) / 1000000;
-      var reason = 'Spend R' + cost.toFixed(0) + ' | 0 conv';
-      _log('INFO', 'NEGATIVE: "' + st + '" | ' + reason);
-      results.searchTermsNegated.push({ searchTerm: st, campaign: row.campaign.name, spend: cost });
-
-      // LOG CHANGE
-      _logChange({ functionName: '_negativeHighSpendSearchTerms_LeadGen', entity: st, entityType: 'SEARCH_TERM_NEGATIVE', campaign: row.campaign.name, reason: reason, spend: cost, conversions: 0 });
-
-      if (!CONFIG.PREVIEW_MODE && negativeList) negativeList.addNegativeKeyword('[' + st + ']');
-      changeCount++;
-    }
-  } catch (e) { _log('ERROR', 'negativeHighSpendSearchTerms_LeadGen: ' + e.message); results.errors.push(e.message); }
-}
+// v4.3.0: _negativeHighSpendSearchTerms_LeadGen REMOVED — all negation now through AI in _smartSearchTermReview
 
 function _promoteWinners_LeadGen(results) {
   var dr = _getDateRange();
@@ -1559,38 +1624,7 @@ function _pauseHighSpendKeywords_Ecommerce(results) {
   } catch (e) { _log('ERROR', 'pauseHighSpendKeywords_Ecommerce: ' + e.message); results.errors.push(e.message); }
 }
 
-function _negativeHighSpendSearchTerms_Ecommerce(results) {
-  var changeCount = 0;
-  var negativeList = _getOrCreateNegativeList(CONFIG.NEGATIVE_LIST_NAME_SPEND);
-  var existing = _getExistingNegatives(negativeList);
-  var query = 'SELECT search_term_view.search_term, campaign.name, metrics.cost_micros, metrics.conversions_value FROM search_term_view WHERE metrics.cost_micros > ' + (CONFIG.ECOM_SEARCH_TERM_SPEND_THRESHOLD * 1000000) + ' AND campaign.status = "ENABLED" AND campaign.advertising_channel_type = "SEARCH" AND segments.date DURING LAST_30_DAYS';
-  try {
-    var search = AdsApp.search(query); var processed = {};
-    while (search.hasNext() && changeCount < CONFIG.MAX_CHANGES_PER_RUN) {
-      var row = search.next();
-      var st = row.searchTermView.searchTerm.toLowerCase().trim();
-      if (processed[st] || existing[st] || _isProtectedTerm(st)) continue;
-      // v4.1.2: Never negative search terms that match active keywords
-      if (_isActiveKeyword(st)) {
-        _log('INFO', 'SKIP (active keyword): "' + st + '" — would have been negatived');
-        continue;
-      }
-      processed[st] = true;
-      var cost = Number(row.metrics.costMicros) / 1000000;
-      var revenue = Number(row.metrics.conversionsValue) || 0;
-      var roas = _calculateROAS(revenue, cost);
-      if (roas >= CONFIG.MIN_ROAS_TO_KEEP) continue;
-      var reason = 'ROAS ' + roas.toFixed(2) + 'x | Spend R' + cost.toFixed(0);
-      results.ecomSearchTermsNegated.push({ searchTerm: st, campaign: row.campaign.name, spend: cost, revenue: revenue, roas: roas });
-
-      // LOG CHANGE
-      _logChange({ functionName: '_negativeHighSpendSearchTerms_Ecommerce', entity: st, entityType: 'SEARCH_TERM_NEGATIVE', campaign: row.campaign.name, reason: reason, spend: cost, conversions: revenue });
-
-      if (!CONFIG.PREVIEW_MODE && negativeList) negativeList.addNegativeKeyword('[' + st + ']');
-      changeCount++;
-    }
-  } catch (e) { _log('ERROR', 'negativeHighSpendSearchTerms_Ecommerce: ' + e.message); results.errors.push(e.message); }
-}
+// v4.3.0: _negativeHighSpendSearchTerms_Ecommerce REMOVED — all negation now through AI in _smartSearchTermReview
 
 function _promoteWinners_Ecommerce(results) {
   var dr = _getDateRange();
@@ -1751,75 +1785,8 @@ function _analyzePMaxAssetGroups(results) {
 }
 
 
-// ============================================
-// SHARED TASKS (all modes)
-// ============================================
-
-function _blockInformationalTerms(results) {
-  var changeCount = 0;
-  var negativeList = _getOrCreateNegativeList(CONFIG.NEGATIVE_LIST_NAME_INFORMATIONAL);
-  var existing = _getExistingNegatives(negativeList);
-  var query = 'SELECT search_term_view.search_term, metrics.cost_micros FROM search_term_view WHERE campaign.status = "ENABLED" AND segments.date DURING LAST_7_DAYS';
-  try {
-    var search = AdsApp.search(query); var added = {};
-    while (search.hasNext() && changeCount < CONFIG.MAX_CHANGES_PER_RUN) {
-      var row = search.next();
-      var st = row.searchTermView.searchTerm.toLowerCase().trim();
-      if (_isProtectedTerm(st)) continue;
-      // v4.1.2: Skip if search term contains any active keyword text
-      var matchedKw = _containsActiveKeyword(st);
-      if (matchedKw) {
-        _log('INFO', 'SKIP (contains active keyword "' + matchedKw + '"): "' + st + '" — would have been blocked as informational');
-        continue;
-      }
-      for (var i = 0; i < INFORMATIONAL_PATTERNS.length; i++) {
-        var p = INFORMATIONAL_PATTERNS[i];
-        if (p.pattern.test(st) && !added[p.negativePhrase] && !existing[p.negativePhrase]) {
-          _log('INFO', 'INFORMATIONAL: "' + st + '" -> "' + p.negativePhrase + '"');
-          results.informationalBlocked.push({ phrase: p.negativePhrase, matchedTerm: st });
-          if (!CONFIG.PREVIEW_MODE && negativeList) negativeList.addNegativeKeyword('"' + p.negativePhrase + '"');
-          added[p.negativePhrase] = true;
-          changeCount++;
-          break;
-        }
-      }
-    }
-  } catch (e) { _log('ERROR', 'blockInformationalTerms: ' + e.message); results.errors.push(e.message); }
-}
-
-function _blockIrrelevantTerms(results) {
-  var irrelevantTerms = CONFIG.IRRELEVANT_TERMS || [];
-  if (irrelevantTerms.length === 0) return;
-  var changeCount = 0;
-  var negativeList = _getOrCreateNegativeList(CONFIG.NEGATIVE_LIST_NAME_IRRELEVANT);
-  var existing = _getExistingNegatives(negativeList);
-  var query = 'SELECT search_term_view.search_term, metrics.cost_micros FROM search_term_view WHERE campaign.status = "ENABLED" AND segments.date DURING LAST_7_DAYS';
-  try {
-    var search = AdsApp.search(query); var added = {};
-    while (search.hasNext() && changeCount < CONFIG.MAX_CHANGES_PER_RUN) {
-      var row = search.next();
-      var st = row.searchTermView.searchTerm.toLowerCase().trim();
-      if (_isProtectedTerm(st)) continue;
-      // v4.2.0: Skip if search term contains any active keyword
-      var irrMatchedKw = _containsActiveKeyword(st);
-      if (irrMatchedKw) {
-        _log('INFO', 'SKIP (contains active keyword "' + irrMatchedKw + '"): "' + st + '" — would have been blocked as irrelevant');
-        continue;
-      }
-      for (var i = 0; i < irrelevantTerms.length; i++) {
-        var term = irrelevantTerms[i];
-        if (st.indexOf(term.toLowerCase()) !== -1 && !added[term] && !existing[term]) {
-          _log('INFO', 'IRRELEVANT: "' + st + '" -> "' + term + '"');
-          results.irrelevantBlocked.push({ phrase: term, matchedTerm: st });
-          if (!CONFIG.PREVIEW_MODE && negativeList) negativeList.addNegativeKeyword('"' + term + '"');
-          added[term] = true;
-          changeCount++;
-          break;
-        }
-      }
-    }
-  } catch (e) { _log('ERROR', 'blockIrrelevantTerms: ' + e.message); results.errors.push(e.message); }
-}
+// v4.3.0: _blockInformationalTerms REMOVED — informational patterns now serve as AI hints in _smartSearchTermReview
+// v4.3.0: _blockIrrelevantTerms REMOVED — irrelevant terms now serve as AI hints in _smartSearchTermReview
 
 function _checkBudgetPacing(results) {
   var today = new Date(); var dom = today.getDate();
@@ -2193,7 +2160,7 @@ function _checkConversionHealth(results) {
       if (CONFIG.SEND_EMAIL !== false) {
         var recipients = CONFIG.EMAIL_ADDRESSES || [CONFIG.EMAIL_RECIPIENT || 'michaelh@syte.co.za'];
         if (typeof recipients === 'string') recipients = [recipients];
-        MailApp.sendEmail({ to: recipients.join(','), subject: '🚨 URGENT: ' + CONFIG.CLIENT_NAME + ' — Conversions Dropped ' + dropPct + '%', body: alertMsg + '\n\nAction needed:\n1. Check conversion tags in GTM\n2. Test the conversion flow manually\n3. Check for landing page errors\n4. Review any recent website changes\n\n— Syte Optimization Script v4.2.0' });
+        MailApp.sendEmail({ to: recipients.join(','), subject: '🚨 URGENT: ' + CONFIG.CLIENT_NAME + ' — Conversions Dropped ' + dropPct + '%', body: alertMsg + '\n\nAction needed:\n1. Check conversion tags in GTM\n2. Test the conversion flow manually\n3. Check for landing page errors\n4. Review any recent website changes\n\n— Syte Optimization Script v4.3.0' });
       }
     }
 
@@ -2430,7 +2397,7 @@ function _sendReport(results, duration) {
 
   var email = '<html><body style="font-family:Arial,sans-serif;max-width:800px;margin:0 auto;color:#333;">';
   email += '<div style="background:linear-gradient(135deg,#1a1a2e,#16213e);color:white;padding:20px;border-radius:8px 8px 0 0;">';
-  email += '<h1 style="margin:0;font-size:20px;">Syte Optimization Report v4.2.0</h1>';
+  email += '<h1 style="margin:0;font-size:20px;">Syte Optimization Report v4.3.0</h1>';
   email += '<p style="margin:5px 0 0;opacity:0.8;">' + accountName + ' | ' + today + ' | ' + mode + ' | ' + CONFIG.ACCOUNT_MODE + '</p></div>';
 
   if (results.conversionAlert) {
@@ -2474,13 +2441,11 @@ function _sendReport(results, duration) {
     email += '<tr><td style="padding:4px 8px;">Last week</td><td style="text-align:right;font-weight:bold;">' + ch.lastWeek.toFixed(0) + ' conv</td></tr>';
   }
 
-  email += '<tr><td colspan="2" style="padding:8px;background:#e8eaf6;font-weight:bold;">AI Smart Negation (v4.1)</td></tr>';
+  email += '<tr><td colspan="2" style="padding:8px;background:#e8eaf6;font-weight:bold;">AI Search Term Review (v4.3.0)</td></tr>';
   email += '<tr><td style="padding:4px 8px;">AI Auto-Negated</td><td style="text-align:right;font-weight:bold;color:#c62828;">' + results.smartNegated.length + '</td></tr>';
   email += '<tr><td style="padding:4px 8px;">AI Flagged for Review</td><td style="text-align:right;font-weight:bold;color:#e65100;">' + results.smartReviewTerms.length + '</td></tr>';
 
-  email += '<tr><td colspan="2" style="padding:8px;background:#fce4ec;font-weight:bold;">Cleanup</td></tr>';
-  email += '<tr><td style="padding:4px 8px;">Informational Blocked</td><td style="text-align:right;font-weight:bold;">' + results.informationalBlocked.length + '</td></tr>';
-  email += '<tr><td style="padding:4px 8px;">Irrelevant Blocked</td><td style="text-align:right;font-weight:bold;">' + results.irrelevantBlocked.length + '</td></tr>';
+  email += '<tr><td colspan="2" style="padding:8px;background:#fce4ec;font-weight:bold;">Other</td></tr>';
   email += '<tr><td style="padding:4px 8px;">Budget Alerts</td><td style="text-align:right;font-weight:bold;">' + results.budgetAlerts.length + '</td></tr>';
   // Audit & Repair section (v4.1.2)
   if (results.auditRepairs && results.auditRepairs.length > 0) {
@@ -2559,17 +2524,7 @@ function _sendReport(results, duration) {
     email += '</table></div>';
   }
 
-  // Informational Blocked detail
-  if (results.informationalBlocked.length > 0) {
-    email += '<div style="padding:15px;"><h3>Informational Terms Blocked</h3>';
-    email += '<table style="width:100%;border-collapse:collapse;font-size:13px;">';
-    email += '<tr style="background:#f3e5f5;"><th style="padding:6px;text-align:left;">Negative Phrase Added</th><th style="padding:6px;text-align:left;">Triggered By</th></tr>';
-    for (var ib = 0; ib < results.informationalBlocked.length; ib++) {
-      var ibItem = results.informationalBlocked[ib];
-      email += '<tr style="border-bottom:1px solid #eee;"><td style="padding:4px 6px;">"' + ibItem.phrase + '"</td><td style="padding:4px 6px;">' + ibItem.matchedTerm + '</td></tr>';
-    }
-    email += '</table></div>';
-  }
+  // v4.3.0: Informational Blocked section removed — handled by unified AI review
 
   // N-gram Negatives detail
   if (results.ngramNegatives.length > 0) {
@@ -2656,11 +2611,11 @@ function _sendReport(results, duration) {
     email += '</ul></div>';
   }
 
-  email += '<div style="padding:15px;color:#666;font-size:12px;"><p>Completed in ' + duration.toFixed(1) + 's | Core v4.2.0 | Syte Digital Agency</p></div></body></html>';
+  email += '<div style="padding:15px;color:#666;font-size:12px;"><p>Completed in ' + duration.toFixed(1) + 's | Core v4.3.0 | Syte Digital Agency</p></div></body></html>';
 
   var recipients = CONFIG.EMAIL_ADDRESSES || [CONFIG.EMAIL_RECIPIENT || 'michaelh@syte.co.za'];
   if (typeof recipients === 'string') recipients = [recipients];
-  MailApp.sendEmail({ to: recipients.join(','), subject: mode + ' Syte v4.2.0 | ' + accountName + ' | ' + CONFIG.ACCOUNT_MODE, htmlBody: email });
+  MailApp.sendEmail({ to: recipients.join(','), subject: mode + ' Syte v4.3.0 | ' + accountName + ' | ' + CONFIG.ACCOUNT_MODE, htmlBody: email });
 }
 
 
@@ -2706,7 +2661,7 @@ function runOptimization() {
   var startTime = new Date();
 
   _log('INFO', '═══════════════════════════════════════════');
-  _log('INFO', 'SYTE OPTIMIZATION CORE v4.2.0');
+  _log('INFO', 'SYTE OPTIMIZATION CORE v4.3.0');
   _log('INFO', 'Client: ' + (CONFIG.CLIENT_NAME || AdsApp.currentAccount().getName()));
   _log('INFO', 'Mode: ' + CONFIG.ACCOUNT_MODE);
   _log('INFO', 'Run: ' + (CONFIG.PREVIEW_MODE ? 'PREVIEW (no changes)' : 'LIVE'));
@@ -2777,15 +2732,14 @@ function runOptimization() {
       _log('INFO', '\n=== NEGATIVE KEYWORD AUDIT & REPAIR ===');
       _auditAndRepairNegatives(results);
 
-      // === SMART AI SEARCH TERM REVIEW (v4.1 — runs before spend-threshold logic) ===
-      _log('INFO', '\n=== SMART AI SEARCH TERM REVIEW ===');
+      // === AI SEARCH TERM REVIEW (v4.3.0 — unified, all negation through AI) ===
+      _log('INFO', '\n=== AI SEARCH TERM REVIEW ===');
       _smartSearchTermReview(results);
 
       // === LEAD GEN ===
       if (_isLeadGenMode()) {
         _log('INFO', '\n=== SEARCH (LEAD GEN) ===');
         _pauseHighSpendKeywords_LeadGen(results);
-        _negativeHighSpendSearchTerms_LeadGen(results);
         if (CONFIG.PROMOTION_ENABLED !== false) _promoteWinners_LeadGen(results);
       }
 
@@ -2793,14 +2747,8 @@ function runOptimization() {
       if (_isEcommerceMode()) {
         _log('INFO', '\n=== SEARCH (ECOMMERCE) ===');
         _pauseHighSpendKeywords_Ecommerce(results);
-        _negativeHighSpendSearchTerms_Ecommerce(results);
         if (CONFIG.PROMOTION_ENABLED !== false) _promoteWinners_Ecommerce(results);
       }
-
-      // === CLEANUP ===
-      _log('INFO', '\n=== CLEANUP ===');
-      _blockInformationalTerms(results);
-      _blockIrrelevantTerms(results);
 
       // === SHOPPING & PMAX ===
       if (_isEcommerceMode()) {
@@ -2845,10 +2793,9 @@ function runOptimization() {
   if (CONFIG.SEND_EMAIL !== false) _sendReport(results, duration);
 
   _log('INFO', '\n=== SUMMARY ===');
-  if (_isLeadGenMode()) _log('INFO', 'KW Paused: ' + results.keywordsPaused.length + ' | ST Negated: ' + results.searchTermsNegated.length + ' | Winners: ' + results.winnersPromoted.length);
-  if (_isEcommerceMode()) _log('INFO', 'Ecom KW: ' + results.ecomKeywordsPaused.length + ' | Ecom ST: ' + results.ecomSearchTermsNegated.length + ' | Ecom Winners: ' + results.ecomWinnersPromoted.length);
-  _log('INFO', 'Device: ' + results.deviceAdjustments.length + ' | Schedule: ' + results.scheduleAdjustments.length + ' | Geo: ' + results.geoAdjustments.length + ' | N-gram: ' + results.ngramNegatives.length + ' | Low QS: ' + results.lowQsPaused.length);
+  if (_isLeadGenMode()) _log('INFO', 'KW Paused: ' + results.keywordsPaused.length + ' | Winners: ' + results.winnersPromoted.length);
+  if (_isEcommerceMode()) _log('INFO', 'Ecom KW: ' + results.ecomKeywordsPaused.length + ' | Ecom Winners: ' + results.ecomWinnersPromoted.length);
   _log('INFO', 'AI Negated: ' + results.smartNegated.length + ' | AI Review: ' + results.smartReviewTerms.length);
-  _log('INFO', 'Audit Repairs: ' + (results.auditRepairs ? results.auditRepairs.length : 0));
-  _log('INFO', 'Informational: ' + results.informationalBlocked.length + ' | Irrelevant: ' + results.irrelevantBlocked.length + ' | Budget: ' + results.budgetAlerts.length + ' | Errors: ' + results.errors.length);
+  _log('INFO', 'Device: ' + results.deviceAdjustments.length + ' | Schedule: ' + results.scheduleAdjustments.length + ' | Geo: ' + results.geoAdjustments.length + ' | N-gram: ' + results.ngramNegatives.length + ' | Low QS: ' + results.lowQsPaused.length);
+  _log('INFO', 'Audit Findings: ' + (results.auditRepairs ? results.auditRepairs.length : 0) + ' | Budget: ' + results.budgetAlerts.length + ' | Errors: ' + results.errors.length);
 }
