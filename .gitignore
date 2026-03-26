@@ -1,0 +1,4 @@
+# Never commit API keys — use Google Sheet Config tab
+*.env
+.env.*
+secrets.*

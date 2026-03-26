@@ -42,12 +42,22 @@ To create a PAT:
 4. Authorize the script (run once manually to grant Sheets + Ads permissions)
 5. Schedule the script to run every 3 days
 
-### 4. Secrets
+### 4. Sheets Authorization
 
-No secrets (API keys, PATs) should appear in committed code. All secrets live in the master Google Sheet Config tab and are read at runtime:
+Every loader must include this line BEFORE the `main()` function:
+```javascript
+var _SHEET_REF = SpreadsheetApp;
+```
+This forces Google Ads Scripts to request Sheets permission when you first authorize the script. Without it, the core script cannot read the API key from the master sheet (because `SpreadsheetApp` calls are inside `eval()`'d code and not detected at parse time).
+
+### 5. Secrets
+
+**NEVER commit API keys or tokens to this repo.** All secrets live in the master Google Sheet Config tab and are read at runtime:
 
 - **ANTHROPIC_API_KEY** — Read by the core script's `_loadSharedConfig()` function
 - **GITHUB_PAT** — Read by the loader's `main()` function before fetching the core
+
+If a key is accidentally committed, rotate it immediately (revoke + issue new key) and remove from the code.
 
 ## Policies
 
@@ -57,4 +67,4 @@ No secrets (API keys, PATs) should appear in committed code. All secrets live in
 
 ## Version
 
-Current: **v4.2.1**
+Current: **v4.3.1**

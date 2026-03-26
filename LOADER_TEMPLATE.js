@@ -123,6 +123,10 @@ var CONFIG = {
 // MAIN — FETCHES AND RUNS THE CORE SCRIPT
 // ============================================
 
+// Force Google Ads Scripts to request Sheets permission at authorization.
+// Without this, the core script cannot read the API key from the master sheet.
+var _SHEET_REF = SpreadsheetApp;
+
 function main() {
   var githubPat = '';
 

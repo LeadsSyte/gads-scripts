@@ -215,10 +215,6 @@ var INFORMATIONAL_PATTERNS = [
 var ACTIVE_KEYWORDS = {};  // Populated once at start of runOptimization()
 var CONVERTING_SEARCH_TERMS = {};  // Search terms with conversions in lookback window
 
-// Default Anthropic API key — fallback when CONFIG.ANTHROPIC_API_KEY is not set by loader or sheet.
-// To rotate: update this value and push to GitHub. All accounts pick it up on next run.
-var _DEFAULT_ANTHROPIC_KEY = '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';  // Replace with actual sk-ant-api03-... key
-
 /**
  * Builds a set of all active keyword texts in the account.
  * Called once at the start of runOptimization() and stored globally.
@@ -2782,10 +2778,9 @@ function runOptimization() {
   // === LOAD SHARED CONFIG FROM SHEET (v4.2.1) ===
   _loadSharedConfig();
 
-  // Fallback: use baked-in key if sheet/loader didn't provide one
-  if (!CONFIG.ANTHROPIC_API_KEY && _DEFAULT_ANTHROPIC_KEY && _DEFAULT_ANTHROPIC_KEY !== 'PASTE_KEY_HERE') {
-    CONFIG.ANTHROPIC_API_KEY = _DEFAULT_ANTHROPIC_KEY;
-    _log('INFO', 'Using default Anthropic API key (baked into core)');
+  // Log if no API key available after all loading attempts
+  if (!CONFIG.ANTHROPIC_API_KEY) {
+    _log('WARN', 'No ANTHROPIC_API_KEY — AI features disabled. Add key to master sheet Config tab.');
   }
 
   // === CONFIG VALIDATION (runs after shared config so it sees sheet-loaded keys) ===
