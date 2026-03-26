@@ -719,6 +719,52 @@ function _getChangeLogSheet() {
   }
 }
 
+/**
+ * Reads shared config values from a "Config" tab in the master Google Sheet.
+ * Expected layout:
+ *   A1: ANTHROPIC_API_KEY    B1: sk-ant-...
+ *   A2: GITHUB_PAT           B2: ghp_...
+ *   (add more rows as needed)
+ *
+ * Values from the sheet OVERRIDE loader CONFIG only if the loader CONFIG is empty/missing.
+ * This means loader-level settings take priority, but the sheet provides defaults.
+ */
+function _loadSharedConfig() {
+  if (!CONFIG.MASTER_SHEET_ID && !CONFIG.SHEET_URL) return;
+
+  // Ensure MASTER_SHEET_ID is set (extract from SHEET_URL if needed)
+  if (!CONFIG.MASTER_SHEET_ID && CONFIG.SHEET_URL) {
+    var match = CONFIG.SHEET_URL.match(/\/d\/([a-zA-Z0-9_-]+)/);
+    if (match) CONFIG.MASTER_SHEET_ID = match[1];
+  }
+  if (!CONFIG.MASTER_SHEET_ID) return;
+
+  try {
+    var ss = SpreadsheetApp.openById(CONFIG.MASTER_SHEET_ID);
+    var configSheet = ss.getSheetByName('Config');
+    if (!configSheet) {
+      _log('DEBUG', 'No "Config" tab in master sheet — using loader CONFIG only');
+      return;
+    }
+
+    var data = configSheet.getDataRange().getValues();
+    for (var i = 0; i < data.length; i++) {
+      var key = String(data[i][0]).trim();
+      var value = String(data[i][1]).trim();
+      if (!key || !value) continue;
+
+      // Only set if not already in CONFIG (loader takes priority)
+      if (key === 'ANTHROPIC_API_KEY' && !CONFIG.ANTHROPIC_API_KEY) {
+        CONFIG.ANTHROPIC_API_KEY = value;
+        _log('INFO', 'Loaded ANTHROPIC_API_KEY from master sheet');
+      }
+      // Add more shared config keys here as needed
+    }
+  } catch (e) {
+    _log('WARN', 'Could not load shared config: ' + e.message);
+  }
+}
+
 function _generateChangeId() {
   return Utilities.formatDate(new Date(), AdsApp.currentAccount().getTimeZone(), 'yyyyMMddHHmmss') +
     '_' + Math.random().toString(36).substr(2, 5).toUpperCase();
@@ -2680,17 +2726,13 @@ function runOptimization() {
     errors: []
   };
 
-  // === CONFIG VALIDATION (v4.2.0) ===
-  _log('INFO', '\n=== CONFIG VALIDATION ===');
-  _validateConfig();
-
   // Config defaults
   CONFIG.AUTO_PROTECT_ACTIVE_KEYWORDS = CONFIG.AUTO_PROTECT_ACTIVE_KEYWORDS !== false;  // default: true
   CONFIG.KEYWORD_PAUSE_MIN_IMPRESSIONS = CONFIG.KEYWORD_PAUSE_MIN_IMPRESSIONS || 100;
   CONFIG.AUDIT_NEGATIVES = CONFIG.AUDIT_NEGATIVES !== false;  // default: true
   CONFIG.AUDIT_CONVERTING_LOOKBACK_DAYS = CONFIG.AUDIT_CONVERTING_LOOKBACK_DAYS || 90;
 
-  // Test sheet access early (v4.2.0)
+  // Test sheet access early
   var testSheet = _getChangeLogSheet();
   if (testSheet) {
     _log('INFO', 'Master sheet connected: ' + CONFIG.MASTER_SHEET_ID);
@@ -2699,6 +2741,13 @@ function runOptimization() {
   } else {
     _log('WARN', 'No MASTER_SHEET_ID or SHEET_URL — change logging disabled');
   }
+
+  // === LOAD SHARED CONFIG FROM SHEET (v4.2.1) ===
+  _loadSharedConfig();
+
+  // === CONFIG VALIDATION (runs after shared config so it sees sheet-loaded keys) ===
+  _log('INFO', '\n=== CONFIG VALIDATION ===');
+  _validateConfig();
 
   // Build active keyword set and converting search terms ONCE at start
   _log('INFO', '\n=== BUILDING ACTIVE KEYWORD SET ===');
