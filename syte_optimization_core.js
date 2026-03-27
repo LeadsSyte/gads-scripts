@@ -2474,7 +2474,7 @@ function _sendReport(results, duration) {
   var today = Utilities.formatDate(new Date(), AdsApp.currentAccount().getTimeZone(), 'yyyy-MM-dd HH:mm');
 
   var email = '<html><body style="font-family:Arial,sans-serif;max-width:800px;margin:0 auto;color:#333;">';
-  email += '<div style="background:linear-gradient(135deg,#1a1a2e,#16213e);color:white;padding:20px;border-radius:8px 8px 0 0;">';
+  email += '<div style="background:linear-gradient(135deg,#0d47a1,#1565c0);color:white;padding:20px;border-radius:8px 8px 0 0;">';
   email += '<h1 style="margin:0;font-size:20px;">Syte Optimization Report v4.3.1</h1>';
   email += '<p style="margin:5px 0 0;opacity:0.8;">' + accountName + ' | ' + today + ' | ' + mode + ' | ' + CONFIG.ACCOUNT_MODE + '</p></div>';
 
@@ -2491,20 +2491,20 @@ function _sendReport(results, duration) {
     email += '<tr><td style="padding:4px 8px;">Winners Promoted</td><td style="text-align:right;font-weight:bold;">' + results.winnersPromoted.length + '</td></tr>';
   }
   if (_isEcommerceMode()) {
-    email += '<tr><td colspan="2" style="padding:8px;background:#e8f5e9;font-weight:bold;">Ecommerce</td></tr>';
+    email += '<tr><td colspan="2" style="padding:8px;background:#e3f2fd;font-weight:bold;">Ecommerce</td></tr>';
     email += '<tr><td style="padding:4px 8px;">Keywords Paused (ROAS)</td><td style="text-align:right;font-weight:bold;">' + results.ecomKeywordsPaused.length + '</td></tr>';
     email += '<tr><td style="padding:4px 8px;">Search Terms Negated</td><td style="text-align:right;font-weight:bold;">' + results.ecomSearchTermsNegated.length + '</td></tr>';
     email += '<tr><td style="padding:4px 8px;">Ecom Winners</td><td style="text-align:right;font-weight:bold;">' + results.ecomWinnersPromoted.length + '</td></tr>';
-    email += '<tr><td colspan="2" style="padding:8px;background:#fff3e0;font-weight:bold;">Shopping</td></tr>';
+    email += '<tr><td colspan="2" style="padding:8px;background:#e3f2fd;font-weight:bold;">Shopping</td></tr>';
     email += '<tr><td style="padding:4px 8px;">Zero Revenue Products</td><td style="text-align:right;font-weight:bold;color:#c62828;">' + results.shoppingProductsPaused.length + '</td></tr>';
     email += '<tr><td style="padding:4px 8px;">Low ROAS Products</td><td style="text-align:right;font-weight:bold;color:#e65100;">' + results.shoppingLowROASProducts.length + '</td></tr>';
     email += '<tr><td style="padding:4px 8px;">Hero Products</td><td style="text-align:right;font-weight:bold;color:#2e7d32;">' + results.shoppingHeroProducts.length + '</td></tr>';
-    email += '<tr><td colspan="2" style="padding:8px;background:#f3e5f5;font-weight:bold;">Performance Max</td></tr>';
+    email += '<tr><td colspan="2" style="padding:8px;background:#e3f2fd;font-weight:bold;">Performance Max</td></tr>';
     email += '<tr><td style="padding:4px 8px;">PMax Alerts</td><td style="text-align:right;font-weight:bold;">' + results.pmaxAlerts.length + '</td></tr>';
     email += '<tr><td style="padding:4px 8px;">PMax Search Terms</td><td style="text-align:right;font-weight:bold;">' + results.pmaxSearchTermsNegated.length + '</td></tr>';
   }
 
-  email += '<tr><td colspan="2" style="padding:8px;background:#e0f2f1;font-weight:bold;">Auto-Optimizations</td></tr>';
+  email += '<tr><td colspan="2" style="padding:8px;background:#e3f2fd;font-weight:bold;">Auto-Optimizations</td></tr>';
   email += '<tr><td style="padding:4px 8px;">Device Bid Adjustments</td><td style="text-align:right;font-weight:bold;">' + results.deviceAdjustments.length + '</td></tr>';
   email += '<tr><td style="padding:4px 8px;">Ad Schedule Adjustments</td><td style="text-align:right;font-weight:bold;">' + results.scheduleAdjustments.length + '</td></tr>';
   email += '<tr><td style="padding:4px 8px;">Geographic Bid Adjustments</td><td style="text-align:right;font-weight:bold;">' + results.geoAdjustments.length + '</td></tr>';
@@ -2514,26 +2514,26 @@ function _sendReport(results, duration) {
   if (results.conversionHealth) {
     var ch = results.conversionHealth;
     var convColor = results.conversionAlert ? '#c62828' : '#2e7d32';
-    email += '<tr><td colspan="2" style="padding:8px;background:#fff9c4;font-weight:bold;">Conversion Health</td></tr>';
+    email += '<tr><td colspan="2" style="padding:8px;background:#e3f2fd;font-weight:bold;">Conversion Health</td></tr>';
     email += '<tr><td style="padding:4px 8px;">This week</td><td style="text-align:right;font-weight:bold;color:' + convColor + ';">' + ch.thisWeek.toFixed(0) + ' conv</td></tr>';
     email += '<tr><td style="padding:4px 8px;">Last week</td><td style="text-align:right;font-weight:bold;">' + ch.lastWeek.toFixed(0) + ' conv</td></tr>';
   }
 
-  email += '<tr><td colspan="2" style="padding:8px;background:#e8eaf6;font-weight:bold;">AI Search Term Review (v4.3.0)</td></tr>';
-  email += '<tr><td style="padding:4px 8px;">AI Auto-Negated</td><td style="text-align:right;font-weight:bold;color:#c62828;">' + results.smartNegated.length + '</td></tr>';
-  email += '<tr><td style="padding:4px 8px;">AI Flagged for Review</td><td style="text-align:right;font-weight:bold;color:#e65100;">' + results.smartReviewTerms.length + '</td></tr>';
+  email += '<tr><td colspan="2" style="padding:8px;background:#e3f2fd;font-weight:bold;">AI Search Term Review</td></tr>';
+  email += '<tr><td style="padding:4px 8px;">AI Auto-Negated</td><td style="text-align:right;font-weight:bold;color:#1565c0;">' + results.smartNegated.length + '</td></tr>';
+  email += '<tr><td style="padding:4px 8px;">AI Flagged for Review</td><td style="text-align:right;font-weight:bold;color:#1565c0;">' + results.smartReviewTerms.length + '</td></tr>';
 
-  email += '<tr><td colspan="2" style="padding:8px;background:#fce4ec;font-weight:bold;">Other</td></tr>';
+  email += '<tr><td colspan="2" style="padding:8px;background:#e3f2fd;font-weight:bold;">Other</td></tr>';
   email += '<tr><td style="padding:4px 8px;">Budget Alerts</td><td style="text-align:right;font-weight:bold;">' + results.budgetAlerts.length + '</td></tr>';
   // Audit & Repair section (v4.1.2)
   if (results.auditRepairs && results.auditRepairs.length > 0) {
     var removedNegs = results.auditRepairs.filter(function(r) { return r.action === 'REMOVED_NEGATIVE'; }).length;
     var removedAgNegs = results.auditRepairs.filter(function(r) { return r.action === 'REMOVED_AG_NEGATIVE'; }).length;
     var unpaused = results.auditRepairs.filter(function(r) { return r.action === 'UNPAUSED_KEYWORD'; }).length;
-    email += '<tr><td colspan="2" style="padding:8px;background:#fff8e1;font-weight:bold;">Audit Findings (Manual Review)</td></tr>';
-    email += '<tr><td style="padding:4px 8px;">Shared List Issues</td><td style="text-align:right;font-weight:bold;color:#e65100;">' + removedNegs + '</td></tr>';
-    email += '<tr><td style="padding:4px 8px;">Ad-Group Conflicts</td><td style="text-align:right;font-weight:bold;color:#e65100;">' + removedAgNegs + '</td></tr>';
-    email += '<tr><td style="padding:4px 8px;">Paused Keywords to Review</td><td style="text-align:right;font-weight:bold;color:#e65100;">' + unpaused + '</td></tr>';
+    email += '<tr><td colspan="2" style="padding:8px;background:#e3f2fd;font-weight:bold;">Audit Findings (Manual Review)</td></tr>';
+    email += '<tr><td style="padding:4px 8px;">Shared List Issues</td><td style="text-align:right;font-weight:bold;color:#1565c0;">' + removedNegs + '</td></tr>';
+    email += '<tr><td style="padding:4px 8px;">Ad-Group Conflicts</td><td style="text-align:right;font-weight:bold;color:#1565c0;">' + removedAgNegs + '</td></tr>';
+    email += '<tr><td style="padding:4px 8px;">Paused Keywords to Review</td><td style="text-align:right;font-weight:bold;color:#1565c0;">' + unpaused + '</td></tr>';
   }
 
   email += '<tr><td style="padding:4px 8px;">Errors</td><td style="text-align:right;font-weight:bold;">' + results.errors.length + '</td></tr>';
@@ -2558,7 +2558,7 @@ function _sendReport(results, duration) {
   if (results.searchTermsNegated.length > 0) {
     email += '<div style="padding:15px;"><h3>Search Terms Negated</h3>';
     email += '<table style="width:100%;border-collapse:collapse;font-size:13px;">';
-    email += '<tr style="background:#ffecb3;"><th style="padding:6px;text-align:left;">Search Term</th><th style="padding:6px;text-align:left;">Campaign</th><th style="padding:6px;text-align:right;">Spend</th></tr>';
+    email += '<tr style="background:#e3f2fd;"><th style="padding:6px;text-align:left;">Search Term</th><th style="padding:6px;text-align:left;">Campaign</th><th style="padding:6px;text-align:right;">Spend</th></tr>';
     for (var stn = 0; stn < results.searchTermsNegated.length; stn++) {
       var snItem = results.searchTermsNegated[stn];
       email += '<tr style="border-bottom:1px solid #eee;"><td style="padding:4px 6px;">' + snItem.searchTerm + '</td><td style="padding:4px 6px;">' + snItem.campaign + '</td><td style="padding:4px 6px;text-align:right;">' + cs + (snItem.spend || 0).toFixed(0) + '</td></tr>';
@@ -2568,9 +2568,9 @@ function _sendReport(results, duration) {
 
   // Winners Promoted detail
   if (results.winnersPromoted.length > 0) {
-    email += '<div style="padding:15px;"><h3 style="color:#2e7d32;">Winners Promoted</h3>';
+    email += '<div style="padding:15px;"><h3 style="color:#1565c0;">Winners Promoted</h3>';
     email += '<table style="width:100%;border-collapse:collapse;font-size:13px;">';
-    email += '<tr style="background:#e8f5e9;"><th style="padding:6px;text-align:left;">Search Term</th><th style="padding:6px;text-align:left;">Campaign</th><th style="padding:6px;text-align:right;">Conversions</th><th style="padding:6px;text-align:right;">CVR</th></tr>';
+    email += '<tr style="background:#e3f2fd;"><th style="padding:6px;text-align:left;">Search Term</th><th style="padding:6px;text-align:left;">Campaign</th><th style="padding:6px;text-align:right;">Conversions</th><th style="padding:6px;text-align:right;">CVR</th></tr>';
     for (var wp = 0; wp < results.winnersPromoted.length; wp++) {
       var wpItem = results.winnersPromoted[wp];
       email += '<tr style="border-bottom:1px solid #eee;"><td style="padding:4px 6px;">[' + wpItem.searchTerm + ']</td><td style="padding:4px 6px;">' + wpItem.campaign + '</td><td style="padding:4px 6px;text-align:right;">' + (wpItem.conversions || 0) + '</td><td style="padding:4px 6px;text-align:right;">' + (wpItem.cvr || 0).toFixed(1) + '%</td></tr>';
@@ -2582,7 +2582,7 @@ function _sendReport(results, duration) {
   if (results.ecomKeywordsPaused.length > 0) {
     email += '<div style="padding:15px;"><h3>Ecom Keywords Paused</h3>';
     email += '<table style="width:100%;border-collapse:collapse;font-size:13px;">';
-    email += '<tr style="background:#e8f5e9;"><th style="padding:6px;text-align:left;">Keyword</th><th style="padding:6px;text-align:left;">Campaign</th><th style="padding:6px;text-align:right;">Spend</th><th style="padding:6px;text-align:right;">ROAS</th></tr>';
+    email += '<tr style="background:#e3f2fd;"><th style="padding:6px;text-align:left;">Keyword</th><th style="padding:6px;text-align:left;">Campaign</th><th style="padding:6px;text-align:right;">Spend</th><th style="padding:6px;text-align:right;">ROAS</th></tr>';
     for (var ek = 0; ek < results.ecomKeywordsPaused.length; ek++) {
       var ekItem = results.ecomKeywordsPaused[ek];
       email += '<tr style="border-bottom:1px solid #eee;"><td style="padding:4px 6px;">' + ekItem.keyword + '</td><td style="padding:4px 6px;">' + ekItem.campaign + '</td><td style="padding:4px 6px;text-align:right;">' + cs + (ekItem.spend || 0).toFixed(0) + '</td><td style="padding:4px 6px;text-align:right;">' + (ekItem.roas || 0).toFixed(2) + 'x</td></tr>';
@@ -2594,7 +2594,7 @@ function _sendReport(results, duration) {
   if (results.ecomSearchTermsNegated.length > 0) {
     email += '<div style="padding:15px;"><h3>Ecom Search Terms Negated</h3>';
     email += '<table style="width:100%;border-collapse:collapse;font-size:13px;">';
-    email += '<tr style="background:#ffecb3;"><th style="padding:6px;text-align:left;">Search Term</th><th style="padding:6px;text-align:left;">Campaign</th><th style="padding:6px;text-align:right;">Spend</th><th style="padding:6px;text-align:right;">ROAS</th></tr>';
+    email += '<tr style="background:#e3f2fd;"><th style="padding:6px;text-align:left;">Search Term</th><th style="padding:6px;text-align:left;">Campaign</th><th style="padding:6px;text-align:right;">Spend</th><th style="padding:6px;text-align:right;">ROAS</th></tr>';
     for (var es = 0; es < results.ecomSearchTermsNegated.length; es++) {
       var esItem = results.ecomSearchTermsNegated[es];
       email += '<tr style="border-bottom:1px solid #eee;"><td style="padding:4px 6px;">' + esItem.searchTerm + '</td><td style="padding:4px 6px;">' + esItem.campaign + '</td><td style="padding:4px 6px;text-align:right;">' + cs + (esItem.spend || 0).toFixed(0) + '</td><td style="padding:4px 6px;text-align:right;">' + (esItem.roas || 0).toFixed(2) + 'x</td></tr>';
@@ -2608,7 +2608,7 @@ function _sendReport(results, duration) {
   if (results.ngramNegatives.length > 0) {
     email += '<div style="padding:15px;"><h3>N-gram Negatives</h3>';
     email += '<table style="width:100%;border-collapse:collapse;font-size:13px;">';
-    email += '<tr style="background:#e0f2f1;"><th style="padding:6px;text-align:left;">Word</th><th style="padding:6px;text-align:right;">Total Spend</th><th style="padding:6px;text-align:right;">Terms</th><th style="padding:6px;text-align:left;">Samples</th></tr>';
+    email += '<tr style="background:#e3f2fd;"><th style="padding:6px;text-align:left;">Word</th><th style="padding:6px;text-align:right;">Total Spend</th><th style="padding:6px;text-align:right;">Terms</th><th style="padding:6px;text-align:left;">Samples</th></tr>';
     for (var ng = 0; ng < results.ngramNegatives.length; ng++) {
       var ngItem = results.ngramNegatives[ng];
       email += '<tr style="border-bottom:1px solid #eee;"><td style="padding:4px 6px;">"' + ngItem.word + '"</td><td style="padding:4px 6px;text-align:right;">' + cs + (ngItem.totalCost || 0).toFixed(0) + '</td><td style="padding:4px 6px;text-align:right;">' + ngItem.termCount + '</td><td style="padding:4px 6px;color:#666;">' + (ngItem.sampleTerms || []).slice(0, 3).join(', ') + '</td></tr>';
@@ -2620,7 +2620,7 @@ function _sendReport(results, duration) {
   if (results.lowQsPaused.length > 0) {
     email += '<div style="padding:15px;"><h3>Low Quality Score Keywords Paused</h3>';
     email += '<table style="width:100%;border-collapse:collapse;font-size:13px;">';
-    email += '<tr style="background:#fff3e0;"><th style="padding:6px;text-align:left;">Keyword</th><th style="padding:6px;text-align:left;">Campaign</th><th style="padding:6px;text-align:right;">QS</th><th style="padding:6px;text-align:right;">Spend</th></tr>';
+    email += '<tr style="background:#e3f2fd;"><th style="padding:6px;text-align:left;">Keyword</th><th style="padding:6px;text-align:left;">Campaign</th><th style="padding:6px;text-align:right;">QS</th><th style="padding:6px;text-align:right;">Spend</th></tr>';
     for (var lq = 0; lq < results.lowQsPaused.length; lq++) {
       var lqItem = results.lowQsPaused[lq];
       email += '<tr style="border-bottom:1px solid #eee;"><td style="padding:4px 6px;">' + lqItem.keyword + '</td><td style="padding:4px 6px;">' + lqItem.campaign + '</td><td style="padding:4px 6px;text-align:right;">' + lqItem.qualityScore + '</td><td style="padding:4px 6px;text-align:right;">' + cs + (lqItem.spend || 0).toFixed(0) + '</td></tr>';
@@ -2632,7 +2632,7 @@ function _sendReport(results, duration) {
   if (results.scheduleAdjustments.length > 0) {
     email += '<div style="padding:15px;"><h3>Ad Schedule Adjustments</h3>';
     email += '<table style="width:100%;border-collapse:collapse;font-size:13px;">';
-    email += '<tr style="background:#e0f2f1;"><th style="padding:6px;text-align:left;">Campaign</th><th style="padding:6px;text-align:left;">Hour</th><th style="padding:6px;text-align:right;">Adjustment</th></tr>';
+    email += '<tr style="background:#e3f2fd;"><th style="padding:6px;text-align:left;">Campaign</th><th style="padding:6px;text-align:left;">Hour</th><th style="padding:6px;text-align:right;">Adjustment</th></tr>';
     for (var sa = 0; sa < results.scheduleAdjustments.length; sa++) {
       var saItem = results.scheduleAdjustments[sa];
       email += '<tr style="border-bottom:1px solid #eee;"><td style="padding:4px 6px;">' + saItem.campaign + '</td><td style="padding:4px 6px;">' + saItem.hourLabel + '</td><td style="padding:4px 6px;text-align:right;">' + saItem.adjustment + '%</td></tr>';
@@ -2642,9 +2642,9 @@ function _sendReport(results, duration) {
 
   // AI Smart Negation details
   if (results.smartNegated.length > 0) {
-    email += '<div style="padding:15px;"><h3 style="color:#c62828;">AI Auto-Negated Search Terms</h3>';
+    email += '<div style="padding:15px;"><h3 style="color:#1565c0;">AI Auto-Negated Search Terms</h3>';
     email += '<table style="width:100%;border-collapse:collapse;font-size:13px;">';
-    email += '<tr style="background:#fce4ec;"><th style="padding:6px;text-align:left;">Search Term</th><th style="padding:6px;text-align:right;">Cost</th><th style="padding:6px;text-align:right;">Clicks</th><th style="padding:6px;text-align:left;">Reason</th></tr>';
+    email += '<tr style="background:#e3f2fd;"><th style="padding:6px;text-align:left;">Search Term</th><th style="padding:6px;text-align:right;">Cost</th><th style="padding:6px;text-align:right;">Clicks</th><th style="padding:6px;text-align:left;">Reason</th></tr>';
     for (var sn = 0; sn < results.smartNegated.length; sn++) {
       var item = results.smartNegated[sn];
       email += '<tr style="border-bottom:1px solid #eee;"><td style="padding:4px 6px;">' + item.term + '</td><td style="padding:4px 6px;text-align:right;">' + cs + item.cost.toFixed(0) + '</td><td style="padding:4px 6px;text-align:right;">' + item.clicks + '</td><td style="padding:4px 6px;color:#666;">' + item.reason + '</td></tr>';
@@ -2654,10 +2654,10 @@ function _sendReport(results, duration) {
 
   // AI Flagged for Review section
   if (results.smartReviewTerms.length > 0) {
-    email += '<div style="padding:15px;background:#fff8e1;"><h3 style="color:#e65100;">AI Flagged for Review</h3>';
+    email += '<div style="padding:15px;background:#e3f2fd;"><h3 style="color:#1565c0;">AI Flagged for Review</h3>';
     email += '<p style="font-size:12px;color:#666;">These terms were flagged as ambiguous by the AI. Please review and manually negate or keep.</p>';
     email += '<table style="width:100%;border-collapse:collapse;font-size:13px;">';
-    email += '<tr style="background:#fff3e0;"><th style="padding:6px;text-align:left;">Search Term</th><th style="padding:6px;text-align:right;">Cost</th><th style="padding:6px;text-align:right;">Clicks</th><th style="padding:6px;text-align:left;">Reason</th></tr>';
+    email += '<tr style="background:#bbdefb;"><th style="padding:6px;text-align:left;">Search Term</th><th style="padding:6px;text-align:right;">Cost</th><th style="padding:6px;text-align:right;">Clicks</th><th style="padding:6px;text-align:left;">Reason</th></tr>';
     for (var sr = 0; sr < results.smartReviewTerms.length; sr++) {
       var rItem = results.smartReviewTerms[sr];
       email += '<tr style="border-bottom:1px solid #eee;"><td style="padding:4px 6px;">' + rItem.term + '</td><td style="padding:4px 6px;text-align:right;">' + cs + rItem.cost.toFixed(0) + '</td><td style="padding:4px 6px;text-align:right;">' + rItem.clicks + '</td><td style="padding:4px 6px;color:#666;">' + rItem.reason + '</td></tr>';
@@ -2667,10 +2667,10 @@ function _sendReport(results, duration) {
 
   // Audit Findings details (report-only)
   if (results.auditRepairs && results.auditRepairs.length > 0) {
-    email += '<div style="padding:15px;background:#fff8e1;"><h3 style="color:#e65100;">Audit Findings — Manual Review Required</h3>';
+    email += '<div style="padding:15px;background:#e3f2fd;"><h3 style="color:#1565c0;">Audit Findings — Manual Review Required</h3>';
     email += '<p style="font-size:12px;color:#666;">The following potential issues were detected. Review and take action manually in Google Ads.</p>';
     email += '<table style="width:100%;border-collapse:collapse;font-size:13px;">';
-    email += '<tr style="background:#c8e6c9;"><th style="padding:6px;text-align:left;">Action</th><th style="padding:6px;text-align:left;">Keyword</th><th style="padding:6px;text-align:left;">Location</th><th style="padding:6px;text-align:left;">Reason</th></tr>';
+    email += '<tr style="background:#bbdefb;"><th style="padding:6px;text-align:left;">Action</th><th style="padding:6px;text-align:left;">Keyword</th><th style="padding:6px;text-align:left;">Location</th><th style="padding:6px;text-align:left;">Reason</th></tr>';
     for (var ar = 0; ar < results.auditRepairs.length; ar++) {
       var repair = results.auditRepairs[ar];
       var actionLabel = repair.action === 'REMOVED_NEGATIVE' ? 'Shared list conflict' : repair.action === 'REMOVED_AG_NEGATIVE' ? 'AG conflict' : 'Consider unpause';
