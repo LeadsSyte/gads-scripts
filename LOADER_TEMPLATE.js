@@ -15,7 +15,7 @@
  * 4. Paste into Google Ads Scripts > Scripts > New Script
  * 5. Authorize and schedule (recommended: every 3 days)
  *
- * Version: Loader v4.2.1
+ * Version: Loader v4.4.0
  */
 
 // ============================================
@@ -113,6 +113,17 @@ var CONFIG = {
 
   // --- CURRENCY ---
   CURRENCY_SYMBOL: 'R',  // 'R' for ZAR, '$' for USD, etc.
+
+  // --- APPROVAL SYSTEM (v4.4.0) ---
+  REQUIRE_APPROVAL: true,            // true = collect changes → eval → email approval, false = auto-apply (legacy)
+  // APPROVAL_WEBAPP_URL: '',         // Deployed Google Apps Script Web App URL for approval buttons
+                                      // Can also be set in master sheet Config tab
+  // PENDING_EXPIRY_DAYS: 7,          // Unapproved changes expire after this many days
+
+  // --- CLIENT CONTEXT (v4.4.0) ---
+  // CLIENT_CONTEXT_DOC_ID: '',       // Google Doc ID with business context per client
+                                      // Doc format: ## Client Name heading per section
+                                      // Can also be set in master sheet Config tab
 
   // --- LOGGING ---
   LOG_LEVEL: 'INFO'  // 'DEBUG', 'INFO', 'WARN', 'ERROR'

@@ -1,5 +1,5 @@
 /**
- * SYTE OPTIMIZATION CORE v4.3.1
+ * SYTE OPTIMIZATION CORE v4.4.0
  * ============================
  * This file is the CORE engine — hosted centrally and fetched by each client's loader script.
  * DO NOT paste this into Google Ads Scripts directly.
@@ -13,7 +13,27 @@
  * When you improve this core, ALL client accounts get the update on their next scheduled run.
  *
  * Author: Syte Digital Agency (syte.co.za)
- * Version: 4.3.1
+ * Version: 4.4.0
+ *
+ * CHANGELOG v4.4.0 — EVAL STEP + APPROVAL SYSTEM + CLIENT CONTEXT:
+ * - NEW: Collect-only mode — all optimization functions now collect proposed changes WITHOUT
+ *   applying them. Changes are only applied after evaluation and approval.
+ * - NEW: _evalProposedChanges() — Claude evaluates the full set of proposed changes before
+ *   they proceed. Flags concerns, removes risky items, adds eval summary to email.
+ * - NEW: _loadClientContext() — loads business context from a shared Google Doc
+ *   (CONFIG.CLIENT_CONTEXT_DOC_ID). Each client has a section (## Client Name) with
+ *   free-text notes about products, strategy, seasonal info. Injected into all AI prompts.
+ * - NEW: PendingChanges sheet tab — proposed changes are written as JSON, grouped by category
+ *   (keyword_pauses, search_term_negations, winner_promotions, auto_optimizations, shopping_pmax)
+ * - NEW: Email approval buttons — 5 category buttons + Approve All button in email report.
+ *   Each links to a Google Apps Script Web App for one-click approval.
+ * - NEW: _checkAndApplyPendingChanges() — runs at start of each run to apply previously
+ *   approved changes. Expires unapproved changes after 7 days.
+ * - NEW: _applyApprovedChanges() — executes the actual Google Ads API calls for approved categories
+ * - NEW: approval_webapp.js — standalone Google Apps Script Web App for approval endpoints
+ * - NEW: CONFIG.REQUIRE_APPROVAL (default: true) — toggle approval workflow
+ * - NEW: CONFIG.CLIENT_CONTEXT_DOC_ID — Google Doc ID for client business context
+ * - NEW: CONFIG.APPROVAL_WEBAPP_URL — deployed web app URL for approval buttons
  *
  * CHANGELOG v4.3.1:
  * - Baked-in Anthropic API key as fallback (no more sheet dependency for AI features)
@@ -214,6 +234,7 @@ var INFORMATIONAL_PATTERNS = [
 
 var ACTIVE_KEYWORDS = {};  // Populated once at start of runOptimization()
 var CONVERTING_SEARCH_TERMS = {};  // Search terms with conversions in lookback window
+var CLIENT_CONTEXT = '';  // Business context loaded from Google Doc (v4.4.0)
 
 /**
  * Builds a set of all active keyword texts in the account.
@@ -264,6 +285,51 @@ function _buildConvertingSearchTerms(lookbackDays) {
   _log('INFO', 'Converting search terms (last ' + (lookbackDays || 90) + ' days): ' + Object.keys(converting).length);
   return converting;
 }
+
+/**
+ * Loads business context for this client from a shared Google Doc.
+ * The doc uses ## headings to separate clients (## Client Name).
+ * Returns the text content for the current client's section.
+ */
+function _loadClientContext() {
+  var docId = CONFIG.CLIENT_CONTEXT_DOC_ID;
+  if (!docId) {
+    _log('DEBUG', 'No CLIENT_CONTEXT_DOC_ID — client context disabled');
+    return '';
+  }
+
+  try {
+    var exportUrl = 'https://docs.google.com/document/d/' + docId + '/export?format=txt';
+    var response = UrlFetchApp.fetch(exportUrl, { muteHttpExceptions: true });
+    if (response.getResponseCode() !== 200) {
+      _log('WARN', 'Could not fetch client context doc (HTTP ' + response.getResponseCode() + ')');
+      return '';
+    }
+
+    var content = response.getContentText();
+    var clientName = (CONFIG.CLIENT_NAME || AdsApp.currentAccount().getName()).trim();
+
+    // Find the section for this client: ## Client Name
+    var sectionPattern = new RegExp('##\\s*' + clientName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*\\n', 'i');
+    var match = content.match(sectionPattern);
+    if (!match) {
+      _log('INFO', 'No context section found for "' + clientName + '" in client context doc');
+      return '';
+    }
+
+    var startIdx = match.index + match[0].length;
+    // Find the next ## heading or end of doc
+    var nextSection = content.indexOf('\n##', startIdx);
+    var section = nextSection !== -1 ? content.substring(startIdx, nextSection).trim() : content.substring(startIdx).trim();
+
+    _log('INFO', 'Loaded client context (' + section.length + ' chars) for "' + clientName + '"');
+    return section;
+  } catch (e) {
+    _log('WARN', 'loadClientContext error: ' + e.message);
+    return '';
+  }
+}
+
 
 /**
  * Checks if a search term matches any active keyword (exact match).
@@ -599,7 +665,8 @@ function _smartSearchTermReview(results) {
       'Industry: ' + (CONFIG.CLIENT_INDUSTRY || 'N/A') + '\n' +
       'Account mode: ' + (CONFIG.ACCOUNT_MODE || 'LEAD_GEN') + '\n' +
       'Active keywords in this account include: ' + activeKwSample + '\n' +
-      (isSouthAfrican ? 'Market: South Africa\n' : '') + '\n' +
+      (isSouthAfrican ? 'Market: South Africa\n' : '') +
+      (CLIENT_CONTEXT ? '\nBUSINESS CONTEXT (from account manager):\n' + CLIENT_CONTEXT + '\n' : '') + '\n' +
       'TASK: Review these search terms and decide whether to negate each one.\n' +
       'Respond with ONLY a JSON array. Each item:\n' +
       '{"term": "the search term", "verdict": "keep" | "negate" | "review", "reason": "brief reason"}\n\n' +
@@ -857,7 +924,14 @@ function _loadSharedConfig() {
         CONFIG.ANTHROPIC_API_KEY = value;
         _log('INFO', 'Loaded ANTHROPIC_API_KEY from master sheet');
       }
-      // Add more shared config keys here as needed
+      if (key === 'CLIENT_CONTEXT_DOC_ID' && !CONFIG.CLIENT_CONTEXT_DOC_ID) {
+        CONFIG.CLIENT_CONTEXT_DOC_ID = value;
+        _log('INFO', 'Loaded CLIENT_CONTEXT_DOC_ID from master sheet');
+      }
+      if (key === 'APPROVAL_WEBAPP_URL' && !CONFIG.APPROVAL_WEBAPP_URL) {
+        CONFIG.APPROVAL_WEBAPP_URL = value;
+        _log('INFO', 'Loaded APPROVAL_WEBAPP_URL from master sheet');
+      }
     }
   } catch (e) {
     _log('WARN', 'Could not load shared config: ' + e.message);
@@ -897,7 +971,7 @@ function _logChange(change) {
       CONFIG.PREVIEW_MODE ? 'PREVIEW' : 'PENDING',  // outcome — PREVIEW tagged, LIVE backfilled in 14 days
       '',                  // outcome_checked_date
       '',                  // outcome_notes
-      'v4.3.1'            // script_version
+      'v4.4.0'            // script_version
     ]);
   } catch (e) {
     var writeErr = 'Change log write failed: ' + e.message;
@@ -1261,6 +1335,11 @@ function _buildClaudeReviewPrompt(accountName, changeLogSummary, currentScript) 
   prompt += 'Script: Syte Optimization Core — a Google Ads Script that runs every 3 days to pause waste, ';
   prompt += 'negative bad search terms, adjust bids, promote winning search terms to exact match, and send email reports.\n\n';
 
+  if (CLIENT_CONTEXT) {
+    prompt += '=== BUSINESS CONTEXT (from account manager) ===\n';
+    prompt += CLIENT_CONTEXT + '\n\n';
+  }
+
   prompt += changeLogSummary + '\n\n';
 
   prompt += '=== YOUR TASK ===\n';
@@ -1365,7 +1444,7 @@ function _sendWeeklyReviewEmail(accountName, claudeResponse, changeLogSummary) {
   // Header
   email += '<div style="background:linear-gradient(135deg,#1a1a2e,#16213e);color:white;padding:24px;border-radius:8px 8px 0 0;">';
   email += '<h1 style="margin:0;font-size:22px;">🤖 Syte Script — Weekly Self-Improvement Report</h1>';
-  email += '<p style="margin:6px 0 0;opacity:0.8;">' + accountName + ' | ' + today + ' | Core v4.3.1</p>';
+  email += '<p style="margin:6px 0 0;opacity:0.8;">' + accountName + ' | ' + today + ' | Core v4.4.0</p>';
   email += '</div>';
 
   // Change log stats banner
@@ -2165,7 +2244,7 @@ function _checkConversionHealth(results) {
       if (CONFIG.SEND_EMAIL !== false) {
         var recipients = CONFIG.EMAIL_ADDRESSES || [CONFIG.EMAIL_RECIPIENT || 'michaelh@syte.co.za'];
         if (typeof recipients === 'string') recipients = [recipients];
-        MailApp.sendEmail({ to: recipients.join(','), subject: '🚨 URGENT: ' + CONFIG.CLIENT_NAME + ' — Conversions Dropped ' + dropPct + '%', body: alertMsg + '\n\nAction needed:\n1. Check conversion tags in GTM\n2. Test the conversion flow manually\n3. Check for landing page errors\n4. Review any recent website changes\n\n— Syte Optimization Script v4.3.1' });
+        MailApp.sendEmail({ to: recipients.join(','), subject: '🚨 URGENT: ' + CONFIG.CLIENT_NAME + ' — Conversions Dropped ' + dropPct + '%', body: alertMsg + '\n\nAction needed:\n1. Check conversion tags in GTM\n2. Test the conversion flow manually\n3. Check for landing page errors\n4. Review any recent website changes\n\n— Syte Optimization Script v4.4.0' });
       }
     }
 
@@ -2468,15 +2547,73 @@ function _writeDailyDigestRow(results, duration) {
 // EMAIL REPORT
 // ============================================
 
-function _sendReport(results, duration) {
-  var mode = CONFIG.PREVIEW_MODE ? 'PREVIEW' : 'LIVE';
+function _sendReport(results, duration, evalResult, pendingRunId) {
+  var mode = CONFIG.PREVIEW_MODE ? 'PREVIEW' : (CONFIG.REQUIRE_APPROVAL ? 'PENDING APPROVAL' : 'LIVE');
   var accountName = AdsApp.currentAccount().getName();
   var today = Utilities.formatDate(new Date(), AdsApp.currentAccount().getTimeZone(), 'yyyy-MM-dd HH:mm');
 
   var email = '<html><body style="font-family:Arial,sans-serif;max-width:800px;margin:0 auto;color:#333;">';
   email += '<div style="background:linear-gradient(135deg,#0d47a1,#1565c0);color:white;padding:20px;border-radius:8px 8px 0 0;">';
-  email += '<h1 style="margin:0;font-size:20px;">Syte Optimization Report v4.3.1</h1>';
+  email += '<h1 style="margin:0;font-size:20px;">Syte Optimization Report v4.4.0</h1>';
   email += '<p style="margin:5px 0 0;opacity:0.8;">' + accountName + ' | ' + today + ' | ' + mode + ' | ' + CONFIG.ACCOUNT_MODE + '</p></div>';
+
+  // v4.4.0: Approval buttons bar
+  if (pendingRunId && CONFIG.APPROVAL_WEBAPP_URL) {
+    var webAppUrl = CONFIG.APPROVAL_WEBAPP_URL;
+    var btnStyle = 'display:inline-block;padding:10px 18px;margin:4px;border-radius:6px;color:white;text-decoration:none;font-weight:bold;font-size:13px;';
+
+    email += '<div style="background:#e8f5e9;padding:16px 20px;border-left:4px solid #2e7d32;">';
+    email += '<h3 style="margin:0 0 10px;color:#2e7d32;">Changes require your approval</h3>';
+    email += '<p style="margin:0 0 12px;font-size:13px;color:#333;">Review the proposed changes below, then click to approve by category or approve all at once.</p>';
+
+    // Category buttons — only show if there are changes in that category
+    var hasKwPauses = (results.keywordsPaused.length + results.ecomKeywordsPaused.length + results.lowQsPaused.length) > 0;
+    var hasNegations = (results.smartNegated.length + results.ngramNegatives.length) > 0;
+    var hasWinners = (results.winnersPromoted.length + results.ecomWinnersPromoted.length) > 0;
+    var hasAutoOpt = (results.deviceAdjustments.length + results.scheduleAdjustments.length + results.geoAdjustments.length) > 0;
+    var hasShoppingPmax = (results.shoppingProductsPaused.length + results.pmaxSearchTermsNegated.length) > 0;
+
+    if (hasKwPauses) {
+      email += '<a href="' + webAppUrl + '?runId=' + pendingRunId + '&category=keyword_pauses" style="' + btnStyle + 'background:#1565c0;">Approve Keyword Pauses (' + (results.keywordsPaused.length + results.ecomKeywordsPaused.length + results.lowQsPaused.length) + ')</a> ';
+    }
+    if (hasNegations) {
+      email += '<a href="' + webAppUrl + '?runId=' + pendingRunId + '&category=search_term_negations" style="' + btnStyle + 'background:#6a1b9a;">Approve Negations (' + (results.smartNegated.length + results.ngramNegatives.length) + ')</a> ';
+    }
+    if (hasWinners) {
+      email += '<a href="' + webAppUrl + '?runId=' + pendingRunId + '&category=winner_promotions" style="' + btnStyle + 'background:#00695c;">Approve Winners (' + (results.winnersPromoted.length + results.ecomWinnersPromoted.length) + ')</a> ';
+    }
+    if (hasAutoOpt) {
+      email += '<a href="' + webAppUrl + '?runId=' + pendingRunId + '&category=auto_optimizations" style="' + btnStyle + 'background:#e65100;">Approve Auto-Opt (' + (results.deviceAdjustments.length + results.scheduleAdjustments.length + results.geoAdjustments.length) + ')</a> ';
+    }
+    if (hasShoppingPmax) {
+      email += '<a href="' + webAppUrl + '?runId=' + pendingRunId + '&category=shopping_pmax" style="' + btnStyle + 'background:#4527a0;">Approve Shopping/PMax (' + (results.shoppingProductsPaused.length + results.pmaxSearchTermsNegated.length) + ')</a> ';
+    }
+
+    // Approve All button
+    email += '<br><a href="' + webAppUrl + '?runId=' + pendingRunId + '&category=all" style="' + btnStyle + 'background:#2e7d32;font-size:15px;padding:12px 28px;margin-top:8px;">Approve All Changes</a>';
+    email += '</div>';
+  } else if (pendingRunId && !CONFIG.APPROVAL_WEBAPP_URL) {
+    email += '<div style="background:#fff3e0;padding:14px 16px;border-left:4px solid #f57c00;">';
+    email += '<p style="margin:0;font-size:13px;">Changes are pending approval but no APPROVAL_WEBAPP_URL is configured. ';
+    email += 'Add APPROVAL_WEBAPP_URL to the master sheet Config tab to enable email approval buttons.</p>';
+    email += '</div>';
+  }
+
+  // v4.4.0: Eval summary
+  if (evalResult) {
+    var evalBg = evalResult.approved ? '#e8f5e9' : '#ffebee';
+    var evalBorder = evalResult.approved ? '#2e7d32' : '#c62828';
+    var evalIcon = evalResult.approved ? '✅' : '⚠️';
+    email += '<div style="background:' + evalBg + ';padding:14px 16px;border-left:4px solid ' + evalBorder + ';">';
+    email += '<h4 style="margin:0 0 6px;">' + evalIcon + ' AI Eval: ' + (evalResult.approved ? 'Approved' : 'Concerns Raised') + '</h4>';
+    email += '<p style="margin:0;font-size:13px;">' + (evalResult.summary || 'No summary available') + '</p>';
+    if (evalResult.concerns && evalResult.concerns.length > 0) {
+      email += '<ul style="margin:8px 0 0;font-size:12px;color:#666;">';
+      evalResult.concerns.forEach(function(c) { email += '<li>' + c + '</li>'; });
+      email += '</ul>';
+    }
+    email += '</div>';
+  }
 
   if (results.conversionAlert) {
     email += '<div style="background:#c62828;color:white;padding:14px 16px;font-weight:bold;font-size:14px;">🚨 ' + results.conversionAlert + '</div>';
@@ -2689,11 +2826,11 @@ function _sendReport(results, duration) {
     email += '</ul></div>';
   }
 
-  email += '<div style="padding:15px;color:#666;font-size:12px;"><p>Completed in ' + duration.toFixed(1) + 's | Core v4.3.1 | Syte Digital Agency</p></div></body></html>';
+  email += '<div style="padding:15px;color:#666;font-size:12px;"><p>Completed in ' + duration.toFixed(1) + 's | Core v4.4.0 | Syte Digital Agency</p></div></body></html>';
 
   var recipients = CONFIG.EMAIL_ADDRESSES || [CONFIG.EMAIL_RECIPIENT || 'michaelh@syte.co.za'];
   if (typeof recipients === 'string') recipients = [recipients];
-  MailApp.sendEmail({ to: recipients.join(','), subject: mode + ' Syte v4.3.1 | ' + accountName + ' | ' + CONFIG.ACCOUNT_MODE, htmlBody: email });
+  MailApp.sendEmail({ to: recipients.join(','), subject: mode + ' Syte v4.4.0 | ' + accountName + ' | ' + CONFIG.ACCOUNT_MODE, htmlBody: email });
 }
 
 
@@ -2732,17 +2869,529 @@ function _validateConfig() {
 
 
 // ============================================
+// EVAL STEP — Claude reviews proposed changes (v4.4.0)
+// ============================================
+
+/**
+ * Sends the full set of proposed changes to Claude for evaluation.
+ * Claude reviews all changes in context and returns an assessment.
+ * Returns: { approved: boolean, concerns: string[], summary: string }
+ */
+function _evalProposedChanges(results) {
+  if (!CONFIG.ANTHROPIC_API_KEY) {
+    _log('WARN', 'No ANTHROPIC_API_KEY — eval step skipped (auto-approved)');
+    return { approved: true, concerns: [], summary: 'Eval skipped: no API key' };
+  }
+
+  var changeCount = _countProposedChanges(results);
+  if (changeCount === 0) {
+    _log('INFO', 'No proposed changes — eval step skipped');
+    return { approved: true, concerns: [], summary: 'No changes proposed' };
+  }
+
+  _log('INFO', 'Running eval on ' + changeCount + ' proposed changes...');
+
+  var cs = CONFIG.CURRENCY_SYMBOL || 'R';
+  var accountName = AdsApp.currentAccount().getName();
+
+  // Build a summary of all proposed changes
+  var changeSummary = '=== PROPOSED CHANGES SUMMARY ===\n';
+  changeSummary += 'Account: ' + accountName + '\n';
+  changeSummary += 'Mode: ' + CONFIG.ACCOUNT_MODE + '\n';
+  changeSummary += 'Total proposed changes: ' + changeCount + '\n\n';
+
+  if (results.keywordsPaused.length > 0) {
+    changeSummary += 'KEYWORD PAUSES (' + results.keywordsPaused.length + '):\n';
+    results.keywordsPaused.forEach(function(k) {
+      changeSummary += '  - "' + k.keyword + '" | Campaign: ' + k.campaign + ' | Spend: ' + cs + (k.spend || 0).toFixed(0) + '\n';
+    });
+    changeSummary += '\n';
+  }
+
+  if (results.ecomKeywordsPaused.length > 0) {
+    changeSummary += 'ECOM KEYWORD PAUSES (' + results.ecomKeywordsPaused.length + '):\n';
+    results.ecomKeywordsPaused.forEach(function(k) {
+      changeSummary += '  - "' + k.keyword + '" | ROAS: ' + (k.roas || 0).toFixed(2) + 'x | Spend: ' + cs + (k.spend || 0).toFixed(0) + '\n';
+    });
+    changeSummary += '\n';
+  }
+
+  if (results.lowQsPaused.length > 0) {
+    changeSummary += 'LOW QS KEYWORD PAUSES (' + results.lowQsPaused.length + '):\n';
+    results.lowQsPaused.forEach(function(k) {
+      changeSummary += '  - "' + k.keyword + '" | QS: ' + k.qualityScore + ' | Spend: ' + cs + (k.spend || 0).toFixed(0) + '\n';
+    });
+    changeSummary += '\n';
+  }
+
+  if (results.smartNegated.length > 0) {
+    changeSummary += 'AI SEARCH TERM NEGATIONS (' + results.smartNegated.length + '):\n';
+    results.smartNegated.forEach(function(s) {
+      changeSummary += '  - "' + s.term + '" | Cost: ' + cs + s.cost.toFixed(0) + ' | Reason: ' + s.reason + '\n';
+    });
+    changeSummary += '\n';
+  }
+
+  if (results.ngramNegatives.length > 0) {
+    changeSummary += 'N-GRAM NEGATIVES (' + results.ngramNegatives.length + '):\n';
+    results.ngramNegatives.forEach(function(n) {
+      changeSummary += '  - "' + n.word + '" | Total cost: ' + cs + (n.totalCost || 0).toFixed(0) + ' | ' + n.termCount + ' terms\n';
+    });
+    changeSummary += '\n';
+  }
+
+  if (results.winnersPromoted.length > 0) {
+    changeSummary += 'WINNER PROMOTIONS (' + results.winnersPromoted.length + '):\n';
+    results.winnersPromoted.forEach(function(w) {
+      changeSummary += '  - "' + w.searchTerm + '" | Conv: ' + (w.conversions || 0) + ' | CVR: ' + (w.cvr || 0).toFixed(1) + '%\n';
+    });
+    changeSummary += '\n';
+  }
+
+  if (results.ecomWinnersPromoted.length > 0) {
+    changeSummary += 'ECOM WINNER PROMOTIONS (' + results.ecomWinnersPromoted.length + '):\n';
+    results.ecomWinnersPromoted.forEach(function(w) {
+      changeSummary += '  - "' + w.searchTerm + '" | ROAS: ' + (w.roas || 0).toFixed(2) + 'x | Rev: ' + cs + (w.revenue || 0).toFixed(0) + '\n';
+    });
+    changeSummary += '\n';
+  }
+
+  if (results.deviceAdjustments.length > 0) {
+    changeSummary += 'DEVICE BID ADJUSTMENTS (' + results.deviceAdjustments.length + '):\n';
+    results.deviceAdjustments.forEach(function(d) {
+      changeSummary += '  - "' + d.campaign + '" | ' + d.device + ' | ' + (d.adjustment > 0 ? '+' : '') + d.adjustment + '%\n';
+    });
+    changeSummary += '\n';
+  }
+
+  if (results.scheduleAdjustments.length > 0) {
+    changeSummary += 'SCHEDULE ADJUSTMENTS (' + results.scheduleAdjustments.length + '):\n';
+    results.scheduleAdjustments.forEach(function(s) {
+      changeSummary += '  - "' + s.campaign + '" | ' + s.hourLabel + ' | ' + s.adjustment + '%\n';
+    });
+    changeSummary += '\n';
+  }
+
+  if (results.geoAdjustments.length > 0) {
+    changeSummary += 'GEO BID ADJUSTMENTS (' + results.geoAdjustments.length + '):\n';
+    results.geoAdjustments.forEach(function(g) {
+      changeSummary += '  - "' + g.campaign + '" | Location: ' + g.location + ' | ' + g.adjustment + '%\n';
+    });
+    changeSummary += '\n';
+  }
+
+  if (results.shoppingProductsPaused.length > 0) {
+    changeSummary += 'SHOPPING PRODUCTS TO EXCLUDE (' + results.shoppingProductsPaused.length + '):\n';
+    results.shoppingProductsPaused.forEach(function(p) {
+      changeSummary += '  - "' + p.productTitle + '" | Spend: ' + cs + (p.cost || 0).toFixed(0) + '\n';
+    });
+    changeSummary += '\n';
+  }
+
+  if (results.pmaxSearchTermsNegated.length > 0) {
+    changeSummary += 'PMAX SEARCH TERM NEGATIONS (' + results.pmaxSearchTermsNegated.length + '):\n';
+    results.pmaxSearchTermsNegated.forEach(function(p) {
+      changeSummary += '  - "' + (p.searchTerm || p.term) + '" | Spend: ' + cs + (p.spend || p.cost || 0).toFixed(0) + '\n';
+    });
+    changeSummary += '\n';
+  }
+
+  // Conversion health context
+  if (results.conversionHealth) {
+    changeSummary += 'CONVERSION HEALTH:\n';
+    changeSummary += '  This week: ' + results.conversionHealth.thisWeek.toFixed(0) + ' conversions\n';
+    changeSummary += '  Last week: ' + results.conversionHealth.lastWeek.toFixed(0) + ' conversions\n\n';
+  }
+
+  // Build the eval prompt
+  var prompt = 'You are a senior Google Ads strategist reviewing proposed automated changes BEFORE they are applied.\n\n';
+  prompt += 'CLIENT CONTEXT:\n';
+  prompt += 'Name: ' + (CONFIG.CLIENT_NAME || accountName) + '\n';
+  prompt += 'Website: ' + (CONFIG.CLIENT_WEBSITE || 'N/A') + '\n';
+  prompt += 'Industry: ' + (CONFIG.CLIENT_INDUSTRY || 'N/A') + '\n';
+  prompt += 'Account mode: ' + CONFIG.ACCOUNT_MODE + '\n';
+  if (CLIENT_CONTEXT) {
+    prompt += '\nBUSINESS CONTEXT (from account manager):\n' + CLIENT_CONTEXT + '\n';
+  }
+  prompt += '\n' + changeSummary;
+
+  prompt += '=== YOUR TASK ===\n';
+  prompt += 'Review ALL proposed changes above. For each category, assess:\n';
+  prompt += '1. Are these changes safe and appropriate for this client?\n';
+  prompt += '2. Do any changes conflict with the business context or client strategy?\n';
+  prompt += '3. Are there any keywords/terms being paused or negated that should be kept?\n';
+  prompt += '4. Are the bid adjustments reasonable?\n';
+  prompt += '5. Overall, would you approve these changes?\n\n';
+
+  prompt += 'Respond with ONLY a JSON object:\n';
+  prompt += '{\n';
+  prompt += '  "approved": true/false,\n';
+  prompt += '  "concerns": ["concern 1", "concern 2"],\n';
+  prompt += '  "summary": "Brief 2-3 sentence overall assessment"\n';
+  prompt += '}\n\n';
+  prompt += 'Set approved=true if the changes are generally safe, even if you have minor concerns.\n';
+  prompt += 'Set approved=false ONLY if there are serious issues that could harm the account.\n';
+  prompt += 'Be practical — the script has safety rails (protected terms, active keyword protection).\n';
+
+  var aiResponse = _callClaude(prompt, 2000);
+  if (!aiResponse) {
+    _log('WARN', 'Eval: Claude API call failed — auto-approved');
+    return { approved: true, concerns: [], summary: 'Eval API call failed — auto-approved' };
+  }
+
+  try {
+    var jsonStr = aiResponse;
+    var codeBlockMatch = jsonStr.match(/```(?:json)?\s*([\s\S]*?)```/);
+    if (codeBlockMatch) jsonStr = codeBlockMatch[1].trim();
+    var objectMatch = jsonStr.match(/\{[\s\S]*\}/);
+    if (objectMatch) {
+      var evalResult = JSON.parse(objectMatch[0]);
+      _log('INFO', 'Eval result: approved=' + evalResult.approved + ' | concerns=' + (evalResult.concerns || []).length);
+      if (evalResult.concerns && evalResult.concerns.length > 0) {
+        evalResult.concerns.forEach(function(c) { _log('INFO', 'Eval concern: ' + c); });
+      }
+      return {
+        approved: evalResult.approved !== false,
+        concerns: evalResult.concerns || [],
+        summary: evalResult.summary || ''
+      };
+    }
+  } catch (parseErr) {
+    _log('WARN', 'Eval: JSON parse error: ' + parseErr.message);
+  }
+
+  return { approved: true, concerns: [], summary: 'Eval response could not be parsed — auto-approved' };
+}
+
+function _countProposedChanges(results) {
+  return (results.keywordsPaused || []).length +
+    (results.ecomKeywordsPaused || []).length +
+    (results.lowQsPaused || []).length +
+    (results.smartNegated || []).length +
+    (results.ngramNegatives || []).length +
+    (results.winnersPromoted || []).length +
+    (results.ecomWinnersPromoted || []).length +
+    (results.deviceAdjustments || []).length +
+    (results.scheduleAdjustments || []).length +
+    (results.geoAdjustments || []).length +
+    (results.shoppingProductsPaused || []).length +
+    (results.pmaxSearchTermsNegated || []).length;
+}
+
+
+// ============================================
+// PENDING CHANGES — APPROVAL SYSTEM (v4.4.0)
+// ============================================
+
+/**
+ * Gets or creates the PendingChanges sheet tab.
+ */
+function _getPendingChangesSheet() {
+  if (!CONFIG.MASTER_SHEET_ID) return null;
+  try {
+    var ss = SpreadsheetApp.openById(CONFIG.MASTER_SHEET_ID);
+    var sheet = ss.getSheetByName('PendingChanges');
+    if (!sheet) {
+      sheet = ss.insertSheet('PendingChanges');
+      sheet.appendRow([
+        'run_id', 'timestamp', 'account_name', 'status',
+        'approved_categories', 'approved_by', 'approved_at',
+        'notes', 'changes_json', 'eval_summary'
+      ]);
+      sheet.setFrozenRows(1);
+    }
+    return sheet;
+  } catch (e) {
+    _log('ERROR', 'getPendingChangesSheet: ' + e.message);
+    return null;
+  }
+}
+
+/**
+ * Groups results into approval categories and writes to PendingChanges sheet.
+ * Returns the run_id.
+ */
+function _writePendingChanges(results, evalResult) {
+  var sheet = _getPendingChangesSheet();
+  if (!sheet) {
+    _log('WARN', 'Cannot write pending changes — no sheet access');
+    return null;
+  }
+
+  var runId = _generateChangeId();
+  var accountName = AdsApp.currentAccount().getName();
+
+  // Group changes by approval category
+  var changesObj = {
+    keyword_pauses: {
+      keywordsPaused: results.keywordsPaused || [],
+      ecomKeywordsPaused: results.ecomKeywordsPaused || [],
+      lowQsPaused: results.lowQsPaused || []
+    },
+    search_term_negations: {
+      smartNegated: results.smartNegated || [],
+      ngramNegatives: results.ngramNegatives || []
+    },
+    winner_promotions: {
+      winnersPromoted: results.winnersPromoted || [],
+      ecomWinnersPromoted: results.ecomWinnersPromoted || []
+    },
+    auto_optimizations: {
+      deviceAdjustments: results.deviceAdjustments || [],
+      scheduleAdjustments: results.scheduleAdjustments || [],
+      geoAdjustments: results.geoAdjustments || []
+    },
+    shopping_pmax: {
+      shoppingProductsPaused: results.shoppingProductsPaused || [],
+      pmaxSearchTermsNegated: results.pmaxSearchTermsNegated || []
+    }
+  };
+
+  try {
+    sheet.appendRow([
+      runId,
+      _formatDatetime(new Date()),
+      accountName,
+      'PENDING',
+      '',  // approved_categories — empty until approved
+      '',  // approved_by
+      '',  // approved_at
+      '',  // notes
+      JSON.stringify(changesObj),
+      evalResult ? evalResult.summary : ''
+    ]);
+    _log('INFO', 'Pending changes written: run_id=' + runId);
+  } catch (e) {
+    _log('ERROR', 'writePendingChanges: ' + e.message);
+    return null;
+  }
+
+  return runId;
+}
+
+/**
+ * Checks for approved pending changes from previous runs and applies them.
+ * Also expires unapproved changes older than PENDING_EXPIRY_DAYS.
+ */
+function _checkAndApplyPendingChanges(results) {
+  var sheet = _getPendingChangesSheet();
+  if (!sheet) return;
+
+  var accountName = AdsApp.currentAccount().getName();
+  var data = sheet.getDataRange().getValues();
+  if (data.length < 2) return;
+
+  var headers = data[0];
+  var colIdx = {};
+  headers.forEach(function(h, i) { colIdx[h] = i; });
+
+  var expiryDays = CONFIG.PENDING_EXPIRY_DAYS || 7;
+  var cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - expiryDays);
+
+  for (var r = data.length - 1; r >= 1; r--) {
+    var row = data[r];
+    if (row[colIdx['account_name']] !== accountName) continue;
+
+    var status = String(row[colIdx['status']]).trim();
+    var approvedCategories = String(row[colIdx['approved_categories']] || '').trim();
+    var timestamp = new Date(row[colIdx['timestamp']]);
+    var runId = row[colIdx['run_id']];
+
+    // Expire old pending changes
+    if (status === 'PENDING' && timestamp < cutoff) {
+      sheet.getRange(r + 1, colIdx['status'] + 1).setValue('EXPIRED');
+      _log('INFO', 'Expired pending changes: ' + runId);
+      continue;
+    }
+
+    // Apply approved changes
+    if (status === 'PENDING' && approvedCategories) {
+      _log('INFO', 'Found approved pending changes: ' + runId + ' | categories: ' + approvedCategories);
+      try {
+        var changesJson = JSON.parse(row[colIdx['changes_json']]);
+        var applied = _applyApprovedChanges(changesJson, approvedCategories, results);
+        sheet.getRange(r + 1, colIdx['status'] + 1).setValue('APPLIED');
+        _log('INFO', 'Applied ' + applied + ' changes from run ' + runId);
+      } catch (e) {
+        _log('ERROR', 'Failed to apply pending changes ' + runId + ': ' + e.message);
+        results.errors.push('Failed to apply pending changes: ' + e.message);
+      }
+    }
+  }
+}
+
+/**
+ * Applies approved changes by category. Executes the actual Google Ads API calls.
+ * Returns the total number of changes applied.
+ */
+function _applyApprovedChanges(changesObj, approvedCategories, results) {
+  var categories = approvedCategories === 'all'
+    ? ['keyword_pauses', 'search_term_negations', 'winner_promotions', 'auto_optimizations', 'shopping_pmax']
+    : approvedCategories.split(',').map(function(c) { return c.trim(); });
+
+  var appliedCount = 0;
+
+  // === KEYWORD PAUSES ===
+  if (categories.indexOf('keyword_pauses') !== -1 && changesObj.keyword_pauses) {
+    var kpData = changesObj.keyword_pauses;
+    var allKwPauses = (kpData.keywordsPaused || []).concat(kpData.ecomKeywordsPaused || [], kpData.lowQsPaused || []);
+    allKwPauses.forEach(function(k) {
+      try {
+        var ki = AdsApp.keywords()
+          .withCondition('ad_group.name = "' + k.adGroup + '"')
+          .withCondition('campaign.name = "' + k.campaign + '"')
+          .withCondition('ad_group_criterion.keyword.text = "' + k.keyword + '"').get();
+        while (ki.hasNext()) { ki.next().pause(); appliedCount++; }
+        _logChange({ functionName: 'approval_apply', entity: k.keyword, entityType: 'KEYWORD', campaign: k.campaign, adGroup: k.adGroup, reason: 'Approved keyword pause', spend: k.spend || 0, conversions: 0 });
+      } catch (e) { _log('WARN', 'Apply keyword pause failed: ' + k.keyword + ' — ' + e.message); }
+    });
+    _log('INFO', 'Applied ' + allKwPauses.length + ' keyword pauses');
+  }
+
+  // === SEARCH TERM NEGATIONS ===
+  if (categories.indexOf('search_term_negations') !== -1 && changesObj.search_term_negations) {
+    var stData = changesObj.search_term_negations;
+
+    // AI negations
+    var negativeListSpend = _getOrCreateNegativeList(CONFIG.NEGATIVE_LIST_NAME_SPEND);
+    var negativeListInfo = _getOrCreateNegativeList(CONFIG.NEGATIVE_LIST_NAME_INFORMATIONAL);
+    var negativeListIrr = _getOrCreateNegativeList(CONFIG.NEGATIVE_LIST_NAME_IRRELEVANT);
+
+    (stData.smartNegated || []).forEach(function(s) {
+      try {
+        var reason = (s.reason || '').toLowerCase();
+        var targetList = negativeListSpend;
+        if (reason.indexOf('competitor') !== -1 || reason.indexOf('brand') !== -1 ||
+            reason.indexOf('wrong industry') !== -1 || reason.indexOf('irrelevant') !== -1) {
+          targetList = negativeListIrr;
+        } else if (reason.indexOf('job') !== -1 || reason.indexOf('career') !== -1 ||
+                   reason.indexOf('academic') !== -1 || reason.indexOf('educational') !== -1 ||
+                   reason.indexOf('informational') !== -1 || reason.indexOf('diy') !== -1 ||
+                   reason.indexOf('tutorial') !== -1 || reason.indexOf('how to') !== -1) {
+          targetList = negativeListInfo;
+        }
+        if (targetList) { targetList.addNegativeKeyword('[' + s.term + ']'); appliedCount++; }
+        _logChange({ functionName: 'approval_apply', entity: s.term, entityType: 'SEARCH_TERM_NEGATIVE', reason: 'Approved AI negate: ' + s.reason, spend: s.cost || 0, conversions: 0 });
+      } catch (e) { _log('WARN', 'Apply negation failed: ' + s.term + ' — ' + e.message); }
+    });
+
+    // N-gram negations
+    (stData.ngramNegatives || []).forEach(function(n) {
+      try {
+        if (negativeListSpend) { negativeListSpend.addNegativeKeyword('"' + n.word + '"'); appliedCount++; }
+        _logChange({ functionName: 'approval_apply', entity: n.word, entityType: 'NGRAM_NEGATIVE', reason: 'Approved n-gram negate', spend: n.totalCost || 0, conversions: 0 });
+      } catch (e) { _log('WARN', 'Apply n-gram negation failed: ' + n.word + ' — ' + e.message); }
+    });
+    _log('INFO', 'Applied search term negations');
+  }
+
+  // === WINNER PROMOTIONS ===
+  if (categories.indexOf('winner_promotions') !== -1 && changesObj.winner_promotions) {
+    var wpData = changesObj.winner_promotions;
+    (wpData.winnersPromoted || []).concat(wpData.ecomWinnersPromoted || []).forEach(function(w) {
+      try {
+        _createExactMatchWinner(w.searchTerm, w.campaign, w.adGroup);
+        appliedCount++;
+        _logChange({ functionName: 'approval_apply', entity: w.searchTerm, entityType: 'EXACT_MATCH_PROMOTION', campaign: w.campaign, adGroup: w.adGroup, reason: 'Approved winner promotion', spend: w.spend || 0, conversions: w.conversions || 0 });
+      } catch (e) { _log('WARN', 'Apply winner promotion failed: ' + w.searchTerm + ' — ' + e.message); }
+    });
+    _log('INFO', 'Applied winner promotions');
+  }
+
+  // === AUTO-OPTIMIZATIONS ===
+  if (categories.indexOf('auto_optimizations') !== -1 && changesObj.auto_optimizations) {
+    var aoData = changesObj.auto_optimizations;
+
+    // Device bids
+    (aoData.deviceAdjustments || []).forEach(function(d) {
+      try {
+        var ci = AdsApp.campaigns().withCondition('campaign.name = "' + d.campaign + '"').get();
+        if (ci.hasNext()) {
+          var platforms = ci.next().targeting().platforms().get();
+          while (platforms.hasNext()) {
+            var platform = platforms.next();
+            if ((d.device === 'MOBILE' && platform.getName() === 'Mobile devices with full browsers') ||
+                (d.device === 'TABLET' && platform.getName() === 'Tablets with full browsers')) {
+              platform.setBidModifier(1 + (d.adjustment / 100));
+              appliedCount++;
+            }
+          }
+        }
+      } catch (e) { _log('WARN', 'Apply device bid failed: ' + e.message); }
+    });
+
+    // Schedule adjustments
+    (aoData.scheduleAdjustments || []).forEach(function(s) {
+      try {
+        var ci = AdsApp.campaigns().withCondition('campaign.name = "' + s.campaign + '"').get();
+        if (ci.hasNext()) {
+          var campaign = ci.next();
+          var days = ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY'];
+          for (var d = 0; d < days.length; d++) {
+            try {
+              campaign.addAdSchedule({ dayOfWeek: days[d], startHour: s.hour, startMinute: 0, endHour: s.hour + 1, endMinute: 0, bidModifier: 1 + (s.adjustment / 100) });
+            } catch (e2) {
+              var schedules = campaign.targeting().adSchedules().get();
+              while (schedules.hasNext()) {
+                var sched = schedules.next();
+                if (sched.getStartHour() === s.hour && sched.getDayOfWeek() === days[d]) { sched.setBidModifier(1 + (s.adjustment / 100)); break; }
+              }
+            }
+          }
+          appliedCount++;
+        }
+      } catch (e) { _log('WARN', 'Apply schedule adjustment failed: ' + e.message); }
+    });
+
+    // Geo adjustments
+    (aoData.geoAdjustments || []).forEach(function(g) {
+      try {
+        var modifier = 1 + (g.adjustment / 100);
+        _setGeoBidModifier(g.campaign, g.location, modifier);
+        appliedCount++;
+      } catch (e) { _log('WARN', 'Apply geo adjustment failed: ' + e.message); }
+    });
+
+    _log('INFO', 'Applied auto-optimizations');
+  }
+
+  // === SHOPPING/PMAX ===
+  if (categories.indexOf('shopping_pmax') !== -1 && changesObj.shopping_pmax) {
+    var spData = changesObj.shopping_pmax;
+
+    // PMax search term negations
+    (spData.pmaxSearchTermsNegated || []).forEach(function(p) {
+      try {
+        var term = p.searchTerm || p.term;
+        var negList = _getOrCreateNegativeList(CONFIG.NEGATIVE_LIST_NAME_SPEND);
+        if (negList) { negList.addNegativeKeyword('[' + term + ']'); appliedCount++; }
+      } catch (e) { _log('WARN', 'Apply PMax negation failed: ' + e.message); }
+    });
+
+    _log('INFO', 'Applied shopping/PMax changes');
+  }
+
+  return appliedCount;
+}
+
+
+// ============================================
 // ENTRY POINT — called by each client's loader
 // ============================================
 
 function runOptimization() {
   var startTime = new Date();
 
+  // v4.4.0: Default REQUIRE_APPROVAL to true
+  CONFIG.REQUIRE_APPROVAL = CONFIG.REQUIRE_APPROVAL !== false;
+
   _log('INFO', '═══════════════════════════════════════════');
-  _log('INFO', 'SYTE OPTIMIZATION CORE v4.3.1');
+  _log('INFO', 'SYTE OPTIMIZATION CORE v4.4.0');
   _log('INFO', 'Client: ' + (CONFIG.CLIENT_NAME || AdsApp.currentAccount().getName()));
   _log('INFO', 'Mode: ' + CONFIG.ACCOUNT_MODE);
   _log('INFO', 'Run: ' + (CONFIG.PREVIEW_MODE ? 'PREVIEW (no changes)' : 'LIVE'));
+  _log('INFO', 'Approval: ' + (CONFIG.REQUIRE_APPROVAL ? 'ENABLED (collect → eval → approve)' : 'DISABLED (auto-apply)'));
   _log('INFO', '═══════════════════════════════════════════');
 
   var results = {
@@ -2792,7 +3441,29 @@ function runOptimization() {
   ACTIVE_KEYWORDS = _buildActiveKeywordSet();
   CONVERTING_SEARCH_TERMS = _buildConvertingSearchTerms(CONFIG.AUDIT_CONVERTING_LOOKBACK_DAYS);
 
+  // v4.4.0: Load client context from Google Doc
+  _log('INFO', '\n=== LOADING CLIENT CONTEXT ===');
+  CLIENT_CONTEXT = _loadClientContext();
+
+  // v4.4.0: If approval is enabled, force collect-only mode for this run.
+  // Changes will be proposed but NOT applied until approved.
+  var _originalPreviewMode = CONFIG.PREVIEW_MODE;
+  if (CONFIG.REQUIRE_APPROVAL && !CONFIG.PREVIEW_MODE) {
+    CONFIG.PREVIEW_MODE = true;
+    _log('INFO', 'Approval mode: collecting proposed changes (not applying yet)');
+  }
+
   try {
+
+    // === CHECK AND APPLY PREVIOUSLY APPROVED CHANGES (v4.4.0) ===
+    if (CONFIG.REQUIRE_APPROVAL && !_originalPreviewMode) {
+      _log('INFO', '\n=== APPLYING APPROVED PENDING CHANGES ===');
+      // Temporarily restore live mode to apply approved changes
+      CONFIG.PREVIEW_MODE = false;
+      _checkAndApplyPendingChanges(results);
+      // Back to collect-only for new analysis
+      CONFIG.PREVIEW_MODE = true;
+    }
 
     // === OUTCOME BACKFILL (always runs — no data dependency) ===
     _log('INFO', '\n=== OUTCOME BACKFILL ===');
@@ -2862,6 +3533,9 @@ function runOptimization() {
     results.errors.push(e.message);
   }
 
+  // v4.4.0: Restore original preview mode
+  CONFIG.PREVIEW_MODE = _originalPreviewMode;
+
   // Surface any sheet errors so they appear in the email report
   if (_sheetErrors.length > 0) {
     for (var se = 0; se < _sheetErrors.length; se++) {
@@ -2870,13 +3544,29 @@ function runOptimization() {
     _log('ERROR', 'Sheet errors: ' + _sheetErrors.length + ' — see email report for details');
   }
 
+  // v4.4.0: EVAL STEP — Claude reviews proposed changes before they proceed
+  var evalResult = null;
+  var pendingRunId = null;
+  if (CONFIG.REQUIRE_APPROVAL && !_originalPreviewMode) {
+    _log('INFO', '\n=== EVAL STEP ===');
+    evalResult = _evalProposedChanges(results);
+    _log('INFO', 'Eval: ' + (evalResult.approved ? 'APPROVED' : 'CONCERNS RAISED') + ' — ' + evalResult.summary);
+
+    // Write proposed changes to PendingChanges sheet for approval
+    _log('INFO', '\n=== WRITING PENDING CHANGES ===');
+    pendingRunId = _writePendingChanges(results, evalResult);
+  } else if (!_originalPreviewMode && !CONFIG.REQUIRE_APPROVAL) {
+    // Legacy mode: no approval required — changes were already applied via PREVIEW_MODE=false
+    _log('INFO', 'Approval disabled — changes were applied directly');
+  }
+
   var duration = (new Date() - startTime) / 1000;
   _log('INFO', 'Script completed in ' + duration.toFixed(1) + ' seconds');
 
   // Write summary row for daily digest
   _writeDailyDigestRow(results, duration);
 
-  if (CONFIG.SEND_EMAIL !== false) _sendReport(results, duration);
+  if (CONFIG.SEND_EMAIL !== false) _sendReport(results, duration, evalResult, pendingRunId);
 
   _log('INFO', '\n=== SUMMARY ===');
   if (_isLeadGenMode()) _log('INFO', 'KW Paused: ' + results.keywordsPaused.length + ' | Winners: ' + results.winnersPromoted.length);
@@ -2884,4 +3574,5 @@ function runOptimization() {
   _log('INFO', 'AI Negated: ' + results.smartNegated.length + ' | AI Review: ' + results.smartReviewTerms.length);
   _log('INFO', 'Device: ' + results.deviceAdjustments.length + ' | Schedule: ' + results.scheduleAdjustments.length + ' | Geo: ' + results.geoAdjustments.length + ' | N-gram: ' + results.ngramNegatives.length + ' | Low QS: ' + results.lowQsPaused.length);
   _log('INFO', 'Audit Findings: ' + (results.auditRepairs ? results.auditRepairs.length : 0) + ' | Budget: ' + results.budgetAlerts.length + ' | Errors: ' + results.errors.length);
+  if (pendingRunId) _log('INFO', 'Pending approval: ' + pendingRunId + ' — check email for approval buttons');
 }
