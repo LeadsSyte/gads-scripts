@@ -2592,23 +2592,23 @@ function _sendReport(results, duration, evalResult, pendingRunId) {
     var hasShoppingPmax = (results.shoppingProductsPaused.length + results.pmaxSearchTermsNegated.length) > 0;
 
     if (hasKwPauses) {
-      email += '<a href="' + webAppUrl + '?runId=' + pendingRunId + '&category=keyword_pauses" style="' + btnStyle + 'background:#1565c0;">Approve Keyword Pauses (' + (results.keywordsPaused.length + results.ecomKeywordsPaused.length + results.lowQsPaused.length) + ')</a> ';
+      email += '<a href="' + webAppUrl + '?runId=' + pendingRunId + '&category=keyword_pauses" target="_blank" style="' + btnStyle + 'background:#1565c0;">Approve Keyword Pauses (' + (results.keywordsPaused.length + results.ecomKeywordsPaused.length + results.lowQsPaused.length) + ')</a> ';
     }
     if (hasNegations) {
-      email += '<a href="' + webAppUrl + '?runId=' + pendingRunId + '&category=search_term_negations" style="' + btnStyle + 'background:#6a1b9a;">Approve Negations (' + (results.smartNegated.length + results.ngramNegatives.length) + ')</a> ';
+      email += '<a href="' + webAppUrl + '?runId=' + pendingRunId + '&category=search_term_negations" target="_blank" style="' + btnStyle + 'background:#6a1b9a;">Approve Negations (' + (results.smartNegated.length + results.ngramNegatives.length) + ')</a> ';
     }
     if (hasWinners) {
-      email += '<a href="' + webAppUrl + '?runId=' + pendingRunId + '&category=winner_promotions" style="' + btnStyle + 'background:#00695c;">Approve Winners (' + (results.winnersPromoted.length + results.ecomWinnersPromoted.length) + ')</a> ';
+      email += '<a href="' + webAppUrl + '?runId=' + pendingRunId + '&category=winner_promotions" target="_blank" style="' + btnStyle + 'background:#00695c;">Approve Winners (' + (results.winnersPromoted.length + results.ecomWinnersPromoted.length) + ')</a> ';
     }
     if (hasAutoOpt) {
-      email += '<a href="' + webAppUrl + '?runId=' + pendingRunId + '&category=auto_optimizations" style="' + btnStyle + 'background:#e65100;">Approve Auto-Opt (' + (results.deviceAdjustments.length + results.scheduleAdjustments.length + results.geoAdjustments.length) + ')</a> ';
+      email += '<a href="' + webAppUrl + '?runId=' + pendingRunId + '&category=auto_optimizations" target="_blank" style="' + btnStyle + 'background:#e65100;">Approve Auto-Opt (' + (results.deviceAdjustments.length + results.scheduleAdjustments.length + results.geoAdjustments.length) + ')</a> ';
     }
     if (hasShoppingPmax) {
-      email += '<a href="' + webAppUrl + '?runId=' + pendingRunId + '&category=shopping_pmax" style="' + btnStyle + 'background:#4527a0;">Approve Shopping/PMax (' + (results.shoppingProductsPaused.length + results.pmaxSearchTermsNegated.length) + ')</a> ';
+      email += '<a href="' + webAppUrl + '?runId=' + pendingRunId + '&category=shopping_pmax" target="_blank" style="' + btnStyle + 'background:#4527a0;">Approve Shopping/PMax (' + (results.shoppingProductsPaused.length + results.pmaxSearchTermsNegated.length) + ')</a> ';
     }
 
     // Approve All button
-    email += '<br><a href="' + webAppUrl + '?runId=' + pendingRunId + '&category=all" style="' + btnStyle + 'background:#2e7d32;font-size:15px;padding:12px 28px;margin-top:8px;">Approve All Changes</a>';
+    email += '<br><a href="' + webAppUrl + '?runId=' + pendingRunId + '&category=all" target="_blank" style="' + btnStyle + 'background:#2e7d32;font-size:15px;padding:12px 28px;margin-top:8px;">Approve All Changes</a>';
     email += '</div>';
   } else if (pendingRunId && !CONFIG.APPROVAL_WEBAPP_URL) {
     email += '<div style="background:#fff3e0;padding:14px 16px;border-left:4px solid #f57c00;">';
