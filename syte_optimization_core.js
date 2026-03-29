@@ -308,16 +308,34 @@ function _loadClientContext() {
 
     var content = response.getContentText();
     var clientName = (CONFIG.CLIENT_NAME || AdsApp.currentAccount().getName()).trim();
+    var clientNameLower = clientName.toLowerCase();
 
-    // Find the section for this client: ## Client Name
-    var sectionPattern = new RegExp('##\\s*' + clientName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*\\n', 'i');
-    var match = content.match(sectionPattern);
-    if (!match) {
-      _log('INFO', 'No context section found for "' + clientName + '" in client context doc');
+    // Find all ## headings in the doc
+    var headingPattern = /##\s*(.+)/g;
+    var bestMatch = null;
+    var headingMatch;
+    while ((headingMatch = headingPattern.exec(content)) !== null) {
+      var headingText = headingMatch[1].trim();
+      var headingLower = headingText.toLowerCase();
+      // Match if: heading contains client name, OR client name contains heading
+      if (headingLower === clientNameLower ||
+          headingLower.indexOf(clientNameLower) !== -1 ||
+          clientNameLower.indexOf(headingLower) !== -1) {
+        bestMatch = { index: headingMatch.index, length: headingMatch[0].length, heading: headingText };
+        break;
+      }
+    }
+
+    if (!bestMatch) {
+      _log('INFO', 'No context section found for "' + clientName + '" in client context doc — AI will run without business context');
       return '';
     }
 
-    var startIdx = match.index + match[0].length;
+    if (bestMatch.heading.toLowerCase() !== clientNameLower) {
+      _log('INFO', 'Fuzzy matched client context: "' + clientName + '" → "' + bestMatch.heading + '"');
+    }
+
+    var startIdx = bestMatch.index + bestMatch.length + 1;
     // Find the next ## heading or end of doc
     var nextSection = content.indexOf('\n##', startIdx);
     var section = nextSection !== -1 ? content.substring(startIdx, nextSection).trim() : content.substring(startIdx).trim();
