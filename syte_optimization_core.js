@@ -697,10 +697,11 @@ function _smartSearchTermReview(results) {
       '- Product variations, sizes, colors, or modifiers of core products\n' +
       '- Location-specific searches for the client\'s products\n' +
       '- "for sale", "buy", "price", "near me", "supplier", "quote" + product = ALWAYS keep\n' +
-      '- Children\'s/kids versions of products the client sells = keep\n\n' +
+      '- Children\'s/kids versions of products the client sells = keep\n' +
+      '- Misspellings or typos of product/service terms = KEEP (misspelled searches still indicate buyer intent)\n' +
+      '- Competitor brand names = KEEP — competitor campaigns are intentional strategy. Only flag based on performance (spend/ROAS), not because the term is a competitor name\n\n' +
 
       '"negate" = The searcher is CLEARLY not a potential customer:\n' +
-      '- Competitor brand names (specific company names, not generic product terms)\n' +
       '- Job/career searches: jobs, salary, vacancy, hiring, career, internship\n' +
       '- Academic: course, degree, university, certification, tutorial, how to build/make\n' +
       '- DIY intent: diy, homemade, handmade, build your own, plans, blueprints\n' +
@@ -718,7 +719,9 @@ function _smartSearchTermReview(results) {
       '2. Product + modifier (size, color, material, age group, location) = "keep"\n' +
       '3. Product + "for sale" / "buy" / "price" / "near me" / "supplier" / "quote" / "cost" / "cheap" / "best" = ALWAYS "keep"\n' +
       '4. When in doubt between "negate" and "review", ALWAYS choose "review"\n' +
-      '5. You are the LAST line of defense. If you say "negate", the term is blocked permanently. Be conservative.\n\n' +
+      '5. You are the LAST line of defense. If you say "negate", the term is blocked permanently. Be conservative.\n' +
+      '6. NEVER negate a search term just because it is misspelled. Misspellings and typos still indicate purchase intent. Treat them the same as the correctly-spelled term.\n' +
+      '7. NEVER negate a search term just because it contains a competitor brand name. Competitor campaigns are intentional. Only consider negation based on performance metrics, not brand identity.\n\n' +
 
       (CONFIG.ACCOUNT_MODE === 'LEAD_GEN' ?
         'AGENCY/SERVICE PROVIDER RULE:\n' +
@@ -821,8 +824,7 @@ function _smartSearchTermReview(results) {
       if (!CONFIG.PREVIEW_MODE) {
         var reason = (v.reason || '').toLowerCase();
         var targetList = negativeListSpend;  // default
-        if (reason.indexOf('competitor') !== -1 || reason.indexOf('brand') !== -1 ||
-            reason.indexOf('wrong industry') !== -1 || reason.indexOf('irrelevant') !== -1) {
+        if (reason.indexOf('wrong industry') !== -1 || reason.indexOf('irrelevant') !== -1) {
           targetList = negativeListIrr;
         } else if (reason.indexOf('job') !== -1 || reason.indexOf('career') !== -1 ||
                    reason.indexOf('academic') !== -1 || reason.indexOf('educational') !== -1 ||
@@ -3281,8 +3283,7 @@ function _applyApprovedChanges(changesObj, approvedCategories, results) {
       try {
         var reason = (s.reason || '').toLowerCase();
         var targetList = negativeListSpend;
-        if (reason.indexOf('competitor') !== -1 || reason.indexOf('brand') !== -1 ||
-            reason.indexOf('wrong industry') !== -1 || reason.indexOf('irrelevant') !== -1) {
+        if (reason.indexOf('wrong industry') !== -1 || reason.indexOf('irrelevant') !== -1) {
           targetList = negativeListIrr;
         } else if (reason.indexOf('job') !== -1 || reason.indexOf('career') !== -1 ||
                    reason.indexOf('academic') !== -1 || reason.indexOf('educational') !== -1 ||
