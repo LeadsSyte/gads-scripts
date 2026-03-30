@@ -243,7 +243,7 @@ var CLIENT_CONTEXT = '';  // Business context loaded from Google Doc (v4.4.0)
 function _buildActiveKeywordSet() {
   var activeKeywords = {};
   try {
-    var query = 'SELECT ad_group_criterion.keyword.text FROM keyword_view ' +
+    var query = 'SELECT ad_group_criterion.keyword.text, campaign.status, ad_group.status, ad_group_criterion.status FROM keyword_view ' +
       'WHERE campaign.status = "ENABLED" AND ad_group.status = "ENABLED" ' +
       'AND ad_group_criterion.status = "ENABLED"';
     var search = AdsApp.search(query);
@@ -268,7 +268,7 @@ function _buildConvertingSearchTerms(lookbackDays) {
     var endDate = new Date();
     var startDate = new Date();
     startDate.setDate(startDate.getDate() - (lookbackDays || 90));
-    var query = 'SELECT search_term_view.search_term, metrics.conversions ' +
+    var query = 'SELECT search_term_view.search_term, metrics.conversions, campaign.status ' +
       'FROM search_term_view WHERE metrics.conversions > 0 ' +
       'AND campaign.status = "ENABLED" ' +
       'AND segments.date BETWEEN "' + _formatDate(startDate) + '" AND "' + _formatDate(endDate) + '"';
@@ -544,7 +544,7 @@ function _smartSearchTermReview(results) {
   if (_isLeadGenMode()) {
     var spendThreshold = CONFIG.SEARCH_TERM_SPEND_THRESHOLD || 100;
     try {
-      var q1 = 'SELECT search_term_view.search_term, campaign.name, metrics.cost_micros, metrics.conversions, metrics.clicks ' +
+      var q1 = 'SELECT search_term_view.search_term, campaign.name, metrics.cost_micros, metrics.conversions, metrics.clicks, campaign.status, campaign.advertising_channel_type ' +
         'FROM search_term_view WHERE metrics.cost_micros > ' + (spendThreshold * 1000000) +
         ' AND metrics.conversions < 1 AND campaign.status = "ENABLED" ' +
         'AND campaign.advertising_channel_type = "SEARCH" AND segments.date DURING LAST_30_DAYS';
@@ -564,7 +564,7 @@ function _smartSearchTermReview(results) {
   if (_isEcommerceMode()) {
     var ecomThreshold = CONFIG.ECOM_SEARCH_TERM_SPEND_THRESHOLD || 800;
     try {
-      var q2 = 'SELECT search_term_view.search_term, campaign.name, metrics.cost_micros, metrics.conversions_value, metrics.clicks ' +
+      var q2 = 'SELECT search_term_view.search_term, campaign.name, metrics.cost_micros, metrics.conversions_value, metrics.clicks, campaign.status, campaign.advertising_channel_type ' +
         'FROM search_term_view WHERE metrics.cost_micros > ' + (ecomThreshold * 1000000) +
         ' AND campaign.status = "ENABLED" AND campaign.advertising_channel_type = "SEARCH" ' +
         'AND segments.date DURING LAST_30_DAYS';
@@ -589,7 +589,7 @@ function _smartSearchTermReview(results) {
   var minClicks = CONFIG.SMART_NEGATION_MIN_CLICKS || 1;
   try {
     var q3 = 'SELECT search_term_view.search_term, search_term_view.status, campaign.name, ' +
-      'metrics.cost_micros, metrics.clicks, metrics.conversions ' +
+      'metrics.cost_micros, metrics.clicks, metrics.conversions, campaign.status ' +
       'FROM search_term_view WHERE campaign.status = "ENABLED" ' +
       'AND metrics.clicks >= ' + minClicks + ' AND metrics.conversions = 0 ' +
       'AND search_term_view.status = "NONE" AND segments.date DURING LAST_7_DAYS';
@@ -1094,9 +1094,9 @@ function _backfillOutcomes() {
           beforeStartD.setDate(beforeStartD.getDate() - 14);
           var beforeStart = _formatDate(beforeStartD);
 
-          var afterQuery = 'SELECT metrics.conversions, metrics.cost_micros FROM campaign ' +
+          var afterQuery = 'SELECT metrics.conversions, metrics.cost_micros, campaign.status FROM campaign ' +
             'WHERE campaign.status = "ENABLED" AND segments.date BETWEEN "' + afterStart + '" AND "' + afterEnd + '"';
-          var beforeQuery = 'SELECT metrics.conversions, metrics.cost_micros FROM campaign ' +
+          var beforeQuery = 'SELECT metrics.conversions, metrics.cost_micros, campaign.status FROM campaign ' +
             'WHERE campaign.status = "ENABLED" AND segments.date BETWEEN "' + beforeStart + '" AND "' + beforeEnd + '"';
 
           var afterConv = 0, afterCost = 0, beforeConv = 0, beforeCost = 0;
@@ -1602,7 +1602,7 @@ function _getAdGroupFinalUrl(campaignName, adGroupName) {
 function _pauseHighSpendKeywords_LeadGen(results) {
   var dr = _getDateRange(); var changeCount = 0;
   var minImpressions = CONFIG.KEYWORD_PAUSE_MIN_IMPRESSIONS || 100;
-  var query = 'SELECT ad_group_criterion.keyword.text, ad_group_criterion.keyword.match_type, campaign.name, ad_group.name, metrics.cost_micros, metrics.conversions, metrics.clicks, metrics.ctr, metrics.impressions FROM keyword_view WHERE metrics.cost_micros > ' + (CONFIG.KEYWORD_SPEND_THRESHOLD * 1000000) + ' AND metrics.conversions < 1 AND campaign.status = "ENABLED" AND ad_group.status = "ENABLED" AND ad_group_criterion.status = "ENABLED" AND campaign.advertising_channel_type = "SEARCH" AND segments.date BETWEEN "' + _getDateRange().startDate + '" AND "' + _getDateRange().endDate + '"';
+  var query = 'SELECT ad_group_criterion.keyword.text, ad_group_criterion.keyword.match_type, campaign.name, ad_group.name, metrics.cost_micros, metrics.conversions, metrics.clicks, metrics.ctr, metrics.impressions, campaign.status, ad_group.status, ad_group_criterion.status, campaign.advertising_channel_type FROM keyword_view WHERE metrics.cost_micros > ' + (CONFIG.KEYWORD_SPEND_THRESHOLD * 1000000) + ' AND metrics.conversions < 1 AND campaign.status = "ENABLED" AND ad_group.status = "ENABLED" AND ad_group_criterion.status = "ENABLED" AND campaign.advertising_channel_type = "SEARCH" AND segments.date BETWEEN "' + _getDateRange().startDate + '" AND "' + _getDateRange().endDate + '"';
   try {
     var search = AdsApp.search(query);
     while (search.hasNext() && changeCount < CONFIG.MAX_CHANGES_PER_RUN) {
@@ -1650,7 +1650,7 @@ function _pauseHighSpendKeywords_LeadGen(results) {
 
 function _promoteWinners_LeadGen(results) {
   var dr = _getDateRange();
-  var query = 'SELECT search_term_view.search_term, campaign.name, ad_group.name, metrics.conversions, metrics.clicks, metrics.cost_micros FROM search_term_view WHERE metrics.conversions > ' + (CONFIG.PROMOTION_MIN_CONVERSIONS - 1) + ' AND metrics.clicks > ' + ((CONFIG.PROMOTION_MIN_CLICKS || 10) - 1) + ' AND campaign.status = "ENABLED" AND campaign.advertising_channel_type = "SEARCH" AND segments.date BETWEEN "' + dr.startDate + '" AND "' + dr.endDate + '"';
+  var query = 'SELECT search_term_view.search_term, campaign.name, ad_group.name, metrics.conversions, metrics.clicks, metrics.cost_micros, campaign.status, campaign.advertising_channel_type FROM search_term_view WHERE metrics.conversions > ' + (CONFIG.PROMOTION_MIN_CONVERSIONS - 1) + ' AND metrics.clicks > ' + ((CONFIG.PROMOTION_MIN_CLICKS || 10) - 1) + ' AND campaign.status = "ENABLED" AND campaign.advertising_channel_type = "SEARCH" AND segments.date BETWEEN "' + dr.startDate + '" AND "' + dr.endDate + '"';
   try {
     var search = AdsApp.search(query); var processed = {};
     while (search.hasNext()) {
@@ -1681,7 +1681,7 @@ function _promoteWinners_LeadGen(results) {
 function _pauseHighSpendKeywords_Ecommerce(results) {
   var dr = _getDateRange(); var changeCount = 0;
   var minImpressions = CONFIG.KEYWORD_PAUSE_MIN_IMPRESSIONS || 100;
-  var query = 'SELECT ad_group_criterion.keyword.text, ad_group_criterion.keyword.match_type, campaign.name, ad_group.name, metrics.cost_micros, metrics.conversions, metrics.conversions_value, metrics.clicks, metrics.impressions FROM keyword_view WHERE metrics.cost_micros > ' + (CONFIG.ECOM_KEYWORD_SPEND_THRESHOLD * 1000000) + ' AND campaign.status = "ENABLED" AND ad_group.status = "ENABLED" AND ad_group_criterion.status = "ENABLED" AND campaign.advertising_channel_type = "SEARCH" AND segments.date BETWEEN "' + dr.startDate + '" AND "' + dr.endDate + '"';
+  var query = 'SELECT ad_group_criterion.keyword.text, ad_group_criterion.keyword.match_type, campaign.name, ad_group.name, metrics.cost_micros, metrics.conversions, metrics.conversions_value, metrics.clicks, metrics.impressions, campaign.status, ad_group.status, ad_group_criterion.status, campaign.advertising_channel_type FROM keyword_view WHERE metrics.cost_micros > ' + (CONFIG.ECOM_KEYWORD_SPEND_THRESHOLD * 1000000) + ' AND campaign.status = "ENABLED" AND ad_group.status = "ENABLED" AND ad_group_criterion.status = "ENABLED" AND campaign.advertising_channel_type = "SEARCH" AND segments.date BETWEEN "' + dr.startDate + '" AND "' + dr.endDate + '"';
   try {
     var search = AdsApp.search(query);
     while (search.hasNext() && changeCount < CONFIG.MAX_CHANGES_PER_RUN) {
@@ -1730,7 +1730,7 @@ function _pauseHighSpendKeywords_Ecommerce(results) {
 
 function _promoteWinners_Ecommerce(results) {
   var dr = _getDateRange();
-  var query = 'SELECT search_term_view.search_term, campaign.name, ad_group.name, metrics.conversions, metrics.conversions_value, metrics.clicks, metrics.cost_micros FROM search_term_view WHERE metrics.conversions > ' + ((CONFIG.ECOM_PROMOTION_MIN_CONVERSIONS || 2) - 1) + ' AND campaign.status = "ENABLED" AND campaign.advertising_channel_type = "SEARCH" AND segments.date BETWEEN "' + dr.startDate + '" AND "' + dr.endDate + '"';
+  var query = 'SELECT search_term_view.search_term, campaign.name, ad_group.name, metrics.conversions, metrics.conversions_value, metrics.clicks, metrics.cost_micros, campaign.status, campaign.advertising_channel_type FROM search_term_view WHERE metrics.conversions > ' + ((CONFIG.ECOM_PROMOTION_MIN_CONVERSIONS || 2) - 1) + ' AND campaign.status = "ENABLED" AND campaign.advertising_channel_type = "SEARCH" AND segments.date BETWEEN "' + dr.startDate + '" AND "' + dr.endDate + '"';
   try {
     var search = AdsApp.search(query); var processed = {};
     while (search.hasNext()) {
@@ -1760,7 +1760,7 @@ function _promoteWinners_Ecommerce(results) {
 
 function _analyzeShoppingProducts(results) {
   var dr = _getDateRange();
-  var query = 'SELECT segments.product_item_id, segments.product_title, campaign.name, metrics.cost_micros, metrics.conversions, metrics.conversions_value, metrics.clicks FROM shopping_performance_view WHERE campaign.status = "ENABLED" AND segments.date BETWEEN "' + dr.startDate + '" AND "' + dr.endDate + '"';
+  var query = 'SELECT segments.product_item_id, segments.product_title, campaign.name, metrics.cost_micros, metrics.conversions, metrics.conversions_value, metrics.clicks, campaign.status FROM shopping_performance_view WHERE campaign.status = "ENABLED" AND segments.date BETWEEN "' + dr.startDate + '" AND "' + dr.endDate + '"';
   try {
     var search = AdsApp.search(query); var products = {};
     while (search.hasNext()) {
@@ -1789,7 +1789,7 @@ function _analyzeShoppingProducts(results) {
 function _analyzeShoppingSearchTerms(results) {
   var changeCount = 0;
   var existing = _getExistingNegatives(_getOrCreateNegativeList(CONFIG.NEGATIVE_LIST_NAME_SPEND));
-  var query = 'SELECT search_term_view.search_term, campaign.name, metrics.cost_micros, metrics.conversions_value FROM search_term_view WHERE campaign.status = "ENABLED" AND campaign.advertising_channel_type = "SHOPPING" AND metrics.cost_micros > ' + (CONFIG.ECOM_SEARCH_TERM_SPEND_THRESHOLD * 1000000) + ' AND segments.date DURING LAST_30_DAYS';
+  var query = 'SELECT search_term_view.search_term, campaign.name, metrics.cost_micros, metrics.conversions_value, campaign.status, campaign.advertising_channel_type FROM search_term_view WHERE campaign.status = "ENABLED" AND campaign.advertising_channel_type = "SHOPPING" AND metrics.cost_micros > ' + (CONFIG.ECOM_SEARCH_TERM_SPEND_THRESHOLD * 1000000) + ' AND segments.date DURING LAST_30_DAYS';
   try {
     var search = AdsApp.search(query); var processed = {};
     while (search.hasNext() && changeCount < CONFIG.MAX_CHANGES_PER_RUN) {
@@ -1821,7 +1821,7 @@ function _analyzeShoppingSearchTerms(results) {
 
 function _monitorPMaxCampaigns(results) {
   var dr = _getDateRange();
-  var query = 'SELECT campaign.name, metrics.cost_micros, metrics.conversions, metrics.conversions_value, metrics.clicks, campaign_budget.amount_micros FROM campaign WHERE campaign.status = "ENABLED" AND campaign.advertising_channel_type = "PERFORMANCE_MAX" AND segments.date BETWEEN "' + dr.startDate + '" AND "' + dr.endDate + '"';
+  var query = 'SELECT campaign.name, metrics.cost_micros, metrics.conversions, metrics.conversions_value, metrics.clicks, campaign_budget.amount_micros, campaign.status, campaign.advertising_channel_type FROM campaign WHERE campaign.status = "ENABLED" AND campaign.advertising_channel_type = "PERFORMANCE_MAX" AND segments.date BETWEEN "' + dr.startDate + '" AND "' + dr.endDate + '"';
   try {
     var search = AdsApp.search(query);
     while (search.hasNext()) {
@@ -1839,7 +1839,7 @@ function _monitorPMaxCampaigns(results) {
 
 function _analyzePMaxSearchTerms(results) {
   var changeCount = 0;
-  var query = 'SELECT search_term_view.search_term, campaign.name, metrics.cost_micros, metrics.conversions_value FROM search_term_view WHERE campaign.status = "ENABLED" AND campaign.advertising_channel_type = "PERFORMANCE_MAX" AND segments.date DURING LAST_30_DAYS';
+  var query = 'SELECT search_term_view.search_term, campaign.name, metrics.cost_micros, metrics.conversions_value, campaign.status, campaign.advertising_channel_type FROM search_term_view WHERE campaign.status = "ENABLED" AND campaign.advertising_channel_type = "PERFORMANCE_MAX" AND segments.date DURING LAST_30_DAYS';
   try {
     var search = AdsApp.search(query); var processed = {};
     while (search.hasNext() && changeCount < CONFIG.MAX_CHANGES_PER_RUN) {
@@ -1871,7 +1871,7 @@ function _analyzePMaxSearchTerms(results) {
 
 function _analyzePMaxAssetGroups(results) {
   var dr = _getDateRange();
-  var query = 'SELECT asset_group.name, campaign.name, metrics.cost_micros, metrics.conversions, metrics.conversions_value FROM asset_group WHERE campaign.status = "ENABLED" AND campaign.advertising_channel_type = "PERFORMANCE_MAX" AND segments.date BETWEEN "' + dr.startDate + '" AND "' + dr.endDate + '"';
+  var query = 'SELECT asset_group.name, campaign.name, metrics.cost_micros, metrics.conversions, metrics.conversions_value, campaign.status, campaign.advertising_channel_type FROM asset_group WHERE campaign.status = "ENABLED" AND campaign.advertising_channel_type = "PERFORMANCE_MAX" AND segments.date BETWEEN "' + dr.startDate + '" AND "' + dr.endDate + '"';
   try {
     var search = AdsApp.search(query);
     while (search.hasNext()) {
@@ -1894,7 +1894,7 @@ function _checkBudgetPacing(results) {
   var today = new Date(); var dom = today.getDate();
   var dim = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
   var expectedPace = dom / dim;
-  var query = 'SELECT metrics.cost_micros FROM campaign WHERE campaign.status = "ENABLED" AND segments.date DURING THIS_MONTH';
+  var query = 'SELECT metrics.cost_micros, campaign.status FROM campaign WHERE campaign.status = "ENABLED" AND segments.date DURING THIS_MONTH';
   try {
     var search = AdsApp.search(query); var totalSpend = 0;
     while (search.hasNext()) totalSpend += Number(search.next().metrics.costMicros) / 1000000;
@@ -1913,7 +1913,7 @@ function _checkBudgetPacing(results) {
 
 function _autoAdjustDeviceBids(results) {
   var dr = _getDateRange();
-  var query = 'SELECT campaign.name, campaign.id, segments.device, metrics.cost_micros, metrics.conversions, metrics.conversions_value, metrics.clicks FROM campaign WHERE campaign.status = "ENABLED" AND campaign.advertising_channel_type = "SEARCH" AND segments.date BETWEEN "' + dr.startDate + '" AND "' + dr.endDate + '"';
+  var query = 'SELECT campaign.name, campaign.id, segments.device, metrics.cost_micros, metrics.conversions, metrics.conversions_value, metrics.clicks, campaign.status, campaign.advertising_channel_type FROM campaign WHERE campaign.status = "ENABLED" AND campaign.advertising_channel_type = "SEARCH" AND segments.date BETWEEN "' + dr.startDate + '" AND "' + dr.endDate + '"';
   try {
     var search = AdsApp.search(query); var campaigns = {};
     while (search.hasNext()) {
@@ -1989,7 +1989,7 @@ function _applyDeviceBidAdjustment(campaignName, device, adjustment, results) {
 // ============================================
 
 function _autoAdjustAdSchedule(results) {
-  var query = 'SELECT campaign.name, segments.hour, metrics.cost_micros, metrics.conversions, metrics.clicks FROM campaign WHERE campaign.status = "ENABLED" AND campaign.advertising_channel_type = "SEARCH" AND segments.date DURING LAST_30_DAYS';
+  var query = 'SELECT campaign.name, segments.hour, metrics.cost_micros, metrics.conversions, metrics.clicks, campaign.status, campaign.advertising_channel_type FROM campaign WHERE campaign.status = "ENABLED" AND campaign.advertising_channel_type = "SEARCH" AND segments.date DURING LAST_30_DAYS';
   try {
     var search = AdsApp.search(query); var hourData = {};
     while (search.hasNext()) {
@@ -2060,11 +2060,12 @@ function _applyHourBidAdjustment(campaignName, hour, adjustment, results) {
 // ============================================
 
 function _autoAdjustGeoBids(results) {
-  var query = 'SELECT campaign.name, campaign_criterion.location.geo_target_constant, metrics.cost_micros, metrics.conversions, metrics.conversions_value, metrics.clicks FROM location_view WHERE campaign.status = "ENABLED" AND segments.date DURING LAST_30_DAYS';
+  var query = 'SELECT campaign.name, campaign_criterion.location.geo_target_constant, metrics.cost_micros, metrics.conversions, metrics.conversions_value, metrics.clicks, campaign.status FROM location_view WHERE campaign.status = "ENABLED" AND segments.date DURING LAST_30_DAYS';
   try {
     var search = AdsApp.search(query); var geoData = {};
     while (search.hasNext()) {
       var row = search.next();
+      if (!row.campaignCriterion || !row.campaignCriterion.location) continue;
       var cn = row.campaign.name, locId = row.campaignCriterion.location.geoTargetConstant;
       var cost = Number(row.metrics.costMicros) / 1000000;
       var conv = Number(row.metrics.conversions) || 0;
@@ -2122,7 +2123,7 @@ function _setGeoBidModifier(campaignName, locationConstant, modifier) {
 // ============================================
 
 function _autoNgramNegatives(results) {
-  var query = 'SELECT search_term_view.search_term, metrics.cost_micros, metrics.conversions, metrics.clicks FROM search_term_view WHERE campaign.status = "ENABLED" AND campaign.advertising_channel_type = "SEARCH" AND segments.date DURING LAST_30_DAYS';
+  var query = 'SELECT search_term_view.search_term, metrics.cost_micros, metrics.conversions, metrics.clicks, campaign.status, campaign.advertising_channel_type FROM search_term_view WHERE campaign.status = "ENABLED" AND campaign.advertising_channel_type = "SEARCH" AND segments.date DURING LAST_30_DAYS';
   try {
     var search = AdsApp.search(query); var wordStats = {};
     while (search.hasNext()) {
@@ -2154,7 +2155,7 @@ function _autoNgramNegatives(results) {
     // Build protected word set from active keywords
     var activeKeywordWords = {};
     try {
-      var kwQuery = 'SELECT ad_group_criterion.keyword.text FROM keyword_view WHERE campaign.status = "ENABLED" AND ad_group.status = "ENABLED" AND ad_group_criterion.status = "ENABLED"';
+      var kwQuery = 'SELECT ad_group_criterion.keyword.text, campaign.status, ad_group.status, ad_group_criterion.status FROM keyword_view WHERE campaign.status = "ENABLED" AND ad_group.status = "ENABLED" AND ad_group_criterion.status = "ENABLED"';
       var kwSearch = AdsApp.search(kwQuery);
       while (kwSearch.hasNext()) {
         var kwText = kwSearch.next().adGroupCriterion.keyword.text.toLowerCase();
@@ -2197,7 +2198,7 @@ function _pauseLowQualityScoreKeywords(results) {
   var dr = _getDateRange();
   var qsThreshold = CONFIG.QS_PAUSE_THRESHOLD || 3;
   var qsSpendThreshold = CONFIG.QS_SPEND_THRESHOLD || 300;
-  var query = 'SELECT ad_group_criterion.keyword.text, ad_group_criterion.keyword.match_type, ad_group_criterion.quality_info.quality_score, campaign.name, ad_group.name, metrics.cost_micros, metrics.conversions, metrics.clicks, metrics.impressions FROM keyword_view WHERE campaign.status = "ENABLED" AND ad_group.status = "ENABLED" AND ad_group_criterion.status = "ENABLED" AND campaign.advertising_channel_type = "SEARCH" AND ad_group_criterion.quality_info.quality_score <= ' + qsThreshold + ' AND metrics.cost_micros > ' + (qsSpendThreshold * 1000000) + ' AND metrics.conversions < 1 AND segments.date BETWEEN "' + dr.startDate + '" AND "' + dr.endDate + '"';
+  var query = 'SELECT ad_group_criterion.keyword.text, ad_group_criterion.keyword.match_type, ad_group_criterion.quality_info.quality_score, campaign.name, ad_group.name, metrics.cost_micros, metrics.conversions, metrics.clicks, metrics.impressions, campaign.status, ad_group.status, ad_group_criterion.status, campaign.advertising_channel_type FROM keyword_view WHERE campaign.status = "ENABLED" AND ad_group.status = "ENABLED" AND ad_group_criterion.status = "ENABLED" AND campaign.advertising_channel_type = "SEARCH" AND ad_group_criterion.quality_info.quality_score <= ' + qsThreshold + ' AND metrics.cost_micros > ' + (qsSpendThreshold * 1000000) + ' AND metrics.conversions < 1 AND segments.date BETWEEN "' + dr.startDate + '" AND "' + dr.endDate + '"';
   try {
     var search = AdsApp.search(query); var changeCount = 0;
     while (search.hasNext() && changeCount < CONFIG.MAX_CHANGES_PER_RUN) {
@@ -2241,13 +2242,13 @@ function _pauseLowQualityScoreKeywords(results) {
 
 function _checkConversionHealth(results) {
   try {
-    var q1 = 'SELECT metrics.conversions, metrics.cost_micros FROM campaign WHERE campaign.status = "ENABLED" AND segments.date DURING LAST_7_DAYS';
+    var q1 = 'SELECT metrics.conversions, metrics.cost_micros, campaign.status FROM campaign WHERE campaign.status = "ENABLED" AND segments.date DURING LAST_7_DAYS';
     var s1 = AdsApp.search(q1); var thisWeekConv = 0, thisWeekCost = 0;
     while (s1.hasNext()) { var r = s1.next(); thisWeekConv += Number(r.metrics.conversions) || 0; thisWeekCost += Number(r.metrics.costMicros) / 1000000; }
 
     var end = new Date(); end.setDate(end.getDate() - 7);
     var start = new Date(); start.setDate(start.getDate() - 14);
-    var q2 = 'SELECT metrics.conversions FROM campaign WHERE campaign.status = "ENABLED" AND segments.date BETWEEN "' + _formatDate(start) + '" AND "' + _formatDate(end) + '"';
+    var q2 = 'SELECT metrics.conversions, campaign.status FROM campaign WHERE campaign.status = "ENABLED" AND segments.date BETWEEN "' + _formatDate(start) + '" AND "' + _formatDate(end) + '"';
     var s2 = AdsApp.search(q2); var lastWeekConv = 0;
     while (s2.hasNext()) { lastWeekConv += Number(s2.next().metrics.conversions) || 0; }
 
@@ -2369,7 +2370,7 @@ function _auditAndRepairNegatives(results) {
   // exclusions (informational, job seekers, DIY, brand protection, etc.)
   try {
     var agNegQuery = 'SELECT ad_group_criterion.keyword.text, ad_group_criterion.keyword.match_type, ' +
-      'campaign.name, ad_group.name ' +
+      'campaign.name, ad_group.name, campaign.status, ad_group.status ' +
       'FROM ad_group_criterion ' +
       'WHERE ad_group_criterion.type = "KEYWORD" ' +
       'AND ad_group_criterion.negative = true ' +
@@ -2431,7 +2432,7 @@ function _auditAndRepairNegatives(results) {
   // === 7c: Unpause wrongly paused keywords ===
   try {
     var pausedQuery = 'SELECT ad_group_criterion.keyword.text, ad_group_criterion.keyword.match_type, ' +
-      'campaign.name, ad_group.name ' +
+      'campaign.name, ad_group.name, campaign.status, ad_group.status, ad_group_criterion.status ' +
       'FROM keyword_view ' +
       'WHERE ad_group_criterion.status = "PAUSED" ' +
       'AND campaign.status = "ENABLED" ' +
