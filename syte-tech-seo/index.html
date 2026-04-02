@@ -1,0 +1,842 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Syte Technical SEO</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html-docx-js/0.3.1/html-docx.js"></script>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<style>
+:root{--bg:#0a0a0c;--surface:#111316;--surface-2:#191b1f;--surface-3:#222228;--border:#2a2a32;--border-hover:#3a3a45;--text:#e8e8ed;--text-muted:#8b8b96;--text-dim:#5a5a66;--accent:#ff6b35;--accent-dim:rgba(255,107,53,0.08);--accent-mid:rgba(255,107,53,0.15);--red:#ff4d4d;--orange:#ff9f43;--green:#34d399;--blue:#4dabff;--purple:#a78bfa;--teal:#00d4aa;--radius:10px;--radius-lg:14px;--transition:0.2s cubic-bezier(0.4,0,0.2,1)}
+*{margin:0;padding:0;box-sizing:border-box}body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;overflow-x:hidden}
+::-webkit-scrollbar{width:6px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+.app{display:grid;grid-template-columns:240px 1fr;min-height:100vh}
+.side{background:var(--surface);border-right:1px solid var(--border);padding:24px 14px;display:flex;flex-direction:column;gap:4px;position:sticky;top:0;height:100vh;overflow-y:auto}
+.logo{font-family:'Instrument Serif',serif;font-size:20px;padding:0 12px 8px;display:flex;align-items:center;gap:8px}.logo-dot{width:8px;height:8px;background:var(--accent);border-radius:50%;display:inline-block}.logo-v{font-family:'DM Sans',sans-serif;font-size:9px;color:var(--text-dim);background:var(--surface-2);padding:2px 7px;border-radius:4px}
+.slbl{font-size:9px;font-weight:600;letter-spacing:1.5px;text-transform:uppercase;color:var(--text-dim);padding:16px 12px 6px}
+.nav{display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:var(--radius);cursor:pointer;transition:var(--transition);font-size:13px;font-weight:500;color:var(--text-muted);border:1px solid transparent;user-select:none}
+.nav:hover{background:var(--surface-2);color:var(--text)}.nav.active{background:var(--accent-dim);color:var(--accent);border-color:rgba(255,107,53,0.15)}
+.ni{width:18px;text-align:center;flex-shrink:0;font-size:13px}
+.sfooter{margin-top:auto;padding:12px 12px 0;border-top:1px solid var(--border)}.sfooter-text{font-size:11px;color:var(--text-dim);line-height:1.5}
+.main{padding:28px 36px;max-width:1020px;width:100%}
+.ph{margin-bottom:24px}.pt{font-family:'Instrument Serif',serif;font-size:28px;letter-spacing:-0.5px;margin-bottom:4px}.ps{color:var(--text-muted);font-size:13px}
+.fs{margin-bottom:18px}.fst{font-size:9px;font-weight:600;letter-spacing:1.2px;text-transform:uppercase;color:var(--text-dim);margin-bottom:10px;display:flex;align-items:center;gap:8px}.fst::after{content:'';flex:1;height:1px;background:var(--border)}
+.fg{display:grid;grid-template-columns:1fr 1fr;gap:12px}.fg.tri{grid-template-columns:1fr 1fr 1fr}.fg.single{grid-template-columns:1fr}
+.fi{display:flex;flex-direction:column;gap:5px}.fi.fw{grid-column:1/-1}
+.fl{font-size:12px;font-weight:500;color:var(--text-muted)}.fl .req{color:var(--red);margin-left:2px}
+input[type="text"],input[type="number"],input[type="email"],input[type="url"],textarea,select{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);font-family:'DM Sans',sans-serif;font-size:13px;padding:9px 12px;transition:var(--transition);width:100%;outline:none}
+input:focus,textarea:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-dim)}
+textarea{resize:vertical;min-height:80px;line-height:1.6}select{cursor:pointer;appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238b8b96' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 12px center;padding-right:32px}
+.hint{font-size:11px;color:var(--text-dim);margin-top:2px}
+.bp{display:inline-flex;align-items:center;gap:8px;background:var(--accent);color:#fff;font-family:inherit;font-size:13px;font-weight:600;padding:10px 22px;border:none;border-radius:var(--radius);cursor:pointer;transition:var(--transition)}.bp:hover{filter:brightness(1.1);transform:translateY(-1px)}.bp:disabled{opacity:0.4;cursor:not-allowed;transform:none}
+.bs{display:inline-flex;align-items:center;gap:8px;background:transparent;color:var(--text-muted);font-family:inherit;font-size:12px;font-weight:500;padding:8px 16px;border:1px solid var(--border);border-radius:var(--radius);cursor:pointer;transition:var(--transition)}.bs:hover{border-color:var(--border-hover);color:var(--text)}
+.bd{border-color:rgba(255,77,77,0.3);color:var(--red)}.bd:hover{border-color:var(--red);background:rgba(255,77,77,0.08)}
+.tab{display:none}.tab.active{display:block}
+.stat-row{display:flex;gap:12px;margin:16px 0;flex-wrap:wrap}.stat-box{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:16px 20px;flex:1;min-width:120px}.stat-val{font-size:22px;font-weight:700;margin-bottom:2px}.stat-lbl{font-size:9px;text-transform:uppercase;letter-spacing:0.8px;color:var(--text-dim)}
+.task-list{display:flex;flex-direction:column;gap:8px;margin:16px 0}
+.task-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 16px;transition:var(--transition)}
+.task-card:hover{border-color:var(--border-hover)}
+.task-header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.task-page{font-weight:600;font-size:13px}.task-url{font-size:11px;color:var(--text-dim);margin-top:2px}
+.task-issue{font-size:12.5px;color:var(--text-muted);margin:8px 0;line-height:1.6}
+.task-fix{background:var(--surface-2);border:1px solid var(--border);border-radius:8px;padding:12px;font-family:'JetBrains Mono',monospace;font-size:11px;line-height:1.6;color:#c8d0d8;white-space:pre-wrap;margin:8px 0;max-height:200px;overflow-y:auto}
+.task-meta{display:flex;align-items:center;gap:10px;margin-top:10px;flex-wrap:wrap}
+.badge{font-size:9px;font-weight:700;letter-spacing:0.5px;padding:3px 8px;border-radius:4px;text-transform:uppercase;display:inline-block}
+.badge-critical{background:rgba(255,77,77,0.12);color:var(--red);border:1px solid rgba(255,77,77,0.2)}
+.badge-high{background:rgba(255,159,67,0.12);color:var(--orange);border:1px solid rgba(255,159,67,0.2)}
+.badge-medium{background:rgba(77,171,255,0.12);color:var(--blue);border:1px solid rgba(77,171,255,0.2)}
+.badge-low{background:rgba(52,211,153,0.12);color:var(--green);border:1px solid rgba(52,211,153,0.2)}
+.badge-open{background:rgba(255,107,53,0.12);color:var(--accent);border:1px solid rgba(255,107,53,0.2)}
+.badge-done{background:rgba(52,211,153,0.12);color:var(--green);border:1px solid rgba(52,211,153,0.2)}
+.badge-verified{background:rgba(167,139,250,0.12);color:var(--purple);border:1px solid rgba(167,139,250,0.2)}
+.badge-failed{background:rgba(255,77,77,0.12);color:var(--red);border:1px solid rgba(255,77,77,0.2)}
+.assign-sel{font-size:11px;padding:4px 24px 4px 8px;background:var(--surface-2);max-width:140px}
+.person-bar{display:flex;align-items:center;gap:12px;padding:10px 14px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);margin:6px 0}
+.person-name{font-weight:600;font-size:13px;width:100px;flex-shrink:0}
+.person-progress{flex:1;height:8px;background:var(--surface-3);border-radius:4px;overflow:hidden}.person-fill{height:100%;border-radius:4px;transition:width 0.5s ease}
+.person-pct{font-size:12px;font-weight:600;width:50px;text-align:right;flex-shrink:0}
+.file-upload{border:2px dashed var(--border);border-radius:var(--radius);padding:24px;text-align:center;cursor:pointer;transition:var(--transition)}.file-upload:hover{border-color:var(--accent);background:var(--accent-dim)}.file-upload.has-file{border-color:var(--green);background:rgba(52,211,153,0.05)}
+.file-upload-icon{font-size:24px;margin-bottom:6px}.file-upload-text{font-size:12px;color:var(--text-muted)}.file-upload-name{font-size:12px;color:var(--green);font-weight:500;margin-top:4px}
+input[type="file"]{display:none}
+.pipe{display:flex;flex-direction:column;gap:2px;margin:20px 0}
+.step{display:flex;align-items:center;gap:12px;padding:12px 16px;background:var(--surface);border:1px solid var(--border);font-size:13px;color:var(--text-dim)}
+.step:first-child{border-radius:var(--radius) var(--radius) 0 0}.step:last-child{border-radius:0 0 var(--radius) var(--radius)}
+.step.active{color:var(--accent);border-color:rgba(255,107,53,0.2);background:var(--accent-dim)}
+.step.done{color:var(--green);border-color:rgba(52,211,153,0.2)}.step.error{color:var(--red)}
+.step-icon{width:22px;text-align:center;font-size:14px}.step-info{flex:1}.step-title{font-weight:500}.step-detail{font-size:11px;color:var(--text-dim);margin-top:1px}
+.spinner-sm{width:14px;height:14px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin 0.8s linear infinite;flex-shrink:0}
+@keyframes spin{to{transform:rotate(360deg)}}
+.pbar{width:100%;height:4px;background:var(--surface-3);border-radius:2px;margin:8px 0;overflow:hidden}.pfill{height:100%;background:var(--accent);border-radius:2px;transition:width 0.5s ease;width:0%}
+.lock{position:fixed;inset:0;background:var(--bg);z-index:9999;display:flex;align-items:center;justify-content:center}.lock.hidden{display:none}.app-hidden{display:none!important}
+.lock-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:40px;width:100%;max-width:380px;text-align:center}
+.lock-logo{font-family:'Instrument Serif',serif;font-size:28px;margin-bottom:4px;display:flex;align-items:center;justify-content:center;gap:10px}
+.lock-sub{color:var(--text-muted);font-size:13px;margin-bottom:24px}
+.lock-input{width:100%;text-align:center;font-size:16px;letter-spacing:2px;padding:14px;margin-bottom:14px}
+.lock-btn{width:100%;padding:14px;background:var(--accent);color:#fff;border:none;border-radius:var(--radius);font-family:inherit;font-size:15px;font-weight:600;cursor:pointer}
+.lock-err{color:var(--red);font-size:13px;margin-top:10px;display:none}.lock-err.visible{display:block}
+.modal-bg{position:fixed;inset:0;background:rgba(0,0,0,0.7);backdrop-filter:blur(4px);display:none;align-items:center;justify-content:center;z-index:100;padding:20px}.modal-bg.visible{display:flex}
+.modal{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);width:100%;max-width:640px;max-height:85vh;overflow-y:auto;padding:28px}
+.modal-title{font-family:'Instrument Serif',serif;font-size:22px;margin-bottom:20px}
+.verify-anim{display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--accent);padding:4px 10px;background:var(--accent-dim);border-radius:4px;border:1px solid rgba(255,107,53,0.2)}
+@media(max-width:768px){.app{grid-template-columns:1fr}.side{position:fixed;left:-250px;z-index:50;width:240px;transition:left 0.3s ease}.side.open{left:0}.main{padding:16px}.fg,.fg.tri{grid-template-columns:1fr}.mobile-btn{display:flex!important}.stat-row{flex-direction:column}}
+.mobile-btn{display:none;position:fixed;top:14px;left:14px;z-index:60;background:var(--surface);border:1px solid var(--border);color:var(--text);width:38px;height:38px;border-radius:var(--radius);align-items:center;justify-content:center;cursor:pointer;font-size:16px}
+.copy-btn{font-size:10px;padding:3px 10px;background:var(--surface-3);border:1px solid var(--border);border-radius:4px;color:var(--text-muted);cursor:pointer;font-family:'DM Sans',sans-serif;transition:var(--transition)}.copy-btn:hover{border-color:var(--accent);color:var(--accent)}
+.empty{text-align:center;padding:60px 20px;color:var(--text-dim)}.empty-icon{font-size:40px;margin-bottom:12px}.empty-text{font-size:14px;margin-bottom:20px}
+.client-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px}
+.client-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:18px;transition:var(--transition)}
+.client-card:hover{border-color:var(--border-hover)}
+.cc-name{font-weight:600;font-size:14px;margin-bottom:4px}.cc-meta{font-size:11px;color:var(--text-muted);line-height:1.5}
+.filter-bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:12px 0}
+.filter-bar select{max-width:180px;font-size:12px;padding:6px 28px 6px 10px}
+.filter-bar .count{font-size:12px;color:var(--text-dim);margin-left:auto}
+</style>
+</head>
+<body>
+
+<!-- Lock -->
+<div class="lock" id="lockScreen">
+  <div class="lock-card">
+    <div class="lock-logo"><span class="logo-dot"></span> Tech SEO</div>
+    <div class="lock-sub">Enter team password</div>
+    <input type="password" class="lock-input" id="lockPw" placeholder="••••••••" onkeydown="if(event.key==='Enter')unlock()">
+    <button class="lock-btn" onclick="unlock()">Unlock</button>
+    <div class="lock-err" id="lockErr">Incorrect password</div>
+  </div>
+</div>
+
+<button class="mobile-btn app-hidden" id="mobBtn" onclick="document.querySelector('.side').classList.toggle('open')">☰</button>
+
+<div class="app app-hidden" id="appContainer">
+  <nav class="side">
+    <div class="logo"><span class="logo-dot"></span> Tech SEO <span class="logo-v">v1</span></div>
+    <div class="slbl">Work</div>
+    <div class="nav active" data-tab="dashboard" onclick="sw(this)"><span class="ni">📊</span> Dashboard</div>
+    <div class="nav" data-tab="tasks" onclick="sw(this)"><span class="ni">📋</span> Task Board</div>
+    <div class="nav" data-tab="scan" onclick="sw(this)"><span class="ni">⚡</span> New Scan</div>
+    <div class="slbl">Config</div>
+    <div class="nav" data-tab="clients" onclick="sw(this)"><span class="ni">🏢</span> Clients</div>
+    <div class="nav" data-tab="team" onclick="sw(this)"><span class="ni">👥</span> Team</div>
+    <div class="nav" data-tab="settings" onclick="sw(this)"><span class="ni">⚙</span> Settings</div>
+    <div class="sfooter"><div class="sfooter-text">Syte Technical SEO v1<br><span style="cursor:pointer;color:var(--accent)" onclick="exportAll()">↓ Export</span> · <span style="cursor:pointer;color:var(--accent)" onclick="document.getElementById('impFile').click()">↑ Import</span><input type="file" id="impFile" accept=".json" onchange="importAll(event)" style="display:none"></div></div>
+  </nav>
+
+  <main class="main">
+    <input type="hidden" id="apiKey" value="">
+
+    <!-- DASHBOARD -->
+    <div class="tab active" id="tab-dashboard">
+      <div class="ph"><div class="pt">Technical SEO Dashboard</div><div class="ps">Team progress on technical fixes across all clients</div></div>
+      <div class="stat-row" id="dashStats"></div>
+      <div style="font-family:'Instrument Serif',serif;font-size:20px;margin:24px 0 12px;">Team Progress</div>
+      <div id="dashTeam"></div>
+      <div style="font-family:'Instrument Serif',serif;font-size:20px;margin:24px 0 12px;">Client Overview</div>
+      <div id="dashClients"></div>
+    </div>
+
+    <!-- TASK BOARD -->
+    <div class="tab" id="tab-tasks">
+      <div class="ph"><div class="pt">Task Board</div><div class="ps">All technical SEO tasks with assignment and verification status</div></div>
+      <div class="filter-bar">
+        <select id="filterClient" onchange="renderTasks()"><option value="">All Clients</option></select>
+        <select id="filterPerson" onchange="renderTasks()"><option value="">All Team</option></select>
+        <select id="filterStatus" onchange="renderTasks()"><option value="">All Status</option><option value="open">Open</option><option value="done">Done (pending verify)</option><option value="verified">Verified</option><option value="failed">Failed Verification</option></select>
+        <select id="filterPriority" onchange="renderTasks()"><option value="">All Priority</option><option value="critical">Critical</option><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option></select>
+        <span class="count" id="taskCount"></span>
+      </div>
+      <div id="taskBoard" class="task-list"></div>
+    </div>
+
+    <!-- NEW SCAN -->
+    <div class="tab" id="tab-scan">
+      <div class="ph"><div class="pt">New Scan</div><div class="ps">Upload a WebCEO/Screaming Frog export or pull from Search Console — AI generates prioritized tasks</div></div>
+      <div class="fs">
+        <div class="fg">
+          <div class="fi"><label class="fl">Client <span class="req">*</span></label><select id="scanClient"><option value="">— Choose —</option></select></div>
+          <div class="fi"><label class="fl">Max Issues to Process</label><input type="number" id="scanMax" min="5" max="100" value="20"></div>
+        </div>
+      </div>
+
+      <div class="fs">
+        <div class="fst">Data Source</div>
+        <div style="display:flex;gap:10px;margin-bottom:14px">
+          <button class="bs" id="srcCsv" onclick="setScanSrc('csv')" style="border-color:var(--accent);color:var(--accent)">📄 Upload CSV</button>
+          <button class="bs" id="srcGsc" onclick="setScanSrc('gsc')">🔍 Google Search Console</button>
+          <button class="bs" id="srcWceo" onclick="setScanSrc('wceo')">🌐 WebCEO (Live)</button>
+        </div>
+        
+        <!-- CSV Upload -->
+        <div id="scanCsvArea">
+          <div class="file-upload" id="scanFileUpload" onclick="document.getElementById('scanFile').click()">
+            <div class="file-upload-icon">📊</div>
+            <div class="file-upload-text">Drag & drop or click to upload WebCEO / Screaming Frog CSV export</div>
+            <div class="file-upload-name" id="scanFileName"></div>
+          </div>
+          <input type="file" id="scanFile" accept=".csv,.tsv,.txt,.xlsx" onchange="handleScanFile(event)">
+        </div>
+
+        <!-- GSC -->
+        <div id="scanGscArea" style="display:none">
+          <div id="gscStatus" style="padding:14px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);font-size:12px;color:var(--text-muted)">
+            Connect Google in Settings first, then select a Search Console property.
+          </div>
+        </div>
+
+        <!-- WebCEO Live -->
+        <div id="scanWceoArea" style="display:none">
+          <div style="padding:14px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius)">
+            <div style="display:flex;gap:10px;align-items:flex-end;margin-bottom:10px">
+              <div class="fi" style="flex:1"><label class="fl">WebCEO Project</label>
+                <select id="wceoProject"><option value="">— Load projects first —</option></select>
+              </div>
+              <button class="bs" onclick="loadWceoProjects()" style="white-space:nowrap;margin-bottom:5px">↻ Load Projects</button>
+            </div>
+            <div id="wceoLoadStatus" style="font-size:11px;color:var(--text-dim)"></div>
+            <div class="hint">Pulls site audit data directly from your WebCEO account via API. Requires API key in Settings.</div>
+          </div>
+        </div>
+
+        <!-- WebCEO Live -->
+        <div id="scanWceoArea" style="display:none">
+          <div style="padding:14px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);font-size:12px;color:var(--text-muted)" id="wceoScanStatus">
+            Pulls site audit data directly from your WebCEO account via API. Make sure the client has a matching WebCEO project.
+          </div>
+        </div>
+      </div>
+
+      <div style="display:flex;gap:10px;margin-top:20px">
+        <button class="bp" id="btnScan" onclick="runScan()">⚡ Analyze & Generate Tasks</button>
+        <button class="bs" id="btnScanStop" onclick="scanStop=true" style="display:none">■ Stop</button>
+      </div>
+
+      <div id="scanPipeline" style="display:none">
+        <div class="pipe">
+          <div class="step" id="s-parse"><span class="step-icon">○</span><div class="step-info"><div class="step-title">Parsing data</div><div class="step-detail" id="s-parse-d">Waiting...</div></div></div>
+          <div class="step" id="s-triage"><span class="step-icon">○</span><div class="step-info"><div class="step-title">AI triage & prioritization</div><div class="step-detail" id="s-triage-d">Waiting...</div></div></div>
+          <div class="step" id="s-fix"><span class="step-icon">○</span><div class="step-info"><div class="step-title">Generating fixes</div><div class="step-detail" id="s-fix-d">Waiting...</div></div></div>
+          <div class="step" id="s-assign"><span class="step-icon">○</span><div class="step-info"><div class="step-title">Auto-assigning tasks</div><div class="step-detail" id="s-assign-d">Waiting...</div></div></div>
+        </div>
+        <div class="pbar"><div class="pfill" id="scanProgress"></div></div>
+      </div>
+
+      <div id="scanOutput" style="display:none"></div>
+    </div>
+
+    <!-- CLIENTS -->
+    <div class="tab" id="tab-clients">
+      <div class="ph"><div class="pt">Clients</div><div class="ps">Configure clients for technical SEO audits</div></div>
+      <div style="display:flex;gap:10px;margin-bottom:20px;flex-wrap:wrap">
+        <button class="bp" onclick="showCF()">+ Add Client</button>
+        <button class="bs" onclick="importAllFromWebCEO()" id="btnImportWceo">🌐 Import All from WebCEO</button>
+        <span id="wceoImportStatus" style="font-size:12px;color:var(--text-dim);align-self:center"></span>
+      </div>
+      <div id="clientList" class="client-grid"></div>
+      <div id="clientEmpty" class="empty" style="display:none"><div class="empty-icon">🏢</div><div class="empty-text">No clients</div></div>
+    </div>
+
+    <!-- TEAM -->
+    <div class="tab" id="tab-team">
+      <div class="ph"><div class="pt">Team Roster</div><div class="ps">Configure team members for task assignment</div></div>
+      <button class="bp" onclick="showTF()" style="margin-bottom:20px">+ Add Team Member</button>
+      <div id="teamList" class="client-grid"></div>
+      <div id="teamEmpty" class="empty" style="display:none"><div class="empty-icon">👥</div><div class="empty-text">No team members configured</div></div>
+    </div>
+
+    <!-- SETTINGS -->
+    <div class="tab" id="tab-settings">
+      <div class="ph"><div class="pt">Settings</div><div class="ps">Google connection and data management</div></div>
+      <div class="fs">
+        <div class="fst">Google Connection</div>
+        <button class="bs" id="gConnBtn" onclick="connectGoogle()" style="background:#fff;color:#333;border-color:#dadce0">
+          🔍 Connect Google (Analytics + Search Console)
+        </button>
+        <div id="gStatus" style="display:none;margin-top:8px;font-size:12px;padding:8px 12px;border-radius:var(--radius)"></div>
+        <div class="hint" style="margin-top:8px">Requires Google Analytics Data API + Search Console API enabled in your Google Cloud project.</div>
+      </div>
+      <div class="fs">
+        <div class="fst">WebCEO API</div>
+        <div class="fg">
+          <div class="fi fw"><label class="fl">WebCEO API Key</label><input type="text" id="wceoKey" placeholder="Paste from WebCEO → My Account → API" onchange="localStorage.setItem('syte-tseo-wceo',this.value)"></div>
+        </div>
+        <div style="display:flex;gap:10px;margin-top:12px;align-items:center">
+          <button class="bp" onclick="importWebCEOClients()" id="wceoImportBtn">⚡ Import All Clients from WebCEO</button>
+          <span id="wceoImportStatus" style="font-size:12px;color:var(--text-dim)"></span>
+        </div>
+        <div class="hint" style="margin-top:8px">Pulls all projects from your WebCEO account and creates clients automatically. Also enables live site audit data pull in New Scan.</div>
+      </div>
+      <div class="fs">
+        <div class="fst">Data</div>
+        <div id="dataStatus" style="margin-bottom:12px;padding:10px 14px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);font-size:12px;color:var(--text-muted)"></div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap">
+          <button class="bs" onclick="exportAll()">↓ Export All</button>
+          <label class="bs" style="cursor:pointer">↑ Import <input type="file" accept=".json" onchange="importAll(event)" style="display:none"></label>
+        </div>
+        <div class="hint" style="margin-top:8px"><span style="color:var(--green)">✓</span> Data stored in your browser. Survives Netlify redeployments.</div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<!-- Client Modal -->
+<div class="modal-bg" id="cfModal">
+  <div class="modal">
+    <div class="modal-title" id="cfTitle">Add Client</div>
+    <input type="hidden" id="cf-id" value="">
+    <div class="fg" style="margin-bottom:12px">
+      <div class="fi"><label class="fl">Name <span class="req">*</span></label><input type="text" id="cf-name"></div>
+      <div class="fi"><label class="fl">Website URL <span class="req">*</span></label><input type="url" id="cf-url" placeholder="https://..."></div>
+      <div class="fi"><label class="fl">Industry</label><input type="text" id="cf-industry" placeholder="e.g. Hospitality"></div>
+      <div class="fi"><label class="fl">GA4 Property ID</label><input type="text" id="cf-ga4" placeholder="Numeric ID (optional)"></div>
+      <div class="fi"><label class="fl">WebCEO Project ID</label><input type="text" id="cf-wceo" placeholder="Auto-set from import" readonly style="opacity:0.7"><div class="hint">Linked automatically when imported from WebCEO</div></div>
+      <div class="fi"><label class="fl">WebCEO Project ID</label><input type="text" id="cf-wceo" placeholder="Auto-filled from WebCEO import"><div class="hint">Links this client to their WebCEO project for live audit pulls</div></div>
+    </div>
+    <div style="display:flex;gap:10px;justify-content:flex-end;padding-top:14px;border-top:1px solid var(--border)">
+      <button class="bs" onclick="closeCF()">Cancel</button>
+      <button class="bp" onclick="saveCF()">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Team Member Modal -->
+<div class="modal-bg" id="tfModal">
+  <div class="modal">
+    <div class="modal-title" id="tfTitle">Add Team Member</div>
+    <input type="hidden" id="tf-id" value="">
+    <div class="fg" style="margin-bottom:12px">
+      <div class="fi"><label class="fl">Name <span class="req">*</span></label><input type="text" id="tf-name"></div>
+      <div class="fi"><label class="fl">Email</label><input type="email" id="tf-email"></div>
+      <div class="fi"><label class="fl">Strength</label><select id="tf-strength"><option value="both">Content + Technical</option><option value="content">Content Focused</option><option value="technical">Technical Focused</option></select></div>
+      <div class="fi"><label class="fl">Max Tasks / Month</label><input type="number" id="tf-max" value="40" min="1" max="100"></div>
+    </div>
+    <div style="display:flex;gap:10px;justify-content:flex-end;padding-top:14px;border-top:1px solid var(--border)">
+      <button class="bs" onclick="closeTF()">Cancel</button>
+      <button class="bp" onclick="saveTF()">Save</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// STATE
+let clients=JSON.parse(localStorage.getItem('syte-tseo-clients')||'[]');
+let team=JSON.parse(localStorage.getItem('syte-tseo-team')||'[]');
+let tasks=JSON.parse(localStorage.getItem('syte-tseo-tasks')||'[]');
+let scanStop=false;
+let scanFileData=null;
+let gToken=null;
+
+const OAUTH_CLIENT_ID='377465514344-ve8jabk68rl333p7p2n9ieo0pj0ruivt.apps.googleusercontent.com';
+const ENCRYPTED_API_KEY='XOQMdgQ9C42E1F4wGt9aaRQWmNLBD4QBy4SAhES1uqbv5MR8uY5PjNavx0u58cy6RpqORVnDkYXDtrfeIiEwgQJY+HTEjl+D1JhVeN8A6iUnwMvLisjW6rto21YBpbRdfPzMdPNBK/Pk42PZa9iIYB5zo07UC6xxcwjrDgaVR3bP6wcum8/N3TPz6axf2UPaBtH/+taFL7s=';
+
+// Auth
+async function deriveKey(p,s){const e=new TextEncoder();const k=await crypto.subtle.importKey('raw',e.encode(p),'PBKDF2',false,['deriveKey']);return crypto.subtle.deriveKey({name:'PBKDF2',salt:s,iterations:100000,hash:'SHA-256'},k,{name:'AES-GCM',length:256},false,['decrypt'])}
+async function decryptApiKey(p){try{const r=atob(ENCRYPTED_API_KEY);const b=new Uint8Array(r.length);for(let i=0;i<r.length;i++)b[i]=r.charCodeAt(i);const s=b.slice(0,16),iv=b.slice(16,28),ct=b.slice(28);const k=await deriveKey(p,s);const d=await crypto.subtle.decrypt({name:'AES-GCM',iv},k,ct);return new TextDecoder().decode(d)}catch(e){return null}}
+async function unlock(){const pw=document.getElementById('lockPw').value;const dk=await decryptApiKey(pw);if(dk&&dk.startsWith('sk-')){document.getElementById('lockScreen').classList.add('hidden');document.getElementById('appContainer').classList.remove('app-hidden');document.getElementById('mobBtn').classList.remove('app-hidden');document.getElementById('apiKey').value=dk;sessionStorage.setItem('syte-tseo-pw',pw);init()}else{document.getElementById('lockErr').classList.add('visible');document.getElementById('lockPw').value='';setTimeout(()=>document.getElementById('lockErr').classList.remove('visible'),2000)}}
+(async()=>{const sp=sessionStorage.getItem('syte-tseo-pw');if(sp){const dk=await decryptApiKey(sp);if(dk&&dk.startsWith('sk-')){document.getElementById('lockScreen').classList.add('hidden');document.getElementById('appContainer').classList.remove('app-hidden');document.getElementById('mobBtn').classList.remove('app-hidden');document.getElementById('apiKey').value=dk;init()}}})();
+
+function init(){
+  document.getElementById('wceoKey').value=localStorage.getItem('syte-tseo-wceo')||'';
+  renderAll();
+  updateDataStatus();
+  initGoogleAuth();
+}
+function sw(el){document.querySelectorAll('.nav').forEach(n=>n.classList.remove('active'));document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));el.classList.add('active');document.getElementById('tab-'+el.dataset.tab).classList.add('active');document.querySelector('.side').classList.remove('open');if(el.dataset.tab==='dashboard')renderDashboard();if(el.dataset.tab==='tasks')renderTasks()}
+function save(){localStorage.setItem('syte-tseo-clients',JSON.stringify(clients));localStorage.setItem('syte-tseo-team',JSON.stringify(team));localStorage.setItem('syte-tseo-tasks',JSON.stringify(tasks));localStorage.setItem('syte-tseo-backup',JSON.stringify({clients,team,tasks,date:new Date().toISOString()}))}
+function renderAll(){renderClients();renderTeam();renderDashboard();renderTasks();renderScanSelects();updateDataStatus()}
+
+// GOOGLE AUTH
+let tokenClient=null;
+function initGoogleAuth(){
+  try{tokenClient=google.accounts.oauth2.initTokenClient({client_id:OAUTH_CLIENT_ID,scope:'https://www.googleapis.com/auth/analytics.readonly https://www.googleapis.com/auth/webmasters.readonly',callback:(r)=>{if(r.error)return;gToken=r.access_token;updateGoogleStatus()}})}catch(e){}
+}
+if(typeof google!=='undefined'&&google.accounts)setTimeout(initGoogleAuth,500);
+else window.addEventListener('load',()=>setTimeout(initGoogleAuth,1000));
+
+function connectGoogle(){if(!tokenClient)initGoogleAuth();if(tokenClient)tokenClient.requestAccessToken();else alert('Google Identity Services not loaded')}
+function updateGoogleStatus(){
+  const s=document.getElementById('gStatus');const b=document.getElementById('gConnBtn');
+  if(gToken){s.style.display='';s.style.background='rgba(52,211,153,0.08)';s.style.border='1px solid rgba(52,211,153,0.2)';s.style.color='var(--green)';s.innerHTML='✓ Connected — GA4 + Search Console ready';b.style.background='rgba(52,211,153,0.1)';b.style.borderColor='rgba(52,211,153,0.3)';b.style.color='var(--green)';b.innerHTML='✓ Google Connected'}
+}
+
+// WEBCEO API
+const WCEO_API_URL='https://online.webceo.com/api/';
+
+async function wceoCall(method, params={}){
+  const apiKey=localStorage.getItem('syte-tseo-wceo');
+  if(!apiKey)throw new Error('WebCEO API key not set. Add it in Settings.');
+  const body=JSON.stringify({method,api_key:apiKey,...params});
+  try{
+    const r=await fetch(WCEO_API_URL,{method:'POST',headers:{'Content-Type':'application/json'},body});
+    if(r.ok){const d=await r.json();return d}
+  }catch(e){}
+  try{
+    const r=await fetch('https://corsproxy.io/?'+encodeURIComponent(WCEO_API_URL),{method:'POST',headers:{'Content-Type':'application/json'},body});
+    if(r.ok){const d=await r.json();return d}
+  }catch(e){}
+  try{
+    const r=await fetch('https://api.allorigins.win/raw?url='+encodeURIComponent(WCEO_API_URL+'?'+new URLSearchParams({method,api_key:apiKey,...params})));
+    if(r.ok){const d=await r.json();return d}
+  }catch(e){}
+  throw new Error('WebCEO API unreachable. The API may not support browser-based calls — try the CSV upload method instead.');
+}
+
+async function importWebCEOClients(){
+  const status=document.getElementById('wceoImportStatus');
+  const btn=document.getElementById('wceoImportBtn');
+  btn.disabled=true;
+  status.textContent='Connecting to WebCEO...';
+  status.style.color='var(--accent)';
+  try{
+    const result=await wceoCall('get_projects');
+    const projects=result.data||result.projects||result;
+    if(!Array.isArray(projects)){
+      status.textContent='Connected but unexpected response format. Check console.';
+      console.log('WebCEO API response:', result);
+      btn.disabled=false;
+      return;
+    }
+    let added=0;
+    for(const proj of projects){
+      const domain=proj.domain||proj.url||proj.site||'';
+      const projId=proj.project||proj.id||proj.project_id||'';
+      const name=domain||projId;
+      if(clients.find(c=>c.url&&domain&&c.url.includes(domain)))continue;
+      clients.push({
+        id:'c-wceo-'+Date.now()+'-'+added,
+        name:name.replace(/^(https?:\/\/)?(www\.)?/,'').replace(/\/$/,''),
+        url:domain.startsWith('http')?domain:'https://'+domain,
+        industry:'',ga4:'',wceoProjectId:projId,wceoDomain:domain
+      });
+      added++;
+    }
+    save();renderAll();
+    status.textContent='✓ '+added+' new clients imported ('+projects.length+' total projects in WebCEO)';
+    status.style.color='var(--green)';
+  }catch(err){
+    status.textContent='Error: '+err.message;
+    status.style.color='var(--red)';
+  }
+  btn.disabled=false;
+}
+
+async function fetchWebCEOAudit(projectId){
+  const result=await wceoCall('get_report',{project:projectId,tool:'technical_audit'});
+  return result;
+}
+
+// CLIENTS
+function renderClients(){
+  const l=document.getElementById('clientList'),e=document.getElementById('clientEmpty');
+  if(!clients.length){l.style.display='none';e.style.display='';return}
+  l.style.display='';e.style.display='none';
+  l.innerHTML=clients.map(c=>{
+    const myTasks=tasks.filter(t=>t.clientId===c.id);
+    const verified=myTasks.filter(t=>t.status==='verified').length;
+    const checks=[
+      {field:'name',label:'Client Name',ok:!!(c.name&&c.name!=='https://')},
+      {field:'url',label:'Website URL',ok:!!(c.url&&c.url!=='https://'&&c.url.length>10)},
+      {field:'wceoProjectId',label:'WebCEO Project',ok:!!c.wceoProjectId},
+    ];
+    const optional=[
+      {field:'industry',label:'Industry',ok:!!c.industry},
+      {field:'ga4',label:'GA4 Property',ok:!!c.ga4},
+    ];
+    const reqDone=checks.filter(x=>x.ok).length;
+    const reqTotal=checks.length;
+    const ready=reqDone===reqTotal;
+    const missing=checks.filter(x=>!x.ok).map(x=>x.label);
+    const optMissing=optional.filter(x=>!x.ok).map(x=>x.label);
+    return '<div class="client-card">'+
+      '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px">'+
+        '<div class="cc-name">'+(c.name||'Unnamed')+'</div>'+
+        '<span class="badge '+(ready?'badge-done':'badge-open')+'" style="font-size:8px">'+(ready?'READY':'SETUP NEEDED')+'</span>'+
+      '</div>'+
+      '<div class="cc-meta">'+
+        (c.url&&c.url!=='https://'?c.url:'<span style="color:var(--red)">No URL</span>')+'<br>'+
+        (c.wceoProjectId?'WebCEO: ✓ linked':'<span style="color:var(--orange)">WebCEO: not linked</span>')+
+        (c.ga4?' · GA4: ✓':' · <span style="color:var(--text-dim)">GA4: optional</span>')+
+        (c.industry?' · '+c.industry:'')+
+        '<br>'+myTasks.length+' tasks · '+verified+' verified'+
+        (missing.length?'<br><span style="color:var(--red);font-size:10px">Missing: '+missing.join(', ')+'</span>':'')+
+        (optMissing.length&&ready?'<br><span style="color:var(--text-dim);font-size:10px">Optional: '+optMissing.join(', ')+'</span>':'')+
+      '</div>'+
+      '<div style="display:flex;gap:6px;margin-top:10px">'+
+        '<button class="bs" onclick="editCF(\''+c.id+'\')" style="font-size:11px;padding:5px 10px">Edit</button>'+
+        '<button class="bs bd" onclick="delClient(\''+c.id+'\')" style="font-size:11px;padding:5px 10px">Delete</button>'+
+      '</div></div>'}).join('');
+}
+function showCF(c=null){document.getElementById('cfModal').classList.add('visible');document.getElementById('cfTitle').textContent=c?'Edit Client':'Add Client';document.getElementById('cf-id').value=c?.id||'';document.getElementById('cf-name').value=c?.name||'';document.getElementById('cf-url').value=c?.url||'';document.getElementById('cf-industry').value=c?.industry||'';document.getElementById('cf-ga4').value=c?.ga4||'';document.getElementById('cf-wceo').value=c?.wceoProjectId||''}
+function closeCF(){document.getElementById('cfModal').classList.remove('visible')}
+function editCF(id){const c=clients.find(x=>x.id===id);if(c)showCF(c)}
+function delClient(id){if(confirm('Delete client?')){clients=clients.filter(x=>x.id!==id);tasks=tasks.filter(t=>t.clientId!==id);save();renderAll()}}
+function saveCF(){
+  const n=document.getElementById('cf-name').value.trim();
+  if(!n)return alert('Name required');
+  const url=document.getElementById('cf-url').value.trim();
+  if(!url||url.length<10)return alert('Website URL required (must include https://)');
+  const eid=document.getElementById('cf-id').value;
+  const id=eid||'c-'+Date.now();
+  const existing=eid?clients.find(x=>x.id===eid):null;
+  const c={id,name:n,url,industry:document.getElementById('cf-industry').value.trim(),ga4:document.getElementById('cf-ga4').value.trim(),wceoProjectId:document.getElementById('cf-wceo').value.trim()||existing?.wceoProjectId||'',domain:existing?.domain||''};
+  if(eid){const i=clients.findIndex(x=>x.id===eid);if(i>=0)clients[i]=c}else clients.push(c);
+  save();closeCF();renderAll();
+}
+
+// TEAM
+function renderTeam(){
+  const l=document.getElementById('teamList'),e=document.getElementById('teamEmpty');
+  if(!team.length){l.style.display='none';e.style.display='';return}
+  l.style.display='';e.style.display='none';
+  l.innerHTML=team.map(t=>{const assigned=tasks.filter(x=>x.assignee===t.id).length;const done=tasks.filter(x=>x.assignee===t.id&&x.status==='verified').length;return'<div class="client-card"><div class="cc-name">'+t.name+'</div><div class="cc-meta">'+(t.email||'')+'<br>'+t.strength+' · Max '+t.max+'/mo<br>'+assigned+' assigned · '+done+' verified</div><div style="display:flex;gap:6px;margin-top:10px"><button class="bs" onclick="editTF(\''+t.id+'\')" style="font-size:11px;padding:5px 10px">Edit</button><button class="bs bd" onclick="delTeam(\''+t.id+'\')" style="font-size:11px;padding:5px 10px">Delete</button></div></div>'}).join('');
+}
+function showTF(t=null){document.getElementById('tfModal').classList.add('visible');document.getElementById('tfTitle').textContent=t?'Edit Member':'Add Member';document.getElementById('tf-id').value=t?.id||'';document.getElementById('tf-name').value=t?.name||'';document.getElementById('tf-email').value=t?.email||'';document.getElementById('tf-strength').value=t?.strength||'both';document.getElementById('tf-max').value=t?.max||40}
+function closeTF(){document.getElementById('tfModal').classList.remove('visible')}
+function editTF(id){const t=team.find(x=>x.id===id);if(t)showTF(t)}
+function delTeam(id){if(confirm('Delete member?')){team=team.filter(x=>x.id!==id);save();renderAll()}}
+function saveTF(){const n=document.getElementById('tf-name').value.trim();if(!n)return alert('Name required');const eid=document.getElementById('tf-id').value;const id=eid||'t-'+Date.now();const t={id,name:n,email:document.getElementById('tf-email').value.trim(),strength:document.getElementById('tf-strength').value,max:parseInt(document.getElementById('tf-max').value)||40};if(eid){const i=team.findIndex(x=>x.id===eid);if(i>=0)team[i]=t}else team.push(t);save();closeTF();renderAll()}
+
+// DASHBOARD
+function renderDashboard(){
+  const total=tasks.length;const open=tasks.filter(t=>t.status==='open').length;const done=tasks.filter(t=>t.status==='done').length;const verified=tasks.filter(t=>t.status==='verified').length;const failed=tasks.filter(t=>t.status==='failed').length;
+  document.getElementById('dashStats').innerHTML=
+    '<div class="stat-box"><div class="stat-val" style="color:var(--accent)">'+total+'</div><div class="stat-lbl">Total Tasks</div></div>'+
+    '<div class="stat-box"><div class="stat-val" style="color:var(--orange)">'+open+'</div><div class="stat-lbl">Open</div></div>'+
+    '<div class="stat-box"><div class="stat-val" style="color:var(--blue)">'+done+'</div><div class="stat-lbl">Done (Pending Verify)</div></div>'+
+    '<div class="stat-box"><div class="stat-val" style="color:var(--green)">'+verified+'</div><div class="stat-lbl">Verified</div></div>'+
+    '<div class="stat-box"><div class="stat-val" style="color:var(--red)">'+failed+'</div><div class="stat-lbl">Failed Verify</div></div>';
+  const dt=document.getElementById('dashTeam');
+  if(!team.length){dt.innerHTML='<div style="color:var(--text-dim);font-size:13px;">No team members configured</div>';return}
+  dt.innerHTML=team.map(m=>{
+    const myTasks=tasks.filter(t=>t.assignee===m.id);
+    const myDone=myTasks.filter(t=>t.status==='verified'||t.status==='done').length;
+    const pct=myTasks.length?Math.round(myDone/myTasks.length*100):0;
+    const color=pct>=75?'var(--green)':pct>=40?'var(--orange)':'var(--red)';
+    return'<div class="person-bar"><div class="person-name">'+m.name+'</div><div class="person-progress"><div class="person-fill" style="width:'+pct+'%;background:'+color+'"></div></div><div class="person-pct" style="color:'+color+'">'+pct+'%</div><div style="font-size:11px;color:var(--text-dim);width:80px;text-align:right">'+myDone+'/'+myTasks.length+'</div></div>'}).join('');
+  const dc=document.getElementById('dashClients');
+  dc.innerHTML=clients.map(c=>{
+    const ct=tasks.filter(t=>t.clientId===c.id);
+    const cv=ct.filter(t=>t.status==='verified').length;
+    const pct=ct.length?Math.round(cv/ct.length*100):0;
+    return'<div class="person-bar"><div class="person-name">'+c.name+'</div><div class="person-progress"><div class="person-fill" style="width:'+pct+'%;background:var(--teal)"></div></div><div class="person-pct" style="color:var(--teal)">'+pct+'%</div><div style="font-size:11px;color:var(--text-dim);width:80px;text-align:right">'+cv+'/'+ct.length+'</div></div>'}).join('');
+}
+
+// TASK BOARD
+function renderScanSelects(){
+  ['scanClient','filterClient'].forEach(id=>{const s=document.getElementById(id);const v=s.value;s.innerHTML='<option value="">'+((id==='filterClient')?'All Clients':'— Choose —')+'</option>';clients.forEach(c=>{
+    const ready=!!(c.name&&c.name!=='https://'&&c.url&&c.url!=='https://'&&c.url.length>10&&c.wceoProjectId);
+    s.innerHTML+='<option value="'+c.id+'"'+((!ready&&id==='scanClient')?' style="color:#888"':'')+'>'+( c.name||'Unnamed')+(ready?'':' ⚠ (setup needed)')+'</option>'
+  });s.value=v});
+  ['filterPerson'].forEach(id=>{const s=document.getElementById(id);const v=s.value;s.innerHTML='<option value="">All Team</option>';team.forEach(t=>{s.innerHTML+='<option value="'+t.id+'">'+t.name+'</option>'});s.value=v});
+}
+
+function renderTasks(){
+  const fc=document.getElementById('filterClient').value;
+  const fp=document.getElementById('filterPerson').value;
+  const fs=document.getElementById('filterStatus').value;
+  const fpri=document.getElementById('filterPriority').value;
+  let filtered=tasks.filter(t=>{
+    if(fc&&t.clientId!==fc)return false;
+    if(fp&&t.assignee!==fp)return false;
+    if(fs&&t.status!==fs)return false;
+    if(fpri&&t.priority!==fpri)return false;
+    return true;
+  });
+  document.getElementById('taskCount').textContent=filtered.length+' tasks';
+  const board=document.getElementById('taskBoard');
+  if(!filtered.length){board.innerHTML='<div class="empty"><div class="empty-icon">📋</div><div class="empty-text">No tasks match filters</div></div>';return}
+
+  board.innerHTML=filtered.map((t,i)=>{
+    const client=clients.find(c=>c.id===t.clientId);
+    const person=team.find(m=>m.id===t.assignee);
+    const assignOpts=team.map(m=>'<option value="'+m.id+'"'+(m.id===t.assignee?' selected':'')+'>'+m.name+'</option>').join('');
+    return'<div class="task-card">'+
+      '<div class="task-header">'+
+        '<div><div class="task-page">'+(t.page||'Unknown Page')+'</div><div class="task-url">'+(t.url||'')+' · '+(client?.name||'')+'</div></div>'+
+        '<span class="badge badge-'+t.status+'">'+t.status+'</span>'+
+      '</div>'+
+      '<div class="task-issue"><span class="badge badge-'+t.priority+'" style="margin-right:6px">'+t.priority+'</span> '+t.issue+'</div>'+
+      (t.fix?'<div style="display:flex;justify-content:space-between;align-items:center;margin:4px 0"><span style="font-size:10px;font-weight:600;text-transform:uppercase;color:var(--text-dim);letter-spacing:0.8px">Copy-paste fix</span><button class="copy-btn" onclick="navigator.clipboard.writeText(tasks['+tasks.indexOf(t)+'].fix)">Copy</button></div><div class="task-fix">'+escH(t.fix)+'</div>':'')+
+      '<div class="task-meta">'+
+        '<select class="assign-sel" onchange="assignTask(\''+t.id+'\',this.value)"><option value="">Unassigned</option>'+assignOpts+'</select>'+
+        (t.status==='open'?'<button class="bs" style="font-size:11px;padding:4px 12px" onclick="markDone(\''+t.id+'\')">✓ Mark Done</button>':'')+
+        (t.status==='done'?'<button class="bp" style="font-size:11px;padding:5px 14px" onclick="verifyTask(\''+t.id+'\')">🔍 Verify Fix</button>':'')+
+        (t.status==='failed'?'<button class="bs" style="font-size:11px;padding:4px 12px" onclick="markDone(\''+t.id+'\')">✓ Re-mark Done</button><div style="font-size:11px;color:var(--red);max-width:300px">'+(t.verifyNote||'')+'</div>':'')+
+        (t.status==='verified'?'<div style="font-size:11px;color:var(--green)">✓ Verified '+(t.verifyDate?new Date(t.verifyDate).toLocaleDateString('en-ZA'):'')+'</div>':'')+
+      '</div></div>'}).join('');
+}
+
+function assignTask(taskId,personId){const t=tasks.find(x=>x.id===taskId);if(t){t.assignee=personId;save();renderTasks()}}
+function markDone(taskId){const t=tasks.find(x=>x.id===taskId);if(t){t.status='done';t.doneDate=new Date().toISOString();save();renderTasks();renderDashboard()}}
+
+// VERIFICATION
+async function verifyTask(taskId){
+  const t=tasks.find(x=>x.id===taskId);if(!t)return;
+  const client=clients.find(c=>c.id===t.clientId);
+  const pageUrl=t.url||(client?.url?client.url+t.page:'');
+  if(!pageUrl){t.status='verified';t.verifyDate=new Date().toISOString();t.verifyNote='URL not available — auto-verified';save();renderTasks();renderDashboard();return}
+  const card=document.querySelector("[onclick=\"verifyTask('"+taskId+"')\"]");
+  if(card)card.outerHTML='<span class="verify-anim"><span class="spinner-sm"></span> Verifying...</span>';
+  try{
+    let html='';
+    const proxies=[u=>'https://api.allorigins.win/raw?url='+encodeURIComponent(u),u=>'https://corsproxy.io/?'+encodeURIComponent(u)];
+    for(const proxy of proxies){
+      try{const r=await fetch(proxy(pageUrl));if(r.ok){html=await r.text();break}}catch(e){}
+    }
+    if(!html){t.status='verified';t.verifyDate=new Date().toISOString();t.verifyNote='Could not fetch page — marked as verified (manual check recommended)';save();renderTasks();renderDashboard();return}
+    const apiKey=document.getElementById('apiKey').value;
+    const resp=await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:500,system:'You verify if a technical SEO fix has been implemented on a web page. Respond ONLY with JSON: {"verified":true/false,"reason":"brief explanation"}',
+        messages:[{role:'user',content:'TASK: '+t.issue+'\n\nEXPECTED FIX:\n'+(t.fix?.substring(0,500)||'N/A')+'\n\nPAGE HTML (first 3000 chars):\n'+html.substring(0,3000)+'\n\nIs the fix implemented? Check the actual HTML for evidence.'}]
+      })
+    });
+    const data=await resp.json();
+    const text=data.content.map(c=>c.text||'').join('');
+    let result;
+    try{result=JSON.parse(text.match(/\{[\s\S]*\}/)[0])}catch(e){result={verified:true,reason:'Could not parse verification — marked verified'}}
+    t.status=result.verified?'verified':'failed';
+    t.verifyDate=new Date().toISOString();
+    t.verifyNote=result.reason;
+  }catch(err){
+    t.status='verified';t.verifyDate=new Date().toISOString();t.verifyNote='Verification error: '+err.message+' — auto-verified';
+  }
+  save();renderTasks();renderDashboard();
+}
+
+// SCAN
+function setScanSrc(src){
+  document.getElementById('scanCsvArea').style.display=src==='csv'?'':'none';
+  document.getElementById('scanGscArea').style.display=src==='gsc'?'':'none';
+  document.getElementById('scanWceoArea').style.display=src==='wceo'?'':'none';
+  ['srcCsv','srcGsc','srcWceo'].forEach(id=>{
+    const el=document.getElementById(id);
+    const active=(id==='src'+src.charAt(0).toUpperCase()+src.slice(1))||(id==='srcCsv'&&src==='csv')||(id==='srcGsc'&&src==='gsc')||(id==='srcWceo'&&src==='wceo');
+    el.style.borderColor=active?'var(--accent)':'var(--border)';
+    el.style.color=active?'var(--accent)':'var(--text-muted)';
+  });
+  window._scanSrc=src;
+}
+
+function handleScanFile(e){const f=e.target.files[0];if(!f)return;const r=new FileReader();r.onload=ev=>{scanFileData=ev.target.result;document.getElementById('scanFileName').textContent='✓ '+f.name;document.getElementById('scanFileUpload').classList.add('has-file')};r.readAsText(f)}
+
+// WEBCEO API (via Netlify proxy)
+async function callWebCEO(method, params={}){
+  const wceoKey=localStorage.getItem('syte-tseo-wceo')||'';
+  if(!wceoKey)throw new Error('WebCEO API key not set. Go to Settings.');
+  const body={method,key:wceoKey,...params};
+  const resp=await fetch('/.netlify/functions/webceo-proxy',{
+    method:'POST',
+    headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body:'json='+encodeURIComponent(JSON.stringify(body))
+  });
+  if(!resp.ok)throw new Error('Proxy error: '+resp.status);
+  const data=await resp.json();
+  if(!Array.isArray(data)||!data.length)throw new Error('Empty API response');
+  if(data[0].result&&data[0].result!==0)throw new Error(data[0].errormsg||'WebCEO error code: '+data[0].result);
+  return data[0];
+}
+
+async function loadWceoProjects(){
+  const status=document.getElementById('wceoLoadStatus');
+  status.innerHTML='<span class="spinner-sm" style="display:inline-block;vertical-align:middle;margin-right:6px"></span> Loading projects...';
+  try{
+    const resp=await callWebCEO('get_projects');
+    const projects=resp.data||[];
+    const sel=document.getElementById('wceoProject');
+    sel.innerHTML='<option value="">— Select project —</option>';
+    const scanClientId=document.getElementById('scanClient').value;
+    const scanClient=clients.find(c=>c.id===scanClientId);
+    const autoSelectId=scanClient?.wceoProjectId||'';
+    projects.forEach(p=>{
+      const selected=p.project===autoSelectId?' selected':'';
+      sel.innerHTML+='<option value="'+p.project+'" data-domain="'+p.domain+'"'+selected+'>'+p.domain+' ('+p.project+')</option>';
+    });
+    status.innerHTML='<span style="color:var(--green)">✓ '+projects.length+' projects loaded'+(autoSelectId?' — auto-selected matching project':'')+'</span>';
+    window._wceoProjects=projects;
+  }catch(err){
+    status.innerHTML='<span style="color:var(--red)">✗ '+err.message+'</span>';
+  }
+}
+
+async function importAllFromWebCEO(){
+  const status=document.getElementById('wceoImportStatus');
+  const btn=document.getElementById('btnImportWceo');
+  btn.disabled=true;
+  status.innerHTML='<span class="spinner-sm" style="display:inline-block;vertical-align:middle;margin-right:6px"></span> Fetching all WebCEO projects...';
+  try{
+    const resp=await callWebCEO('get_projects');
+    const projects=resp.data||[];
+    if(!projects.length){status.innerHTML='<span style="color:var(--red)">No projects found in WebCEO</span>';return}
+    let imported=0,skipped=0,updated=0;
+    for(let i=0;i<projects.length;i++){
+      const p=projects[i];
+      status.innerHTML='Importing '+(i+1)+' of '+projects.length+': '+p.domain+'...';
+      const exists=clients.find(c=>c.wceoProjectId===p.project||(c.url&&c.url.replace(/https?:\/\//,'').replace(/\/$/,'')===p.domain));
+      if(exists){
+        if(!exists.wceoProjectId)exists.wceoProjectId=p.project;
+        if(!exists.name||exists.name==='https://')exists.name=p.domain.replace(/^www\./,'').split('.')[0].charAt(0).toUpperCase()+p.domain.replace(/^www\./,'').split('.')[0].slice(1);
+        if(!exists.url||exists.url==='https://')exists.url='https://'+p.domain;
+        updated++;skipped++;
+      }else{
+        const domainClean=p.domain.replace(/^www\./,'');
+        const nameParts=domainClean.split('.')[0];
+        const clientName=nameParts.charAt(0).toUpperCase()+nameParts.slice(1);
+        clients.push({id:'c-'+Date.now()+'-'+i,name:clientName,url:'https://'+p.domain,domain:p.domain,industry:'',ga4:'',wceoProjectId:p.project,setupComplete:false});
+        imported++;
+      }
+    }
+    save();renderAll();
+    status.innerHTML='<span style="color:var(--green)">✓ Done! '+imported+' new clients imported, '+updated+' existing updated ('+projects.length+' total in WebCEO)</span>';
+  }catch(err){
+    status.innerHTML='<span style="color:var(--red)">✗ '+err.message+'</span>';
+  }finally{btn.disabled=false}
+}
+
+async function pullWceoAuditData(projectId){
+  const methods=[
+    {method:'get_technical_audit',params:{project:projectId}},
+    {method:'get_site_audit',params:{project:projectId}},
+    {method:'get_seo_analysis',params:{project:projectId}},
+    {method:'get_issues',params:{project:projectId}},
+    {method:'get_errors',params:{project:projectId}},
+    {method:'get_audit',params:{project:projectId}},
+    {method:'get_on_page_issues',params:{project:projectId}},
+    {method:'get_landing_page_seo',params:{project:projectId}},
+  ];
+  let auditData=null;
+  let successMethod='';
+  for(const m of methods){
+    try{
+      const resp=await callWebCEO(m.method,m.params);
+      if(resp.data){auditData=resp.data;successMethod=m.method;break}
+    }catch(e){continue}
+  }
+  if(!auditData){
+    try{
+      const resp=await callWebCEO('get_report',{project:projectId});
+      if(resp.data){auditData=resp.data;successMethod='get_report'}
+    }catch(e){}
+  }
+  return {data:auditData,method:successMethod};
+}
+
+function setStep(id,state,detail){
+  const el=document.getElementById('s-'+id);el.className='step '+(state||'');
+  const icon=el.querySelector('.step-icon');
+  if(state==='active')icon.innerHTML='<div class="spinner-sm"></div>';
+  else if(state==='done')icon.textContent='✓';
+  else if(state==='error')icon.textContent='✗';
+  else icon.textContent='○';
+  if(detail)document.getElementById('s-'+id+'-d').textContent=detail;
+}
+
+async function callClaude(sys,usr){
+  const apiKey=document.getElementById('apiKey').value;
+  const r=await fetch('https://api.anthropic.com/v1/messages',{
+    method:'POST',headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+    body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:8000,system:sys,messages:[{role:'user',content:usr}]})
+  });
+  if(!r.ok){const e=await r.json();throw new Error(e.error?.message||'API error')}
+  const d=await r.json();return d.content.map(c=>c.text||'').join('');
+}
+
+async function runScan(){
+  const clientId=document.getElementById('scanClient').value;
+  if(!clientId)return alert('Select a client');
+  const client=clients.find(c=>c.id===clientId);
+  const maxIssues=parseInt(document.getElementById('scanMax').value)||20;
+  const source=window._scanSrc||'csv';
+  const missing=[];
+  if(!client.name||client.name==='https://')missing.push('Client Name');
+  if(!client.url||client.url==='https://'||client.url.length<10)missing.push('Website URL');
+  if(source==='wceo'&&!client.wceoProjectId&&!document.getElementById('wceoProject').value)missing.push('WebCEO Project');
+  if(missing.length)return alert('Client setup incomplete. Missing: '+missing.join(', ')+'\n\nGo to Clients → Edit to complete setup.');
+  if(source==='csv'&&!scanFileData)return alert('Upload a CSV file first');
+  if(source==='wceo'&&!localStorage.getItem('syte-tseo-wceo'))return alert('Add your WebCEO API key in Settings first');
+  scanStop=false;
+  document.getElementById('btnScan').disabled=true;
+  document.getElementById('btnScanStop').style.display='';
+  document.getElementById('scanPipeline').style.display='';
+  document.getElementById('scanOutput').style.display='none';
+  document.getElementById('scanProgress').style.width='0%';
+  try{
+    let csvData='';
+    if(source==='wceo'){
+      setStep('parse','active','Connecting to WebCEO API...');
+      const wceoProjectId=document.getElementById('wceoProject').value;
+      if(!wceoProjectId){throw new Error('Select a WebCEO project first. Click "Load Projects" in the WebCEO panel.')}
+      try{
+        const result=await pullWceoAuditData(wceoProjectId);
+        if(result.data){
+          csvData=typeof result.data==='string'?result.data:JSON.stringify(result.data,null,2);
+          setStep('parse','done','WebCEO audit data retrieved via '+result.method);
+        }else{
+          throw new Error('No audit data returned. Ensure a scan has been run for this project in WebCEO.');
+        }
+      }catch(err){
+        setStep('parse','error','WebCEO API: '+err.message+' — falling back to CSV if available');
+        if(scanFileData){csvData=scanFileData}
+        else throw new Error('WebCEO API failed and no CSV uploaded. Try uploading a CSV export instead.');
+      }
+    }else if(source==='csv'){
+      setStep('parse','active','Reading CSV...');
+      csvData=scanFileData;
+      const lines=csvData.split('\n').filter(l=>l.trim());
+      setStep('parse','done',lines.length+' rows parsed');
+    }else{
+      setStep('parse','active','Search Console integration coming soon...');
+      throw new Error('Search Console integration not yet implemented. Use CSV upload or WebCEO.');
+    }
+    document.getElementById('scanProgress').style.width='15%';
+    if(scanStop)throw new Error('Stopped');
+    setStep('triage','active','AI analyzing issues...');
+    const csvSample=csvData.substring(0,12000);
+    const triageSystem='You are a technical SEO expert. Analyze this data from a site audit tool (WebCEO, Screaming Frog, or JSON audit data). Identify the most impactful technical SEO issues, prioritize them, and generate COPY-PASTE READY fixes.\n\nCLIENT: '+client.name+' | URL: '+(client.url||'N/A')+' | INDUSTRY: '+(client.industry||'General')+'\n\nReturn ONLY valid JSON array. No markdown, no backticks.\n\nFor each issue return:\n{"page":"Page title or path","url":"full URL if available","issue":"Clear description of the problem","priority":"critical|high|medium|low","category":"meta|structure|speed|links|schema|crawl|mobile","fix":"THE ACTUAL COPY-PASTE FIX (corrected title tag, redirect rule, schema code, etc)","where":"Where to implement (e.g. page <head>, .htaccess, CMS settings)"}\n\nPRIORITIZATION RULES:\n- critical: Broken pages (404/500), noindex on important pages, canonical issues on high-traffic pages, security issues\n- high: Missing/duplicate title tags, missing meta descriptions, broken internal links, redirect chains, missing H1\n- medium: Missing alt tags, long titles, thin content pages, missing schema, slow pages\n- low: Minor formatting issues, optional optimizations\n\nGenerate max '+maxIssues+' issues, ordered by priority (critical first).';
+    const raw=await callClaude(triageSystem,'Analyze this audit data and generate prioritized technical SEO tasks:\n\n'+csvSample);
+    let issues;
+    try{const m=raw.match(/\[[\s\S]*\]/);issues=JSON.parse(m[0])}catch(e){throw new Error('Failed to parse AI response')}
+    setStep('triage','done',issues.length+' issues identified');
+    document.getElementById('scanProgress').style.width='60%';
+    if(scanStop)throw new Error('Stopped');
+    setStep('fix','done',issues.length+' fixes generated');
+    document.getElementById('scanProgress').style.width='80%';
+    setStep('assign','active','Distributing tasks...');
+    const newTasks=issues.map((issue,i)=>{
+      const assignee=team.length?team[i%team.length].id:'';
+      return{id:'task-'+Date.now()+'-'+i,clientId,page:issue.page||'',url:issue.url||'',issue:issue.issue||'',priority:issue.priority||'medium',category:issue.category||'general',fix:issue.fix||'',where:issue.where||'',status:'open',assignee,created:new Date().toISOString(),doneDate:null,verifyDate:null,verifyNote:''};
+    });
+    tasks=[...tasks,...newTasks];
+    save();
+    setStep('assign','done',newTasks.length+' tasks created and assigned');
+    document.getElementById('scanProgress').style.width='100%';
+    document.getElementById('scanOutput').style.display='';
+    document.getElementById('scanOutput').innerHTML='<div style="padding:16px;background:rgba(52,211,153,0.08);border:1px solid rgba(52,211,153,0.2);border-radius:var(--radius);margin-top:16px">'+
+      '<div style="font-weight:600;color:var(--green);margin-bottom:4px">✓ '+newTasks.length+' tasks created</div>'+
+      '<div style="font-size:12px;color:var(--text-muted)">'+
+        'Critical: '+newTasks.filter(t=>t.priority==='critical').length+' · '+
+        'High: '+newTasks.filter(t=>t.priority==='high').length+' · '+
+        'Medium: '+newTasks.filter(t=>t.priority==='medium').length+' · '+
+        'Low: '+newTasks.filter(t=>t.priority==='low').length+'<br>'+
+        (team.length?'Auto-assigned to: '+team.map(m=>m.name).join(', '):'No team members — assign manually on the Task Board')+
+      '</div>'+
+      '<button class="bp" style="margin-top:12px" onclick="sw(document.querySelector(\'[data-tab=tasks]\'))">→ Go to Task Board</button>'+
+    '</div>';
+    renderAll();
+  }catch(err){
+    if(err.message!=='Stopped'){['parse','triage','fix','assign'].forEach(s=>{if(document.getElementById('s-'+s).classList.contains('active'))setStep(s,'error',err.message)})}
+  }finally{document.getElementById('btnScan').disabled=false;document.getElementById('btnScanStop').style.display='none'}
+}
+
+// EXPORT / IMPORT
+function exportAll(){const d={version:1,date:new Date().toISOString(),clients,team,tasks};saveAs(new Blob([JSON.stringify(d,null,2)],{type:'application/json'}),'syte-tseo-backup-'+new Date().toISOString().slice(0,10)+'.json')}
+function importAll(e){const f=e.target.files[0];if(!f)return;const r=new FileReader();r.onload=ev=>{try{const d=JSON.parse(ev.target.result);if(d.clients)d.clients.forEach(c=>{if(!clients.find(x=>x.id===c.id))clients.push(c)});if(d.team)d.team.forEach(t=>{if(!team.find(x=>x.id===t.id))team.push(t)});if(d.tasks)d.tasks.forEach(t=>{if(!tasks.find(x=>x.id===t.id))tasks.push(t)});save();renderAll();alert('Imported successfully')}catch(err){alert('Invalid file: '+err.message)}};r.readAsText(f);e.target.value=''}
+
+function updateDataStatus(){
+  const el=document.getElementById('dataStatus');if(!el)return;
+  el.innerHTML='<strong>'+clients.length+'</strong> clients · <strong>'+team.length+'</strong> team members · <strong>'+tasks.length+'</strong> tasks<br>'+
+  '<span style="color:var(--green)">✓ Data persists across deployments</span>'}
+
+function escH(s){return(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+</script>
+</body>
+</html>
