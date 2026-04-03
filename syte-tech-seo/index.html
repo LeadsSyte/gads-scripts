@@ -269,6 +269,11 @@ input[type="file"]{display:none}
           <span id="wceoImportStatus" style="font-size:12px;color:var(--text-dim)"></span>
         </div>
         <div class="hint" style="margin-top:8px">Pulls all projects from your WebCEO account and creates clients automatically. Also enables live site audit data pull in New Scan.</div>
+        <div style="display:flex;gap:10px;margin-top:12px;align-items:center">
+          <button class="bs" onclick="runWceoDiagnostics()">🔍 API Diagnostics</button>
+          <span id="wceoDiagStatus" style="font-size:11px;color:var(--text-dim)"></span>
+        </div>
+        <div id="wceoDiagOutput" style="display:none;margin-top:8px;padding:12px;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius);font-family:'JetBrains Mono',monospace;font-size:11px;max-height:300px;overflow-y:auto;white-space:pre-wrap;color:#c8d0d8"></div>
       </div>
       <div class="fs">
         <div class="fst">Data</div>
@@ -730,31 +735,98 @@ async function importAllFromWebCEO(){
 }
 
 async function pullWceoAuditData(projectId){
-  const methods=[
-    {method:'get_technical_audit',params:{project:projectId}},
-    {method:'get_site_audit',params:{project:projectId}},
-    {method:'get_seo_analysis',params:{project:projectId}},
-    {method:'get_issues',params:{project:projectId}},
-    {method:'get_errors',params:{project:projectId}},
-    {method:'get_audit',params:{project:projectId}},
-    {method:'get_on_page_issues',params:{project:projectId}},
-    {method:'get_landing_page_seo',params:{project:projectId}},
+  // First discover available methods via list_methods
+  let availableMethods=[];
+  try{
+    const discovery=await callWebCEO('list_methods');
+    if(discovery.data&&Array.isArray(discovery.data))availableMethods=discovery.data;
+    else if(Array.isArray(discovery))availableMethods=discovery;
+    console.log('WebCEO available methods:',availableMethods);
+  }catch(e){console.warn('list_methods failed:',e.message)}
+
+  // Try discovered methods that look audit-related first
+  const auditKeywords=['audit','error','issue','seo','analysis','crawl','page','site','technical','landing','onpage','on_page'];
+  const auditMethods=availableMethods.filter(m=>typeof m==='string'&&auditKeywords.some(k=>m.toLowerCase().includes(k)));
+
+  // Fallback to guessed methods if discovery didn't work
+  const methodsToTry=[
+    ...auditMethods,
+    'get_technical_audit','get_site_audit','get_seo_analysis','get_issues',
+    'get_errors','get_audit','get_on_page_issues','get_landing_page_seo',
+    'get_data','get_scan_results','get_report'
   ];
+  // Deduplicate
+  const uniqueMethods=[...new Set(methodsToTry)];
+
   let auditData=null;
   let successMethod='';
-  for(const m of methods){
+  for(const method of uniqueMethods){
     try{
-      const resp=await callWebCEO(m.method,m.params);
-      if(resp.data){auditData=resp.data;successMethod=m.method;break}
+      const resp=await callWebCEO(method,{project:projectId});
+      if(resp.data){auditData=resp.data;successMethod=method;console.log('WebCEO audit data found via:',method);break}
     }catch(e){continue}
   }
+
+  // If still no data, try get_projects to at least get scan info
   if(!auditData){
     try{
-      const resp=await callWebCEO('get_report',{project:projectId});
-      if(resp.data){auditData=resp.data;successMethod='get_report'}
+      // Some WebCEO setups include audit data in the project details
+      const resp=await callWebCEO('get_project',{project:projectId});
+      if(resp.data){auditData=resp.data;successMethod='get_project'}
     }catch(e){}
   }
-  return {data:auditData,method:successMethod};
+
+  // Log what we found for debugging
+  if(!auditData)console.warn('WebCEO: No audit data found. Available methods:',availableMethods,'Tried:',uniqueMethods);
+
+  return {data:auditData,method:successMethod,availableMethods};
+}
+
+async function runWceoDiagnostics(){
+  const status=document.getElementById('wceoDiagStatus');
+  const output=document.getElementById('wceoDiagOutput');
+  output.style.display='';
+  status.textContent='Running diagnostics...';
+  let log='WebCEO API Diagnostics\n======================\n\n';
+  // 1. Test list_methods
+  try{
+    log+='1. Calling list_methods...\n';
+    const resp=await callWebCEO('list_methods');
+    const methods=resp.data||resp;
+    log+='   Available methods: '+JSON.stringify(methods,null,2)+'\n\n';
+  }catch(e){log+='   Error: '+e.message+'\n\n'}
+  // 2. Test get_projects
+  try{
+    log+='2. Calling get_projects...\n';
+    const resp=await callWebCEO('get_projects');
+    const projects=resp.data||[];
+    log+='   Found '+projects.length+' projects\n';
+    if(projects.length>0)log+='   First project: '+JSON.stringify(projects[0],null,2)+'\n\n';
+  }catch(e){log+='   Error: '+e.message+'\n\n'}
+  // 3. Test audit methods on first project with wceoProjectId
+  const testClient=clients.find(c=>c.wceoProjectId);
+  if(testClient){
+    const pid=testClient.wceoProjectId;
+    log+='3. Testing audit methods on project: '+pid+' ('+testClient.name+')\n';
+    const testMethods=['get_technical_audit','get_site_audit','get_seo_analysis','get_issues','get_errors','get_audit','get_data','get_scan_results','get_report','get_project','get_on_page_issues','get_landing_page_seo'];
+    for(const method of testMethods){
+      try{
+        const resp=await callWebCEO(method,{project:pid});
+        const hasData=!!resp.data;
+        const dataType=resp.data?typeof resp.data:'none';
+        const dataLen=Array.isArray(resp.data)?resp.data.length:(typeof resp.data==='string'?resp.data.length:'N/A');
+        log+='   '+method+': ✓ (data type: '+dataType+', length: '+dataLen+')\n';
+        if(resp.data)log+='     Preview: '+JSON.stringify(resp.data).substring(0,200)+'...\n';
+      }catch(e){
+        log+='   '+method+': ✗ '+e.message+'\n';
+      }
+    }
+  }else{
+    log+='3. No clients with WebCEO project ID found — skipping audit tests\n';
+  }
+  log+='\n=== Done ===\n';
+  output.textContent=log;
+  status.innerHTML='<span style="color:var(--green)">✓ Diagnostics complete — check output below</span>';
 }
 
 function setStep(id,state,detail){
@@ -1030,7 +1102,10 @@ async function scanClient(clientId,options={}){
   onProgress('pulling','Fetching data via '+source);
   if(source==='wceo'){
     const result=await pullWceoAuditData(client.wceoProjectId);
-    if(!result.data)return{skipped:true,reason:'No WebCEO audit data'};
+    if(!result.data){
+      const methodInfo=result.availableMethods&&result.availableMethods.length?' (API methods: '+result.availableMethods.slice(0,5).join(', ')+(result.availableMethods.length>5?'...':'')+')':', run diagnostics in Settings';
+      return{skipped:true,reason:'No WebCEO audit data'+methodInfo};
+    }
     rawData=typeof result.data==='string'?result.data:JSON.stringify(result.data,null,2);
   }else if(source==='gsc'){
     rawData=await pullGSCData(client);
