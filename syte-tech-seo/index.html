@@ -129,6 +129,11 @@ input[type="file"]{display:none}
     <div class="tab active" id="tab-dashboard">
       <div class="ph"><div class="pt">Technical SEO Dashboard</div><div class="ps">Team progress on technical fixes across all clients</div></div>
       <div class="stat-row" id="dashStats"></div>
+      <div style="display:flex;gap:10px;align-items:center;margin:16px 0">
+        <button class="bp" onclick="autoScanAll()" id="btnRefreshAll">↻ Refresh Stale Clients</button>
+        <button class="bs" onclick="autoScanAll({force:true})">↻ Force Refresh All</button>
+        <span id="staleCount" style="font-size:12px;color:var(--text-dim)"></span>
+      </div>
       <div style="font-family:'Instrument Serif',serif;font-size:20px;margin:24px 0 12px;">Team Progress</div>
       <div id="dashTeam"></div>
       <div style="font-family:'Instrument Serif',serif;font-size:20px;margin:24px 0 12px;">Client Overview</div>
@@ -153,7 +158,7 @@ input[type="file"]{display:none}
       <div class="ph"><div class="pt">New Scan</div><div class="ps">Upload a WebCEO/Screaming Frog export or pull from Search Console — AI generates prioritized tasks</div></div>
       <div class="fs">
         <div class="fg">
-          <div class="fi"><label class="fl">Client <span class="req">*</span></label><select id="scanClient"><option value="">— Choose —</option></select></div>
+          <div class="fi"><label class="fl">Client <span class="req">*</span></label><select id="scanClient" onchange="autoSelectScanSource(this.value)"><option value="">— Choose —</option></select></div>
           <div class="fi"><label class="fl">Max Issues to Process</label><input type="number" id="scanMax" min="5" max="100" value="20"></div>
         </div>
       </div>
@@ -290,6 +295,7 @@ input[type="file"]{display:none}
       <div class="fi"><label class="fl">GA4 Property ID</label><input type="text" id="cf-ga4" placeholder="Numeric ID (optional)"></div>
       <div class="fi"><label class="fl">WebCEO Project ID</label><input type="text" id="cf-wceo" placeholder="Auto-set from import" readonly style="opacity:0.7"><div class="hint">Linked automatically when imported from WebCEO</div></div>
       <div class="fi"><label class="fl">WebCEO Project ID</label><input type="text" id="cf-wceo" placeholder="Auto-filled from WebCEO import"><div class="hint">Links this client to their WebCEO project for live audit pulls</div></div>
+      <div class="fi"><label class="fl">GSC Property</label><input type="text" id="cf-gsc" placeholder="Auto-matched from Google connect"><div class="hint">e.g. https://example.com/ or sc-domain:example.com</div></div>
     </div>
     <div style="display:flex;gap:10px;justify-content:flex-end;padding-top:14px;border-top:1px solid var(--border)">
       <button class="bs" onclick="closeCF()">Cancel</button>
@@ -316,6 +322,22 @@ input[type="file"]{display:none}
   </div>
 </div>
 
+<!-- Bulk Scan Modal -->
+<div class="modal-bg" id="bulkScanModal">
+  <div class="modal">
+    <div class="modal-title">Scanning Clients</div>
+    <div id="bulkScanContent"></div>
+  </div>
+</div>
+
+<!-- Property Match Modal -->
+<div class="modal-bg" id="propMatchModal">
+  <div class="modal">
+    <div class="modal-title">Match Google Property</div>
+    <div id="propMatchContent"></div>
+  </div>
+</div>
+
 <script>
 // STATE
 let clients=JSON.parse(localStorage.getItem('syte-tseo-clients')||'[]');
@@ -339,9 +361,10 @@ function init(){
   renderAll();
   updateDataStatus();
   initGoogleAuth();
+  setTimeout(checkAutoScanPrompt,1500);
 }
 function sw(el){document.querySelectorAll('.nav').forEach(n=>n.classList.remove('active'));document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));el.classList.add('active');document.getElementById('tab-'+el.dataset.tab).classList.add('active');document.querySelector('.side').classList.remove('open');if(el.dataset.tab==='dashboard')renderDashboard();if(el.dataset.tab==='tasks')renderTasks()}
-function save(){localStorage.setItem('syte-tseo-clients',JSON.stringify(clients));localStorage.setItem('syte-tseo-team',JSON.stringify(team));localStorage.setItem('syte-tseo-tasks',JSON.stringify(tasks));localStorage.setItem('syte-tseo-backup',JSON.stringify({clients,team,tasks,date:new Date().toISOString()}))}
+function save(){localStorage.setItem('syte-tseo-clients',JSON.stringify(clients));localStorage.setItem('syte-tseo-team',JSON.stringify(team));localStorage.setItem('syte-tseo-tasks',JSON.stringify(tasks));localStorage.setItem('syte-tseo-backup',JSON.stringify({clients,team,tasks,scanLog:getScanLog(),date:new Date().toISOString()}))}
 function renderAll(){renderClients();renderTeam();renderDashboard();renderTasks();renderScanSelects();updateDataStatus()}
 
 // GOOGLE AUTH
@@ -355,7 +378,7 @@ else window.addEventListener('load',()=>setTimeout(initGoogleAuth,1000));
 function connectGoogle(){if(!tokenClient)initGoogleAuth();if(tokenClient)tokenClient.requestAccessToken();else alert('Google Identity Services not loaded')}
 function updateGoogleStatus(){
   const s=document.getElementById('gStatus');const b=document.getElementById('gConnBtn');
-  if(gToken){s.style.display='';s.style.background='rgba(52,211,153,0.08)';s.style.border='1px solid rgba(52,211,153,0.2)';s.style.color='var(--green)';s.innerHTML='✓ Connected — GA4 + Search Console ready';b.style.background='rgba(52,211,153,0.1)';b.style.borderColor='rgba(52,211,153,0.3)';b.style.color='var(--green)';b.innerHTML='✓ Google Connected'}
+  if(gToken){s.style.display='';s.style.background='rgba(52,211,153,0.08)';s.style.border='1px solid rgba(52,211,153,0.2)';s.style.color='var(--green)';s.innerHTML='✓ Connected — discovering properties...';b.style.background='rgba(52,211,153,0.1)';b.style.borderColor='rgba(52,211,153,0.3)';b.style.color='var(--green)';b.innerHTML='✓ Google Connected';autoMatchGoogleProperties()}
 }
 
 // WEBCEO API
@@ -465,7 +488,7 @@ function renderClients(){
         '<button class="bs bd" onclick="delClient(\''+c.id+'\')" style="font-size:11px;padding:5px 10px">Delete</button>'+
       '</div></div>'}).join('');
 }
-function showCF(c=null){document.getElementById('cfModal').classList.add('visible');document.getElementById('cfTitle').textContent=c?'Edit Client':'Add Client';document.getElementById('cf-id').value=c?.id||'';document.getElementById('cf-name').value=c?.name||'';document.getElementById('cf-url').value=c?.url||'';document.getElementById('cf-industry').value=c?.industry||'';document.getElementById('cf-ga4').value=c?.ga4||'';document.getElementById('cf-wceo').value=c?.wceoProjectId||''}
+function showCF(c=null){document.getElementById('cfModal').classList.add('visible');document.getElementById('cfTitle').textContent=c?'Edit Client':'Add Client';document.getElementById('cf-id').value=c?.id||'';document.getElementById('cf-name').value=c?.name||'';document.getElementById('cf-url').value=c?.url||'';document.getElementById('cf-industry').value=c?.industry||'';document.getElementById('cf-ga4').value=c?.ga4||'';document.getElementById('cf-wceo').value=c?.wceoProjectId||'';document.getElementById('cf-gsc').value=c?.gscProperty||''}
 function closeCF(){document.getElementById('cfModal').classList.remove('visible')}
 function editCF(id){const c=clients.find(x=>x.id===id);if(c)showCF(c)}
 function delClient(id){if(confirm('Delete client?')){clients=clients.filter(x=>x.id!==id);tasks=tasks.filter(t=>t.clientId!==id);save();renderAll()}}
@@ -477,7 +500,7 @@ function saveCF(){
   const eid=document.getElementById('cf-id').value;
   const id=eid||'c-'+Date.now();
   const existing=eid?clients.find(x=>x.id===eid):null;
-  const c={id,name:n,url,industry:document.getElementById('cf-industry').value.trim(),ga4:document.getElementById('cf-ga4').value.trim(),wceoProjectId:document.getElementById('cf-wceo').value.trim()||existing?.wceoProjectId||'',domain:existing?.domain||''};
+  const c={id,name:n,url,industry:document.getElementById('cf-industry').value.trim(),ga4:document.getElementById('cf-ga4').value.trim(),wceoProjectId:document.getElementById('cf-wceo').value.trim()||existing?.wceoProjectId||'',gscProperty:document.getElementById('cf-gsc').value.trim()||existing?.gscProperty||'',domain:existing?.domain||''};
   if(eid){const i=clients.findIndex(x=>x.id===eid);if(i>=0)clients[i]=c}else clients.push(c);
   save();closeCF();renderAll();
 }
@@ -513,11 +536,17 @@ function renderDashboard(){
     const color=pct>=75?'var(--green)':pct>=40?'var(--orange)':'var(--red)';
     return'<div class="person-bar"><div class="person-name">'+m.name+'</div><div class="person-progress"><div class="person-fill" style="width:'+pct+'%;background:'+color+'"></div></div><div class="person-pct" style="color:'+color+'">'+pct+'%</div><div style="font-size:11px;color:var(--text-dim);width:80px;text-align:right">'+myDone+'/'+myTasks.length+'</div></div>'}).join('');
   const dc=document.getElementById('dashClients');
+  const scanLog=getScanLog();
   dc.innerHTML=clients.map(c=>{
     const ct=tasks.filter(t=>t.clientId===c.id);
     const cv=ct.filter(t=>t.status==='verified').length;
     const pct=ct.length?Math.round(cv/ct.length*100):0;
-    return'<div class="person-bar"><div class="person-name">'+c.name+'</div><div class="person-progress"><div class="person-fill" style="width:'+pct+'%;background:var(--teal)"></div></div><div class="person-pct" style="color:var(--teal)">'+pct+'%</div><div style="font-size:11px;color:var(--text-dim);width:80px;text-align:right">'+cv+'/'+ct.length+'</div></div>'}).join('');
+    const logEntry=scanLog[c.id];
+    const lastScan=logEntry?new Date(logEntry.lastScanDate).toLocaleDateString('en-ZA'):'Never';
+    const stale=isClientStale(c.id);
+    const staleBadge=stale?'<span class="badge badge-critical" style="font-size:7px;margin-left:4px">STALE</span>':'<span class="badge badge-done" style="font-size:7px;margin-left:4px">OK</span>';
+    return'<div class="person-bar"><div class="person-name">'+c.name+'</div><div style="font-size:9px;color:var(--text-dim);width:110px;text-align:center">'+lastScan+staleBadge+'</div><div class="person-progress"><div class="person-fill" style="width:'+pct+'%;background:var(--teal)"></div></div><div class="person-pct" style="color:var(--teal)">'+pct+'%</div><div style="font-size:11px;color:var(--text-dim);width:80px;text-align:right">'+cv+'/'+ct.length+'</div></div>'}).join('');
+  checkAutoScanPrompt();
 }
 
 // TASK BOARD
@@ -615,6 +644,14 @@ function setScanSrc(src){
     el.style.color=active?'var(--accent)':'var(--text-muted)';
   });
   window._scanSrc=src;
+}
+
+function autoSelectScanSource(clientId){
+  const client=clients.find(c=>c.id===clientId);
+  if(!client)return;
+  if(client.wceoProjectId&&localStorage.getItem('syte-tseo-wceo'))setScanSrc('wceo');
+  else if(gToken&&client.gscProperty)setScanSrc('gsc');
+  else setScanSrc('csv');
 }
 
 function handleScanFile(e){const f=e.target.files[0];if(!f)return;const r=new FileReader();r.onload=ev=>{scanFileData=ev.target.result;document.getElementById('scanFileName').textContent='✓ '+f.name;document.getElementById('scanFileUpload').classList.add('has-file')};r.readAsText(f)}
@@ -745,6 +782,11 @@ async function runScan(){
   if(!clientId)return alert('Select a client');
   const client=clients.find(c=>c.id===clientId);
   const maxIssues=parseInt(document.getElementById('scanMax').value)||20;
+  // Auto-detect source if user hasn't explicitly chosen one
+  if(!window._scanSrc){
+    if(client.wceoProjectId&&localStorage.getItem('syte-tseo-wceo'))window._scanSrc='wceo';
+    else if(gToken&&client.gscProperty)window._scanSrc='gsc';
+  }
   const source=window._scanSrc||'csv';
   const missing=[];
   if(!client.name||client.name==='https://')missing.push('Client Name');
@@ -807,6 +849,7 @@ async function runScan(){
     });
     tasks=[...tasks,...newTasks];
     save();
+    updateScanLog(clientId,source,newTasks.length,simpleHash(csvData));
     setStep('assign','done',newTasks.length+' tasks created and assigned');
     document.getElementById('scanProgress').style.width='100%';
     document.getElementById('scanOutput').style.display='';
@@ -837,6 +880,250 @@ function updateDataStatus(){
   '<span style="color:var(--green)">✓ Data persists across deployments</span>'}
 
 function escH(s){return(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+
+// ═══════════════════════════════════════
+// SCAN TRACKING
+// ═══════════════════════════════════════
+function getScanLog(){return JSON.parse(localStorage.getItem('syte-tseo-scanlog')||'{}')}
+function updateScanLog(clientId,source,taskCount,dataHash){
+  const log=getScanLog();
+  log[clientId]={lastScanDate:new Date().toISOString(),source,taskCount,dataHash};
+  localStorage.setItem('syte-tseo-scanlog',JSON.stringify(log));
+}
+function isClientStale(clientId,days=30){
+  const log=getScanLog();const entry=log[clientId];
+  if(!entry||!entry.lastScanDate)return true;
+  return(Date.now()-new Date(entry.lastScanDate).getTime())/(1000*60*60*24)>=days;
+}
+function simpleHash(str){
+  let h=0;for(let i=0;i<str.length;i++){h=((h<<5)-h)+str.charCodeAt(i);h|=0}
+  return h.toString(36);
+}
+
+// ═══════════════════════════════════════
+// GOOGLE PROPERTY AUTO-DISCOVERY
+// ═══════════════════════════════════════
+function normalizeDomain(url){
+  if(!url)return'';
+  return url.replace(/^(https?:\/\/)?(sc-domain:)?(www\.)?/,'').replace(/\/$/,'').toLowerCase();
+}
+
+async function googleFetch(url,options={}){
+  if(!gToken)throw new Error('Not connected to Google');
+  options.headers={...options.headers,'Authorization':'Bearer '+gToken};
+  let resp=await fetch(url,options);
+  if(resp.status===401){
+    await new Promise(resolve=>{
+      tokenClient.callback=(r)=>{if(!r.error)gToken=r.access_token;resolve()};
+      tokenClient.requestAccessToken({prompt:''});
+    });
+    options.headers['Authorization']='Bearer '+gToken;
+    resp=await fetch(url,options);
+  }
+  return resp;
+}
+
+async function autoMatchGoogleProperties(){
+  if(!gToken)return;
+  const results={ga4:[],gsc:[]};
+  // Fetch GA4 properties
+  try{
+    const r=await googleFetch('https://analyticsadmin.googleapis.com/v1beta/accountSummaries?pageSize=200');
+    if(r.ok){const d=await r.json();for(const acct of(d.accountSummaries||[])){for(const p of(acct.propertySummaries||[])){results.ga4.push({propertyId:p.property.replace('properties/',''),displayName:p.displayName,property:p.property})}}}
+  }catch(e){console.warn('GA4 discovery failed:',e)}
+  // Fetch GSC sites
+  try{
+    const r=await googleFetch('https://www.googleapis.com/webmasters/v3/sites');
+    if(r.ok){const d=await r.json();results.gsc=(d.siteEntry||[]).map(s=>({siteUrl:s.siteUrl,permissionLevel:s.permissionLevel}))}
+  }catch(e){console.warn('GSC discovery failed:',e)}
+  // Auto-match to clients
+  const ambiguous=[];
+  for(const client of clients){
+    const cd=normalizeDomain(client.url||client.domain||'');
+    if(!cd)continue;
+    // Match GSC
+    if(!client.gscProperty){
+      const matches=results.gsc.filter(s=>{const gd=normalizeDomain(s.siteUrl);return gd===cd||gd==='www.'+cd||cd==='www.'+gd});
+      if(matches.length===1)client.gscProperty=matches[0].siteUrl;
+      else if(matches.length>1)ambiguous.push({client,type:'gsc',options:matches});
+    }
+    // Match GA4
+    if(!client.ga4){
+      const matches=results.ga4.filter(p=>{const pd=normalizeDomain(p.displayName);return pd===cd||p.displayName.toLowerCase().includes(cd.split('.')[0])});
+      if(matches.length===1){client.ga4=matches[0].propertyId}
+      else if(matches.length>1)ambiguous.push({client,type:'ga4',options:matches});
+    }
+  }
+  save();renderAll();
+  if(ambiguous.length)showPropertyMatchPrompt(ambiguous,0);
+  const matchedGsc=clients.filter(c=>c.gscProperty).length;
+  const matchedGa4=clients.filter(c=>c.ga4).length;
+  const gs=document.getElementById('gStatus');
+  if(gs){gs.innerHTML='✓ Connected — '+matchedGsc+' GSC + '+matchedGa4+' GA4 properties matched to clients'+(ambiguous.length?' · '+ambiguous.length+' need manual matching':'')}
+  return results;
+}
+
+function showPropertyMatchPrompt(ambiguous,idx){
+  if(idx>=ambiguous.length){closePropMatch();return}
+  const item=ambiguous[idx];
+  const modal=document.getElementById('propMatchModal');
+  modal.classList.add('visible');
+  const opts=item.options.map((o,i)=>'<option value="'+i+'">'+(o.siteUrl||o.displayName||o.propertyId)+'</option>').join('');
+  document.getElementById('propMatchContent').innerHTML=
+    '<div style="margin-bottom:12px;font-size:13px">We found <strong>'+item.options.length+'</strong> '+item.type.toUpperCase()+' properties for <strong>'+item.client.name+'</strong> ('+normalizeDomain(item.client.url)+'):</div>'+
+    '<select id="propMatchSel" style="width:100%;margin-bottom:12px">'+opts+'</select>'+
+    '<div style="display:flex;gap:10px;justify-content:flex-end">'+
+      '<button class="bs" onclick="skipPropMatch('+idx+','+JSON.stringify(ambiguous).length+')">Skip</button>'+
+      '<button class="bp" onclick="applyPropMatch()">Apply</button>'+
+    '</div>'+
+    '<div style="font-size:11px;color:var(--text-dim);margin-top:8px">'+(idx+1)+' of '+ambiguous.length+' to resolve</div>';
+  window._propMatchAmbiguous=ambiguous;
+  window._propMatchIdx=idx;
+}
+function applyPropMatch(){
+  const amb=window._propMatchAmbiguous;const idx=window._propMatchIdx;
+  const item=amb[idx];const selIdx=parseInt(document.getElementById('propMatchSel').value);
+  const chosen=item.options[selIdx];
+  if(item.type==='gsc')item.client.gscProperty=chosen.siteUrl;
+  else item.client.ga4=chosen.propertyId;
+  save();
+  showPropertyMatchPrompt(amb,idx+1);
+}
+function skipPropMatch(){showPropertyMatchPrompt(window._propMatchAmbiguous,window._propMatchIdx+1)}
+function closePropMatch(){document.getElementById('propMatchModal').classList.remove('visible');renderAll()}
+
+async function pullGSCData(client){
+  if(!gToken||!client.gscProperty)return null;
+  const end=new Date().toISOString().slice(0,10);
+  const start=new Date(Date.now()-90*86400000).toISOString().slice(0,10);
+  try{
+    const r=await googleFetch('https://www.googleapis.com/webmasters/v3/sites/'+encodeURIComponent(client.gscProperty)+'/searchAnalytics/query',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({startDate:start,endDate:end,dimensions:['page'],rowLimit:100})
+    });
+    if(!r.ok){if(r.status===401){gToken=null;throw new Error('Google token expired — reconnect in Settings')}throw new Error('GSC API error: '+r.status)}
+    const d=await r.json();return JSON.stringify(d.rows||[],null,2);
+  }catch(e){console.warn('GSC pull failed for',client.name,e);return null}
+}
+
+// ═══════════════════════════════════════
+// PROGRAMMATIC SCAN + BULK REFRESH
+// ═══════════════════════════════════════
+function buildTriagePrompt(client,maxIssues){
+  return'You are a technical SEO expert. Analyze this data from a site audit tool (WebCEO, Screaming Frog, or JSON audit data). Identify the most impactful technical SEO issues, prioritize them, and generate COPY-PASTE READY fixes.\n\nCLIENT: '+client.name+' | URL: '+(client.url||'N/A')+' | INDUSTRY: '+(client.industry||'General')+'\n\nReturn ONLY valid JSON array. No markdown, no backticks.\n\nFor each issue return:\n{"page":"Page title or path","url":"full URL if available","issue":"Clear description of the problem","priority":"critical|high|medium|low","category":"meta|structure|speed|links|schema|crawl|mobile","fix":"THE ACTUAL COPY-PASTE FIX (corrected title tag, redirect rule, schema code, etc)","where":"Where to implement (e.g. page <head>, .htaccess, CMS settings)"}\n\nPRIORITIZATION RULES:\n- critical: Broken pages (404/500), noindex on important pages, canonical issues on high-traffic pages, security issues\n- high: Missing/duplicate title tags, missing meta descriptions, broken internal links, redirect chains, missing H1\n- medium: Missing alt tags, long titles, thin content pages, missing schema, slow pages\n- low: Minor formatting issues, optional optimizations\n\nGenerate max '+maxIssues+' issues, ordered by priority (critical first).';
+}
+
+async function scanClient(clientId,options={}){
+  const client=clients.find(c=>c.id===clientId);
+  if(!client)throw new Error('Client not found');
+  const maxIssues=options.maxIssues||20;
+  const onProgress=options.onProgress||(()=>{});
+  // Determine source
+  let source=options.source||null;
+  if(!source){
+    if(client.wceoProjectId&&localStorage.getItem('syte-tseo-wceo'))source='wceo';
+    else if(gToken&&client.gscProperty)source='gsc';
+    else return{skipped:true,reason:'No data source available'};
+  }
+  // Pull data
+  let rawData='';
+  onProgress('pulling','Fetching data via '+source);
+  if(source==='wceo'){
+    const result=await pullWceoAuditData(client.wceoProjectId);
+    if(!result.data)return{skipped:true,reason:'No WebCEO audit data'};
+    rawData=typeof result.data==='string'?result.data:JSON.stringify(result.data,null,2);
+  }else if(source==='gsc'){
+    rawData=await pullGSCData(client);
+    if(!rawData)return{skipped:true,reason:'No GSC data'};
+  }else{
+    return{skipped:true,reason:'Source '+source+' requires manual upload'};
+  }
+  // Check hash — skip AI if unchanged
+  const dataHash=simpleHash(rawData);
+  const scanLog=getScanLog();
+  if(scanLog[clientId]&&scanLog[clientId].dataHash===dataHash&&!options.force){
+    updateScanLog(clientId,source,scanLog[clientId].taskCount,dataHash);
+    return{skipped:true,reason:'Data unchanged since last scan'};
+  }
+  // AI triage
+  onProgress('analyzing','AI analyzing issues...');
+  const csvSample=rawData.substring(0,12000);
+  const raw=await callClaude(buildTriagePrompt(client,maxIssues),'Analyze this audit data and generate prioritized technical SEO tasks:\n\n'+csvSample);
+  let issues;
+  try{const m=raw.match(/\[[\s\S]*\]/);issues=JSON.parse(m[0])}catch(e){throw new Error('Failed to parse AI response for '+client.name)}
+  // Replace old open tasks if requested
+  if(options.replaceExisting){tasks=tasks.filter(t=>t.clientId!==clientId||t.status==='verified')}
+  const newTasks=issues.map((issue,i)=>({
+    id:'task-'+Date.now()+'-'+i,clientId,page:issue.page||'',url:issue.url||'',
+    issue:issue.issue||'',priority:issue.priority||'medium',category:issue.category||'general',
+    fix:issue.fix||'',where:issue.where||'',status:'open',
+    assignee:team.length?team[i%team.length].id:'',
+    created:new Date().toISOString(),doneDate:null,verifyDate:null,verifyNote:''
+  }));
+  tasks=[...tasks,...newTasks];
+  save();
+  updateScanLog(clientId,source,newTasks.length,dataHash);
+  return{success:true,taskCount:newTasks.length,source};
+}
+
+let bulkScanAbort=false;
+async function autoScanAll(options={}){
+  const forceAll=options.force||false;
+  const staleClients=clients.filter(c=>{
+    if(!forceAll&&!isClientStale(c.id))return false;
+    return(c.wceoProjectId&&localStorage.getItem('syte-tseo-wceo'))||(gToken&&c.gscProperty);
+  });
+  if(!staleClients.length){alert('All clients are up to date (scanned within 30 days).');return}
+  bulkScanAbort=false;
+  const modal=document.getElementById('bulkScanModal');modal.classList.add('visible');
+  const content=document.getElementById('bulkScanContent');
+  const results={scanned:0,skipped:0,errors:0,details:[]};
+  for(let i=0;i<staleClients.length;i++){
+    if(bulkScanAbort){results.details.push({name:'Cancelled by user',status:'abort'});break}
+    const client=staleClients[i];
+    content.innerHTML=
+      '<div class="pbar" style="margin-bottom:16px"><div class="pfill" style="width:'+Math.round((i/staleClients.length)*100)+'%"></div></div>'+
+      '<div style="font-size:13px;margin-bottom:8px">Scanning <strong>'+client.name+'</strong> ('+(i+1)+' of '+staleClients.length+')</div>'+
+      '<div id="bulkScanDetail" style="font-size:11px;color:var(--text-dim)">Starting...</div>'+
+      '<div style="margin-top:16px;text-align:right"><button class="bs bd" onclick="bulkScanAbort=true">Cancel</button></div>';
+    try{
+      const result=await scanClient(client.id,{
+        maxIssues:15,replaceExisting:true,force:forceAll,
+        onProgress:(phase,msg)=>{const d=document.getElementById('bulkScanDetail');if(d)d.textContent=msg}
+      });
+      if(result.skipped){results.skipped++;results.details.push({name:client.name,status:'skipped',reason:result.reason})}
+      else{results.scanned++;results.details.push({name:client.name,status:'success',tasks:result.taskCount})}
+    }catch(err){
+      results.errors++;results.details.push({name:client.name,status:'error',reason:err.message});
+    }
+    if(i<staleClients.length-1)await new Promise(r=>setTimeout(r,2000));
+  }
+  // Show results
+  content.innerHTML=
+    '<div style="font-size:15px;font-weight:600;margin-bottom:12px">Scan Complete</div>'+
+    '<div class="stat-row" style="margin-bottom:16px">'+
+      '<div class="stat-box"><div class="stat-val" style="color:var(--green)">'+results.scanned+'</div><div class="stat-lbl">Scanned</div></div>'+
+      '<div class="stat-box"><div class="stat-val" style="color:var(--text-dim)">'+results.skipped+'</div><div class="stat-lbl">Skipped</div></div>'+
+      '<div class="stat-box"><div class="stat-val" style="color:var(--red)">'+results.errors+'</div><div class="stat-lbl">Errors</div></div>'+
+    '</div>'+
+    '<div style="max-height:200px;overflow-y:auto;font-size:11px;margin-bottom:16px">'+
+      results.details.map(d=>'<div style="padding:4px 0;border-bottom:1px solid var(--border);display:flex;justify-content:space-between"><span>'+d.name+'</span><span style="color:'+(d.status==='success'?'var(--green)':d.status==='error'?'var(--red)':'var(--text-dim)')+'">'+
+        (d.status==='success'?'✓ '+d.tasks+' tasks':d.status==='error'?'✗ '+d.reason:d.status==='abort'?'⬛ Cancelled':'⏭ '+(d.reason||'skipped'))+'</span></div>').join('')+
+    '</div>'+
+    '<div style="text-align:right"><button class="bp" onclick="document.getElementById(\'bulkScanModal\').classList.remove(\'visible\');renderAll()">Done</button></div>';
+}
+
+function checkAutoScanPrompt(){
+  const staleClients=clients.filter(c=>isClientStale(c.id)&&(
+    (c.wceoProjectId&&localStorage.getItem('syte-tseo-wceo'))||(gToken&&c.gscProperty)
+  ));
+  const el=document.getElementById('staleCount');
+  if(el&&staleClients.length>0){
+    el.innerHTML='<span style="color:var(--orange)">'+staleClients.length+' of '+clients.length+' clients need refresh</span>';
+  }else if(el){
+    el.innerHTML='<span style="color:var(--green)">All '+clients.length+' clients up to date</span>';
+  }
+}
 </script>
 </body>
 </html>
