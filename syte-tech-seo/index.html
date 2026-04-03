@@ -129,8 +129,9 @@ input[type="file"]{display:none}
     <div class="tab active" id="tab-dashboard">
       <div class="ph"><div class="pt">Technical SEO Dashboard</div><div class="ps">Team progress on technical fixes across all clients</div></div>
       <div class="stat-row" id="dashStats"></div>
-      <div style="display:flex;gap:10px;align-items:center;margin:16px 0">
-        <button class="bp" onclick="autoScanAll()" id="btnRefreshAll">↻ Refresh Stale Clients</button>
+      <div style="display:flex;gap:10px;align-items:center;margin:16px 0;flex-wrap:wrap">
+        <button class="bp" onclick="autoScanAll({limit:5})">↻ Test 5 Clients</button>
+        <button class="bs" onclick="autoScanAll()">↻ Refresh All Stale</button>
         <button class="bs" onclick="autoScanAll({force:true})">↻ Force Refresh All</button>
         <span id="staleCount" style="font-size:12px;color:var(--text-dim)"></span>
       </div>
@@ -1144,11 +1145,13 @@ async function scanClient(clientId,options={}){
 let bulkScanAbort=false;
 async function autoScanAll(options={}){
   const forceAll=options.force||false;
-  const staleClients=clients.filter(c=>{
+  const maxClients=options.limit||0;
+  let staleClients=clients.filter(c=>{
     if(!forceAll&&!isClientStale(c.id))return false;
     return(c.wceoProjectId&&localStorage.getItem('syte-tseo-wceo'))||(gToken&&c.gscProperty);
   });
   if(!staleClients.length){alert('All clients are up to date (scanned within 30 days).');return}
+  if(maxClients>0)staleClients=staleClients.slice(0,maxClients);
   bulkScanAbort=false;
   const modal=document.getElementById('bulkScanModal');modal.classList.add('visible');
   const content=document.getElementById('bulkScanContent');
