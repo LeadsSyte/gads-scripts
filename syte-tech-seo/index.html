@@ -744,12 +744,12 @@ async function pullWceoAuditData(projectId){
     console.log('WebCEO available methods:',availableMethods);
   }catch(e){console.warn('list_methods failed:',e.message)}
 
-  // Try discovered methods that look audit-related first
+  // Try the correct method first, then discovered methods, then fallbacks
   const auditKeywords=['audit','error','issue','seo','analysis','crawl','page','site','technical','landing','onpage','on_page'];
   const auditMethods=availableMethods.filter(m=>typeof m==='string'&&auditKeywords.some(k=>m.toLowerCase().includes(k)));
 
-  // Fallback to guessed methods if discovery didn't work
   const methodsToTry=[
+    'get_site_audit_data',  // Correct WebCEO API method name
     ...auditMethods,
     'get_technical_audit','get_site_audit','get_seo_analysis','get_issues',
     'get_errors','get_audit','get_on_page_issues','get_landing_page_seo',
@@ -808,7 +808,7 @@ async function runWceoDiagnostics(){
   if(testClient){
     const pid=testClient.wceoProjectId;
     log+='3. Testing audit methods on project: '+pid+' ('+testClient.name+')\n';
-    const testMethods=['get_technical_audit','get_site_audit','get_seo_analysis','get_issues','get_errors','get_audit','get_data','get_scan_results','get_report','get_project','get_on_page_issues','get_landing_page_seo'];
+    const testMethods=['get_site_audit_data','get_site_audit_keywords','get_rankings','get_backlinks','get_technical_audit','get_site_audit','get_seo_analysis','get_issues','get_errors','get_audit','get_data','get_scan_results','get_report','get_project'];
     for(const method of testMethods){
       try{
         const resp=await callWebCEO(method,{project:pid});
