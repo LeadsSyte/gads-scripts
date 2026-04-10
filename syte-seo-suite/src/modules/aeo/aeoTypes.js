@@ -1,0 +1,23 @@
+// The 20 AEO optimization types.
+export const AEO_TYPES = [
+  { id: 'faq_schema', label: 'FAQ Schema JSON-LD', group: 'schema' },
+  { id: 'howto_schema', label: 'HowTo Schema', group: 'schema' },
+  { id: 'org_schema', label: 'Organization Schema', group: 'schema' },
+  { id: 'article_schema', label: 'Article Schema', group: 'schema' },
+  { id: 'author_schema', label: 'Author Schema with E-E-A-T', group: 'schema' },
+  { id: 'product_schema', label: 'Product Schema', group: 'schema' },
+  { id: 'breadcrumb_schema', label: 'Breadcrumb Schema', group: 'schema' },
+  { id: 'speakable_schema', label: 'Speakable Schema', group: 'schema' },
+  { id: 'webpage_schema', label: 'WebPage Schema', group: 'schema' },
+  { id: 'answer_block', label: 'Answer Block (40-60 words)', group: 'content' },
+  { id: 'key_takeaways', label: 'Key Takeaways / TL;DR', group: 'content' },
+  { id: 'entity_definitions', label: 'Entity Definitions', group: 'content' },
+  { id: 'snippet_paragraphs', label: 'Snippet-Optimized Paragraphs', group: 'content' },
+  { id: 'comparison_tables', label: 'Comparison Tables', group: 'content' },
+  { id: 'citations_block', label: 'External Citations Block', group: 'content' },
+  { id: 'freshness_markers', label: 'Content Freshness Markers', group: 'content' },
+  { id: 'heading_hierarchy', label: 'Heading Hierarchy', group: 'content' },
+  { id: 'internal_linking', label: 'Internal Linking', group: 'content' },
+  { id: 'list_content', label: 'List-Based Content', group: 'content' },
+  { id: 'faq_section', label: 'FAQ Content Section', group: 'content' },
+];
