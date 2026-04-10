@@ -27,7 +27,8 @@
  * Version: 1.0.0
  */
 
-var SHEET_ID = 'PASTE_SHEET_ID_HERE';  // Master Google Sheet ID
+// Master Google Sheet — accepts either a full URL or just the ID portion
+var SHEET_ID = 'https://docs.google.com/spreadsheets/d/1TDEpz--yxg-x1lO3twfJ2Y_VJ6988Y1vaB0BKe6IfJU/edit?gid=0#gid=0';
 var EMAIL_TO = 'michaelh@syte.co.za';
 var TIMEZONE = 'Africa/Johannesburg';
 
@@ -39,7 +40,7 @@ var FLAG_CRITICAL_PCT = 50; // Red flag: conversions dropped 50%+
 var SILENT_DAYS = 4;
 
 function main() {
-  var ss = SpreadsheetApp.openById(SHEET_ID);
+  var ss = SpreadsheetApp.openById(_extractSheetId(SHEET_ID));
   var digestSheet = ss.getSheetByName('DailyDigest');
   if (!digestSheet) { Logger.log('No DailyDigest tab found'); return; }
 
@@ -373,6 +374,16 @@ function main() {
 // ============================================
 // HELPERS
 // ============================================
+
+/**
+ * Accepts either a raw sheet ID or a full sheet URL and returns the ID.
+ */
+function _extractSheetId(idOrUrl) {
+  if (!idOrUrl) throw new Error('SHEET_ID is not set');
+  var s = String(idOrUrl).trim();
+  var m = s.match(/\/d\/([a-zA-Z0-9_-]+)/);
+  return m ? m[1] : s;
+}
 
 /**
  * Builds a small approval activity summary from the PendingChanges tab.
