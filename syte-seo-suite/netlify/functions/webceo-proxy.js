@@ -1,10 +1,12 @@
-// WebCEO API proxy — avoids browser CORS and keeps the API key server-side.
-// Set WEBCEO_API_KEY in your Netlify site environment variables.
+// WebCEO API proxy — ported verbatim from the previous working Technical
+// SEO tool on the claude/syte-seo-suite-rEwKM branch. Avoids browser CORS
+// and keeps the API key server-side.
 //
-// WebCEO's public API accepts JSON POST at https://online.webceo.com/api/
-// with a body of { key, method, ...params }. This proxy forwards the browser's
-// { endpoint, params } payload into that shape and passes the response
-// straight through.
+// Incoming request body: { endpoint: "get_project_overview", body: {...} }
+// Outgoing call:           POST https://api.webceo.com/{endpoint}/
+// Outgoing body:           { key, ...body }
+//
+// Env var: WEBCEO_KEY (falls back to WEBCEO_API_KEY for backwards compat).
 
 export async function handler(event) {
   if (event.httpMethod === 'OPTIONS') {
@@ -14,12 +16,12 @@ export async function handler(event) {
     return { statusCode: 405, headers: corsHeaders(), body: 'Method Not Allowed' };
   }
 
-  const apiKey = process.env.WEBCEO_API_KEY;
-  if (!apiKey) {
+  const key = process.env.WEBCEO_KEY || process.env.WEBCEO_API_KEY;
+  if (!key) {
     return {
       statusCode: 500,
       headers: corsHeaders(),
-      body: JSON.stringify({ error: 'WEBCEO_API_KEY not set in Netlify environment.' })
+      body: JSON.stringify({ error: 'WEBCEO_KEY env var not set in Netlify environment.' })
     };
   }
 
@@ -27,27 +29,25 @@ export async function handler(event) {
   try { payload = JSON.parse(event.body || '{}'); }
   catch { return { statusCode: 400, headers: corsHeaders(), body: 'Invalid JSON' }; }
 
-  const endpoint = payload.endpoint;
-  const params = payload.params || {};
-  if (!endpoint) return { statusCode: 400, headers: corsHeaders(), body: 'Missing endpoint' };
+  const { endpoint, body = {} } = payload;
+  if (!endpoint) {
+    return { statusCode: 400, headers: corsHeaders(), body: 'Missing endpoint' };
+  }
 
-  const outgoing = {
-    key: apiKey,
-    method: endpoint,
-    ...params
-  };
+  const url = `https://api.webceo.com/${endpoint}/`;
+  const requestBody = { key, ...body };
 
   try {
-    const res = await fetch('https://online.webceo.com/api/', {
+    const res = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(outgoing)
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(requestBody)
     });
     const text = await res.text();
     return {
       statusCode: res.status,
       headers: {
-        'Content-Type': 'application/json',
+        'content-type': 'application/json',
         ...corsHeaders()
       },
       body: text

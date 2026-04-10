@@ -1,104 +1,91 @@
-// Thin wrapper around the WebCEO API via the Netlify proxy function.
-// The proxy avoids CORS and hides the API key server-side.
+// WebCEO API wrapper — ported from the previous working Technical SEO tool.
+// Every call goes through the Netlify proxy so CORS and the API key stay
+// server-side. The request shape is { endpoint, body } — the proxy turns
+// that into POST https://api.webceo.com/{endpoint}/ with { key, ...body }.
 
-const PROXY_URL = '/.netlify/functions/webceo-proxy';
+const PROXY = '/.netlify/functions/webceo-proxy';
 
-export async function webceoCall(endpoint, params = {}) {
-  const res = await fetch(PROXY_URL, {
+export async function webceoRequest(endpoint, body = {}) {
+  const res = await fetch(PROXY, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ endpoint, params })
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ endpoint, body })
   });
-  if (!res.ok) throw new Error('WebCEO proxy error ' + res.status);
+  if (!res.ok) {
+    const txt = await res.text().catch(() => '');
+    throw new Error(`WebCEO proxy error ${res.status} ${txt.slice(0, 200)}`);
+  }
   return res.json();
 }
 
+// Per-project audit data — exactly what the previous tool used.
 export async function getAudit(projectId) {
-  return webceoCall('get_site_audit', { project: projectId });
+  return webceoRequest('get_project_overview', { project_id: projectId });
 }
 
-// WebCEO's public API returns a batch-format array of results:
-//   [{ method: "...", result: <data or error code>, errormsg: "..." }]
-// On success, the actual data lives inside result[0].result. On failure,
-// errormsg is populated and result is a numeric error code.
-function isBatchError(resp) {
-  const arr = Array.isArray(resp) ? resp : [resp];
-  for (const item of arr) {
-    if (!item || typeof item !== 'object') continue;
-    if (item.errormsg) return item.errormsg;
-    if (item.error) return item.error;
-    if (item.status === 'error') return item.message || 'error';
-    // A numeric `result` in the batch envelope is an error code.
-    if (typeof item.result === 'number') return 'error code ' + item.result;
-  }
+// Legacy alias so any code still calling getAuditData keeps working.
+export const getAuditData = getAudit;
+
+// ---------------------------------------------------------------------------
+// Project listing — NEW relative to the previous tool, which didn't list
+// projects at all (clients were entered manually with their WebCEO project
+// ID). WebCEO's docs list `get_project_list` as the canonical method but a
+// couple of variants exist. Try each URL-path endpoint and return the first
+// one that responds with something that isn't an error envelope.
+// ---------------------------------------------------------------------------
+
+function isErrorResponse(resp) {
+  if (!resp || typeof resp !== 'object') return 'empty';
+  // Batch format: [{ method, result, errormsg }]
+  if (Array.isArray(resp) && resp[0]?.errormsg) return resp[0].errormsg;
+  if (resp.errormsg) return resp.errormsg;
+  if (resp.error) return resp.error;
+  if (resp.status === 'error') return resp.message || 'error';
+  // Numeric `result` in a single-object response is a status code.
+  if (Array.isArray(resp) && typeof resp[0]?.result === 'number') return 'code ' + resp[0].result;
   return null;
 }
 
-function unwrapBatch(resp) {
-  if (Array.isArray(resp) && resp[0] && 'result' in resp[0]) {
-    return resp[0].result;
-  }
-  return resp;
-}
-
-// Method names WebCEO's public API has used across revisions. The first
-// one that doesn't return an "Unknown command" error wins. You can also
-// pass a custom name from the UI if none of these match.
-const DEFAULT_METHOD_CANDIDATES = [
-  'get_projects',
+const LIST_ENDPOINTS = [
   'get_project_list',
   'get_projects_list',
-  'list_projects',
   'get_all_projects',
-  'get_account_projects',
-  'get_account_info',
-  'get_account',
-  'account_info'
+  'list_projects',
+  'get_projects'
 ];
 
-export async function getProjects(customMethod) {
-  const candidates = customMethod
-    ? [customMethod, ...DEFAULT_METHOD_CANDIDATES]
-    : DEFAULT_METHOD_CANDIDATES;
+export async function getProjects(customEndpoint) {
+  const candidates = customEndpoint
+    ? [customEndpoint, ...LIST_ENDPOINTS]
+    : LIST_ENDPOINTS;
 
   const attempts = [];
-  for (const method of candidates) {
+  for (const endpoint of candidates) {
     try {
-      const resp = await webceoCall(method, {});
-      const err = isBatchError(resp);
-      attempts.push({ method, errormsg: err, raw: resp });
+      const resp = await webceoRequest(endpoint, {});
+      const err = isErrorResponse(resp);
+      attempts.push({ method: endpoint, errormsg: err, raw: resp });
       if (!err) {
-        return { resp, method, attempts, data: unwrapBatch(resp) };
+        return { resp, method: endpoint, attempts };
       }
     } catch (e) {
-      attempts.push({ method, errormsg: e.message });
+      attempts.push({ method: endpoint, errormsg: e.message });
     }
   }
-  // Nothing worked — return last raw response + all attempts so the UI
-  // can show the operator exactly what was tried.
   const last = attempts[attempts.length - 1];
-  return {
-    resp: last?.raw || null,
-    method: last?.method || null,
-    attempts,
-    data: null
-  };
+  return { resp: last?.raw || null, method: last?.method || null, attempts };
 }
 
 // ---------------------------------------------------------------------------
-// Response parsing — WebCEO's `get_projects` response shape varies by account
-// type and API revision. We walk the whole response tree and collect every
-// object that *looks* like a project (has either a project/id field or a
-// url/domain field). This makes the sync resilient to wrapper envelopes like
-// { result: { projects: [...] } } or flat arrays or object-keyed maps.
+// Response tree walker — finds every object that looks like a project in
+// whatever shape WebCEO returns.
 // ---------------------------------------------------------------------------
 
-const PROJECT_KEYS = [
+const PROJECT_CONTAINER_KEYS = [
   'projects', 'project_list', 'projectList', 'items', 'data', 'result', 'results'
 ];
-
-const ID_KEYS  = ['project', 'project_id', 'projectId', 'id', 'pid', 'key', 'uid'];
-const URL_KEYS = ['url', 'site_url', 'siteUrl', 'website', 'domain', 'site_domain', 'siteDomain', 'host', 'hostname'];
+const ID_KEYS   = ['project', 'project_id', 'projectId', 'id', 'pid', 'key', 'uid'];
+const URL_KEYS  = ['url', 'site_url', 'siteUrl', 'website', 'domain', 'site_domain', 'siteDomain', 'host', 'hostname'];
 const NAME_KEYS = ['name', 'title', 'project_name', 'projectName', 'site_name', 'siteName', 'label'];
 
 function readFirst(obj, keys) {
@@ -106,7 +93,6 @@ function readFirst(obj, keys) {
   for (const k of keys) {
     if (obj[k] != null && obj[k] !== '') return String(obj[k]);
   }
-  // Also look one level inside `site` / `project` sub-objects.
   for (const sub of ['site', 'project', 'info', 'data']) {
     if (obj[sub] && typeof obj[sub] === 'object') {
       for (const k of keys) {
@@ -122,9 +108,6 @@ function looksLikeProject(obj) {
   return !!(readFirst(obj, ID_KEYS) || readFirst(obj, URL_KEYS));
 }
 
-// Recursively collect every object in `root` that looks like a project.
-// Handles arrays, nested objects, and object-keyed maps like
-// { "123": {url:"..."}, "456": {...} }.
 export function extractProjects(root) {
   const out = [];
   const seen = new Set();
@@ -141,34 +124,27 @@ export function extractProjects(root) {
       }
       return;
     }
-
-    // Object. First check if it itself looks like a project.
     if (looksLikeProject(node)) {
       out.push(node);
       return;
     }
 
-    // Object-keyed map of projects? e.g. {123: {...}, 456: {...}}
     const values = Object.values(node);
-    const allProjects =
-      values.length > 0 &&
-      values.every(v => looksLikeProject(v));
-    if (allProjects) {
+    if (values.length && values.every(v => looksLikeProject(v))) {
       for (const v of values) out.push(v);
       return;
     }
 
-    // Otherwise recurse into promising keys + everything else.
-    for (const key of PROJECT_KEYS) {
+    for (const key of PROJECT_CONTAINER_KEYS) {
       if (node[key] !== undefined) walk(node[key]);
     }
     for (const [k, v] of Object.entries(node)) {
-      if (!PROJECT_KEYS.includes(k)) walk(v);
+      if (!PROJECT_CONTAINER_KEYS.includes(k)) walk(v);
     }
   }
 
   walk(root);
-  // Dedupe by id+url combo.
+
   const uniq = [];
   const keys = new Set();
   for (const p of out) {
@@ -180,18 +156,18 @@ export function extractProjects(root) {
   return uniq;
 }
 
-// Upsert WebCEO projects into the Supabase clients table. WebCEO is the
-// source of truth for which clients exist. Returns detailed breakdown so the
-// UI can display diagnostics when the shape is surprising.
-export async function syncWebceoClients(upsertClient, existingClients, customMethod) {
-  const fetched = await getProjects(customMethod);
+// ---------------------------------------------------------------------------
+// Sync WebCEO projects → Supabase clients. Matches by wceo_project_id first,
+// falls back to normalized URL. Brand-new clients default to all four service
+// flags on.
+// ---------------------------------------------------------------------------
+
+export async function syncWebceoClients(upsertClient, existingClients, customEndpoint) {
+  const fetched = await getProjects(customEndpoint);
   // eslint-disable-next-line no-console
   console.log('[WebCEO] fetch result:', fetched);
 
-  // Walk whichever of the wrapper or the unwrapped data actually has projects.
-  const projects = fetched.data
-    ? extractProjects(fetched.data)
-    : extractProjects(fetched.resp);
+  const projects = extractProjects(fetched.resp);
   // eslint-disable-next-line no-console
   console.log('[WebCEO] extracted project candidates:', projects);
 
@@ -210,9 +186,9 @@ export async function syncWebceoClients(upsertClient, existingClients, customMet
   );
 
   for (const p of projects) {
-    const pid  = readFirst(p, ID_KEYS).trim();
+    const pid    = readFirst(p, ID_KEYS).trim();
     const rawUrl = readFirst(p, URL_KEYS).trim();
-    const name = (readFirst(p, NAME_KEYS) || rawUrl || pid || 'Unnamed').trim();
+    const name   = (readFirst(p, NAME_KEYS) || rawUrl || pid || 'Unnamed').trim();
 
     if (!pid && !rawUrl) {
       skipped++;
