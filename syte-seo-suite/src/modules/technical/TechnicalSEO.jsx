@@ -100,6 +100,7 @@ export default function TechnicalSEO({ sub }) {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
   const [err, setErr] = useState('');
+  const [syncResult, setSyncResult] = useState(null);
 
   useEffect(() => { saveTasks(tasks); }, [tasks]);
   useEffect(() => { saveTeam(team); }, [team]);
@@ -277,14 +278,22 @@ export default function TechnicalSEO({ sub }) {
 
   if (sub === 'Clients') {
     async function doSync() {
-      setBusy(true); setErr(''); setMsg('Syncing from WebCEO…');
+      setBusy(true); setErr(''); setMsg('Syncing from WebCEO…'); setSyncResult(null);
       try {
         const r = await syncWebceoClients(upsertClient, clients);
         await reloadClients();
-        setMsg(`Sync complete. ${r.inserted} new · ${r.updated} updated (${r.total} total in WebCEO).`);
+        setSyncResult(r);
+        const parts = [
+          r.inserted + ' new',
+          r.updated + ' updated',
+          r.skipped ? r.skipped + ' skipped' : null
+        ].filter(Boolean).join(' · ');
+        setMsg(`Sync complete. ${parts} (${r.total} total found in WebCEO response).`);
       } catch (e) { setErr(e.message); setMsg(''); }
       finally { setBusy(false); }
     }
+
+    const showDebug = syncResult && (syncResult.total === 0 || (syncResult.inserted + syncResult.updated) === 0);
 
     return (
       <div className="content-area">
@@ -301,6 +310,28 @@ export default function TechnicalSEO({ sub }) {
         </div>
         {msg && <div style={{ color: 'var(--green)', marginBottom: 10 }}>{msg}</div>}
         {err && <div style={{ color: 'var(--red)', marginBottom: 10 }}>{err}</div>}
+
+        {syncResult && (
+          <details open={showDebug} style={{ marginBottom: 14, background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: 12 }}>
+            <summary style={{ cursor: 'pointer', fontSize: 12, color: 'var(--text-muted)' }}>
+              {showDebug ? '⚠ Sync returned no new clients — click to see raw WebCEO response' : 'Debug: raw WebCEO response'}
+            </summary>
+            {syncResult.skippedReasons?.length > 0 && (
+              <div style={{ marginTop: 8, fontSize: 12 }}>
+                <strong style={{ color: 'var(--orange)' }}>Skipped items:</strong>
+                <ul style={{ margin: '4px 0 8px 18px' }}>
+                  {syncResult.skippedReasons.map((r, i) => <li key={i} className="muted">{r}</li>)}
+                </ul>
+              </div>
+            )}
+            <pre style={{ background: 'var(--bg)', padding: 10, borderRadius: 6, fontSize: 11, overflowX: 'auto', maxHeight: 400 }}>
+              {JSON.stringify(syncResult.rawResponse, null, 2)}
+            </pre>
+            <div className="muted" style={{ fontSize: 11, marginTop: 6 }}>
+              Copy this whole block and paste it back to Claude so the parser can be fixed.
+            </div>
+          </details>
+        )}
 
         <table>
           <thead>
