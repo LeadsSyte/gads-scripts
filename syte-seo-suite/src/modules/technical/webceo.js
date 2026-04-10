@@ -46,12 +46,24 @@ function isErrorResponse(resp) {
   return null;
 }
 
+// WebCEO v3/v4 method names seen in the wild and documentation scrapes.
+// The first one that responds without an error envelope wins. If none match
+// your account, paste the right name into the "Custom method name" box on
+// the Clients tab — you can find it in WebCEO's own help / API docs or by
+// opening DevTools on the existing Technical SEO dashboard while it lists
+// projects and copying the `method` field from the request.
 const LIST_ENDPOINTS = [
+  'get_account_info',
+  'get_projects',
+  'get_projects_overview',
+  'get_project_overview',
+  'get_all_projects',
   'get_project_list',
   'get_projects_list',
-  'get_all_projects',
   'list_projects',
-  'get_projects'
+  'projects_list',
+  'get_user_projects',
+  'account_info'
 ];
 
 export async function getProjects(customEndpoint) {

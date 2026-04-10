@@ -1,10 +1,7 @@
-// WebCEO API proxy — ported verbatim from the previous working Technical
-// SEO tool on the claude/syte-seo-suite-rEwKM branch. Avoids browser CORS
-// and keeps the API key server-side.
-//
-// Incoming request body: { endpoint: "get_project_overview", body: {...} }
-// Outgoing call:           POST https://api.webceo.com/{endpoint}/
-// Outgoing body:           { key, ...body }
+// WebCEO API proxy — correct base URL is https://online.webceo.com/api/
+// (not api.webceo.com, which doesn't resolve). The public API takes a JSON
+// POST body of { key, method, ...params } and responds with a batch-format
+// array: [{ method, result, errormsg }].
 //
 // Env var: WEBCEO_KEY (falls back to WEBCEO_API_KEY for backwards compat).
 
@@ -29,19 +26,21 @@ export async function handler(event) {
   try { payload = JSON.parse(event.body || '{}'); }
   catch { return { statusCode: 400, headers: corsHeaders(), body: 'Invalid JSON' }; }
 
-  const { endpoint, body = {} } = payload;
-  if (!endpoint) {
-    return { statusCode: 400, headers: corsHeaders(), body: 'Missing endpoint' };
+  // Accept both the old-tool contract { endpoint, body } and my previous
+  // contract { endpoint, params } so existing call sites keep working.
+  const method = payload.endpoint || payload.method;
+  const bodyFields = payload.body || payload.params || {};
+  if (!method) {
+    return { statusCode: 400, headers: corsHeaders(), body: 'Missing endpoint/method' };
   }
 
-  const url = `https://api.webceo.com/${endpoint}/`;
-  const requestBody = { key, ...body };
+  const outgoing = { key, method, ...bodyFields };
 
   try {
-    const res = await fetch(url, {
+    const res = await fetch('https://online.webceo.com/api/', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(requestBody)
+      body: JSON.stringify(outgoing)
     });
     const text = await res.text();
     return {
@@ -56,7 +55,7 @@ export async function handler(event) {
     return {
       statusCode: 502,
       headers: corsHeaders(),
-      body: JSON.stringify({ error: e.message })
+      body: JSON.stringify({ error: e.message, stage: 'upstream fetch' })
     };
   }
 }

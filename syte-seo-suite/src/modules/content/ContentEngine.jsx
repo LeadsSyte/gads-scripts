@@ -51,6 +51,7 @@ const SCORE_KEYS = [
 
 export default function ContentEngine({ sub }) {
   const client = useClients(s => s.current());
+  const allClients = useClients(s => s.clients);
   const [topic, setTopic] = useState('');
   const [keyword, setKeyword] = useState('');
   const [length, setLength] = useState(1500);
@@ -125,6 +126,55 @@ export default function ContentEngine({ sub }) {
     } finally {
       setRunning(false);
     }
+  }
+
+  if (tab === 'Clients') {
+    // Show every client with Content Engine enabled, with their per-client
+    // defaults relevant for content work.
+    const contentClients = allClients.filter(c => c.does_content !== false);
+    return (
+      <div className="content-area">
+        <div className="row" style={{ justifyContent: 'space-between', marginBottom: 14 }}>
+          <h2 style={{ margin: 0 }}>Content Engine Clients</h2>
+          <span className="muted" style={{ fontSize: 12 }}>
+            {contentClients.length} / {allClients.length} clients have Content Engine enabled
+          </span>
+        </div>
+        <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+          <table>
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>URL</th>
+                <th>Industry</th>
+                <th>Location</th>
+                <th>Pages / mo</th>
+                <th>Voice</th>
+                <th>Author</th>
+              </tr>
+            </thead>
+            <tbody>
+              {contentClients.length === 0 && (
+                <tr><td colSpan={7} className="muted" style={{ textAlign: 'center', padding: 24 }}>
+                  No clients have Content Engine enabled. Toggle it on in Edit Client → Services.
+                </td></tr>
+              )}
+              {contentClients.map(c => (
+                <tr key={c.id}>
+                  <td>{c.name}</td>
+                  <td className="muted" style={{ maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.url || '—'}</td>
+                  <td className="muted">{c.industry || '—'}</td>
+                  <td className="muted">{c.location || '—'}</td>
+                  <td>{c.pages_per_month || 15}</td>
+                  <td className="muted" style={{ maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.voice || '—'}</td>
+                  <td className="muted">{c.author || '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    );
   }
 
   if (tab === 'History') {
