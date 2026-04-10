@@ -20,16 +20,15 @@
  * Setup:
  * 1. Paste into Google Ads Scripts in ANY one account
  * 2. Set SHEET_ID to your master Google Sheet ID
- * 3. Set EMAIL_TO to the recipient(s)
- * 4. Schedule weekly (e.g. Mondays 9am, after the morning daily digest)
- * 5. Authorize Sheets access
+ * 3. Schedule weekly on Sundays (e.g. Sunday 9am)
+ * 4. Authorize Sheets access
  *
  * Author: Syte Digital Agency (syte.co.za)
  * Version: 1.0.0
  */
 
 var SHEET_ID = 'PASTE_SHEET_ID_HERE';  // Master Google Sheet ID
-var EMAIL_TO = 'leads@syte.co.za';
+var EMAIL_TO = 'michaelh@syte.co.za';
 var TIMEZONE = 'Africa/Johannesburg';
 
 // Red-flag thresholds (percentage drop in conversions week-over-week)
