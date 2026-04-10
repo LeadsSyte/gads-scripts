@@ -40,6 +40,7 @@ var MASTER_SHEET_ID = 'YOUR_MASTER_SHEET_ID_HERE';
  *         or: ?runId=XXXXX&category=all
  */
 function doGet(e) {
+  e = e || { parameter: {} };
   var view = (e.parameter.view || '').trim();
   var action = (e.parameter.action || '').trim();
   var runId = (e.parameter.runId || '').trim();
