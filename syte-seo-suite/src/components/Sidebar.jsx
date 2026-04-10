@@ -1,9 +1,11 @@
-import React from 'react';
+import React, { useState } from 'react';
+import SuiteSettingsModal from './SuiteSettingsModal.jsx';
 
 const MODULES = [
   { id: 'content',   label: 'Content Engine', color: 'var(--mod-content)' },
   { id: 'technical', label: 'Technical SEO',  color: 'var(--mod-technical)' },
   { id: 'aeo',       label: 'AEO Engine',     color: 'var(--mod-aeo)' },
+  { id: 'reports',   label: 'Reports',        color: 'var(--mod-reports)' },
   { id: 'cms',       label: 'CMS',            color: 'var(--mod-cms)' }
 ];
 
@@ -11,11 +13,13 @@ const SUB_NAVS = {
   content:   ['New Article', 'Rewrite & Expand', 'Metadata & Schema', 'Editorial Feedback', 'History'],
   technical: ['Dashboard', 'Task Board', 'New Scan', 'Clients', 'Team', 'Settings'],
   aeo:       ['Run Optimizations', 'Latest Results', 'Clients', 'Settings', 'History'],
+  reports:   ['AEO Snapshot', 'Monthly Report', 'History'],
   cms:       ['Connector', 'Push History']
 };
 
 export default function Sidebar({ module, setModule, sub, setSub }) {
   const active = MODULES.find(m => m.id === module);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   return (
     <aside className="sidebar">
@@ -81,17 +85,14 @@ export default function Sidebar({ module, setModule, sub, setSub }) {
 
       <div style={{ marginTop: 'auto', padding: 16, borderTop: '1px solid var(--border)' }}>
         <button
-          onClick={() => {
-            // Jump to this module's Settings sub-tab if it has one.
-            const nav = SUB_NAVS[module] || [];
-            if (nav.includes('Settings')) setSub('Settings');
-            else { setModule('technical'); setSub('Settings'); }
-          }}
+          onClick={() => setSettingsOpen(true)}
           style={{ width: '100%', background: 'transparent', border: '1px solid var(--border)' }}
         >
-          Settings
+          Suite Settings
         </button>
       </div>
+
+      {settingsOpen && <SuiteSettingsModal onClose={() => setSettingsOpen(false)} />}
     </aside>
   );
 }

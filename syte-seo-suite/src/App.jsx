@@ -6,6 +6,7 @@ import ContentEngine from './modules/content/ContentEngine.jsx';
 import TechnicalSEO from './modules/technical/TechnicalSEO.jsx';
 import AEOEngine from './modules/aeo/AEOEngine.jsx';
 import CMSPush from './modules/cms/CMSPush.jsx';
+import ReportsModule from './modules/reports/ReportsModule.jsx';
 import { useClients } from './store/useClients.js';
 import { getStoredApiKey } from './lib/auth.js';
 import { needsMigration, countLegacyClients, runMigration } from './lib/migration.js';
@@ -15,7 +16,18 @@ const ACCENTS = {
   content:   '#c8ff00',
   technical: '#ff6b35',
   aeo:       '#00d4aa',
-  cms:       '#4dabff'
+  cms:       '#4dabff',
+  reports:   '#a78bfa'
+};
+
+// Service flag filter per module. null = show all clients, else filters the
+// top-bar dropdown to clients with `does_<filter>` !== false.
+const SERVICE_FILTER = {
+  content:   'content',
+  aeo:       'aeo',
+  reports:   'reporting',
+  technical: null,  // Technical SEO is the source of truth — always all clients
+  cms:       null
 };
 
 function MigrationScreen({ count, onDone }) {
@@ -90,7 +102,7 @@ export default function App() {
     <div className="app-shell" style={{ '--accent': accent }}>
       <Sidebar module={module} setModule={setModule} sub={sub} setSub={setSub} />
       <main className="main">
-        <ClientSelector accent={accent} />
+        <ClientSelector accent={accent} serviceFilter={SERVICE_FILTER[module]} />
         {!hasSupabase && (
           <div style={{ background: 'var(--surface-2)', padding: '8px 24px', fontSize: 12, color: 'var(--orange)', borderBottom: '1px solid var(--border)' }}>
             Supabase not configured — running on localStorage fallback. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in .env to enable sync.
@@ -99,6 +111,7 @@ export default function App() {
         {module === 'content'   && <ContentEngine sub={sub} />}
         {module === 'technical' && <TechnicalSEO sub={sub} />}
         {module === 'aeo'       && <AEOEngine sub={sub} />}
+        {module === 'reports'   && <ReportsModule sub={sub} />}
         {module === 'cms'       && <CMSPush sub={sub} />}
       </main>
     </div>

@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useClients } from '../store/useClients.js';
 
-const FIELDS = [
+const BASE_FIELDS = [
   ['name',              'Client Name',        'input'],
   ['url',               'Website URL',        'input'],
   ['industry',          'Industry',           'input'],
@@ -20,8 +20,50 @@ const FIELDS = [
   ['pages_per_month',   'Pages / month',      'number']
 ];
 
+const REPORTING_FIELDS = [
+  ['reporting_email',    'Reporting Email',    'input'],
+  ['start_date',         'Start Date with Syte', 'date'],
+  ['rankscale_url',      'Rankscale Share URL (optional)', 'input'],
+  ['aeo_probe_queries',  'AEO Probe Queries (one per line)', 'textarea'],
+  ['competitors',        'Key Competitors (comma separated)', 'textarea'],
+  ['internal_notes',     'Internal Notes (never shown to client)', 'textarea']
+];
+
+const SERVICES = [
+  ['does_technical', 'Technical SEO', 'var(--mod-technical)'],
+  ['does_content',   'Content Engine', 'var(--mod-content)'],
+  ['does_aeo',       'AEO Engine',     'var(--mod-aeo)'],
+  ['does_reporting', 'Monthly Reporting', 'var(--mod-reports)']
+];
+
+function Field({ k, label, type, value, onChange }) {
+  const wrapStyle = type === 'textarea' ? { gridColumn: 'span 2' } : {};
+  return (
+    <div style={wrapStyle}>
+      <label>{label}</label>
+      {type === 'textarea' ? (
+        <textarea value={value || ''} onChange={e => onChange(k, e.target.value)} rows={3} />
+      ) : type === 'date' ? (
+        <input type="date" value={value || ''} onChange={e => onChange(k, e.target.value)} />
+      ) : type === 'number' ? (
+        <input type="number" value={value || ''} onChange={e => onChange(k, parseInt(e.target.value) || 0)} />
+      ) : (
+        <input type="text" value={value || ''} onChange={e => onChange(k, e.target.value)} />
+      )}
+    </div>
+  );
+}
+
 export default function ClientModal({ initial, onClose }) {
-  const [f, setF] = useState({ pages_per_month: 15, ...initial });
+  // Services default true for new clients.
+  const [f, setF] = useState({
+    pages_per_month: 15,
+    does_technical: true,
+    does_content: true,
+    does_aeo: true,
+    does_reporting: true,
+    ...initial
+  });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const save = useClients(s => s.save);
@@ -58,20 +100,38 @@ export default function ClientModal({ initial, onClose }) {
           <button onClick={onClose} className="ghost">Close</button>
         </div>
 
+        <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '.08em', color: 'var(--text-dim)', margin: '0 0 8px' }}>
+          Services
+        </div>
+        <div className="row" style={{ gap: 16, flexWrap: 'wrap', marginBottom: 16 }}>
+          {SERVICES.map(([k, label, color]) => (
+            <label key={k} style={{ display: 'flex', alignItems: 'center', gap: 8, textTransform: 'none', margin: 0, cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={f[k] !== false}
+                onChange={e => update(k, e.target.checked)}
+                style={{ width: 'auto', accentColor: color }}
+              />
+              <span style={{ color: 'var(--text)', fontSize: 13 }}>{label}</span>
+            </label>
+          ))}
+        </div>
+
+        <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '.08em', color: 'var(--text-dim)', margin: '16px 0 8px' }}>
+          Brand & Content
+        </div>
         <div className="grid-2">
-          {FIELDS.map(([k, label, type]) => (
-            <div key={k} style={type === 'textarea' ? { gridColumn: 'span 2' } : {}}>
-              <label>{label}</label>
-              {type === 'textarea' ? (
-                <textarea value={f[k] || ''} onChange={e => update(k, e.target.value)} rows={3} />
-              ) : (
-                <input
-                  type={type === 'number' ? 'number' : 'text'}
-                  value={f[k] || ''}
-                  onChange={e => update(k, type === 'number' ? parseInt(e.target.value) || 0 : e.target.value)}
-                />
-              )}
-            </div>
+          {BASE_FIELDS.map(([k, label, type]) => (
+            <Field key={k} k={k} label={label} type={type} value={f[k]} onChange={update} />
+          ))}
+        </div>
+
+        <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '.08em', color: 'var(--text-dim)', margin: '20px 0 8px' }}>
+          Reporting & AEO
+        </div>
+        <div className="grid-2">
+          {REPORTING_FIELDS.map(([k, label, type]) => (
+            <Field key={k} k={k} label={label} type={type} value={f[k]} onChange={update} />
           ))}
         </div>
 

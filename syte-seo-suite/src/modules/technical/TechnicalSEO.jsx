@@ -3,7 +3,8 @@ import { useClients } from '../../store/useClients.js';
 import { claudeComplete, extractJSON } from '../../lib/anthropic.js';
 import { corsFetchText } from '../../lib/corsProxy.js';
 import PushToCmsButton from '../../components/PushToCmsButton.jsx';
-import { getAudit } from './webceo.js';
+import { getAudit, syncWebceoClients } from './webceo.js';
+import { upsertClient } from '../../lib/supabase.js';
 import { querySearchAnalytics } from './gsc.js';
 import { ensureToken, SCOPES, getToken, clearToken } from './googleAuth.js';
 
@@ -93,6 +94,7 @@ function statusClass(s) {
 export default function TechnicalSEO({ sub }) {
   const clients = useClients(s => s.clients);
   const client = useClients(s => s.current());
+  const reloadClients = useClients(s => s.load);
   const [tasks, setTasks] = useState(loadTasks());
   const [team, setTeam] = useState(loadTeam());
   const [busy, setBusy] = useState(false);
@@ -274,18 +276,51 @@ export default function TechnicalSEO({ sub }) {
   }
 
   if (sub === 'Clients') {
+    async function doSync() {
+      setBusy(true); setErr(''); setMsg('Syncing from WebCEO…');
+      try {
+        const r = await syncWebceoClients(upsertClient, clients);
+        await reloadClients();
+        setMsg(`Sync complete. ${r.inserted} new · ${r.updated} updated (${r.total} total in WebCEO).`);
+      } catch (e) { setErr(e.message); setMsg(''); }
+      finally { setBusy(false); }
+    }
+
     return (
       <div className="content-area">
-        <h2 style={{ marginTop: 0 }}>Clients</h2>
+        <div className="row" style={{ justifyContent: 'space-between', marginBottom: 14 }}>
+          <h2 style={{ margin: 0 }}>Clients</h2>
+          <div className="row">
+            <span className="muted" style={{ fontSize: 12 }}>
+              WebCEO is the source of truth. Every synced client gets all four services by default — toggle off per-client in Edit.
+            </span>
+            <button onClick={doSync} disabled={busy} className="primary" style={{ background: ACCENT, borderColor: ACCENT }}>
+              {busy ? 'Syncing…' : 'Sync from WebCEO'}
+            </button>
+          </div>
+        </div>
+        {msg && <div style={{ color: 'var(--green)', marginBottom: 10 }}>{msg}</div>}
+        {err && <div style={{ color: 'var(--red)', marginBottom: 10 }}>{err}</div>}
+
         <table>
-          <thead><tr><th>Name</th><th>URL</th><th>WebCEO</th><th>GSC</th><th>Tasks</th></tr></thead>
+          <thead>
+            <tr>
+              <th>Name</th><th>URL</th><th>WebCEO</th><th>GSC</th>
+              <th>Tech</th><th>Content</th><th>AEO</th><th>Reports</th>
+              <th>Tasks</th>
+            </tr>
+          </thead>
           <tbody>
             {clients.map(c => (
               <tr key={c.id}>
                 <td>{c.name}</td>
-                <td className="muted">{c.url}</td>
-                <td>{c.wceo_project_id ? <span className="badge green">yes</span> : <span className="badge">—</span>}</td>
-                <td>{c.gsc_property ? <span className="badge green">yes</span> : <span className="badge">—</span>}</td>
+                <td className="muted" style={{ maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.url}</td>
+                <td>{c.wceo_project_id ? <span className="badge green">✓</span> : <span className="badge">—</span>}</td>
+                <td>{c.gsc_property ? <span className="badge green">✓</span> : <span className="badge">—</span>}</td>
+                <td>{c.does_technical !== false ? <span className="badge orange">✓</span> : <span className="badge">—</span>}</td>
+                <td>{c.does_content !== false ? <span className="badge" style={{ color: 'var(--mod-content)', borderColor: 'var(--mod-content)' }}>✓</span> : <span className="badge">—</span>}</td>
+                <td>{c.does_aeo !== false ? <span className="badge teal">✓</span> : <span className="badge">—</span>}</td>
+                <td>{c.does_reporting !== false ? <span className="badge" style={{ color: 'var(--mod-reports)', borderColor: 'var(--mod-reports)' }}>✓</span> : <span className="badge">—</span>}</td>
                 <td>{tasks.filter(t => t.client_id === c.id).length}</td>
               </tr>
             ))}

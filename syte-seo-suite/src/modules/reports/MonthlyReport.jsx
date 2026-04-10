@@ -1,0 +1,413 @@
+import React, { useState, useEffect, useMemo } from 'react';
+import { useClients } from '../../store/useClients.js';
+import { claudeComplete, extractJSON } from '../../lib/anthropic.js';
+import { listAeoSnapshots, logReportSent } from '../../lib/supabase.js';
+import { ALICE_SYSTEM, MICROSITE_SYSTEM, QA_SYSTEM, buildAlicePayload } from './reportPrompts.js';
+import { buildMicrositeHtml, downloadMicrosite } from './microsite.js';
+
+const ACCENT = '#a78bfa';
+
+function thisMonth() { return new Date().toISOString().slice(0, 7); }
+function monthLabel(m) {
+  if (!m) return '';
+  const [y, mo] = m.split('-');
+  const d = new Date(parseInt(y), parseInt(mo) - 1, 1);
+  return d.toLocaleString('en-US', { month: 'long', year: 'numeric' });
+}
+
+function parseAliceOutput(text) {
+  if (!text) return { subject: '', body: '' };
+  const lines = text.split('\n');
+  let subject = '';
+  let bodyStart = 0;
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(/^SUBJECT:\s*(.+)/i);
+    if (m) { subject = m[1].trim(); continue; }
+    if (lines[i].trim() === '---') { bodyStart = i + 1; break; }
+  }
+  const body = lines.slice(bodyStart).join('\n').trim();
+  return { subject, body: body || text };
+}
+
+export default function MonthlyReport() {
+  const client = useClients(s => s.current());
+  const [month, setMonth] = useState(thisMonth());
+  const [form, setForm] = useState({});
+  const [tone, setTone] = useState('mixed');
+  const [includeAlg, setIncludeAlg] = useState(false);
+  const [algContext, setAlgContext] = useState('');
+  const [aeoSnap, setAeoSnap] = useState(null);
+  const [phase, setPhase] = useState('idle'); // idle | alice | micro | qa | review
+  const [err, setErr] = useState('');
+  const [email, setEmail] = useState({ subject: '', body: '' });
+  const [microJson, setMicroJson] = useState(null);
+  const [qa, setQa] = useState(null);
+  const [sent, setSent] = useState(false);
+  const [showMicroFull, setShowMicroFull] = useState(false);
+
+  useEffect(() => {
+    setEmail({ subject: '', body: '' });
+    setMicroJson(null);
+    setQa(null);
+    setSent(false);
+    setPhase('idle');
+    setForm({
+      hasSeo: client?.does_content !== false || client?.does_technical !== false,
+      hasAeo: client?.does_aeo !== false
+    });
+  }, [client?.id]);
+
+  useEffect(() => {
+    if (!client) { setAeoSnap(null); return; }
+    listAeoSnapshots(client.id).then(rows => {
+      const match = rows.find(r => r.month === month) || null;
+      setAeoSnap(match);
+    }).catch(() => {});
+  }, [client?.id, month]);
+
+  const update = (k, v) => setForm(prev => ({ ...prev, [k]: v }));
+
+  const micrositeHtml = useMemo(() => {
+    if (!microJson || !client) return '';
+    return buildMicrositeHtml({
+      micro: microJson,
+      client,
+      monthLabel: monthLabel(month),
+      rankscale: client.rankscale_url
+    });
+  }, [microJson, client, month]);
+
+  async function generate() {
+    if (!client) return;
+    setErr(''); setEmail({ subject: '', body: '' }); setMicroJson(null); setQa(null); setSent(false);
+
+    const payload = buildAlicePayload({
+      clientName: client.name,
+      goals: client.context,
+      tone,
+      month: monthLabel(month),
+      includeAlgorithm: includeAlg,
+      algorithmContext: algContext,
+      ...form
+    }, aeoSnap);
+
+    try {
+      // 1. Alice email
+      setPhase('alice');
+      const aliceText = await claudeComplete({
+        system: ALICE_SYSTEM,
+        messages: [{ role: 'user', content: payload }],
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 1000,
+        temperature: 0.7
+      });
+      const parsed = parseAliceOutput(aliceText);
+      setEmail(parsed);
+
+      // 2. Microsite JSON
+      setPhase('micro');
+      const micrositeText = await claudeComplete({
+        system: MICROSITE_SYSTEM,
+        messages: [{ role: 'user', content: payload }],
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 1000,
+        temperature: 0.5
+      });
+      const microObj = extractJSON(micrositeText);
+      if (!microObj) throw new Error('Microsite JSON could not be parsed from model output.');
+      if (!microObj.clientName) microObj.clientName = client.name;
+      setMicroJson(microObj);
+
+      // 3. QA
+      setPhase('qa');
+      const qaText = await claudeComplete({
+        system: QA_SYSTEM,
+        messages: [{ role: 'user', content: 'Alice email to review:\n\n' + aliceText }],
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 500,
+        temperature: 0
+      });
+      const qaObj = extractJSON(qaText);
+      if (qaObj) setQa(qaObj);
+
+      setPhase('review');
+    } catch (e) {
+      setErr(e.message);
+      setPhase('idle');
+    }
+  }
+
+  async function markSent() {
+    if (!client) return;
+    try {
+      await logReportSent({
+        client_id: client.id,
+        month,
+        sent_date: new Date().toISOString(),
+        qa_score: qa?.overallScore || null,
+        aeo_snapshot_score: aeoSnap?.overall_score || null,
+        email_subject: email.subject || ''
+      });
+      setSent(true);
+    } catch (e) { setErr(e.message); }
+  }
+
+  function copyEmail() {
+    const text = (email.subject ? 'Subject: ' + email.subject + '\n\n' : '') + email.body;
+    navigator.clipboard.writeText(text).catch(() => {});
+  }
+
+  function downloadHtml() {
+    if (!micrositeHtml) return;
+    const safeName = (client.name || 'client').replace(/[^a-z0-9]+/gi, '-');
+    downloadMicrosite(micrositeHtml, `${safeName}-${month}-Report.html`);
+  }
+
+  if (!client) return <div className="muted">Select a client first.</div>;
+
+  const hasSnapshot = !!aeoSnap;
+
+  const PHASES = [
+    { key: 'alice', label: 'Alice email' },
+    { key: 'micro', label: 'Microsite JSON' },
+    { key: 'qa',    label: 'QA check' }
+  ];
+
+  return (
+    <div>
+      <h2 style={{ marginTop: 0 }}>Monthly Report</h2>
+
+      {/* Step 1: client + month */}
+      <div className="card" style={{ marginBottom: 14 }}>
+        <div className="grid-2">
+          <div>
+            <label>Client</label>
+            <div style={{ padding: '9px 12px', background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 'var(--radius)' }}>
+              {client.name}
+            </div>
+          </div>
+          <div>
+            <label>Report Month</label>
+            <input type="month" value={month} onChange={e => setMonth(e.target.value)} />
+          </div>
+        </div>
+        <div className="row" style={{ marginTop: 10, gap: 10, flexWrap: 'wrap' }}>
+          {hasSnapshot ? (
+            <span className="badge green">AEO snapshot: {aeoSnap.overall_score}/100</span>
+          ) : (
+            form.hasAeo && (
+              <span className="badge orange">No AEO snapshot for {month} — run one first for richer insights</span>
+            )
+          )}
+        </div>
+      </div>
+
+      {/* Step 2: SEO data */}
+      {form.hasSeo && (
+        <div className="card" style={{ marginBottom: 14 }}>
+          <strong>SEO Data</strong>
+          <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--text-dim)', margin: '12px 0 6px' }}>Traffic</div>
+          <div className="grid-3">
+            <div><label>Total users (this)</label><input value={form.seoUsersThis || ''} onChange={e => update('seoUsersThis', e.target.value)} /></div>
+            <div><label>Total users (last)</label><input value={form.seoUsersLast || ''} onChange={e => update('seoUsersLast', e.target.value)} /></div>
+            <div><label>Total users (YoY)</label><input value={form.seoUsersYoy || ''} onChange={e => update('seoUsersYoy', e.target.value)} /></div>
+            <div><label>Organic users (this)</label><input value={form.seoOrganicThis || ''} onChange={e => update('seoOrganicThis', e.target.value)} /></div>
+            <div><label>Organic users (last)</label><input value={form.seoOrganicLast || ''} onChange={e => update('seoOrganicLast', e.target.value)} /></div>
+            <div></div>
+            <div><label>Organic conv. (this)</label><input value={form.seoConvThis || ''} onChange={e => update('seoConvThis', e.target.value)} /></div>
+            <div><label>Organic conv. (last)</label><input value={form.seoConvLast || ''} onChange={e => update('seoConvLast', e.target.value)} /></div>
+            <div></div>
+            <div><label>Organic sessions (this)</label><input value={form.seoSessThis || ''} onChange={e => update('seoSessThis', e.target.value)} /></div>
+            <div><label>Organic sessions (last)</label><input value={form.seoSessLast || ''} onChange={e => update('seoSessLast', e.target.value)} /></div>
+          </div>
+          <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--text-dim)', margin: '14px 0 6px' }}>Search Console</div>
+          <div className="grid-3">
+            <div><label>Clicks (this)</label><input value={form.gscClicksThis || ''} onChange={e => update('gscClicksThis', e.target.value)} /></div>
+            <div><label>Clicks (last)</label><input value={form.gscClicksLast || ''} onChange={e => update('gscClicksLast', e.target.value)} /></div>
+            <div><label>Impressions (this)</label><input value={form.gscImpressionsThis || ''} onChange={e => update('gscImpressionsThis', e.target.value)} /></div>
+            <div><label>Site CTR % (this)</label><input value={form.gscCtrThis || ''} onChange={e => update('gscCtrThis', e.target.value)} /></div>
+            <div><label>Avg position (this)</label><input value={form.gscPosThis || ''} onChange={e => update('gscPosThis', e.target.value)} /></div>
+            <div><label>Avg position (last)</label><input value={form.gscPosLast || ''} onChange={e => update('gscPosLast', e.target.value)} /></div>
+          </div>
+          <div style={{ marginTop: 10 }}>
+            <label>Top pages (paste from Looker)</label>
+            <textarea value={form.topPages || ''} onChange={e => update('topPages', e.target.value)} rows={3} placeholder="/page/ — 57 users (+42%)" />
+          </div>
+          <div>
+            <label>Top queries</label>
+            <textarea value={form.topQueries || ''} onChange={e => update('topQueries', e.target.value)} rows={3} />
+          </div>
+        </div>
+      )}
+
+      {/* Step 3: AEO manual override (only shown if snapshot missing) */}
+      {form.hasAeo && !hasSnapshot && (
+        <div className="card" style={{ marginBottom: 14 }}>
+          <strong>AEO Summary (manual — no snapshot for this month)</strong>
+          <div className="grid-2" style={{ marginTop: 10 }}>
+            <div><label>Score</label><input value={form.aeoScoreManual || ''} onChange={e => update('aeoScoreManual', e.target.value)} /></div>
+            <div><label>Share of mentions</label><input value={form.aeoSomManual || ''} onChange={e => update('aeoSomManual', e.target.value)} /></div>
+            <div><label>Citations</label><input value={form.aeoCitationsManual || ''} onChange={e => update('aeoCitationsManual', e.target.value)} /></div>
+            <div><label>Sentiment</label><input value={form.aeoSentimentManual || ''} onChange={e => update('aeoSentimentManual', e.target.value)} /></div>
+            <div style={{ gridColumn: 'span 2' }}><label>Engines covered</label><input value={form.aeoEnginesManual || ''} onChange={e => update('aeoEnginesManual', e.target.value)} /></div>
+          </div>
+        </div>
+      )}
+      {form.hasAeo && hasSnapshot && (
+        <div className="card" style={{ marginBottom: 14 }}>
+          <strong>AEO Summary</strong>
+          <span className="badge green" style={{ marginLeft: 10 }}>Auto-populated from AEO Snapshot ✓</span>
+          <div className="muted" style={{ fontSize: 12, marginTop: 8 }}>
+            Score {aeoSnap.overall_score}/100 · {aeoSnap.sentiment} · engines {(aeoSnap.engines_used || []).join(', ')}
+          </div>
+        </div>
+      )}
+
+      {/* Step 4: tone */}
+      <div className="card" style={{ marginBottom: 14 }}>
+        <div className="grid-2">
+          <div>
+            <label>Tone</label>
+            <select value={tone} onChange={e => setTone(e.target.value)}>
+              <option value="positive">Positive — lead with wins</option>
+              <option value="mixed">Mixed — honest but optimistic</option>
+              <option value="recovery">Recovery — explain + what we're doing</option>
+            </select>
+          </div>
+          <div>
+            <label>Algorithm updates</label>
+            <div className="row" style={{ gap: 10, marginTop: 4 }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6, textTransform: 'none', margin: 0 }}>
+                <input type="checkbox" checked={includeAlg} onChange={e => setIncludeAlg(e.target.checked)} style={{ width: 'auto' }} />
+                Include
+              </label>
+            </div>
+          </div>
+          {includeAlg && (
+            <div style={{ gridColumn: 'span 2' }}>
+              <label>Context / algorithm updates</label>
+              <textarea value={algContext} onChange={e => setAlgContext(e.target.value)} rows={2} />
+            </div>
+          )}
+        </div>
+
+        <div className="row" style={{ justifyContent: 'space-between', marginTop: 14 }}>
+          <div className="row" style={{ gap: 8 }}>
+            {PHASES.map(p => (
+              <span key={p.key} style={{
+                fontSize: 11, padding: '4px 10px', borderRadius: 999,
+                border: '1px solid var(--border)',
+                background: phase === p.key ? ACCENT : 'transparent',
+                color: phase === p.key ? '#0a0a0c'
+                       : (phase === 'review' || (phase === 'micro' && p.key === 'alice') || (phase === 'qa' && p.key !== 'qa')) ? 'var(--green)' : 'var(--text-muted)'
+              }}>{p.label}</span>
+            ))}
+          </div>
+          <button className="primary" onClick={generate} disabled={phase !== 'idle' && phase !== 'review'} style={{ background: ACCENT, borderColor: ACCENT, color: '#0a0a0c' }}>
+            {phase === 'idle' || phase === 'review' ? 'Generate Report' : 'Working…'}
+          </button>
+        </div>
+        {err && <div style={{ color: 'var(--red)', marginTop: 10 }}>{err}</div>}
+      </div>
+
+      {/* Review section */}
+      {phase === 'review' && (
+        <>
+          {qa && (
+            <div className="card" style={{ marginBottom: 14 }}>
+              <div className="row" style={{ justifyContent: 'space-between', marginBottom: 10 }}>
+                <strong>QA Review</strong>
+                <div className="row" style={{ gap: 10 }}>
+                  <span className="badge" style={{
+                    background: qa.overallScore >= 8 ? 'rgba(52,211,153,.1)'
+                              : qa.overallScore >= 6 ? 'rgba(255,159,67,.1)'
+                              : 'rgba(255,77,77,.1)',
+                    color: qa.overallScore >= 8 ? 'var(--green)' : qa.overallScore >= 6 ? 'var(--orange)' : 'var(--red)',
+                    borderColor: 'transparent'
+                  }}>
+                    {qa.overallScore}/10
+                  </span>
+                  {qa.readyToSend
+                    ? <span className="badge green">Ready to send</span>
+                    : <span className="badge red">Revise before sending</span>}
+                </div>
+              </div>
+              {(qa.checks || []).map((c, i) => (
+                <div key={i} className="row" style={{ justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid var(--border)' }}>
+                  <span style={{ fontSize: 13 }}>
+                    <span style={{ color: c.pass ? 'var(--green)' : 'var(--red)', marginRight: 8 }}>
+                      {c.pass ? '✓' : '✗'}
+                    </span>
+                    {c.label}
+                  </span>
+                  {c.note && <span className="muted" style={{ fontSize: 11 }}>{c.note}</span>}
+                </div>
+              ))}
+              {qa.suggestion && (
+                <div style={{ marginTop: 10, padding: 10, background: 'var(--surface-2)', borderRadius: 8, fontSize: 13 }}>
+                  <strong>Suggestion:</strong> {qa.suggestion}
+                  <div style={{ marginTop: 8 }}>
+                    <button onClick={generate}>Regenerate</button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          <div className="card" style={{ marginBottom: 14 }}>
+            <div className="row" style={{ justifyContent: 'space-between', marginBottom: 10 }}>
+              <strong>Alice Email</strong>
+              <button onClick={copyEmail}>Copy to clipboard</button>
+            </div>
+            <label>Subject</label>
+            <input value={email.subject} onChange={e => setEmail(prev => ({ ...prev, subject: e.target.value }))} />
+            <label style={{ marginTop: 10 }}>Body</label>
+            <textarea value={email.body} onChange={e => setEmail(prev => ({ ...prev, body: e.target.value }))} rows={12} style={{ fontFamily: 'DM Sans, sans-serif', fontSize: 14 }} />
+          </div>
+
+          {micrositeHtml && (
+            <div className="card" style={{ marginBottom: 14 }}>
+              <div className="row" style={{ justifyContent: 'space-between', marginBottom: 10 }}>
+                <strong>Microsite Preview</strong>
+                <div className="row" style={{ gap: 8 }}>
+                  <button onClick={downloadHtml}>Download .html</button>
+                  <button onClick={() => setShowMicroFull(v => !v)}>{showMicroFull ? 'Collapse' : 'Open full screen'}</button>
+                </div>
+              </div>
+              <iframe
+                title="microsite"
+                srcDoc={micrositeHtml}
+                style={{
+                  width: '100%',
+                  height: showMicroFull ? '80vh' : 520,
+                  border: '1px solid var(--border)',
+                  borderRadius: 'var(--radius)',
+                  background: 'var(--bg)'
+                }}
+              />
+            </div>
+          )}
+
+          <div className="card">
+            <div className="row" style={{ justifyContent: 'space-between' }}>
+              <div>
+                <strong>{sent ? 'Sent ✓' : 'Approve & Mark Sent'}</strong>
+                <div className="muted" style={{ fontSize: 12 }}>
+                  Logs to the report history for {client.name} — {monthLabel(month)}.
+                </div>
+              </div>
+              <button
+                className="primary"
+                onClick={markSent}
+                disabled={sent}
+                style={{ background: ACCENT, borderColor: ACCENT, color: '#0a0a0c' }}
+              >
+                {sent ? 'Logged' : 'Approve & Mark Sent'}
+              </button>
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}

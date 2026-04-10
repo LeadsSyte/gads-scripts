@@ -125,3 +125,85 @@ export async function logProgress(entry) {
     await supabase.from('syte_suite_progress').insert(entry);
   }
 }
+
+// ---------------------------------------------------------------------------
+// Reporting module — AEO snapshot history + monthly report log.
+// Both fall back to localStorage so the module works offline.
+// ---------------------------------------------------------------------------
+
+export async function saveAeoSnapshot(row) {
+  if (supabase) {
+    const { data, error } = await supabase
+      .from('syte_suite_aeo_history')
+      .insert(row)
+      .select()
+      .single();
+    if (error) throw error;
+    return data;
+  }
+  const list = JSON.parse(localStorage.getItem(LS_PREFIX + 'aeo_history') || '[]');
+  row.id = crypto.randomUUID();
+  row.created_at = new Date().toISOString();
+  list.push(row);
+  localStorage.setItem(LS_PREFIX + 'aeo_history', JSON.stringify(list));
+  return row;
+}
+
+export async function listAeoSnapshots(clientId) {
+  if (supabase) {
+    let q = supabase
+      .from('syte_suite_aeo_history')
+      .select('*')
+      .order('month', { ascending: false });
+    if (clientId) q = q.eq('client_id', clientId);
+    const { data, error } = await q;
+    if (error) throw error;
+    return data || [];
+  }
+  const list = JSON.parse(localStorage.getItem(LS_PREFIX + 'aeo_history') || '[]');
+  return clientId ? list.filter(r => r.client_id === clientId) : list;
+}
+
+export async function deleteAeoSnapshot(id) {
+  if (supabase) {
+    const { error } = await supabase.from('syte_suite_aeo_history').delete().eq('id', id);
+    if (error) throw error;
+    return;
+  }
+  const list = JSON.parse(localStorage.getItem(LS_PREFIX + 'aeo_history') || '[]');
+  localStorage.setItem(LS_PREFIX + 'aeo_history', JSON.stringify(list.filter(r => r.id !== id)));
+}
+
+export async function logReportSent(row) {
+  if (supabase) {
+    const { data, error } = await supabase
+      .from('syte_suite_report_log')
+      .insert(row)
+      .select()
+      .single();
+    if (error) throw error;
+    return data;
+  }
+  const list = JSON.parse(localStorage.getItem(LS_PREFIX + 'report_log') || '[]');
+  row.id = crypto.randomUUID();
+  row.sent_date = row.sent_date || new Date().toISOString();
+  row.created_at = new Date().toISOString();
+  list.push(row);
+  localStorage.setItem(LS_PREFIX + 'report_log', JSON.stringify(list));
+  return row;
+}
+
+export async function listSentReports(clientId) {
+  if (supabase) {
+    let q = supabase
+      .from('syte_suite_report_log')
+      .select('*')
+      .order('sent_date', { ascending: false });
+    if (clientId) q = q.eq('client_id', clientId);
+    const { data, error } = await q;
+    if (error) throw error;
+    return data || [];
+  }
+  const list = JSON.parse(localStorage.getItem(LS_PREFIX + 'report_log') || '[]');
+  return clientId ? list.filter(r => r.client_id === clientId) : list;
+}
