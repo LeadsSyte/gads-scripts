@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { useClients } from '../../store/useClients.js';
 import { claudeComplete, extractJSON } from '../../lib/anthropic.js';
 import { corsFetchText } from '../../lib/corsProxy.js';
-import { queueCmsChange } from '../../lib/supabase.js';
+import PushToCmsButton from '../../components/PushToCmsButton.jsx';
 import { getAudit } from './webceo.js';
 import { querySearchAnalytics } from './gsc.js';
 import { ensureToken, SCOPES, getToken, clearToken } from './googleAuth.js';
@@ -165,18 +165,14 @@ export default function TechnicalSEO({ sub }) {
     finally { setBusy(false); }
   }
 
-  async function handleQueue(task) {
-    if (!task.copy_paste_fix) return;
-    await queueCmsChange({
-      client_id: task.client_id,
+  function buildPushItem(task) {
+    return {
       module: 'technical',
       page_url: task.page_url,
       page_title: task.title,
       change_type: task.fix_type,
-      payload: { fix: task.copy_paste_fix, description: task.description },
-      status: 'pending'
-    });
-    updateTask(task.id, { queued: true });
+      payload: { fix: task.copy_paste_fix, description: task.description }
+    };
   }
 
   // -------- Subviews --------
@@ -230,13 +226,12 @@ export default function TechnicalSEO({ sub }) {
                   <div className="row" style={{ marginTop: 8, gap: 6 }}>
                     <span className={'badge ' + priorityClass(t.priority)}>{t.priority}</span>
                     {t.assignee && <span className="badge">{t.assignee}</span>}
-                    {t.queued && <span className="badge blue">queued</span>}
                   </div>
                   <div className="row" style={{ marginTop: 8, gap: 6, flexWrap: 'wrap' }}>
                     {status === 'open' && <button onClick={() => updateTask(t.id, { status: 'done' })}>Mark Done</button>}
                     {status === 'done' && <button onClick={() => handleVerify(t)} disabled={busy}>Verify</button>}
-                    {t.copy_paste_fix && !t.queued && (
-                      <button onClick={() => handleQueue(t)} style={{ borderColor: 'var(--mod-cms)', color: 'var(--mod-cms)' }}>Queue for CMS</button>
+                    {t.copy_paste_fix && (
+                      <PushToCmsButton item={buildPushItem(t)} label="Push to CMS" />
                     )}
                   </div>
                   {t.copy_paste_fix && (

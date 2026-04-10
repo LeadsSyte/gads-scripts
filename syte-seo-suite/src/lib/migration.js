@@ -112,3 +112,94 @@ export async function runMigration() {
   localStorage.setItem(MIGRATED_FLAG, '1');
   return { migrated, skipped };
 }
+
+// ---------------------------------------------------------------------------
+// Paste-based importer — used when the legacy data lives on a different
+// origin (e.g. the old tools are on other Netlify URLs, so they can't share
+// localStorage with this app). User pastes anything shaped like a client
+// list and we best-effort normalise it.
+//
+// Accepts:
+//   - raw JSON array of client objects
+//   - raw JSON object mapping id -> client
+//   - bundle object shaped like: { tseo: <raw or json>, aeo: ..., ce: ... }
+//   - raw localStorage dump: { "syte-tseo-clients": "[...]", ... }
+// Returns { parsed: [<unified client>], raw: <what was detected> }.
+// ---------------------------------------------------------------------------
+
+function coerceArray(value) {
+  if (value == null) return [];
+  if (typeof value === 'string') {
+    const inner = parseJSON(value);
+    return coerceArray(inner);
+  }
+  if (Array.isArray(value)) return value;
+  if (typeof value === 'object') {
+    // { id: client } or { someKey: client }
+    const vals = Object.values(value);
+    // If every value looks like a client object, treat as a list.
+    if (vals.every(v => v && typeof v === 'object' && !Array.isArray(v))) return vals;
+  }
+  return [];
+}
+
+export function parsePastedClients(text) {
+  const root = parseJSON((text || '').trim());
+  if (!root) throw new Error('That does not look like JSON. Check the paste and try again.');
+
+  let candidates = [];
+  const pushFrom = (v) => {
+    for (const rec of coerceArray(v)) candidates.push(rec);
+  };
+
+  // Known bundle keys (what we ask the user to export with the console one-liner).
+  if (root && typeof root === 'object' && !Array.isArray(root)) {
+    const bundleKeys = ['tseo', 'aeo', 'ce', 'syte-tseo-clients', 'syte-aeo-clients', 'syte-ce-brands'];
+    const hasBundleKey = bundleKeys.some(k => k in root);
+    if (hasBundleKey) {
+      for (const k of bundleKeys) if (k in root) pushFrom(root[k]);
+    } else {
+      pushFrom(root);
+    }
+  } else {
+    pushFrom(root);
+  }
+
+  const seen = new Map();
+  for (const rec of candidates) {
+    const mapped = mapLegacy(rec);
+    if (!mapped || (!mapped.name && !mapped.url)) continue;
+    const key = (mapped.url || mapped.name || '').toLowerCase().trim();
+    if (!key) continue;
+    if (seen.has(key)) seen.set(key, mergeClient(seen.get(key), mapped));
+    else seen.set(key, mapped);
+  }
+  return [...seen.values()];
+}
+
+export async function importPastedClients(text) {
+  const parsed = parsePastedClients(text);
+  if (!parsed.length) throw new Error('No client records found in that paste.');
+
+  const existing = await listClients().catch(() => []);
+  const existingByKey = new Map(existing.map(c => [(c.url || c.name || '').toLowerCase().trim(), c]));
+
+  let inserted = 0, merged = 0, skipped = 0;
+  for (const client of parsed) {
+    const key = (client.url || client.name || '').toLowerCase().trim();
+    const match = existingByKey.get(key);
+    try {
+      if (match) {
+        await upsertClient(mergeClient(match, client));
+        merged++;
+      } else {
+        await upsertClient(client);
+        inserted++;
+      }
+    } catch (e) {
+      console.error('Import failed for', client.name, e);
+      skipped++;
+    }
+  }
+  return { total: parsed.length, inserted, merged, skipped };
+}

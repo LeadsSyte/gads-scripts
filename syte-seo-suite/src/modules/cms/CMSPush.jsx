@@ -1,10 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useClients } from '../../store/useClients.js';
-import { listCmsQueue, updateCmsQueueItem, upsertClient } from '../../lib/supabase.js';
+import { listCmsQueue, upsertClient } from '../../lib/supabase.js';
 import { detectCms, testWordPress, testShopify } from './cmsDetect.js';
-import { pushToWordPress } from './wordpressPush.js';
-import { pushToShopify } from './shopifyPush.js';
-import { buildAndDownloadZip } from './customZip.js';
 
 const ACCENT = '#4dabff';
 
@@ -13,26 +10,27 @@ function statusBadge(s) {
   return <span className={'badge ' + (map[s] || '')}>{s}</span>;
 }
 
+// CMS module, post-refactor: this is now just the connector config + a
+// read-only push history. The actual "Push Now" action lives inline on
+// each generated output in Content Engine, Technical SEO, and AEO Engine
+// via <PushToCmsButton />.
 export default function CMSPush({ sub }) {
   const client = useClients(s => s.current());
   const load = useClients(s => s.load);
-  const [queue, setQueue] = useState([]);
+  const [history, setHistory] = useState([]);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
   const [err, setErr] = useState('');
 
-  // Connector form state (driven by selected client)
   const [form, setForm] = useState({});
-  useEffect(() => {
-    if (client) setForm(client);
-  }, [client?.id]);
+  useEffect(() => { if (client) setForm(client); }, [client?.id]);
 
-  async function refreshQueue() {
-    if (!client) { setQueue([]); return; }
-    try { setQueue(await listCmsQueue(client.id)); }
+  async function refreshHistory() {
+    if (!client) { setHistory([]); return; }
+    try { setHistory(await listCmsQueue(client.id)); }
     catch (e) { setErr(e.message); }
   }
-  useEffect(() => { refreshQueue(); }, [client?.id]);
+  useEffect(() => { refreshHistory(); }, [client?.id]);
 
   async function saveConnector(patch = {}) {
     if (!client) return;
@@ -77,52 +75,15 @@ export default function CMSPush({ sub }) {
     finally { setBusy(false); }
   }
 
-  async function handlePush(item) {
-    if (!client) return;
-    setBusy(true); setErr(''); setMsg('');
-    try {
-      let result;
-      if (client.cms_type === 'WordPress') result = await pushToWordPress(client, item);
-      else if (client.cms_type === 'Shopify') result = await pushToShopify(client, item);
-      else {
-        await buildAndDownloadZip(client, [item]);
-        result = { ok: true, admin_url: '' };
-      }
-      await updateCmsQueueItem(item.id, {
-        status: 'pushed',
-        pushed_at: new Date().toISOString(),
-        payload: { ...(item.payload || {}), admin_url: result.admin_url }
-      });
-      setMsg('Pushed. ' + (result.admin_url ? 'Review: ' + result.admin_url : 'Downloaded package.'));
-      await refreshQueue();
-    } catch (e) {
-      await updateCmsQueueItem(item.id, { status: 'failed', error_msg: e.message });
-      setErr(e.message);
-      await refreshQueue();
-    } finally { setBusy(false); }
-  }
-
-  async function handleSkip(item) {
-    await updateCmsQueueItem(item.id, { status: 'skipped' });
-    await refreshQueue();
-  }
-
-  async function handleDownloadAll() {
-    if (!client) return;
-    const pending = queue.filter(i => i.status === 'pending');
-    if (!pending.length) { setMsg('Nothing pending.'); return; }
-    await buildAndDownloadZip(client, pending);
-    for (const p of pending) {
-      await updateCmsQueueItem(p.id, { status: 'pushed', pushed_at: new Date().toISOString() });
-    }
-    await refreshQueue();
-  }
-
   // -------- Subviews --------
-  if (sub === 'CMS Connector') {
+  if (sub === 'Connector') {
     return (
       <div className="content-area">
         <h2 style={{ marginTop: 0 }}>CMS Connector</h2>
+        <div className="muted" style={{ fontSize: 13, marginBottom: 14 }}>
+          Connect this client's CMS here, then push content directly from Content Engine,
+          Technical SEO, or AEO Engine using the inline <em>Push to CMS</em> button.
+        </div>
         {!client && <div className="muted">Select a client first.</div>}
         {client && (
           <>
@@ -195,94 +156,43 @@ export default function CMSPush({ sub }) {
     );
   }
 
-  if (sub === 'Push Queue') {
-    const pending = queue.filter(i => i.status === 'pending');
-    return (
-      <div className="content-area">
-        <div className="row" style={{ justifyContent: 'space-between', marginBottom: 14 }}>
-          <h2 style={{ margin: 0 }}>Push Queue</h2>
-          <div className="row">
-            <span className="muted">{pending.length} pending</span>
-            {client?.cms_type === 'Custom Site' && (
-              <button onClick={handleDownloadAll} disabled={!pending.length}>Download Full Package</button>
-            )}
-          </div>
-        </div>
-        <div className="card">
-          <table>
-            <thead>
-              <tr>
-                <th>Page</th>
-                <th>Change Type</th>
-                <th>Module</th>
-                <th>Status</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {queue.map(item => (
-                <tr key={item.id}>
-                  <td style={{ maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                    <div style={{ fontWeight: 600 }}>{item.page_title}</div>
-                    <div className="muted" style={{ fontSize: 11 }}>{item.page_url}</div>
-                  </td>
-                  <td><span className="badge">{item.change_type}</span></td>
-                  <td className="muted" style={{ fontSize: 12 }}>{item.module}</td>
-                  <td>{statusBadge(item.status)}</td>
-                  <td>
-                    <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
-                      {item.status === 'pending' && (
-                        <>
-                          <button onClick={() => handlePush(item)} disabled={busy} style={{ borderColor: ACCENT, color: ACCENT }}>Push Now</button>
-                          <button onClick={() => alert(JSON.stringify(item.payload, null, 2))}>Preview</button>
-                          <button onClick={() => handleSkip(item)}>Skip</button>
-                        </>
-                      )}
-                      {item.payload?.admin_url && (
-                        <a href={item.payload.admin_url} target="_blank" rel="noreferrer" style={{ color: ACCENT, fontSize: 12 }}>Review →</a>
-                      )}
-                    </div>
-                  </td>
-                </tr>
-              ))}
-              {queue.length === 0 && (
-                <tr><td colSpan={5} className="muted" style={{ textAlign: 'center', padding: 24 }}>Queue is empty for this client.</td></tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-        {msg && <div style={{ color: 'var(--green)', marginTop: 10 }}>{msg}</div>}
-        {err && <div style={{ color: 'var(--red)', marginTop: 10 }}>{err}</div>}
-      </div>
-    );
-  }
-
   if (sub === 'Push History') {
-    const done = queue.filter(i => i.status !== 'pending');
     return (
       <div className="content-area">
         <h2 style={{ marginTop: 0 }}>Push History</h2>
+        <div className="muted" style={{ fontSize: 13, marginBottom: 12 }}>
+          Every inline push from Content Engine, Technical SEO, and AEO Engine is logged here.
+        </div>
         <div className="card">
           <table>
             <thead>
-              <tr><th>Date</th><th>Page</th><th>Type</th><th>Status</th><th>Review</th></tr>
+              <tr><th>Date</th><th>Module</th><th>Page</th><th>Type</th><th>Status</th><th>Review</th></tr>
             </thead>
             <tbody>
-              {done.map(item => (
+              {history.map(item => (
                 <tr key={item.id}>
-                  <td className="muted" style={{ fontSize: 12 }}>{item.pushed_at ? new Date(item.pushed_at).toLocaleString() : '—'}</td>
-                  <td style={{ maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.page_title}</td>
+                  <td className="muted" style={{ fontSize: 12 }}>
+                    {item.pushed_at ? new Date(item.pushed_at).toLocaleString() : new Date(item.created_at).toLocaleString()}
+                  </td>
+                  <td className="muted" style={{ fontSize: 12 }}>{item.module}</td>
+                  <td style={{ maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    <div style={{ fontWeight: 600 }}>{item.page_title}</div>
+                    <div className="muted" style={{ fontSize: 11 }}>{item.page_url}</div>
+                  </td>
                   <td><span className="badge">{item.change_type}</span></td>
                   <td>{statusBadge(item.status)}</td>
                   <td>
                     {item.payload?.admin_url && (
                       <a href={item.payload.admin_url} target="_blank" rel="noreferrer" style={{ color: ACCENT }}>Admin →</a>
                     )}
+                    {item.status === 'failed' && item.error_msg && (
+                      <span className="muted" style={{ fontSize: 11 }}>{item.error_msg}</span>
+                    )}
                   </td>
                 </tr>
               ))}
-              {done.length === 0 && (
-                <tr><td colSpan={5} className="muted" style={{ textAlign: 'center', padding: 24 }}>No pushes yet.</td></tr>
+              {history.length === 0 && (
+                <tr><td colSpan={6} className="muted" style={{ textAlign: 'center', padding: 24 }}>No pushes yet.</td></tr>
               )}
             </tbody>
           </table>

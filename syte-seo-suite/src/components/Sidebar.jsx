@@ -4,14 +4,14 @@ const MODULES = [
   { id: 'content',   label: 'Content Engine', color: 'var(--mod-content)' },
   { id: 'technical', label: 'Technical SEO',  color: 'var(--mod-technical)' },
   { id: 'aeo',       label: 'AEO Engine',     color: 'var(--mod-aeo)' },
-  { id: 'cms',       label: 'CMS Push',       color: 'var(--mod-cms)' }
+  { id: 'cms',       label: 'CMS',            color: 'var(--mod-cms)' }
 ];
 
 const SUB_NAVS = {
   content:   ['New Article', 'Rewrite & Expand', 'Metadata & Schema', 'Editorial Feedback', 'History'],
   technical: ['Dashboard', 'Task Board', 'New Scan', 'Clients', 'Team', 'Settings'],
   aeo:       ['Run Optimizations', 'Latest Results', 'Clients', 'Settings', 'History'],
-  cms:       ['CMS Connector', 'Push Queue', 'Push History']
+  cms:       ['Connector', 'Push History']
 };
 
 export default function Sidebar({ module, setModule, sub, setSub }) {

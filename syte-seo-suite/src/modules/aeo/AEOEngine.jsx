@@ -2,7 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { useClients } from '../../store/useClients.js';
 import { claudeComplete, extractJSON } from '../../lib/anthropic.js';
 import { corsFetchText } from '../../lib/corsProxy.js';
-import { queueCmsChange } from '../../lib/supabase.js';
+import PushToCmsButton from '../../components/PushToCmsButton.jsx';
+import { pushItemInline } from '../cms/pushAction.js';
 import { AEO_SYSTEM, AEO_TYPES } from './aeoTypes.js';
 import { fetchSitemapUrls } from './sitemap.js';
 import { listAccountSummaries, runReport } from './ga4.js';
@@ -138,23 +139,33 @@ export default function AEOEngine({ sub }) {
     finally { setBusy(false); }
   }
 
-  async function queueAllForClient() {
+  function buildOptItem(pageUrl, opt) {
+    return {
+      module: 'aeo',
+      page_url: pageUrl,
+      page_title: opt.title,
+      change_type: opt.type,
+      payload: { code: opt.code, placement: opt.placement, reason: opt.reason }
+    };
+  }
+
+  async function pushAllForClient() {
     if (!client) return;
+    setBusy(true); setErr(''); setProgress('');
     const mine = Object.values(results).filter(r => r.client_id === client.id);
+    let ok = 0, fail = 0;
     for (const r of mine) {
       for (const opt of r.optimizations || []) {
-        await queueCmsChange({
-          client_id: client.id,
-          module: 'aeo',
-          page_url: r.url,
-          page_title: opt.title,
-          change_type: opt.type,
-          payload: { code: opt.code, placement: opt.placement, reason: opt.reason },
-          status: 'pending'
-        });
+        try {
+          await pushItemInline(client, buildOptItem(r.url, opt));
+          ok++;
+        } catch (e) {
+          fail++;
+        }
+        setProgress('Pushed ' + ok + ' · failed ' + fail);
       }
     }
-    alert('Queued all AEO optimizations for ' + client.name);
+    setBusy(false);
   }
 
   // -------- Subviews --------
@@ -188,8 +199,8 @@ export default function AEOEngine({ sub }) {
         <div className="row" style={{ justifyContent: 'space-between', marginBottom: 14 }}>
           <h2 style={{ margin: 0 }}>Latest Results</h2>
           {mine.length > 0 && (
-            <button onClick={queueAllForClient} style={{ borderColor: 'var(--mod-cms)', color: 'var(--mod-cms)' }}>
-              Queue All for CMS Push
+            <button onClick={pushAllForClient} disabled={busy} style={{ borderColor: 'var(--mod-cms)', color: 'var(--mod-cms)' }}>
+              {busy ? 'Pushing…' : 'Push All to CMS'}
             </button>
           )}
         </div>
@@ -209,6 +220,9 @@ export default function AEOEngine({ sub }) {
                 </summary>
                 <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>Placement: {o.placement} · {o.reason}</div>
                 <pre style={{ background: 'var(--bg)', padding: 10, marginTop: 6, fontSize: 11, overflowX: 'auto' }}>{o.code}</pre>
+                <div style={{ marginTop: 6 }}>
+                  <PushToCmsButton item={buildOptItem(r.url, o)} />
+                </div>
               </details>
             ))}
           </div>

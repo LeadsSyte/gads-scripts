@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useClients } from '../store/useClients.js';
 import ClientModal from './ClientModal.jsx';
+import ImportClientsModal from './ImportClientsModal.jsx';
 
 export default function ClientSelector({ accent }) {
   const clients   = useClients(s => s.clients);
@@ -8,6 +9,7 @@ export default function ClientSelector({ accent }) {
   const select    = useClients(s => s.select);
   const current   = useClients(s => s.current);
   const [editing, setEditing] = useState(null);
+  const [importing, setImporting] = useState(false);
 
   const active = current();
 
@@ -27,6 +29,7 @@ export default function ClientSelector({ accent }) {
         </select>
         <button onClick={() => setEditing({})}>+ Add Client</button>
         {active && <button onClick={() => setEditing(active)}>Edit</button>}
+        <button onClick={() => setImporting(true)}>Import from Old Tools</button>
       </div>
       {active?.cms_type && (
         <span className="badge blue">{active.cms_type}</span>
@@ -37,6 +40,7 @@ export default function ClientSelector({ accent }) {
           onClose={() => setEditing(null)}
         />
       )}
+      {importing && <ImportClientsModal onClose={() => setImporting(false)} />}
     </div>
   );
 }

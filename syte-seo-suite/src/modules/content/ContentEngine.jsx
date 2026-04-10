@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useClients } from '../../store/useClients.js';
 import { claudeStream, extractJSON } from '../../lib/anthropic.js';
-import { queueCmsChange } from '../../lib/supabase.js';
 import { buildSystemPrompt, TAB_PROMPTS } from './prompts.js';
+import PushToCmsButton from '../../components/PushToCmsButton.jsx';
 
 const ACCENT = '#c8ff00';
 const HISTORY_KEY = 'syte-suite-content-history';
@@ -60,16 +60,36 @@ export default function ContentEngine({ sub }) {
   const [running, setRunning] = useState(false);
   const [err, setErr] = useState('');
   const [history, setHistory] = useState(loadHistory());
-  const [queued, setQueued] = useState(false);
 
   const tab = sub || 'New Article';
   const scores = useMemo(() => (output ? extractJSON(output) : null), [output]);
 
-  useEffect(() => { setQueued(false); }, [tab, output]);
+  // Build the virtual queue item that the inline Push-to-CMS button will push.
+  const pushItem = useMemo(() => {
+    if (!output) return null;
+    const titleMatch = output.match(/Meta Title[:\s]*(.+)/i);
+    const descMatch = output.match(/Meta Description[:\s]*(.+)/i);
+    const schemaMatch = output.match(/```json([\s\S]*?)```/);
+    const faqMatch = output.match(/(?:FAQ|Frequently Asked)[\s\S]*/i);
+    return {
+      module: 'content',
+      page_url: url || client?.url || '',
+      page_title: topic || keyword || 'Generated Article',
+      change_type: 'article',
+      payload: {
+        meta_title: titleMatch ? titleMatch[1].trim() : '',
+        meta_description: descMatch ? descMatch[1].trim() : '',
+        primary_keyword: keyword,
+        schema: schemaMatch ? schemaMatch[1].trim() : '',
+        faq: faqMatch ? faqMatch[0] : '',
+        html: output
+      }
+    };
+  }, [output, url, client, topic, keyword]);
 
   async function run() {
     if (!client) { setErr('Select a client first.'); return; }
-    setErr(''); setOutput(''); setRunning(true); setQueued(false);
+    setErr(''); setOutput(''); setRunning(true);
 
     const system = buildSystemPrompt(client);
     let userPrompt;
@@ -104,37 +124,6 @@ export default function ContentEngine({ sub }) {
       setErr(e.message);
     } finally {
       setRunning(false);
-    }
-  }
-
-  async function queueForCms() {
-    if (!client || !output) return;
-    try {
-      // Extract what we can for CMS push: meta title, meta description, schema, FAQ.
-      const titleMatch = output.match(/Meta Title[:\s]*(.+)/i);
-      const descMatch = output.match(/Meta Description[:\s]*(.+)/i);
-      const schemaMatch = output.match(/```json([\s\S]*?)```/);
-      const faqMatch = output.match(/(?:FAQ|Frequently Asked)[\s\S]*/i);
-
-      await queueCmsChange({
-        client_id: client.id,
-        module: 'content',
-        page_url: url || client.url || '',
-        page_title: topic || keyword || 'Generated Article',
-        change_type: 'article',
-        payload: {
-          meta_title: titleMatch ? titleMatch[1].trim() : '',
-          meta_description: descMatch ? descMatch[1].trim() : '',
-          primary_keyword: keyword,
-          schema: schemaMatch ? schemaMatch[1].trim() : '',
-          faq: faqMatch ? faqMatch[0] : '',
-          html: output
-        },
-        status: 'pending'
-      });
-      setQueued(true);
-    } catch (e) {
-      setErr(e.message);
     }
   }
 
@@ -220,9 +209,7 @@ export default function ContentEngine({ sub }) {
             <div className="row">
               <button onClick={() => exportTxt(output, topic || 'article')}>Export .txt</button>
               <button onClick={() => exportDocx(output, topic || 'article')}>Export .docx</button>
-              <button onClick={queueForCms} disabled={queued} style={{ borderColor: 'var(--mod-cms)', color: 'var(--mod-cms)' }}>
-                {queued ? 'Queued for CMS ✓' : 'Queue for CMS Push'}
-              </button>
+              {pushItem && <PushToCmsButton item={pushItem} />}
             </div>
           </div>
           <div className="stream-output">{output}</div>
