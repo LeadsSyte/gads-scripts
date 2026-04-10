@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import SuiteSettingsModal from './SuiteSettingsModal.jsx';
 
 const MODULES = [
+  { id: 'clients',   label: 'Clients',        color: '#e8e8ed' },
   { id: 'content',   label: 'Content Engine', color: 'var(--mod-content)' },
   { id: 'technical', label: 'Technical SEO',  color: 'var(--mod-technical)' },
   { id: 'aeo',       label: 'AEO Engine',     color: 'var(--mod-aeo)' },
@@ -10,6 +11,7 @@ const MODULES = [
 ];
 
 const SUB_NAVS = {
+  clients:   ['All Clients'],
   content:   ['New Article', 'Rewrite & Expand', 'Metadata & Schema', 'Editorial Feedback', 'Clients', 'History'],
   technical: ['Dashboard', 'Task Board', 'New Scan', 'Clients', 'Team', 'Settings'],
   aeo:       ['Run Optimizations', 'Latest Results', 'Clients', 'Settings', 'History'],

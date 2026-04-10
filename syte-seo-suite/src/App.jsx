@@ -7,12 +7,14 @@ import TechnicalSEO from './modules/technical/TechnicalSEO.jsx';
 import AEOEngine from './modules/aeo/AEOEngine.jsx';
 import CMSPush from './modules/cms/CMSPush.jsx';
 import ReportsModule from './modules/reports/ReportsModule.jsx';
+import ClientsMaster from './modules/clients/ClientsMaster.jsx';
 import { useClients } from './store/useClients.js';
 import { getStoredApiKey } from './lib/auth.js';
 import { needsMigration, countLegacyClients, runMigration } from './lib/migration.js';
 import { hasSupabase } from './lib/supabase.js';
 
 const ACCENTS = {
+  clients:   '#e8e8ed',
   content:   '#c8ff00',
   technical: '#ff6b35',
   aeo:       '#00d4aa',
@@ -23,6 +25,7 @@ const ACCENTS = {
 // Service flag filter per module. null = show all clients, else filters the
 // top-bar dropdown to clients with `does_<filter>` !== false.
 const SERVICE_FILTER = {
+  clients:   null,  // Master view — show everyone
   content:   'content',
   aeo:       'aeo',
   reports:   'reporting',
@@ -68,8 +71,8 @@ function MigrationScreen({ count, onDone }) {
 
 export default function App() {
   const [unlocked, setUnlocked] = useState(!!getStoredApiKey());
-  const [module, setModule] = useState('content');
-  const [sub, setSub] = useState('New Article');
+  const [module, setModule] = useState('clients');
+  const [sub, setSub] = useState('All Clients');
   const [migration, setMigration] = useState({ checked: false, needed: false, count: 0 });
 
   const load = useClients(s => s.load);
@@ -108,6 +111,7 @@ export default function App() {
             Supabase not configured — running on localStorage fallback. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in .env to enable sync.
           </div>
         )}
+        {module === 'clients'   && <ClientsMaster />}
         {module === 'content'   && <ContentEngine sub={sub} />}
         {module === 'technical' && <TechnicalSEO sub={sub} />}
         {module === 'aeo'       && <AEOEngine sub={sub} />}
