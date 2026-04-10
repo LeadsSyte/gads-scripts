@@ -27,7 +27,19 @@
 // ============================================
 // CONFIGURATION — UPDATE THIS
 // ============================================
+// Accepts either a raw sheet ID or a full sheet URL.
 var MASTER_SHEET_ID = 'YOUR_MASTER_SHEET_ID_HERE';
+
+/**
+ * Returns just the sheet ID, whether MASTER_SHEET_ID is set to a raw ID or
+ * a full https://docs.google.com/spreadsheets/d/<ID>/edit URL.
+ */
+function _sheetId() {
+  var s = String(MASTER_SHEET_ID || '').trim();
+  if (!s) throw new Error('MASTER_SHEET_ID is not set');
+  var m = s.match(/\/d\/([a-zA-Z0-9_-]+)/);
+  return m ? m[1] : s;
+}
 
 
 // ============================================
@@ -51,7 +63,7 @@ function doGet(e) {
   if (view === 'client') {
     if (!account) return _renderPage('Error', 'Missing account parameter.', false);
     try {
-      var ss = SpreadsheetApp.openById(MASTER_SHEET_ID);
+      var ss = SpreadsheetApp.openById(_sheetId());
       return _renderClientDashboard(ss, account);
     } catch (e2) {
       return _renderPage('Error', 'Could not load client dashboard: ' + e2.message, false);
@@ -74,7 +86,7 @@ function doGet(e) {
   }
 
   try {
-    var ss = SpreadsheetApp.openById(MASTER_SHEET_ID);
+    var ss = SpreadsheetApp.openById(_sheetId());
     var sheet = ss.getSheetByName('PendingChanges');
     if (!sheet) {
       return _renderPage('Error', 'PendingChanges sheet not found in master spreadsheet.', false);
@@ -183,7 +195,7 @@ function doPost(e) {
   }
 
   try {
-    var ss = SpreadsheetApp.openById(MASTER_SHEET_ID);
+    var ss = SpreadsheetApp.openById(_sheetId());
     var sheet = ss.getSheetByName('PendingChanges');
     var data = sheet.getDataRange().getValues();
     var headers = data[0];
@@ -413,7 +425,7 @@ function _renderClientDashboard(ss, accountName) {
  */
 function _rejectRun(runId) {
   try {
-    var ss = SpreadsheetApp.openById(MASTER_SHEET_ID);
+    var ss = SpreadsheetApp.openById(_sheetId());
     var sheet = ss.getSheetByName('PendingChanges');
     if (!sheet) return _renderPage('Error', 'PendingChanges sheet not found.', false);
 
