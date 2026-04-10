@@ -17,36 +17,72 @@ export async function getAudit(projectId) {
   return webceoCall('get_site_audit', { project: projectId });
 }
 
-// WebCEO's public API has used a couple of different method names across
-// revisions. Try the canonical one first, fall back if it errors or returns
-// an empty/wrong-shape payload.
-export async function getProjects() {
-  const candidates = ['get_projects_list', 'get_projects', 'getProjects', 'getProjectsList'];
-  let lastErr = null;
-  let lastResp = null;
+// WebCEO's public API returns a batch-format array of results:
+//   [{ method: "...", result: <data or error code>, errormsg: "..." }]
+// On success, the actual data lives inside result[0].result. On failure,
+// errormsg is populated and result is a numeric error code.
+function isBatchError(resp) {
+  const arr = Array.isArray(resp) ? resp : [resp];
+  for (const item of arr) {
+    if (!item || typeof item !== 'object') continue;
+    if (item.errormsg) return item.errormsg;
+    if (item.error) return item.error;
+    if (item.status === 'error') return item.message || 'error';
+    // A numeric `result` in the batch envelope is an error code.
+    if (typeof item.result === 'number') return 'error code ' + item.result;
+  }
+  return null;
+}
+
+function unwrapBatch(resp) {
+  if (Array.isArray(resp) && resp[0] && 'result' in resp[0]) {
+    return resp[0].result;
+  }
+  return resp;
+}
+
+// Method names WebCEO's public API has used across revisions. The first
+// one that doesn't return an "Unknown command" error wins. You can also
+// pass a custom name from the UI if none of these match.
+const DEFAULT_METHOD_CANDIDATES = [
+  'get_projects',
+  'get_project_list',
+  'get_projects_list',
+  'list_projects',
+  'get_all_projects',
+  'get_account_projects',
+  'get_account_info',
+  'get_account',
+  'account_info'
+];
+
+export async function getProjects(customMethod) {
+  const candidates = customMethod
+    ? [customMethod, ...DEFAULT_METHOD_CANDIDATES]
+    : DEFAULT_METHOD_CANDIDATES;
+
+  const attempts = [];
   for (const method of candidates) {
     try {
       const resp = await webceoCall(method, {});
-      // If WebCEO says the method is unknown, it typically returns
-      // { status: "error", error: "method ... not found" }. Skip and try next.
-      const errMsg = (resp?.error || resp?.message || '').toLowerCase();
-      if (errMsg.includes('method') && (errMsg.includes('not') || errMsg.includes('unknown'))) {
-        lastResp = resp;
-        continue;
+      const err = isBatchError(resp);
+      attempts.push({ method, errormsg: err, raw: resp });
+      if (!err) {
+        return { resp, method, attempts, data: unwrapBatch(resp) };
       }
-      if (resp?.status === 'error') {
-        lastResp = resp;
-        continue;
-      }
-      return resp;
     } catch (e) {
-      lastErr = e;
+      attempts.push({ method, errormsg: e.message });
     }
   }
-  // Return whatever the last attempt gave back so the caller can diagnose.
-  if (lastResp) return lastResp;
-  if (lastErr) throw lastErr;
-  return { projects: [] };
+  // Nothing worked — return last raw response + all attempts so the UI
+  // can show the operator exactly what was tried.
+  const last = attempts[attempts.length - 1];
+  return {
+    resp: last?.raw || null,
+    method: last?.method || null,
+    attempts,
+    data: null
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -147,13 +183,15 @@ export function extractProjects(root) {
 // Upsert WebCEO projects into the Supabase clients table. WebCEO is the
 // source of truth for which clients exist. Returns detailed breakdown so the
 // UI can display diagnostics when the shape is surprising.
-export async function syncWebceoClients(upsertClient, existingClients) {
-  const resp = await getProjects();
-  // Always log the raw response — open DevTools console if the sync looks wrong.
+export async function syncWebceoClients(upsertClient, existingClients, customMethod) {
+  const fetched = await getProjects(customMethod);
   // eslint-disable-next-line no-console
-  console.log('[WebCEO] raw get_projects response:', resp);
+  console.log('[WebCEO] fetch result:', fetched);
 
-  const projects = extractProjects(resp);
+  // Walk whichever of the wrapper or the unwrapped data actually has projects.
+  const projects = fetched.data
+    ? extractProjects(fetched.data)
+    : extractProjects(fetched.resp);
   // eslint-disable-next-line no-console
   console.log('[WebCEO] extracted project candidates:', projects);
 
@@ -214,6 +252,8 @@ export async function syncWebceoClients(upsertClient, existingClients) {
     skipped,
     total: projects.length,
     skippedReasons,
-    rawResponse: resp
+    rawResponse: fetched.resp,
+    method: fetched.method,
+    attempts: fetched.attempts
   };
 }

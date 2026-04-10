@@ -101,6 +101,7 @@ export default function TechnicalSEO({ sub }) {
   const [msg, setMsg] = useState('');
   const [err, setErr] = useState('');
   const [syncResult, setSyncResult] = useState(null);
+  const [customMethod, setCustomMethod] = useState('');
 
   useEffect(() => { saveTasks(tasks); }, [tasks]);
   useEffect(() => { saveTeam(team); }, [team]);
@@ -280,7 +281,7 @@ export default function TechnicalSEO({ sub }) {
     async function doSync() {
       setBusy(true); setErr(''); setMsg('Syncing from WebCEO…'); setSyncResult(null);
       try {
-        const r = await syncWebceoClients(upsertClient, clients);
+        const r = await syncWebceoClients(upsertClient, clients, customMethod.trim() || undefined);
         await reloadClients();
         setSyncResult(r);
         const parts = [
@@ -288,7 +289,8 @@ export default function TechnicalSEO({ sub }) {
           r.updated + ' updated',
           r.skipped ? r.skipped + ' skipped' : null
         ].filter(Boolean).join(' · ');
-        setMsg(`Sync complete. ${parts} (${r.total} total found in WebCEO response).`);
+        const methodNote = r.method ? ` [method: ${r.method}]` : '';
+        setMsg(`Sync complete. ${parts} (${r.total} found in WebCEO response)${methodNote}.`);
       } catch (e) { setErr(e.message); setMsg(''); }
       finally { setBusy(false); }
     }
@@ -308,6 +310,25 @@ export default function TechnicalSEO({ sub }) {
             </button>
           </div>
         </div>
+        {/* Custom method name override — needed when WebCEO's method name
+            isn't in our candidate list. Leave blank to auto-detect. */}
+        <div className="card" style={{ marginBottom: 14, padding: 12 }}>
+          <div className="row" style={{ gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+            <div style={{ flex: 1, minWidth: 280 }}>
+              <label>Custom WebCEO method name (optional)</label>
+              <input
+                value={customMethod}
+                onChange={e => setCustomMethod(e.target.value)}
+                placeholder="leave blank to auto-detect"
+                className="mono"
+              />
+            </div>
+            <div className="muted" style={{ fontSize: 11, maxWidth: 420 }}>
+              If auto-detect fails, check WebCEO's API docs or dashboard for the project-list method name and paste it here. We'll try this first, then fall back to common variants.
+            </div>
+          </div>
+        </div>
+
         {msg && <div style={{ color: 'var(--green)', marginBottom: 10 }}>{msg}</div>}
         {err && <div style={{ color: 'var(--red)', marginBottom: 10 }}>{err}</div>}
 
@@ -316,6 +337,29 @@ export default function TechnicalSEO({ sub }) {
             <summary style={{ cursor: 'pointer', fontSize: 12, color: 'var(--text-muted)' }}>
               {showDebug ? '⚠ Sync returned no new clients — click to see raw WebCEO response' : 'Debug: raw WebCEO response'}
             </summary>
+
+            {syncResult.attempts?.length > 0 && (
+              <div style={{ marginTop: 10, fontSize: 12 }}>
+                <strong>Methods tried:</strong>
+                <ul style={{ margin: '4px 0 8px 18px' }}>
+                  {syncResult.attempts.map((a, i) => (
+                    <li key={i} className="mono" style={{ fontSize: 11 }}>
+                      <span style={{ color: a.errormsg ? 'var(--red)' : 'var(--green)' }}>
+                        {a.errormsg ? '✗' : '✓'}
+                      </span>
+                      {' '}{a.method}
+                      {a.errormsg && <span className="muted"> — {a.errormsg}</span>}
+                    </li>
+                  ))}
+                </ul>
+                {showDebug && (
+                  <div className="muted" style={{ fontSize: 11 }}>
+                    None of the auto-detected method names worked. Look up the right name in WebCEO's API docs and paste it into the "Custom WebCEO method name" box above.
+                  </div>
+                )}
+              </div>
+            )}
+
             {syncResult.skippedReasons?.length > 0 && (
               <div style={{ marginTop: 8, fontSize: 12 }}>
                 <strong style={{ color: 'var(--orange)' }}>Skipped items:</strong>
@@ -324,6 +368,7 @@ export default function TechnicalSEO({ sub }) {
                 </ul>
               </div>
             )}
+
             <pre style={{ background: 'var(--bg)', padding: 10, borderRadius: 6, fontSize: 11, overflowX: 'auto', maxHeight: 400 }}>
               {JSON.stringify(syncResult.rawResponse, null, 2)}
             </pre>
