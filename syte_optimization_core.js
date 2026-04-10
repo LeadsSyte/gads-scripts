@@ -2557,6 +2557,34 @@ function _writeDailyDigestRow(results, duration) {
       results.errors ? results.errors.length : 0
     ]);
 
+    // Persist individual error messages to "Errors" tab so the weekly
+    // client report can link into a per-client drill-down view.
+    if (results.errors && results.errors.length > 0) {
+      try {
+        var errorsSheet = ss.getSheetByName('Errors');
+        if (!errorsSheet) {
+          errorsSheet = ss.insertSheet('Errors');
+          errorsSheet.getRange(1, 1, 1, 6).setValues([[
+            'timestamp', 'date', 'account', 'mode', 'run_mode', 'error_message'
+          ]]);
+          errorsSheet.getRange(1, 1, 1, 6).setFontWeight('bold');
+          errorsSheet.setFrozenRows(1);
+        }
+        var errRows = [];
+        for (var ei = 0; ei < results.errors.length; ei++) {
+          errRows.push([
+            now, dateStr, accountName, CONFIG.ACCOUNT_MODE,
+            CONFIG.PREVIEW_MODE ? 'PREVIEW' : 'LIVE',
+            String(results.errors[ei])
+          ]);
+        }
+        errorsSheet.getRange(errorsSheet.getLastRow() + 1, 1, errRows.length, 6)
+                   .setValues(errRows);
+      } catch (ee) {
+        _log('WARN', 'Could not write to Errors tab: ' + ee.message);
+      }
+    }
+
     _log('INFO', 'Daily digest row written');
   } catch (e) {
     _log('WARN', 'Could not write daily digest row: ' + e.message);

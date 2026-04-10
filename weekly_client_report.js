@@ -27,7 +27,8 @@
  * Version: 1.0.0
  */
 
-var SHEET_ID = 'PASTE_SHEET_ID_HERE';  // Master Google Sheet ID
+// Master Google Sheet — accepts either a full URL or just the ID portion
+var SHEET_ID = 'https://docs.google.com/spreadsheets/d/1TDEpz--yxg-x1lO3twfJ2Y_VJ6988Y1vaB0BKe6IfJU/edit?gid=0#gid=0';
 var EMAIL_TO = 'michaelh@syte.co.za';
 var TIMEZONE = 'Africa/Johannesburg';
 
@@ -39,9 +40,13 @@ var FLAG_CRITICAL_PCT = 50; // Red flag: conversions dropped 50%+
 var SILENT_DAYS = 4;
 
 function main() {
-  var ss = SpreadsheetApp.openById(SHEET_ID);
+  var ss = SpreadsheetApp.openById(_extractSheetId(SHEET_ID));
   var digestSheet = ss.getSheetByName('DailyDigest');
   if (!digestSheet) { Logger.log('No DailyDigest tab found'); return; }
+
+  // Read APPROVAL_WEBAPP_URL from Config tab so account names can link to the
+  // per-client dashboard. If it's not configured, names render as plain text.
+  var webAppUrl = _loadWebAppUrl(ss);
 
   var data = digestSheet.getDataRange().getValues();
   if (data.length < 2) { Logger.log('No data in DailyDigest'); return; }
@@ -244,7 +249,7 @@ function main() {
       email += '<tr style="background:' + (f % 2 === 0 ? '#fff' : '#fff5f5') +
                ';border-bottom:1px solid #ffcdd2;">';
       email += '<td style="padding:6px 8px;">' + badge + '</td>';
-      email += '<td style="padding:6px 8px;font-weight:600;">' + fr.name + '</td>';
+      email += '<td style="padding:6px 8px;font-weight:600;">' + _linkAccount(fr.name, webAppUrl) + '</td>';
       email += '<td style="padding:6px 8px;text-align:right;">' + fr.convThis.toFixed(0) + '</td>';
       email += '<td style="padding:6px 8px;text-align:right;">' + fr.convLast.toFixed(0) + '</td>';
       email += '<td style="padding:6px 8px;text-align:right;color:#c62828;font-weight:600;">↓ ' +
@@ -265,7 +270,7 @@ function main() {
              SILENT_DAYS + ' days — check that the script is still scheduled.</p>';
     email += '<ul style="font-size:13px;margin:0;padding:0 0 0 20px;">';
     for (var s = 0; s < silent.length; s++) {
-      email += '<li><strong>' + silent[s].name + '</strong> — last run ' +
+      email += '<li><strong>' + _linkAccount(silent[s].name, webAppUrl) + '</strong> — last run ' +
                (silent[s].lastRunDate || 'unknown') + '</li>';
     }
     email += '</ul></div>';
@@ -318,7 +323,7 @@ function main() {
     var totalKw = row.kwPaused + row.lowQsPaused;
 
     email += '<tr style="background:' + rowBg + ';border-bottom:1px solid #eee;">';
-    email += '<td style="padding:6px 8px;font-weight:600;">' + row.name + '</td>';
+    email += '<td style="padding:6px 8px;font-weight:600;">' + _linkAccount(row.name, webAppUrl) + '</td>';
     email += '<td style="padding:6px 8px;text-align:center;font-size:11px;color:#666;">' +
              row.mode + '</td>';
     email += '<td style="padding:6px 8px;text-align:right;">' + row.runs + '</td>';
@@ -373,6 +378,51 @@ function main() {
 // ============================================
 // HELPERS
 // ============================================
+
+/**
+ * Reads APPROVAL_WEBAPP_URL from the master sheet's Config tab. Returns ''
+ * if the Config tab is missing or the key isn't set.
+ */
+function _loadWebAppUrl(ss) {
+  try {
+    var configSheet = ss.getSheetByName('Config');
+    if (!configSheet) return '';
+    var data = configSheet.getDataRange().getValues();
+    for (var i = 0; i < data.length; i++) {
+      var key = String(data[i][0] || '').trim();
+      var val = String(data[i][1] || '').trim();
+      if (key === 'APPROVAL_WEBAPP_URL' && val) return val;
+    }
+  } catch (e) {
+    Logger.log('Could not read Config tab: ' + e.message);
+  }
+  return '';
+}
+
+/**
+ * Wraps an account name in a link to the per-client dashboard if the web
+ * app URL is configured; otherwise returns the plain HTML-escaped name.
+ */
+function _linkAccount(name, webAppUrl) {
+  var safe = String(name)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+  if (!webAppUrl) return safe;
+  var url = webAppUrl + (webAppUrl.indexOf('?') >= 0 ? '&' : '?') +
+            'view=client&account=' + encodeURIComponent(name);
+  return '<a href="' + url + '" style="color:#1565c0;text-decoration:none;">' + safe + '</a>';
+}
+
+/**
+ * Accepts either a raw sheet ID or a full sheet URL and returns the ID.
+ */
+function _extractSheetId(idOrUrl) {
+  if (!idOrUrl) throw new Error('SHEET_ID is not set');
+  var s = String(idOrUrl).trim();
+  var m = s.match(/\/d\/([a-zA-Z0-9_-]+)/);
+  return m ? m[1] : s;
+}
 
 /**
  * Builds a small approval activity summary from the PendingChanges tab.
