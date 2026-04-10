@@ -1,5 +1,5 @@
 /**
- * SYTE OPTIMIZATION CORE v4.4.0
+ * SYTE OPTIMIZATION CORE v4.5.0
  * ============================
  * This file is the CORE engine — hosted centrally and fetched by each client's loader script.
  * DO NOT paste this into Google Ads Scripts directly.
@@ -13,7 +13,22 @@
  * When you improve this core, ALL client accounts get the update on their next scheduled run.
  *
  * Author: Syte Digital Agency (syte.co.za)
- * Version: 4.4.0
+ * Version: 4.5.0
+ *
+ * CHANGELOG v4.5.0 — AI SEARCH TERM REVIEW NOW COVERS SHOPPING + PMAX:
+ * - _smartSearchTermReview() candidate collection expanded to SEARCH, SHOPPING, and PERFORMANCE_MAX.
+ *   Previously the unified AI review only saw Search campaigns; Shopping/PMax relied on blunt
+ *   spend+ROAS thresholds and a small regex list. Now borderline terms (clicks but no conversions
+ *   in the last 7 days) and low-ROAS terms on every channel get routed through Claude Haiku with
+ *   full client context, active-keyword safety, and the same "when in doubt, review" rules.
+ * - Candidates now track channelType. At apply time, PMax negations are written as campaign-level
+ *   negative keywords on the specific PMax campaign (shared neg lists are not supported on PMax);
+ *   Search and Shopping negations continue to use the routed shared negative lists.
+ * - PMax results still flow into results.pmaxSearchTermsNegated so the email report, approvals,
+ *   and digest rollups keep working with no format change.
+ * - _analyzeShoppingSearchTerms() and _analyzePMaxSearchTerms() now early-return when
+ *   SMART_NEGATION is on and an ANTHROPIC_API_KEY is present, avoiding double negation. They
+ *   remain as fallbacks for accounts running without the AI path.
  *
  * CHANGELOG v4.4.0 — EVAL STEP + APPROVAL SYSTEM + CLIENT CONTEXT:
  * - NEW: Collect-only mode — all optimization functions now collect proposed changes WITHOUT
@@ -552,7 +567,7 @@ function _smartSearchTermReview(results) {
       while (s1.hasNext()) {
         var r1 = s1.next();
         var st1 = r1.searchTermView.searchTerm.toLowerCase().trim();
-        if (!candidates[st1]) candidates[st1] = { term: st1, cost: 0, clicks: 0, campaign: r1.campaign.name, sources: [] };
+        if (!candidates[st1]) candidates[st1] = { term: st1, cost: 0, clicks: 0, campaign: r1.campaign.name, channelType: 'SEARCH', sources: [] };
         candidates[st1].cost += Number(r1.metrics.costMicros) / 1000000;
         candidates[st1].clicks += Number(r1.metrics.clicks) || 0;
         if (candidates[st1].sources.indexOf('HIGH_SPEND_LEAD_GEN') === -1) candidates[st1].sources.push('HIGH_SPEND_LEAD_GEN');
@@ -561,12 +576,13 @@ function _smartSearchTermReview(results) {
   }
 
   // SOURCE 2: High spend, low ROAS (last 30 days) — ecommerce
+  // v4.5.0: expanded to cover SEARCH, SHOPPING, and PERFORMANCE_MAX campaigns
   if (_isEcommerceMode()) {
     var ecomThreshold = CONFIG.ECOM_SEARCH_TERM_SPEND_THRESHOLD || 800;
     try {
       var q2 = 'SELECT search_term_view.search_term, campaign.name, metrics.cost_micros, metrics.conversions_value, metrics.clicks, campaign.status, campaign.advertising_channel_type ' +
         'FROM search_term_view WHERE metrics.cost_micros > ' + (ecomThreshold * 1000000) +
-        ' AND campaign.status = "ENABLED" AND campaign.advertising_channel_type = "SEARCH" ' +
+        ' AND campaign.status = "ENABLED" AND campaign.advertising_channel_type IN ("SEARCH", "SHOPPING", "PERFORMANCE_MAX") ' +
         'AND segments.date DURING LAST_30_DAYS';
       var s2 = AdsApp.search(q2);
       while (s2.hasNext()) {
@@ -576,7 +592,8 @@ function _smartSearchTermReview(results) {
         var revenue2 = Number(r2.metrics.conversionsValue) || 0;
         var roas2 = cost2 > 0 ? revenue2 / cost2 : 0;
         if (roas2 >= (CONFIG.MIN_ROAS_TO_KEEP || 1.5)) continue;
-        if (!candidates[st2]) candidates[st2] = { term: st2, cost: 0, clicks: 0, campaign: r2.campaign.name, sources: [], revenue: 0 };
+        var ch2 = r2.campaign.advertisingChannelType || 'SEARCH';
+        if (!candidates[st2]) candidates[st2] = { term: st2, cost: 0, clicks: 0, campaign: r2.campaign.name, channelType: ch2, sources: [], revenue: 0 };
         candidates[st2].cost += cost2;
         candidates[st2].clicks += Number(r2.metrics.clicks) || 0;
         candidates[st2].revenue = (candidates[st2].revenue || 0) + revenue2;
@@ -586,18 +603,21 @@ function _smartSearchTermReview(results) {
   }
 
   // SOURCE 3: Early detection — clicks but no conversions, last 7 days
+  // v4.5.0: expanded to cover SEARCH, SHOPPING, and PERFORMANCE_MAX (borderline borderline terms on every channel)
   var minClicks = CONFIG.SMART_NEGATION_MIN_CLICKS || 1;
   try {
     var q3 = 'SELECT search_term_view.search_term, search_term_view.status, campaign.name, ' +
-      'metrics.cost_micros, metrics.clicks, metrics.conversions, campaign.status ' +
+      'metrics.cost_micros, metrics.clicks, metrics.conversions, campaign.status, campaign.advertising_channel_type ' +
       'FROM search_term_view WHERE campaign.status = "ENABLED" ' +
       'AND metrics.clicks >= ' + minClicks + ' AND metrics.conversions = 0 ' +
+      'AND campaign.advertising_channel_type IN ("SEARCH", "SHOPPING", "PERFORMANCE_MAX") ' +
       'AND search_term_view.status = "NONE" AND segments.date DURING LAST_7_DAYS';
     var s3 = AdsApp.search(q3);
     while (s3.hasNext()) {
       var r3 = s3.next();
       var st3 = r3.searchTermView.searchTerm.toLowerCase().trim();
-      if (!candidates[st3]) candidates[st3] = { term: st3, cost: 0, clicks: 0, campaign: r3.campaign.name, sources: [] };
+      var ch3 = r3.campaign.advertisingChannelType || 'SEARCH';
+      if (!candidates[st3]) candidates[st3] = { term: st3, cost: 0, clicks: 0, campaign: r3.campaign.name, channelType: ch3, sources: [] };
       candidates[st3].cost += Number(r3.metrics.costMicros) / 1000000;
       candidates[st3].clicks += Number(r3.metrics.clicks) || 0;
       if (candidates[st3].sources.indexOf('EARLY_DETECTION') === -1) candidates[st3].sources.push('EARLY_DETECTION');
@@ -804,35 +824,60 @@ function _smartSearchTermReview(results) {
         continue;
       }
 
-      _log('INFO', 'AI NEGATE: "' + termKey + '" | ' + (CONFIG.CURRENCY_SYMBOL || 'R') + data.cost.toFixed(0) + ' | Reason: ' + v.reason);
-      results.smartNegated.push({ term: termKey, cost: data.cost, clicks: data.clicks, reason: v.reason });
+      var channelType = data.channelType || 'SEARCH';
+      _log('INFO', 'AI NEGATE [' + channelType + ']: "' + termKey + '" | ' + (CONFIG.CURRENCY_SYMBOL || 'R') + data.cost.toFixed(0) + ' | Reason: ' + v.reason);
+      results.smartNegated.push({ term: termKey, cost: data.cost, clicks: data.clicks, reason: v.reason, channelType: channelType, campaign: data.campaign });
 
-      // Also populate searchTermsNegated for backwards compat
-      results.searchTermsNegated.push({ searchTerm: termKey, campaign: data.campaign, spend: data.cost });
+      // Also populate backwards-compat buckets so the email report still surfaces Shopping/PMax
+      if (channelType === 'PERFORMANCE_MAX') {
+        results.pmaxSearchTermsNegated.push({ searchTerm: termKey, campaign: data.campaign, spend: data.cost });
+      } else {
+        results.searchTermsNegated.push({ searchTerm: termKey, campaign: data.campaign, spend: data.cost });
+      }
 
       _logChange({
         functionName: '_smartSearchTermReview',
         entity: termKey,
         entityType: 'SEARCH_TERM_NEGATIVE',
-        campaign: data.campaign,
+        campaign: data.campaign + ' [' + channelType + ']',
         reason: 'AI Negate: ' + v.reason,
         spend: data.cost,
         conversions: 0
       });
 
-      // Route to appropriate negative list based on AI reasoning
+      // Route negation to the correct place for this channel type.
+      //   SEARCH: shared negative keyword list (applied account-wide).
+      //   SHOPPING: shared negative keyword list still works for Shopping campaigns.
+      //   PERFORMANCE_MAX: PMax cannot use shared neg lists — add as campaign-level negative.
       if (!CONFIG.PREVIEW_MODE) {
-        var reason = (v.reason || '').toLowerCase();
-        var targetList = negativeListSpend;  // default
-        if (reason.indexOf('wrong industry') !== -1 || reason.indexOf('irrelevant') !== -1) {
-          targetList = negativeListIrr;
-        } else if (reason.indexOf('job') !== -1 || reason.indexOf('career') !== -1 ||
-                   reason.indexOf('academic') !== -1 || reason.indexOf('educational') !== -1 ||
-                   reason.indexOf('informational') !== -1 || reason.indexOf('diy') !== -1 ||
-                   reason.indexOf('tutorial') !== -1 || reason.indexOf('how to') !== -1) {
-          targetList = negativeListInfo;
+        try {
+          if (channelType === 'PERFORMANCE_MAX') {
+            // Campaign-level negative keyword on the specific PMax campaign
+            var pmaxIter = AdsApp.performanceMaxCampaigns()
+              .withCondition('campaign.name = "' + data.campaign.replace(/"/g, '\\"') + '"').get();
+            if (pmaxIter.hasNext()) {
+              pmaxIter.next().createNegativeKeyword('[' + termKey + ']');
+            } else {
+              _log('WARN', 'AI negate: PMax campaign "' + data.campaign + '" not found — falling back to shared list');
+              if (negativeListSpend) negativeListSpend.addNegativeKeyword('[' + termKey + ']');
+            }
+          } else {
+            // SEARCH + SHOPPING: route to appropriate shared negative list by AI reason
+            var reason = (v.reason || '').toLowerCase();
+            var targetList = negativeListSpend;  // default
+            if (reason.indexOf('wrong industry') !== -1 || reason.indexOf('irrelevant') !== -1) {
+              targetList = negativeListIrr;
+            } else if (reason.indexOf('job') !== -1 || reason.indexOf('career') !== -1 ||
+                       reason.indexOf('academic') !== -1 || reason.indexOf('educational') !== -1 ||
+                       reason.indexOf('informational') !== -1 || reason.indexOf('diy') !== -1 ||
+                       reason.indexOf('tutorial') !== -1 || reason.indexOf('how to') !== -1) {
+              targetList = negativeListInfo;
+            }
+            if (targetList) targetList.addNegativeKeyword('[' + termKey + ']');
+          }
+        } catch (negErr) {
+          _log('WARN', 'AI negate: failed to add "' + termKey + '" for ' + channelType + ' — ' + negErr.message);
         }
-        if (targetList) targetList.addNegativeKeyword('[' + termKey + ']');
       }
 
       negateCount++;
@@ -991,7 +1036,7 @@ function _logChange(change) {
       CONFIG.PREVIEW_MODE ? 'PREVIEW' : 'PENDING',  // outcome — PREVIEW tagged, LIVE backfilled in 14 days
       '',                  // outcome_checked_date
       '',                  // outcome_notes
-      'v4.4.0'            // script_version
+      'v4.5.0'            // script_version
     ]);
   } catch (e) {
     var writeErr = 'Change log write failed: ' + e.message;
@@ -1464,7 +1509,7 @@ function _sendWeeklyReviewEmail(accountName, claudeResponse, changeLogSummary) {
   // Header
   email += '<div style="background:linear-gradient(135deg,#1a1a2e,#16213e);color:white;padding:24px;border-radius:8px 8px 0 0;">';
   email += '<h1 style="margin:0;font-size:22px;">🤖 Syte Script — Weekly Self-Improvement Report</h1>';
-  email += '<p style="margin:6px 0 0;opacity:0.8;">' + accountName + ' | ' + today + ' | Core v4.4.0</p>';
+  email += '<p style="margin:6px 0 0;opacity:0.8;">' + accountName + ' | ' + today + ' | Core v4.5.0</p>';
   email += '</div>';
 
   // Change log stats banner
@@ -1789,6 +1834,13 @@ function _analyzeShoppingProducts(results) {
 }
 
 function _analyzeShoppingSearchTerms(results) {
+  // v4.5.0: When the AI-powered smart review is active and has an API key,
+  // it already covers Shopping search terms (irrelevant + borderline, last 7/30 days).
+  // Skip this legacy threshold-only fallback to avoid duplicate negation.
+  if (CONFIG.SMART_NEGATION !== false && CONFIG.ANTHROPIC_API_KEY) {
+    _log('INFO', 'Shopping search terms handled by AI smart review — skipping legacy analyzer');
+    return;
+  }
   var changeCount = 0;
   var existing = _getExistingNegatives(_getOrCreateNegativeList(CONFIG.NEGATIVE_LIST_NAME_SPEND));
   var query = 'SELECT search_term_view.search_term, campaign.name, metrics.cost_micros, metrics.conversions_value, campaign.status, campaign.advertising_channel_type FROM search_term_view WHERE campaign.status = "ENABLED" AND campaign.advertising_channel_type = "SHOPPING" AND metrics.cost_micros > ' + (CONFIG.ECOM_SEARCH_TERM_SPEND_THRESHOLD * 1000000) + ' AND segments.date DURING LAST_30_DAYS';
@@ -1840,6 +1892,13 @@ function _monitorPMaxCampaigns(results) {
 }
 
 function _analyzePMaxSearchTerms(results) {
+  // v4.5.0: When the AI-powered smart review is active and has an API key,
+  // it already covers PMax search terms (irrelevant + borderline, last 7/30 days)
+  // and routes negations as campaign-level PMax negatives. Skip the legacy fallback.
+  if (CONFIG.SMART_NEGATION !== false && CONFIG.ANTHROPIC_API_KEY) {
+    _log('INFO', 'PMax search terms handled by AI smart review — skipping legacy analyzer');
+    return;
+  }
   var changeCount = 0;
   var query = 'SELECT search_term_view.search_term, campaign.name, metrics.cost_micros, metrics.conversions_value, campaign.status, campaign.advertising_channel_type FROM search_term_view WHERE campaign.status = "ENABLED" AND campaign.advertising_channel_type = "PERFORMANCE_MAX" AND segments.date DURING LAST_30_DAYS';
   try {
@@ -2265,7 +2324,7 @@ function _checkConversionHealth(results) {
       if (CONFIG.SEND_EMAIL !== false) {
         var recipients = CONFIG.EMAIL_ADDRESSES || [CONFIG.EMAIL_RECIPIENT || 'michaelh@syte.co.za'];
         if (typeof recipients === 'string') recipients = [recipients];
-        MailApp.sendEmail({ to: recipients.join(','), subject: '🚨 URGENT: ' + CONFIG.CLIENT_NAME + ' — Conversions Dropped ' + dropPct + '%', body: alertMsg + '\n\nAction needed:\n1. Check conversion tags in GTM\n2. Test the conversion flow manually\n3. Check for landing page errors\n4. Review any recent website changes\n\n— Syte Optimization Script v4.4.0' });
+        MailApp.sendEmail({ to: recipients.join(','), subject: '🚨 URGENT: ' + CONFIG.CLIENT_NAME + ' — Conversions Dropped ' + dropPct + '%', body: alertMsg + '\n\nAction needed:\n1. Check conversion tags in GTM\n2. Test the conversion flow manually\n3. Check for landing page errors\n4. Review any recent website changes\n\n— Syte Optimization Script v4.5.0' });
       }
     }
 
@@ -2603,7 +2662,7 @@ function _sendReport(results, duration, evalResult, pendingRunId) {
 
   var email = '<html><body style="font-family:Arial,sans-serif;max-width:800px;margin:0 auto;color:#333;">';
   email += '<div style="background:linear-gradient(135deg,#0d47a1,#1565c0);color:white;padding:20px;border-radius:8px 8px 0 0;">';
-  email += '<h1 style="margin:0;font-size:20px;">Syte Optimization Report v4.4.0</h1>';
+  email += '<h1 style="margin:0;font-size:20px;">Syte Optimization Report v4.5.0</h1>';
   email += '<p style="margin:5px 0 0;opacity:0.8;">' + accountName + ' | ' + today + ' | ' + mode + ' | ' + CONFIG.ACCOUNT_MODE + '</p></div>';
 
   // v4.4.0: Approval buttons bar
@@ -2875,11 +2934,11 @@ function _sendReport(results, duration, evalResult, pendingRunId) {
     email += '</ul></div>';
   }
 
-  email += '<div style="padding:15px;color:#666;font-size:12px;"><p>Completed in ' + duration.toFixed(1) + 's | Core v4.4.0 | Syte Digital Agency</p></div></body></html>';
+  email += '<div style="padding:15px;color:#666;font-size:12px;"><p>Completed in ' + duration.toFixed(1) + 's | Core v4.5.0 | Syte Digital Agency</p></div></body></html>';
 
   var recipients = CONFIG.EMAIL_ADDRESSES || [CONFIG.EMAIL_RECIPIENT || 'michaelh@syte.co.za'];
   if (typeof recipients === 'string') recipients = [recipients];
-  MailApp.sendEmail({ to: recipients.join(','), subject: mode + ' Syte v4.4.0 | ' + accountName + ' | ' + CONFIG.ACCOUNT_MODE, htmlBody: email });
+  MailApp.sendEmail({ to: recipients.join(','), subject: mode + ' Syte v4.5.0 | ' + accountName + ' | ' + CONFIG.ACCOUNT_MODE, htmlBody: email });
 }
 
 
@@ -3435,7 +3494,7 @@ function runOptimization() {
   CONFIG.REQUIRE_APPROVAL = CONFIG.REQUIRE_APPROVAL !== false;
 
   _log('INFO', '═══════════════════════════════════════════');
-  _log('INFO', 'SYTE OPTIMIZATION CORE v4.4.0');
+  _log('INFO', 'SYTE OPTIMIZATION CORE v4.5.0');
   _log('INFO', 'Client: ' + (CONFIG.CLIENT_NAME || AdsApp.currentAccount().getName()));
   _log('INFO', 'Mode: ' + CONFIG.ACCOUNT_MODE);
   _log('INFO', 'Run: ' + (CONFIG.PREVIEW_MODE ? 'PREVIEW (no changes)' : 'LIVE'));
