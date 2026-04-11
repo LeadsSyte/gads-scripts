@@ -143,32 +143,10 @@ export async function diagnoseSupabase() {
     };
   }
 
-  // 1. Raw fetch to prove the host resolves and responds.
-  try {
-    const res = await fetch(url + '/rest/v1/', {
-      method: 'GET',
-      headers: { apikey: key, Authorization: 'Bearer ' + key }
-    });
-    if (!res.ok) {
-      return {
-        ok: false,
-        reason: 'http-error',
-        detail: 'Supabase responded ' + res.status + ' ' + res.statusText,
-        url,
-        keyPreview: key.slice(0, 12) + '…'
-      };
-    }
-  } catch (e) {
-    return {
-      ok: false,
-      reason: 'network',
-      detail: 'Network fetch to Supabase failed: ' + (e.message || String(e)) + '. Most likely the URL is wrong, the project is paused, or a browser extension is blocking it.',
-      url,
-      keyPreview: key.slice(0, 12) + '…'
-    };
-  }
-
-  // 2. Table-level check — the client-list query we actually use.
+  // Table-level check only — this is what actually matters. The new
+  // `sb_publishable_*` API keys return 401 on the /rest/v1/ root endpoint
+  // even when regular table access works fine, so we skip the root ping
+  // and go straight to a count HEAD against the actual table we use.
   try {
     const { error } = await supabase
       .from('syte_suite_clients')
@@ -185,8 +163,8 @@ export async function diagnoseSupabase() {
   } catch (e) {
     return {
       ok: false,
-      reason: 'client-error',
-      detail: 'supabase-js threw: ' + (e.message || String(e)),
+      reason: 'network',
+      detail: 'Network fetch to Supabase failed: ' + (e.message || String(e)) + '. Most likely the URL is wrong, the project is paused, or a browser extension is blocking it.',
       url,
       keyPreview: key.slice(0, 12) + '…'
     };

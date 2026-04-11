@@ -3,6 +3,7 @@ import { useClients } from '../../store/useClients.js';
 import { snapshotPreflight, runSnapshot } from './aeoRunner.js';
 import { saveAeoSnapshot, listAeoSnapshots } from '../../lib/supabase.js';
 import { ALL_ENGINES } from './aeoEngines.js';
+import { readinessFor } from '../../lib/clientReadiness.js';
 
 const ACCENT = '#a78bfa';
 
@@ -31,6 +32,8 @@ function ScoreBar({ value, label }) {
 
 export default function AEOSnapshot() {
   const client = useClients(s => s.current());
+  const allClients = useClients(s => s.clients);
+  const selectClient = useClients(s => s.select);
   const [preflight, setPreflight] = useState(null);
   const [progress, setProgress] = useState(null);
   const [snapshot, setSnapshot] = useState(null);
@@ -38,6 +41,33 @@ export default function AEOSnapshot() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [msg, setMsg] = useState('');
+
+  // Bulk-run state
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkProgress, setBulkProgress] = useState(null);
+  const [pendingMonthly, setPendingMonthly] = useState([]);
+
+  // Compute the list of AEO-enabled clients that haven't had a snapshot
+  // yet this month. Runs once when clients load.
+  useEffect(() => {
+    (async () => {
+      const thisMonth = new Date().toISOString().slice(0, 7);
+      const aeoClients = allClients.filter(c => {
+        if (c.does_aeo === false) return false;
+        const readiness = readinessFor(c, 'aeo');
+        return readiness.status === 'ready';
+      });
+      const pending = [];
+      for (const c of aeoClients) {
+        try {
+          const rows = await listAeoSnapshots(c.id);
+          const hasThisMonth = rows.some(r => r.month === thisMonth);
+          if (!hasThisMonth) pending.push(c);
+        } catch {}
+      }
+      setPendingMonthly(pending);
+    })();
+  }, [allClients]);
 
   useEffect(() => {
     if (!client) { setPreflight(null); setSnapshot(null); setLastSnapshot(null); return; }
@@ -86,7 +116,43 @@ export default function AEOSnapshot() {
     } catch (e) { setErr(e.message); }
   }
 
-  if (!client) {
+  // Run a snapshot for every AEO-ready client in sequence. Each one saves
+  // to syte_suite_aeo_history on success. Progress is tracked per-client
+  // so the user can see which ones finish and which ones fail.
+  async function runBulk(clientList) {
+    if (!clientList || clientList.length === 0) return;
+    setBulkBusy(true); setErr(''); setMsg('');
+    const total = clientList.length;
+    const results = { ok: 0, fail: 0, errors: [] };
+    for (let i = 0; i < clientList.length; i++) {
+      const c = clientList[i];
+      setBulkProgress({ index: i, total, clientName: c.name, status: 'running' });
+      try {
+        const result = await runSnapshot(c, {
+          onProgress: (p) => {
+            setBulkProgress({
+              index: i, total, clientName: c.name,
+              status: 'running',
+              detail: p.phase === 'sentiment' ? 'sentiment' : (p.engine || '')
+            });
+          }
+        });
+        await saveAeoSnapshot(result);
+        results.ok++;
+      } catch (e) {
+        results.fail++;
+        results.errors.push(c.name + ': ' + e.message);
+      }
+    }
+    setBulkProgress({ index: total, total, status: 'done', ok: results.ok, fail: results.fail, errors: results.errors });
+    setBulkBusy(false);
+
+    // Refresh the pending-monthly list since we just ran some.
+    const thisMonth = new Date().toISOString().slice(0, 7);
+    setPendingMonthly(prev => prev.filter(c => !clientList.some(r => r.id === c.id)));
+  }
+
+  if (!client && pendingMonthly.length === 0 && allClients.filter(c => c.does_aeo !== false).length === 0) {
     return <div className="muted">Select a client first.</div>;
   }
 
@@ -98,15 +164,112 @@ export default function AEOSnapshot() {
 
   const queries = (client.aeo_probe_queries || '').split('\n').map(s => s.trim()).filter(Boolean);
 
+  const today = new Date();
+  const isAfterFirst = today.getDate() >= 1; // always true, kept for clarity
+  const thisMonth = new Date().toISOString().slice(0, 7);
+  const readyAeoClients = allClients.filter(c => {
+    if (c.does_aeo === false) return false;
+    return readinessFor(c, 'aeo').status === 'ready';
+  });
+
   return (
     <div>
       <div className="row" style={{ justifyContent: 'space-between', marginBottom: 14 }}>
         <h2 style={{ margin: 0 }}>AEO Snapshot</h2>
         <span className="badge" style={{ borderColor: ACCENT, color: ACCENT }}>
-          {new Date().toISOString().slice(0, 7)}
+          {thisMonth}
         </span>
       </div>
 
+      {/* Monthly scheduler banner — prompts bulk run if any AEO-ready clients
+          haven't been snapshotted yet this month. Purely client-side. */}
+      {pendingMonthly.length > 0 && !bulkBusy && !bulkProgress?.status && (
+        <div className="card" style={{ marginBottom: 14, borderLeft: '4px solid ' + ACCENT }}>
+          <div className="row" style={{ justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
+            <div>
+              <strong>{pendingMonthly.length} client{pendingMonthly.length === 1 ? '' : 's'} need a {thisMonth} snapshot</strong>
+              <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+                Monthly schedule: AEO snapshots run on the 1st of every month. Click Run All to process
+                every ready client now, or run each one individually below.
+              </div>
+            </div>
+            <button
+              className="primary"
+              onClick={() => runBulk(pendingMonthly)}
+              style={{ background: ACCENT, borderColor: ACCENT, color: '#0a0a0c' }}
+            >
+              Run All ({pendingMonthly.length})
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Bulk-run progress */}
+      {bulkBusy && bulkProgress && (
+        <div className="card" style={{ marginBottom: 14, borderLeft: '4px solid ' + ACCENT }}>
+          <div className="row" style={{ justifyContent: 'space-between' }}>
+            <strong>Running bulk AEO snapshots</strong>
+            <span className="muted" style={{ fontSize: 12 }}>
+              {bulkProgress.index + 1} / {bulkProgress.total}
+            </span>
+          </div>
+          <div style={{ fontSize: 13, marginTop: 6 }}>
+            {bulkProgress.clientName} {bulkProgress.detail && <span className="muted">· {bulkProgress.detail}</span>}
+          </div>
+          <div style={{ height: 6, background: 'var(--surface-2)', borderRadius: 3, marginTop: 10, overflow: 'hidden' }}>
+            <div style={{
+              width: Math.round(((bulkProgress.index + 1) / bulkProgress.total) * 100) + '%',
+              height: '100%', background: ACCENT, transition: 'width .3s'
+            }} />
+          </div>
+        </div>
+      )}
+
+      {/* Bulk-run summary after completion */}
+      {bulkProgress?.status === 'done' && (
+        <div className="card" style={{ marginBottom: 14, borderLeft: '4px solid var(--green)' }}>
+          <div className="row" style={{ justifyContent: 'space-between' }}>
+            <strong>Bulk run complete</strong>
+            <button onClick={() => setBulkProgress(null)}>Dismiss</button>
+          </div>
+          <div style={{ fontSize: 13, marginTop: 6 }}>
+            {bulkProgress.ok} succeeded · {bulkProgress.fail} failed
+          </div>
+          {bulkProgress.errors?.length > 0 && (
+            <details style={{ marginTop: 8 }}>
+              <summary className="muted" style={{ fontSize: 11, cursor: 'pointer' }}>Errors</summary>
+              <ul style={{ fontSize: 12, margin: '6px 0 0 18px' }}>
+                {bulkProgress.errors.map((e, i) => <li key={i} className="muted">{e}</li>)}
+              </ul>
+            </details>
+          )}
+        </div>
+      )}
+
+      {/* Bulk action when no clients need a monthly run */}
+      {pendingMonthly.length === 0 && !bulkBusy && !bulkProgress?.status && readyAeoClients.length > 0 && (
+        <div className="muted" style={{ fontSize: 12, marginBottom: 10 }}>
+          All {readyAeoClients.length} AEO-ready clients have a snapshot for {thisMonth} ✓
+          {' '}
+          <button
+            onClick={() => runBulk(readyAeoClients)}
+            style={{ padding: '3px 10px', fontSize: 11, marginLeft: 8 }}
+          >
+            Re-run all anyway
+          </button>
+        </div>
+      )}
+
+      {!client && (
+        <div className="card" style={{ marginBottom: 14 }}>
+          <div className="muted">
+            Select a client in the top bar to see or run a per-client snapshot,
+            or use the Run All button above to process every ready client at once.
+          </div>
+        </div>
+      )}
+
+      {client && <>
       <div className="card" style={{ marginBottom: 14 }}>
         <div className="row" style={{ justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
           <div>
@@ -281,6 +444,7 @@ export default function AEOSnapshot() {
           </div>
         </>
       )}
+      </>}
     </div>
   );
 }

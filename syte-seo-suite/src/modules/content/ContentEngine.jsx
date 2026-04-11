@@ -3,6 +3,7 @@ import { useClients } from '../../store/useClients.js';
 import { claudeStream, extractJSON } from '../../lib/anthropic.js';
 import { buildSystemPrompt, TAB_PROMPTS } from './prompts.js';
 import PushToCmsButton from '../../components/PushToCmsButton.jsx';
+import ClientCardsGrid from '../../components/ClientCardsGrid.jsx';
 
 const ACCENT = '#c8ff00';
 const HISTORY_KEY = 'syte-suite-content-history';
@@ -129,8 +130,6 @@ export default function ContentEngine({ sub }) {
   }
 
   if (tab === 'Clients') {
-    // Show every client with Content Engine enabled, with their per-client
-    // defaults relevant for content work.
     const contentClients = allClients.filter(c => c.does_content !== false);
     return (
       <div className="content-area">
@@ -140,39 +139,7 @@ export default function ContentEngine({ sub }) {
             {contentClients.length} / {allClients.length} clients have Content Engine enabled
           </span>
         </div>
-        <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
-          <table>
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>URL</th>
-                <th>Industry</th>
-                <th>Location</th>
-                <th>Pages / mo</th>
-                <th>Voice</th>
-                <th>Author</th>
-              </tr>
-            </thead>
-            <tbody>
-              {contentClients.length === 0 && (
-                <tr><td colSpan={7} className="muted" style={{ textAlign: 'center', padding: 24 }}>
-                  No clients have Content Engine enabled. Toggle it on in Edit Client → Services.
-                </td></tr>
-              )}
-              {contentClients.map(c => (
-                <tr key={c.id}>
-                  <td>{c.name}</td>
-                  <td className="muted" style={{ maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.url || '—'}</td>
-                  <td className="muted">{c.industry || '—'}</td>
-                  <td className="muted">{c.location || '—'}</td>
-                  <td>{c.pages_per_month || 15}</td>
-                  <td className="muted" style={{ maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.voice || '—'}</td>
-                  <td className="muted">{c.author || '—'}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <ClientCardsGrid service="content" accent={ACCENT} clients={contentClients} />
       </div>
     );
   }

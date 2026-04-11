@@ -4,6 +4,7 @@ import { claudeComplete, extractJSON } from '../../lib/anthropic.js';
 import { corsFetchText } from '../../lib/corsProxy.js';
 import PushToCmsButton from '../../components/PushToCmsButton.jsx';
 import { pushItemInline } from '../cms/pushAction.js';
+import ClientCardsGrid from '../../components/ClientCardsGrid.jsx';
 import { AEO_SYSTEM, AEO_TYPES } from './aeoTypes.js';
 import { fetchSitemapUrls } from './sitemap.js';
 import { listAccountSummaries, runReport } from './ga4.js';
@@ -232,22 +233,16 @@ export default function AEOEngine({ sub }) {
   }
 
   if (sub === 'Clients') {
+    const aeoClients = clients.filter(c => c.does_aeo !== false);
     return (
       <div className="content-area">
-        <h2 style={{ marginTop: 0 }}>Clients</h2>
-        <table>
-          <thead><tr><th>Name</th><th>Sitemap</th><th>GA4</th><th>Results</th></tr></thead>
-          <tbody>
-            {clients.map(c => (
-              <tr key={c.id}>
-                <td>{c.name}</td>
-                <td className="muted">{c.sitemap_url || '—'}</td>
-                <td>{c.ga4_property_id || '—'}</td>
-                <td>{Object.values(results).filter(r => r.client_id === c.id).length}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <div className="row" style={{ justifyContent: 'space-between', marginBottom: 14 }}>
+          <h2 style={{ margin: 0 }}>AEO Engine Clients</h2>
+          <span className="muted" style={{ fontSize: 12 }}>
+            {aeoClients.length} / {clients.length} clients have AEO enabled
+          </span>
+        </div>
+        <ClientCardsGrid service="aeo" accent={ACCENT} clients={aeoClients} />
       </div>
     );
   }
