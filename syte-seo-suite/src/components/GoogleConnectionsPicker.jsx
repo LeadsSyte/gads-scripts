@@ -25,6 +25,7 @@ export default function GoogleConnectionsPicker({ ga4Value, onChangeGa4, gscValu
   const [gscSites, setGscSites] = useState([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState('');
+  const [apiErrors, setApiErrors] = useState([]); // structured API-disabled errors
 
   // Manual entry fallbacks
   const [manualGa4, setManualGa4] = useState(false);
@@ -43,19 +44,30 @@ export default function GoogleConnectionsPicker({ ga4Value, onChangeGa4, gscValu
   }, [signedIn]);
 
   async function loadProperties() {
-    setLoading(true); setErr('');
-    try {
-      const [e, ga, sites] = await Promise.all([
-        getCurrentEmail(),
-        fetchGa4Properties().catch(e => { console.error('GA4 fetch failed', e); setErr('GA4 fetch: ' + e.message); return []; }),
-        fetchGscSites().catch(e => { console.error('GSC fetch failed', e); setErr(prev => prev + (prev ? ' · ' : '') + 'GSC fetch: ' + e.message); return []; })
-      ]);
-      setEmail(e);
-      setGa4Props(ga);
-      setGscSites(sites);
-    } finally {
-      setLoading(false);
-    }
+    setLoading(true); setErr(''); setApiErrors([]);
+    const errors = [];
+    let genericErr = '';
+
+    const ga = await fetchGa4Properties().catch(e => {
+      console.error('GA4 fetch failed', e);
+      if (e.apiDisabled) errors.push({ service: 'GA4 Admin', message: e.message, enableUrl: e.enableUrl });
+      else genericErr += (genericErr ? ' · ' : '') + 'GA4: ' + e.message;
+      return [];
+    });
+    const sites = await fetchGscSites().catch(e => {
+      console.error('GSC fetch failed', e);
+      if (e.apiDisabled) errors.push({ service: 'Search Console', message: e.message, enableUrl: e.enableUrl });
+      else genericErr += (genericErr ? ' · ' : '') + 'GSC: ' + e.message;
+      return [];
+    });
+    const e = await getCurrentEmail();
+
+    setEmail(e);
+    setGa4Props(ga);
+    setGscSites(sites);
+    setApiErrors(errors);
+    if (genericErr) setErr(genericErr);
+    setLoading(false);
   }
 
   async function doSignIn() {
@@ -151,6 +163,49 @@ export default function GoogleConnectionsPicker({ ga4Value, onChangeGa4, gscValu
         to sign into each one when setting up clients.
       </div>
 
+      {apiErrors.map((ae, i) => (
+        <div key={i} style={{
+          marginBottom: 10,
+          padding: 12,
+          background: 'color-mix(in srgb, var(--orange) 8%, var(--surface-2))',
+          border: '1px solid color-mix(in srgb, var(--orange) 40%, var(--border))',
+          borderLeft: '4px solid var(--orange)',
+          borderRadius: 'var(--radius)'
+        }}>
+          <strong style={{ color: 'var(--orange)', fontSize: 13 }}>
+            {ae.service} API needs enabling
+          </strong>
+          <div style={{ fontSize: 12, marginTop: 6, color: 'var(--text)' }}>
+            {ae.message}
+          </div>
+          <div style={{ marginTop: 10, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <a
+              href={ae.enableUrl}
+              target="_blank"
+              rel="noreferrer"
+              style={{
+                display: 'inline-block',
+                padding: '6px 14px',
+                background: 'var(--orange)',
+                color: '#0a0a0c',
+                borderRadius: 'var(--radius)',
+                textDecoration: 'none',
+                fontWeight: 600,
+                fontSize: 12
+              }}
+            >
+              Enable {ae.service} API →
+            </a>
+            <button
+              onClick={loadProperties}
+              disabled={loading}
+              style={{ fontSize: 11, padding: '5px 10px' }}
+            >
+              {loading ? 'Re-checking…' : 'I\'ve enabled it — Refresh'}
+            </button>
+          </div>
+        </div>
+      ))}
       {err && <div style={{ color: 'var(--red)', marginBottom: 10, fontSize: 12 }}>{err}</div>}
       {loading && <div className="muted" style={{ fontSize: 12, marginBottom: 10 }}>Loading properties…</div>}
 

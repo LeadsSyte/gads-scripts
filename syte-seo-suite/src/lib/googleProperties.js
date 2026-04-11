@@ -1,7 +1,38 @@
 // Fetch + normalize GA4 properties and GSC sites for the current Google
 // token, plus format validation helpers for manual entry fallback.
 
-import { ensureToken, SCOPES } from '../modules/technical/googleAuth.js';
+import { ensureToken, SCOPES, GOOGLE_CLIENT_ID } from '../modules/technical/googleAuth.js';
+
+// Google's "API not enabled" errors come back as 403 with a message that
+// includes the phrase "has not been used in project" followed by the project
+// number. We throw a structured error the UI can render with a clickable
+// enable link instead of dumping the raw message on the operator.
+function extractProjectNumber() {
+  // Client IDs are shaped like "<project_number>-<hash>.apps.googleusercontent.com"
+  const m = GOOGLE_CLIENT_ID.match(/^(\d+)-/);
+  return m ? m[1] : null;
+}
+
+function makeApiDisabledError(service, apiLibraryPath) {
+  const project = extractProjectNumber();
+  const url = project
+    ? `https://console.cloud.google.com/apis/library/${apiLibraryPath}?project=${project}`
+    : `https://console.cloud.google.com/apis/library/${apiLibraryPath}`;
+  const err = new Error(`${service} API is not enabled on your Google Cloud project. Open the link below and click Enable, wait ~60 seconds, then hit Refresh.`);
+  err.enableUrl = url;
+  err.apiDisabled = true;
+  return err;
+}
+
+// Returns true if a raw API error response looks like an API-not-enabled 403.
+async function handleApiError(res, service, apiLibraryPath) {
+  if (res.ok) return null;
+  const txt = await res.text().catch(() => '');
+  if (res.status === 403 && /has not been used in project|API has not been used|disabled/i.test(txt)) {
+    throw makeApiDisabledError(service, apiLibraryPath);
+  }
+  throw new Error(`${service} ${res.status} ${txt.slice(0, 200)}`);
+}
 
 // ---------------------------------------------------------------------------
 // GA4 — flatten account summaries into a single property list, with full
@@ -25,10 +56,7 @@ export async function fetchGa4Properties() {
       'https://analyticsadmin.googleapis.com/v1beta/accountSummaries?' + params.toString(),
       { headers: { Authorization: 'Bearer ' + token.access_token } }
     );
-    if (!res.ok) {
-      const txt = await res.text().catch(() => '');
-      throw new Error('GA4 ' + res.status + ' ' + txt.slice(0, 200));
-    }
+    await handleApiError(res, 'GA4 Admin', 'analyticsadmin.googleapis.com');
     const data = await res.json();
 
     for (const acc of data.accountSummaries || []) {
@@ -77,10 +105,7 @@ export async function fetchGscSites() {
     'https://searchconsole.googleapis.com/webmasters/v3/sites',
     { headers: { Authorization: 'Bearer ' + token.access_token } }
   );
-  if (!res.ok) {
-    const txt = await res.text().catch(() => '');
-    throw new Error('GSC ' + res.status + ' ' + txt.slice(0, 200));
-  }
+  await handleApiError(res, 'Search Console', 'searchconsole.googleapis.com');
   const data = await res.json();
   const out = (data.siteEntry || []).map(s => ({
     siteUrl: s.siteUrl,
