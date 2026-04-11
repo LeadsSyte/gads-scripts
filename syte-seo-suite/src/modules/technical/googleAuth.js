@@ -1,6 +1,6 @@
-// Shared Google OAuth token handling (used by both Technical SEO for GSC
-// and AEO Engine for GA4). Uses the Google OAuth 2.0 implicit flow so it
-// works from a static single-page app without any backend.
+// Shared Google OAuth token handling. Covers the Technical SEO and AEO
+// modules (GSC + GA4) AND the client modal's GA4/GSC property picker.
+// Uses the Google OAuth 2.0 implicit flow — no backend required.
 
 export const GOOGLE_CLIENT_ID = '377465514344-ve8jabk68rl333p7p2n9ieo0pj0ruivt.apps.googleusercontent.com';
 
@@ -10,6 +10,10 @@ export const SCOPES = {
   gsc:  'https://www.googleapis.com/auth/webmasters.readonly',
   ga4:  'https://www.googleapis.com/auth/analytics.readonly'
 };
+
+// All the scopes needed for the combined GA4 + GSC picker. Requesting both
+// at once means the user only has to consent one time.
+export const ALL_READ_SCOPES = [SCOPES.gsc, SCOPES.ga4];
 
 export function getToken() {
   try {
@@ -25,7 +29,40 @@ export function clearToken() {
   localStorage.removeItem(TOKEN_KEY);
 }
 
-// Load the Google Identity Services script.
+// Revoke + clear so the next sign-in forces a full account picker.
+export async function signOut() {
+  const t = getToken();
+  if (t?.access_token && window.google?.accounts?.oauth2) {
+    try {
+      await new Promise((resolve) => {
+        window.google.accounts.oauth2.revoke(t.access_token, () => resolve());
+      });
+    } catch {}
+  }
+  clearToken();
+}
+
+// Fetch the current token's email + scope via Google's tokeninfo endpoint.
+// Cached on the token itself so repeated calls don't hammer Google.
+export async function getCurrentEmail() {
+  const t = getToken();
+  if (!t?.access_token) return null;
+  if (t.email) return t.email;
+  try {
+    const res = await fetch('https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=' + encodeURIComponent(t.access_token));
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (data.email) {
+      // Persist email back onto the stored token so we don't re-fetch every time.
+      const merged = { ...t, email: data.email };
+      localStorage.setItem(TOKEN_KEY, JSON.stringify(merged));
+      return data.email;
+    }
+  } catch {}
+  return null;
+}
+
+// Load the Google Identity Services script on demand.
 let gisLoaded;
 function loadGis() {
   if (gisLoaded) return gisLoaded;
@@ -41,12 +78,17 @@ function loadGis() {
   return gisLoaded;
 }
 
-export async function requestToken(scopes) {
+// Request an access token. Options:
+//   scopes: string or array of scope URLs
+//   forcePicker: if true, show the account chooser so the user can pick a
+//     different Google account (needed for the 6-account use case).
+export async function requestToken(scopes, { forcePicker = false } = {}) {
   await loadGis();
   return new Promise((resolve, reject) => {
     const client = window.google.accounts.oauth2.initTokenClient({
       client_id: GOOGLE_CLIENT_ID,
       scope: Array.isArray(scopes) ? scopes.join(' ') : scopes,
+      prompt: forcePicker ? 'select_account' : '',
       callback: (resp) => {
         if (resp.error) { reject(new Error(resp.error)); return; }
         const token = {
@@ -58,12 +100,19 @@ export async function requestToken(scopes) {
         resolve(token);
       }
     });
-    client.requestAccessToken({ prompt: '' });
+    client.requestAccessToken(forcePicker ? { prompt: 'select_account' } : {});
   });
 }
 
 export async function ensureToken(scopes) {
   const t = getToken();
-  if (t && (!scopes || scopes.every(s => (t.scope || '').includes(s)))) return t;
-  return requestToken(scopes);
+  const needed = Array.isArray(scopes) ? scopes : [scopes];
+  if (t && needed.every(s => (t.scope || '').includes(s))) return t;
+  return requestToken(needed);
+}
+
+// Force the account picker to show (used by the "Switch account" button).
+export async function switchAccount(scopes) {
+  await signOut();
+  return requestToken(scopes, { forcePicker: true });
 }

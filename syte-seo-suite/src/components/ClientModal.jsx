@@ -1,6 +1,8 @@
 import React, { useState, useMemo } from 'react';
 import { useClients } from '../store/useClients.js';
 import { claudeComplete, extractJSON } from '../lib/anthropic.js';
+import { normalizeGa4Id, normalizeGscProperty } from '../lib/googleProperties.js';
+import GoogleConnectionsPicker from './GoogleConnectionsPicker.jsx';
 
 // Brand voice presets — the dropdown contents. Picking Custom… reveals the
 // free text box so you can still type something bespoke.
@@ -20,6 +22,9 @@ const BRAND_VOICES = [
 // Base client fields (brand/content). Voice is rendered separately as a
 // dropdown. AEO probe queries + competitors are rendered separately too so
 // they can have their own auto-generate + validation behaviour.
+// GA4 Property ID and GSC Property are rendered separately via the
+// GoogleConnectionsPicker so they can be picked from a dropdown after
+// signing in with Google. See below.
 const BASE_FIELDS = [
   ['name',              'Client Name',        'input'],
   ['url',               'Website URL',        'input'],
@@ -32,8 +37,6 @@ const BASE_FIELDS = [
   ['context',           'Brand Context',      'textarea'],
   ['internal_links',    'Internal Links (one per line)', 'textarea'],
   ['sitemap_url',       'Sitemap URL',        'input'],
-  ['ga4_property_id',   'GA4 Property ID',    'input'],
-  ['gsc_property',      'GSC Property',       'input'],
   ['wceo_project_id',   'WebCEO Project ID',  'input'],
   ['pages_per_month',   'Pages / month',      'number']
 ];
@@ -184,6 +187,26 @@ Return ONLY valid JSON: { "queries": ["...", "..."] }`;
       if (payload.url && !/^https?:\/\//.test(payload.url)) {
         payload.url = 'https://' + payload.url.trim();
       }
+      // Validate + normalize GA4 property ID
+      if (payload.ga4_property_id) {
+        const r = normalizeGa4Id(payload.ga4_property_id);
+        if (!r.ok) {
+          setBusy(false);
+          setErr('GA4 Property ID invalid: ' + (r.message || r.reason));
+          return;
+        }
+        payload.ga4_property_id = r.value;
+      }
+      // Validate + normalize GSC property
+      if (payload.gsc_property) {
+        const r = normalizeGscProperty(payload.gsc_property);
+        if (!r.ok) {
+          setBusy(false);
+          setErr('Search Console Property invalid: ' + (r.message || r.reason));
+          return;
+        }
+        payload.gsc_property = r.value;
+      }
       await save(payload);
       onClose();
     } catch (e) {
@@ -274,6 +297,14 @@ Return ONLY valid JSON: { "queries": ["...", "..."] }`;
             )}
           </div>
         </div>
+
+        {/* Google connections (GA4 + GSC) */}
+        <GoogleConnectionsPicker
+          ga4Value={f.ga4_property_id}
+          onChangeGa4={v => update('ga4_property_id', v)}
+          gscValue={f.gsc_property}
+          onChangeGsc={v => update('gsc_property', v)}
+        />
 
         {/* Reporting & AEO */}
         <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '.08em', color: 'var(--text-dim)', margin: '20px 0 8px' }}>
