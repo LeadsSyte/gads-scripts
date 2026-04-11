@@ -46,7 +46,7 @@ QA SCORING OUTPUT (at the very end, after the article, as a single JSON code blo
 Suggestions must be 2–3 concrete improvements.
 `.trim();
 
-export function buildSystemPrompt(client, extra = '') {
+export function buildSystemPrompt(client, extra = '', researchContext = null) {
   const brandBlock = client ? `
 BRAND CONTEXT:
 - Name: ${client.name || ''}
@@ -62,7 +62,34 @@ BRAND CONTEXT:
 ${(client.internal_links || '').split('\n').filter(Boolean).map(l => '  - ' + l.trim()).join('\n')}
 `.trim() : '';
 
-  return [CORE_RULES, brandBlock, COMPLIANCE_RULES, QA_RULES, extra].filter(Boolean).join('\n\n');
+  // Research block is injected only when the topic came through the
+  // Topic Research tab (or when the operator picked an opportunity). It
+  // gives the writer the real Search Console numbers so the article can
+  // be framed around actual ranking gaps instead of guesswork.
+  const researchBlock = researchContext ? `
+SEARCH CONSOLE RESEARCH CONTEXT:
+- Primary keyword: ${researchContext.primary_keyword || ''}
+- Current position: ${researchContext.current_position ?? 'unranked'}
+- Current impressions (last 90d): ${researchContext.current_impressions ?? 0}
+- Current clicks (last 90d): ${researchContext.current_clicks ?? 0}
+- Opportunity type: ${researchContext.opportunity_type || 'unknown'}
+- Best existing ranking page: ${researchContext.best_existing_page || 'NONE'}${researchContext.best_existing_position ? ' (pos ' + researchContext.best_existing_position + ')' : ''}
+- Target page: ${researchContext.target_page || 'NEW'}
+- Suggested angle: ${researchContext.suggested_angle || ''}
+- Rationale: ${researchContext.rationale || ''}
+- Related queries the brand already ranks for:
+${(researchContext.related_queries || []).map(q => '  - "' + q.query + '" (pos ' + q.position + ', ' + q.impressions + ' impressions)').join('\n')}
+
+RANKING-AWARE WRITING RULES:
+- If this is a "refresh existing" opportunity, the article should expand on the existing page's angle without cannibalizing it. Mention in the meta that this is an updated/fresher take.
+- If this is "low-hanging-fruit" (pos 5-20), the article must clearly differentiate from whatever is currently in positions 1-4. Go deeper, use more recent data, add comparison tables, and target the "suggested angle" above directly.
+- If this is a "content-gap" (pos 21+), assume the brand has weak or no coverage. Go comprehensive and be the canonical answer.
+- If this is a "ranking-defend" (pos ≤3), this is a refresh/expansion, NOT a new article. Flag that in the intro.
+- If this is a "meta-rewrite", return ONLY the new meta title, meta description, and a 40-word AEO summary block — do not rewrite body content.
+- Naturally weave in the related queries above throughout the body so the article captures long-tail variations the brand already has traction for.
+`.trim() : '';
+
+  return [CORE_RULES, brandBlock, researchBlock, COMPLIANCE_RULES, QA_RULES, extra].filter(Boolean).join('\n\n');
 }
 
 export const TAB_PROMPTS = {

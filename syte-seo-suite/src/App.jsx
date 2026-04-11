@@ -112,7 +112,7 @@ export default function App() {
           </div>
         )}
         {module === 'clients'   && <ClientsMaster />}
-        {module === 'content'   && <ContentEngine sub={sub} />}
+        {module === 'content'   && <ContentEngine sub={sub} setSub={setSub} />}
         {module === 'technical' && <TechnicalSEO sub={sub} />}
         {module === 'aeo'       && <AEOEngine sub={sub} />}
         {module === 'reports'   && <ReportsModule sub={sub} />}

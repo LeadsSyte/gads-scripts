@@ -10,7 +10,16 @@ async function gscFetch(path, init = {}) {
       'Content-Type': 'application/json'
     }
   });
-  if (!res.ok) throw new Error('GSC ' + res.status + ' ' + await res.text());
+  if (!res.ok) {
+    const txt = await res.text().catch(() => '');
+    // Surface the API-disabled error with the same hint as the picker.
+    if (res.status === 403 && /has not been used in project/i.test(txt)) {
+      const err = new Error('Search Console API is not enabled on your Google Cloud project. Open Google Cloud Console → APIs → enable Search Console API, wait 60s, try again.');
+      err.apiDisabled = true;
+      throw err;
+    }
+    throw new Error('GSC ' + res.status + ' ' + txt.slice(0, 300));
+  }
   return res.json();
 }
 
@@ -18,7 +27,14 @@ export async function listSites() {
   return gscFetch('/webmasters/v3/sites');
 }
 
-export async function querySearchAnalytics(siteUrl, days = 28) {
+// Generic keyword/page query. `dimensions` is an array like ['query'],
+// ['page'], or ['query', 'page']. Caller decides timeframe and row limit.
+export async function querySearchAnalytics(siteUrl, {
+  days = 90,
+  dimensions = ['query'],
+  rowLimit = 1000,
+  startRow = 0
+} = {}) {
   const end = new Date();
   const start = new Date(Date.now() - days * 86400000);
   return gscFetch('/webmasters/v3/sites/' + encodeURIComponent(siteUrl) + '/searchAnalytics/query', {
@@ -26,8 +42,39 @@ export async function querySearchAnalytics(siteUrl, days = 28) {
     body: JSON.stringify({
       startDate: start.toISOString().slice(0, 10),
       endDate:   end.toISOString().slice(0, 10),
-      dimensions: ['page'],
-      rowLimit: 500
+      dimensions,
+      rowLimit,
+      startRow
     })
   });
+}
+
+// Convenience wrappers used by the Content Engine topic researcher.
+export async function topQueriesByImpression(siteUrl, days = 90) {
+  const data = await querySearchAnalytics(siteUrl, { days, dimensions: ['query'], rowLimit: 1000 });
+  return (data.rows || [])
+    .map(r => ({
+      query: r.keys[0],
+      clicks: r.clicks || 0,
+      impressions: r.impressions || 0,
+      ctr: r.ctr || 0,
+      position: r.position || 0
+    }))
+    .sort((a, b) => b.impressions - a.impressions);
+}
+
+export async function topPagesWithQueries(siteUrl, days = 90) {
+  const data = await querySearchAnalytics(siteUrl, {
+    days,
+    dimensions: ['page', 'query'],
+    rowLimit: 2500
+  });
+  return (data.rows || []).map(r => ({
+    page: r.keys[0],
+    query: r.keys[1],
+    clicks: r.clicks || 0,
+    impressions: r.impressions || 0,
+    ctr: r.ctr || 0,
+    position: r.position || 0
+  }));
 }

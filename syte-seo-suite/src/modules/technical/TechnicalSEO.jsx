@@ -133,7 +133,7 @@ export default function TechnicalSEO({ sub }) {
       } else if (client.gsc_property) {
         setMsg('Fetching GSC data…');
         await ensureToken([SCOPES.gsc]);
-        auditData = await querySearchAnalytics(client.gsc_property, 28);
+        auditData = await querySearchAnalytics(client.gsc_property, { days: 28, dimensions: ['page'], rowLimit: 500 });
       } else {
         throw new Error('Client needs either a WebCEO Project ID or a GSC Property.');
       }

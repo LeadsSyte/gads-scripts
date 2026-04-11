@@ -4,6 +4,7 @@ import { claudeStream, extractJSON } from '../../lib/anthropic.js';
 import { buildSystemPrompt, TAB_PROMPTS } from './prompts.js';
 import PushToCmsButton from '../../components/PushToCmsButton.jsx';
 import ClientCardsGrid from '../../components/ClientCardsGrid.jsx';
+import TopicResearch from './TopicResearch.jsx';
 
 const ACCENT = '#c8ff00';
 const HISTORY_KEY = 'syte-suite-content-history';
@@ -50,7 +51,7 @@ const SCORE_KEYS = [
   ['internal_linking',    'Internal Linking']
 ];
 
-export default function ContentEngine({ sub }) {
+export default function ContentEngine({ sub, setSub }) {
   const client = useClients(s => s.current());
   const allClients = useClients(s => s.clients);
   const [topic, setTopic] = useState('');
@@ -62,8 +63,12 @@ export default function ContentEngine({ sub }) {
   const [running, setRunning] = useState(false);
   const [err, setErr] = useState('');
   const [history, setHistory] = useState(loadHistory());
+  // When the user clicks Write Article on a topic card, we stash the full
+  // research context here and the next generation uses it in the system
+  // prompt. Stays alive across tab switches inside Content Engine.
+  const [researchContext, setResearchContext] = useState(null);
 
-  const tab = sub || 'New Article';
+  const tab = sub || 'Topic Research';
   const scores = useMemo(() => (output ? extractJSON(output) : null), [output]);
 
   // Build the virtual queue item that the inline Push-to-CMS button will push.
@@ -93,7 +98,7 @@ export default function ContentEngine({ sub }) {
     if (!client) { setErr('Select a client first.'); return; }
     setErr(''); setOutput(''); setRunning(true);
 
-    const system = buildSystemPrompt(client);
+    const system = buildSystemPrompt(client, '', researchContext);
     let userPrompt;
     switch (tab) {
       case 'Rewrite & Expand':    userPrompt = TAB_PROMPTS['Rewrite & Expand'](existing, keyword, length); break;
@@ -127,6 +132,28 @@ export default function ContentEngine({ sub }) {
     } finally {
       setRunning(false);
     }
+  }
+
+  if (tab === 'Topic Research') {
+    return (
+      <div className="content-area">
+        <TopicResearch
+          onWriteArticle={(opp, ctx) => {
+            // Pre-fill the New Article form from the selected opportunity
+            // and stash the full ranking context so buildSystemPrompt can
+            // reference it during generation.
+            setTopic(opp.topic_title || '');
+            setKeyword(opp.primary_keyword || '');
+            setLength(opp.recommended_length || 1500);
+            if (opp.target_page && opp.target_page !== 'NEW') {
+              setUrl(opp.target_page);
+            }
+            setResearchContext(ctx);
+            if (typeof setSub === 'function') setSub('New Article');
+          }}
+        />
+      </div>
+    );
   }
 
   if (tab === 'Clients') {
@@ -207,6 +234,35 @@ export default function ContentEngine({ sub }) {
             </div>
           )}
         </div>
+
+        {/* Research context badge — only shows when the opportunity came
+            from Topic Research. Lets the operator drop the context if they
+            want a pure manual run without ranking hints. */}
+        {researchContext && (
+          <div style={{
+            marginTop: 12,
+            padding: 10,
+            background: 'color-mix(in srgb, ' + ACCENT + ' 10%, var(--surface-2))',
+            border: '1px solid color-mix(in srgb, ' + ACCENT + ' 40%, var(--border))',
+            borderLeft: '3px solid ' + ACCENT,
+            borderRadius: 'var(--radius)',
+            fontSize: 12
+          }}>
+            <div className="row" style={{ justifyContent: 'space-between', marginBottom: 4 }}>
+              <strong style={{ color: ACCENT }}>Ranking-aware generation enabled</strong>
+              <button onClick={() => setResearchContext(null)} style={{ fontSize: 10, padding: '3px 8px' }}>
+                Drop context
+              </button>
+            </div>
+            <div className="muted" style={{ fontSize: 11 }}>
+              Writing for <strong>{researchContext.primary_keyword}</strong> · currently{' '}
+              <strong>position {researchContext.current_position ?? '—'}</strong> with{' '}
+              {(researchContext.current_impressions || 0).toLocaleString()} impressions · type:{' '}
+              {researchContext.opportunity_type}
+              {researchContext.related_queries?.length > 0 && ` · ${researchContext.related_queries.length} related queries folded in`}
+            </div>
+          </div>
+        )}
 
         <div className="row" style={{ marginTop: 14, justifyContent: 'space-between' }}>
           <div className="muted" style={{ fontSize: 12 }}>
