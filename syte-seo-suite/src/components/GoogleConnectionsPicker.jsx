@@ -38,27 +38,25 @@ export default function GoogleConnectionsPicker({ ga4Value, onChangeGa4, gscValu
   // Load properties whenever we're signed in.
   useEffect(() => {
     if (!signedIn) { setGa4Props([]); setGscSites([]); return; }
-    let cancelled = false;
-    (async () => {
-      setLoading(true); setErr('');
-      try {
-        const [e, ga, sites] = await Promise.all([
-          getCurrentEmail(),
-          fetchGa4Properties().catch(e => { console.error('GA4 fetch failed', e); return []; }),
-          fetchGscSites().catch(e => { console.error('GSC fetch failed', e); return []; })
-        ]);
-        if (cancelled) return;
-        setEmail(e);
-        setGa4Props(ga);
-        setGscSites(sites);
-      } catch (e) {
-        if (!cancelled) setErr(e.message);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => { cancelled = true; };
+    loadProperties();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [signedIn]);
+
+  async function loadProperties() {
+    setLoading(true); setErr('');
+    try {
+      const [e, ga, sites] = await Promise.all([
+        getCurrentEmail(),
+        fetchGa4Properties().catch(e => { console.error('GA4 fetch failed', e); setErr('GA4 fetch: ' + e.message); return []; }),
+        fetchGscSites().catch(e => { console.error('GSC fetch failed', e); setErr(prev => prev + (prev ? ' · ' : '') + 'GSC fetch: ' + e.message); return []; })
+      ]);
+      setEmail(e);
+      setGa4Props(ga);
+      setGscSites(sites);
+    } finally {
+      setLoading(false);
+    }
+  }
 
   async function doSignIn() {
     setErr('');
@@ -137,6 +135,9 @@ export default function GoogleConnectionsPicker({ ga4Value, onChangeGa4, gscValu
                 <span className="dot" style={{ background: 'var(--green)', marginRight: 6 }} />
                 {email || '(fetching…)'}
               </span>
+              <button onClick={loadProperties} disabled={loading} style={{ fontSize: 11, padding: '4px 10px' }}>
+                {loading ? 'Loading…' : 'Refresh'}
+              </button>
               <button onClick={doSwitch} style={{ fontSize: 11, padding: '4px 10px' }}>Switch account</button>
               <button onClick={doSignOut} style={{ fontSize: 11, padding: '4px 10px' }}>Sign out</button>
             </>
@@ -156,7 +157,14 @@ export default function GoogleConnectionsPicker({ ga4Value, onChangeGa4, gscValu
       {/* GA4 row */}
       <div style={{ marginBottom: 14 }}>
         <div className="row" style={{ justifyContent: 'space-between', alignItems: 'baseline' }}>
-          <label style={{ margin: 0 }}>GA4 Property</label>
+          <label style={{ margin: 0 }}>
+            GA4 Property
+            {signedIn && !loading && (
+              <span className="muted" style={{ fontSize: 10, textTransform: 'none', letterSpacing: 0, marginLeft: 8 }}>
+                {ga4Props.length} loaded across {Object.keys(ga4Groups).length} account(s)
+              </span>
+            )}
+          </label>
           <button
             onClick={() => setManualGa4(v => !v)}
             style={{ padding: '2px 8px', fontSize: 10 }}
@@ -206,7 +214,14 @@ export default function GoogleConnectionsPicker({ ga4Value, onChangeGa4, gscValu
       {/* GSC row */}
       <div>
         <div className="row" style={{ justifyContent: 'space-between', alignItems: 'baseline' }}>
-          <label style={{ margin: 0 }}>Search Console Property</label>
+          <label style={{ margin: 0 }}>
+            Search Console Property
+            {signedIn && !loading && (
+              <span className="muted" style={{ fontSize: 10, textTransform: 'none', letterSpacing: 0, marginLeft: 8 }}>
+                {gscSites.length} loaded
+              </span>
+            )}
+          </label>
           <button
             onClick={() => setManualGsc(v => !v)}
             style={{ padding: '2px 8px', fontSize: 10 }}

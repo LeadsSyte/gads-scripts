@@ -4,44 +4,71 @@
 import { ensureToken, SCOPES } from '../modules/technical/googleAuth.js';
 
 // ---------------------------------------------------------------------------
-// GA4 — flatten account summaries into a single property list
+// GA4 — flatten account summaries into a single property list, with full
+// pagination. The endpoint returns up to 200 per page; some agency-style
+// accounts have dozens of GA4 accounts + hundreds of properties total, so
+// we loop on nextPageToken until Google stops sending one.
 // ---------------------------------------------------------------------------
 
 export async function fetchGa4Properties() {
   const token = await ensureToken([SCOPES.ga4]);
-  const res = await fetch(
-    'https://analyticsadmin.googleapis.com/v1beta/accountSummaries',
-    { headers: { Authorization: 'Bearer ' + token.access_token } }
-  );
-  if (!res.ok) {
-    const txt = await res.text().catch(() => '');
-    throw new Error('GA4 ' + res.status + ' ' + txt.slice(0, 200));
-  }
-  const data = await res.json();
-  const out = [];
-  for (const acc of data.accountSummaries || []) {
-    for (const p of acc.propertySummaries || []) {
-      const id = (p.property || '').replace(/^properties\//, '');
-      out.push({
-        id,
-        name: p.displayName || '(unnamed)',
-        account: acc.displayName || '(no account name)',
-        accountId: (acc.account || '').replace(/^accounts\//, '')
-      });
+
+  const all = [];
+  let pageToken = null;
+  let safety = 0;
+
+  do {
+    const params = new URLSearchParams({ pageSize: '200' });
+    if (pageToken) params.set('pageToken', pageToken);
+
+    const res = await fetch(
+      'https://analyticsadmin.googleapis.com/v1beta/accountSummaries?' + params.toString(),
+      { headers: { Authorization: 'Bearer ' + token.access_token } }
+    );
+    if (!res.ok) {
+      const txt = await res.text().catch(() => '');
+      throw new Error('GA4 ' + res.status + ' ' + txt.slice(0, 200));
     }
-  }
+    const data = await res.json();
+
+    for (const acc of data.accountSummaries || []) {
+      for (const p of acc.propertySummaries || []) {
+        const id = (p.property || '').replace(/^properties\//, '');
+        all.push({
+          id,
+          name: p.displayName || '(unnamed)',
+          account: acc.displayName || '(no account name)',
+          accountId: (acc.account || '').replace(/^accounts\//, '')
+        });
+      }
+    }
+
+    pageToken = data.nextPageToken || null;
+    safety++;
+    if (safety > 50) {
+      // eslint-disable-next-line no-console
+      console.warn('[GA4] stopped paginating after 50 pages; API may be returning an infinite token.');
+      break;
+    }
+  } while (pageToken);
+
+  // eslint-disable-next-line no-console
+  console.log('[GA4] fetched', all.length, 'properties across', safety, 'page(s)');
+
   // Sort by account then by property name.
-  out.sort((a, b) => {
+  all.sort((a, b) => {
     const a1 = (a.account || '').toLowerCase();
     const b1 = (b.account || '').toLowerCase();
     if (a1 !== b1) return a1.localeCompare(b1);
     return (a.name || '').toLowerCase().localeCompare((b.name || '').toLowerCase());
   });
-  return out;
+  return all;
 }
 
 // ---------------------------------------------------------------------------
-// GSC — list sites (URL-prefix and domain) the user has access to
+// GSC — list every site the user has access to. We keep ALL permission
+// levels now (including siteUnverifiedUser) so we never hide a legitimate
+// property — the operator can judge for themselves whether to use it.
 // ---------------------------------------------------------------------------
 
 export async function fetchGscSites() {
@@ -57,12 +84,12 @@ export async function fetchGscSites() {
   const data = await res.json();
   const out = (data.siteEntry || []).map(s => ({
     siteUrl: s.siteUrl,
-    permissionLevel: s.permissionLevel
+    permissionLevel: s.permissionLevel || 'unknown'
   }));
-  // Hide "unverifiedUser" entries since they can't query anything.
-  const usable = out.filter(s => s.permissionLevel && s.permissionLevel !== 'siteUnverifiedUser');
-  usable.sort((a, b) => a.siteUrl.localeCompare(b.siteUrl));
-  return usable;
+  // eslint-disable-next-line no-console
+  console.log('[GSC] fetched', out.length, 'sites');
+  out.sort((a, b) => a.siteUrl.localeCompare(b.siteUrl));
+  return out;
 }
 
 // ---------------------------------------------------------------------------
