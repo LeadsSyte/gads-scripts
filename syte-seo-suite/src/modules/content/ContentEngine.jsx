@@ -5,14 +5,18 @@ import { buildSystemPrompt, TAB_PROMPTS } from './prompts.js';
 import PushToCmsButton from '../../components/PushToCmsButton.jsx';
 import ClientCardsGrid from '../../components/ClientCardsGrid.jsx';
 import TopicResearch from './TopicResearch.jsx';
+import AutoWrite from './AutoWrite.jsx';
 
 const ACCENT = '#c8ff00';
 const HISTORY_KEY = 'syte-suite-content-history';
+// Raised from 50 to 500 so bulk Auto Write runs (up to 20 articles per
+// client × many clients) don't immediately roll off the history.
+const HISTORY_CAP = 500;
 
 function loadHistory() {
   try { return JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]'); } catch { return []; }
 }
-function saveHistory(h) { localStorage.setItem(HISTORY_KEY, JSON.stringify(h.slice(0, 50))); }
+function saveHistory(h) { localStorage.setItem(HISTORY_KEY, JSON.stringify(h.slice(0, HISTORY_CAP))); }
 
 function escapeHtml(s = '') {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -68,7 +72,7 @@ export default function ContentEngine({ sub, setSub }) {
   // prompt. Stays alive across tab switches inside Content Engine.
   const [researchContext, setResearchContext] = useState(null);
 
-  const tab = sub || 'Topic Research';
+  const tab = sub || 'Auto Write';
   const scores = useMemo(() => (output ? extractJSON(output) : null), [output]);
 
   // Build the virtual queue item that the inline Push-to-CMS button will push.
@@ -132,6 +136,14 @@ export default function ContentEngine({ sub, setSub }) {
     } finally {
       setRunning(false);
     }
+  }
+
+  if (tab === 'Auto Write') {
+    return (
+      <div className="content-area">
+        <AutoWrite />
+      </div>
+    );
   }
 
   if (tab === 'Topic Research') {

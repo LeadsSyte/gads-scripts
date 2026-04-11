@@ -62,6 +62,17 @@ BRAND CONTEXT:
 ${(client.internal_links || '').split('\n').filter(Boolean).map(l => '  - ' + l.trim()).join('\n')}
 `.trim() : '';
 
+  // Manual direction from the client record — if the account manager has
+  // set one, every article for this client must honor it literally.
+  const manualDirection = (client?.internal_notes || '').trim();
+  const directionBlock = manualDirection ? `
+MANUAL CONTENT DIRECTION (from account manager — must be followed):
+"""
+${manualDirection}
+"""
+This direction overrides any conflicting default instructions. Apply it to the angle, examples, tone, and structure of the article.
+`.trim() : '';
+
   // Research block is injected only when the topic came through the
   // Topic Research tab (or when the operator picked an opportunity). It
   // gives the writer the real Search Console numbers so the article can
@@ -89,7 +100,7 @@ RANKING-AWARE WRITING RULES:
 - Naturally weave in the related queries above throughout the body so the article captures long-tail variations the brand already has traction for.
 `.trim() : '';
 
-  return [CORE_RULES, brandBlock, researchBlock, COMPLIANCE_RULES, QA_RULES, extra].filter(Boolean).join('\n\n');
+  return [CORE_RULES, brandBlock, directionBlock, researchBlock, COMPLIANCE_RULES, QA_RULES, extra].filter(Boolean).join('\n\n');
 }
 
 export const TAB_PROMPTS = {

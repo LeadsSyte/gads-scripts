@@ -44,8 +44,7 @@ const BASE_FIELDS = [
 const REPORTING_FIELDS = [
   ['reporting_email',    'Reporting Email',    'input'],
   ['start_date',         'Start Date with Syte', 'date'],
-  ['rankscale_url',      'Rankscale Share URL (optional)', 'input'],
-  ['internal_notes',     'Internal Notes (never shown to client)', 'textarea']
+  ['rankscale_url',      'Rankscale Share URL (optional)', 'input']
 ];
 
 const SERVICES = [
@@ -296,6 +295,24 @@ Return ONLY valid JSON: { "queries": ["...", "..."] }`;
               />
             )}
           </div>
+        </div>
+
+        {/* Manual content direction — optional override for Auto Write.
+            Claude uses this to steer topic selection AND the article itself.
+            Blank = pure data-driven from GSC rankings. */}
+        <div style={{ marginTop: 14 }}>
+          <label>
+            Manual Content Direction{' '}
+            <span className="muted" style={{ textTransform: 'none', letterSpacing: 0, fontSize: 11 }}>
+              — optional, never shown to client
+            </span>
+          </label>
+          <textarea
+            value={f.internal_notes || ''}
+            onChange={e => update('internal_notes', e.target.value)}
+            rows={3}
+            placeholder={`Leave blank to let Claude pick topics based on Search Console data alone.\n\nOr steer the direction, e.g.\n  "Focus on South African ecommerce case studies this month"\n  "Avoid mentioning specific competitor brand names"\n  "Lead every article with a real customer story"`}
+          />
         </div>
 
         {/* Google connections (GA4 + GSC) */}

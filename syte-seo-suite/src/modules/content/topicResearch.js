@@ -180,11 +180,21 @@ export async function generateTopicRecommendations(client, research) {
     };
   });
 
+  // Manual direction from the client record. When present, it MUST take
+  // priority over pure data-driven prioritization — e.g. if the account
+  // manager has said "focus on ecommerce case studies this month", Claude
+  // should bias topic selection in that direction even if the GSC numbers
+  // suggest other opportunities first.
+  const manualDirection = (client.internal_notes || '').trim();
+  const directionBlock = manualDirection
+    ? `\n\nMANUAL DIRECTION FROM ACCOUNT MANAGER (takes priority over pure data-driven ranking):\n"""\n${manualDirection}\n"""\n\nWhen this direction is present, you MUST:\n- Prioritize opportunities that align with it, even if their heuristic score is lower.\n- Explicitly reference the direction in the "summary" field.\n- Use it to shape the "suggested_angle" for every opportunity.\nIf the direction conflicts with a high-score opportunity, bias toward the direction unless that would ignore a major quick-win (pos 5-15, >1000 impressions).`
+    : '';
+
   const userMessage = `BRAND CONTEXT:
 ${JSON.stringify(summary, null, 2)}
 
 SEARCH CONSOLE DATA (top 40 scored opportunities from last ${research.days} days):
-${JSON.stringify(opportunities, null, 2)}
+${JSON.stringify(opportunities, null, 2)}${directionBlock}
 
 Analyze the data and return the JSON structure described in the system prompt.`;
 
