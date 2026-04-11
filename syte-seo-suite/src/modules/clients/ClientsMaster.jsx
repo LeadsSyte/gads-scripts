@@ -1,6 +1,6 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { useClients } from '../../store/useClients.js';
-import { upsertClient } from '../../lib/supabase.js';
+import { upsertClient, diagnoseSupabase } from '../../lib/supabase.js';
 import { syncWebceoClients } from '../technical/webceo.js';
 import ClientModal from '../../components/ClientModal.jsx';
 import ImportClientsModal from '../../components/ImportClientsModal.jsx';
@@ -52,6 +52,21 @@ export default function ClientsMaster() {
   const [err, setErr] = useState('');
   const [syncResult, setSyncResult] = useState(null);
   const [customMethod, setCustomMethod] = useState('');
+  const [health, setHealth] = useState(null);
+
+  // Run the Supabase connection check on mount and after any save action
+  // so the user can see exactly why a save would fail before they try.
+  useEffect(() => {
+    let cancelled = false;
+    diagnoseSupabase().then(r => { if (!cancelled) setHealth(r); });
+    return () => { cancelled = true; };
+  }, []);
+
+  async function recheckHealth() {
+    setHealth(null);
+    const r = await diagnoseSupabase();
+    setHealth(r);
+  }
 
   const filtered = useMemo(() => {
     if (!filter.trim()) return clients;
@@ -145,6 +160,41 @@ export default function ClientsMaster() {
           </div>
         ))}
       </div>
+
+      {/* Supabase connection health banner */}
+      {health && !health.ok && (
+        <div className="card" style={{
+          marginBottom: 14,
+          borderColor: 'var(--red)',
+          borderLeft: '4px solid var(--red)',
+          background: 'color-mix(in srgb, var(--red) 6%, var(--surface))'
+        }}>
+          <div className="row" style={{ justifyContent: 'space-between', marginBottom: 6 }}>
+            <strong style={{ color: 'var(--red)' }}>Supabase connection problem</strong>
+            <button onClick={recheckHealth} style={{ padding: '4px 10px', fontSize: 11 }}>Re-check</button>
+          </div>
+          <div style={{ fontSize: 13 }}>{health.detail}</div>
+          <div className="muted mono" style={{ fontSize: 11, marginTop: 6 }}>
+            URL: {health.url || '(empty)'} · key: {health.keyPreview}
+          </div>
+          <details style={{ marginTop: 8 }}>
+            <summary className="muted" style={{ fontSize: 11, cursor: 'pointer' }}>What to check</summary>
+            <ul style={{ margin: '6px 0 0 18px', fontSize: 12 }}>
+              <li>In Netlify → Site configuration → Environment variables, confirm <code>VITE_SUPABASE_URL</code> starts with <code>https://</code> and ends with <code>.supabase.co</code> (no trailing slash).</li>
+              <li>Confirm <code>VITE_SUPABASE_ANON_KEY</code> is the <strong>Publishable key</strong> (starts with <code>sb_publishable_</code>), not the secret.</li>
+              <li>If you changed env vars, trigger a fresh Netlify deploy — env vars are baked into the bundle at build time.</li>
+              <li>On the Supabase free tier, projects pause after 1 week of inactivity. Open your Supabase dashboard and confirm the project says "Active".</li>
+              <li>Ad blockers / privacy extensions sometimes block <code>*.supabase.co</code>. Try the app in an incognito window.</li>
+            </ul>
+          </details>
+        </div>
+      )}
+      {health && health.ok && (
+        <div className="muted" style={{ fontSize: 11, marginBottom: 10 }}>
+          <span className="dot" style={{ background: 'var(--green)', marginRight: 6 }} />
+          Supabase connected · {health.url}
+        </div>
+      )}
 
       {/* Custom WebCEO method override (only shown if sync ever failed this session) */}
       {syncResult && (

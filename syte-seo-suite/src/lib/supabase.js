@@ -126,6 +126,75 @@ export async function logProgress(entry) {
   }
 }
 
+// Connection diagnostic — pings the clients table with a HEAD count and
+// returns the first real error (or a 'no-supabase' marker if env vars
+// aren't set). Used by the master Clients view to show a live banner.
+export async function diagnoseSupabase() {
+  const url = import.meta.env.VITE_SUPABASE_URL || '';
+  const key = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
+
+  if (!supabase) {
+    return {
+      ok: false,
+      reason: 'no-supabase',
+      detail: 'VITE_SUPABASE_URL or VITE_SUPABASE_ANON_KEY is not set. Running on localStorage fallback.',
+      url,
+      keyPreview: key ? key.slice(0, 12) + '…' : '(empty)'
+    };
+  }
+
+  // 1. Raw fetch to prove the host resolves and responds.
+  try {
+    const res = await fetch(url + '/rest/v1/', {
+      method: 'GET',
+      headers: { apikey: key, Authorization: 'Bearer ' + key }
+    });
+    if (!res.ok) {
+      return {
+        ok: false,
+        reason: 'http-error',
+        detail: 'Supabase responded ' + res.status + ' ' + res.statusText,
+        url,
+        keyPreview: key.slice(0, 12) + '…'
+      };
+    }
+  } catch (e) {
+    return {
+      ok: false,
+      reason: 'network',
+      detail: 'Network fetch to Supabase failed: ' + (e.message || String(e)) + '. Most likely the URL is wrong, the project is paused, or a browser extension is blocking it.',
+      url,
+      keyPreview: key.slice(0, 12) + '…'
+    };
+  }
+
+  // 2. Table-level check — the client-list query we actually use.
+  try {
+    const { error } = await supabase
+      .from('syte_suite_clients')
+      .select('id', { count: 'exact', head: true });
+    if (error) {
+      return {
+        ok: false,
+        reason: 'table-error',
+        detail: 'Supabase table query failed: ' + error.message + '. Did you run both supabase-schema.sql and supabase-schema-reports.sql?',
+        url,
+        keyPreview: key.slice(0, 12) + '…'
+      };
+    }
+  } catch (e) {
+    return {
+      ok: false,
+      reason: 'client-error',
+      detail: 'supabase-js threw: ' + (e.message || String(e)),
+      url,
+      keyPreview: key.slice(0, 12) + '…'
+    };
+  }
+
+  return { ok: true, url, keyPreview: key.slice(0, 12) + '…' };
+}
+
 // ---------------------------------------------------------------------------
 // Reporting module — AEO snapshot history + monthly report log.
 // Both fall back to localStorage so the module works offline.

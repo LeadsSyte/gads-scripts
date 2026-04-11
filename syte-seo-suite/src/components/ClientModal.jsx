@@ -1,6 +1,25 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { useClients } from '../store/useClients.js';
+import { claudeComplete, extractJSON } from '../lib/anthropic.js';
 
+// Brand voice presets — the dropdown contents. Picking Custom… reveals the
+// free text box so you can still type something bespoke.
+const BRAND_VOICES = [
+  'Professional & authoritative',
+  'Warm & friendly',
+  'Confident & bold',
+  'Playful & casual',
+  'Expert & educational',
+  'Luxury & sophisticated',
+  'Direct & straightforward',
+  'Approachable & conversational',
+  'Inspirational & empowering',
+  'Technical & precise'
+];
+
+// Base client fields (brand/content). Voice is rendered separately as a
+// dropdown. AEO probe queries + competitors are rendered separately too so
+// they can have their own auto-generate + validation behaviour.
 const BASE_FIELDS = [
   ['name',              'Client Name',        'input'],
   ['url',               'Website URL',        'input'],
@@ -9,7 +28,6 @@ const BASE_FIELDS = [
   ['org_name',          'Organization Name',  'input'],
   ['author',            'Default Author',     'input'],
   ['author_creds',      'Author Credentials', 'input'],
-  ['voice',             'Brand Voice',        'textarea'],
   ['audience',          'Target Audience',    'textarea'],
   ['context',           'Brand Context',      'textarea'],
   ['internal_links',    'Internal Links (one per line)', 'textarea'],
@@ -24,8 +42,6 @@ const REPORTING_FIELDS = [
   ['reporting_email',    'Reporting Email',    'input'],
   ['start_date',         'Start Date with Syte', 'date'],
   ['rankscale_url',      'Rankscale Share URL (optional)', 'input'],
-  ['aeo_probe_queries',  'AEO Probe Queries (one per line)', 'textarea'],
-  ['competitors',        'Key Competitors (comma separated)', 'textarea'],
   ['internal_notes',     'Internal Notes (never shown to client)', 'textarea']
 ];
 
@@ -35,6 +51,33 @@ const SERVICES = [
   ['does_aeo',       'AEO Engine',     'var(--mod-aeo)'],
   ['does_reporting', 'Monthly Reporting', 'var(--mod-reports)']
 ];
+
+// ---- validation helpers ---------------------------------------------------
+
+const DOMAIN_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/i;
+
+function stripToDomain(raw) {
+  return raw
+    .trim()
+    .toLowerCase()
+    .replace(/^https?:\/\//, '')
+    .replace(/^www\./, '')
+    .replace(/\/.*$/, '')
+    .trim();
+}
+
+function parseCompetitorList(raw) {
+  return (raw || '')
+    .split(/[,\n]/)
+    .map(s => s.trim())
+    .filter(Boolean);
+}
+
+function normalizeCompetitorList(raw) {
+  return parseCompetitorList(raw).map(stripToDomain).filter(Boolean).join(', ');
+}
+
+// ---- generic field -------------------------------------------------------
 
 function Field({ k, label, type, value, onChange }) {
   const wrapStyle = type === 'textarea' ? { gridColumn: 'span 2' } : {};
@@ -54,8 +97,9 @@ function Field({ k, label, type, value, onChange }) {
   );
 }
 
+// ---- main modal ----------------------------------------------------------
+
 export default function ClientModal({ initial, onClose }) {
-  // Services default true for new clients.
   const [f, setF] = useState({
     pages_per_month: 15,
     does_technical: true,
@@ -66,29 +110,102 @@ export default function ClientModal({ initial, onClose }) {
   });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  const [genBusy, setGenBusy] = useState(false);
+  const [genMsg, setGenMsg] = useState('');
+  // Brand voice: is the current value one of the presets, or custom?
+  const [voiceMode, setVoiceMode] = useState(
+    f.voice && !BRAND_VOICES.includes(f.voice) ? 'custom' : 'preset'
+  );
   const save = useClients(s => s.save);
   const remove = useClients(s => s.remove);
 
   function update(k, v) { setF(prev => ({ ...prev, [k]: v })); }
 
+  // Highlight any competitor entries that don't look like a domain.
+  const competitorIssues = useMemo(() => {
+    const list = parseCompetitorList(f.competitors);
+    return list
+      .map(entry => ({ entry, ok: DOMAIN_RE.test(stripToDomain(entry)) }))
+      .filter(x => !x.ok);
+  }, [f.competitors]);
+
+  async function generateQueries() {
+    if (!f.industry && !f.context) {
+      setErr('Fill in Industry (or Brand Context) first so the generator has something to work with.');
+      return;
+    }
+    setGenBusy(true); setGenMsg(''); setErr('');
+    try {
+      const prompt = `Client: ${f.name || '(unnamed)'}
+Industry: ${f.industry || ''}
+Location / service area: ${f.location || ''}
+Target audience: ${f.audience || ''}
+Brand context: ${f.context || ''}
+Website: ${f.url || ''}
+
+Generate 8 natural-language probe queries that a potential customer might type into an AI assistant (ChatGPT, Perplexity, Gemini, or Claude) when looking for this kind of business. Queries should:
+- Sound like real user intents, not SEO keyword strings
+- Mix "best X in [location]" style with problem-first questions
+- Stay short (4-10 words each)
+- Test whether this specific brand would get mentioned in an AI's recommendation
+- Be lower-case, no quotes, one per entry
+
+Return ONLY valid JSON: { "queries": ["...", "..."] }`;
+      const text = await claudeComplete({
+        system: 'You generate AEO probe queries. Output ONLY valid JSON — no code fences, no prose.',
+        messages: [{ role: 'user', content: prompt }],
+        max_tokens: 800,
+        temperature: 0.7
+      });
+      const parsed = extractJSON(text);
+      if (!parsed?.queries || !Array.isArray(parsed.queries)) {
+        throw new Error('Generator returned unexpected output. Try again.');
+      }
+      update('aeo_probe_queries', parsed.queries.join('\n'));
+      setGenMsg(`Generated ${parsed.queries.length} queries ✓`);
+    } catch (e) {
+      setErr('Query generation failed: ' + e.message);
+    } finally {
+      setGenBusy(false);
+    }
+  }
+
   async function handleSave() {
     if (!f.name) { setErr('Name is required'); return; }
     setBusy(true); setErr('');
     try {
-      await save(f);
+      // Normalize before save: strip https:// / trailing slashes from
+      // competitor list so downstream brand detection works.
+      const payload = { ...f };
+      if (payload.competitors) {
+        payload.competitors = normalizeCompetitorList(payload.competitors);
+      }
+      // Normalize website URL
+      if (payload.url && !/^https?:\/\//.test(payload.url)) {
+        payload.url = 'https://' + payload.url.trim();
+      }
+      await save(payload);
       onClose();
-    } catch (e) { setErr(e.message); }
-    finally { setBusy(false); }
+    } catch (e) {
+      console.error('ClientModal save error:', e);
+      if (/Failed to fetch|NetworkError|fetch/i.test(e?.message || '')) {
+        setErr('Network error — could not reach Supabase. Check your internet connection, or verify VITE_SUPABASE_URL is correct in Netlify env vars.');
+      } else if (/column/i.test(e?.message || '') && /does not exist/i.test(e?.message || '')) {
+        setErr('Database schema out of date: ' + e.message + '. Run supabase-schema-reports.sql in the Supabase SQL Editor.');
+      } else {
+        setErr(e?.message || String(e));
+      }
+    } finally { setBusy(false); }
   }
 
   async function handleDelete() {
     if (!f.id) return;
     if (!confirm('Delete this client? This cannot be undone.')) return;
-    setBusy(true);
+    setBusy(true); setErr('');
     try {
       await remove(f.id);
       onClose();
-    } catch (e) { setErr(e.message); }
+    } catch (e) { setErr(e?.message || String(e)); }
     finally { setBusy(false); }
   }
 
@@ -100,6 +217,7 @@ export default function ClientModal({ initial, onClose }) {
           <button onClick={onClose} className="ghost">Close</button>
         </div>
 
+        {/* Services */}
         <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '.08em', color: 'var(--text-dim)', margin: '0 0 8px' }}>
           Services
         </div>
@@ -117,6 +235,7 @@ export default function ClientModal({ initial, onClose }) {
           ))}
         </div>
 
+        {/* Brand & Content */}
         <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '.08em', color: 'var(--text-dim)', margin: '16px 0 8px' }}>
           Brand & Content
         </div>
@@ -124,8 +243,39 @@ export default function ClientModal({ initial, onClose }) {
           {BASE_FIELDS.map(([k, label, type]) => (
             <Field key={k} k={k} label={label} type={type} value={f[k]} onChange={update} />
           ))}
+
+          {/* Brand voice — dropdown with preset options + Custom… escape */}
+          <div>
+            <label>Brand Voice / Tone</label>
+            <select
+              value={voiceMode === 'custom' ? '__custom__' : (f.voice || '')}
+              onChange={e => {
+                const v = e.target.value;
+                if (v === '__custom__') {
+                  setVoiceMode('custom');
+                  update('voice', '');
+                } else {
+                  setVoiceMode('preset');
+                  update('voice', v);
+                }
+              }}
+            >
+              <option value="">— select a tone —</option>
+              {BRAND_VOICES.map(v => <option key={v} value={v}>{v}</option>)}
+              <option value="__custom__">Custom…</option>
+            </select>
+            {voiceMode === 'custom' && (
+              <input
+                value={f.voice || ''}
+                onChange={e => update('voice', e.target.value)}
+                placeholder="Describe the brand voice…"
+                style={{ marginTop: 6 }}
+              />
+            )}
+          </div>
         </div>
 
+        {/* Reporting & AEO */}
         <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '.08em', color: 'var(--text-dim)', margin: '20px 0 8px' }}>
           Reporting & AEO
         </div>
@@ -135,7 +285,63 @@ export default function ClientModal({ initial, onClose }) {
           ))}
         </div>
 
-        {err && <div style={{ color: 'var(--red)', marginTop: 12 }}>{err}</div>}
+        {/* AEO probe queries with auto-generate */}
+        <div style={{ marginTop: 12 }}>
+          <div className="row" style={{ justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 4 }}>
+            <label style={{ margin: 0 }}>
+              AEO Probe Queries{' '}
+              <span className="muted" style={{ textTransform: 'none', letterSpacing: 0, fontSize: 11 }}>
+                (one per line — things a customer might ask an AI assistant)
+              </span>
+            </label>
+            <button
+              type="button"
+              onClick={generateQueries}
+              disabled={genBusy}
+              style={{ padding: '4px 10px', fontSize: 11, borderColor: 'var(--mod-reports)', color: 'var(--mod-reports)' }}
+            >
+              {genBusy ? 'Generating…' : '✨ Generate from brand context'}
+            </button>
+          </div>
+          <textarea
+            value={f.aeo_probe_queries || ''}
+            onChange={e => update('aeo_probe_queries', e.target.value)}
+            rows={5}
+            placeholder={
+              f.industry && f.location
+                ? `e.g. best ${f.industry.toLowerCase()} in ${f.location.toLowerCase()}`
+                : 'e.g. best digital marketing agency johannesburg'
+            }
+          />
+          {genMsg && <div style={{ color: 'var(--green)', fontSize: 11, marginTop: 4 }}>{genMsg}</div>}
+        </div>
+
+        {/* Competitors with domain validation */}
+        <div style={{ marginTop: 12 }}>
+          <label>
+            Key Competitors{' '}
+            <span className="muted" style={{ textTransform: 'none', letterSpacing: 0, fontSize: 11 }}>
+              (comma-separated domains — e.g. nicolarde.co.za, flume.co.za)
+            </span>
+          </label>
+          <textarea
+            value={f.competitors || ''}
+            onChange={e => update('competitors', e.target.value)}
+            rows={2}
+            placeholder="competitor1.co.za, competitor2.com, competitor3.net"
+            onBlur={() => {
+              // Auto-normalize on blur so the user sees clean values.
+              if (f.competitors) update('competitors', normalizeCompetitorList(f.competitors));
+            }}
+          />
+          {competitorIssues.length > 0 && (
+            <div style={{ color: 'var(--orange)', fontSize: 11, marginTop: 4 }}>
+              Not valid domains: {competitorIssues.map(x => '"' + x.entry + '"').join(', ')}. They'll be normalized on save.
+            </div>
+          )}
+        </div>
+
+        {err && <div style={{ color: 'var(--red)', marginTop: 12, fontSize: 13 }}>{err}</div>}
 
         <div style={{ display: 'flex', gap: 10, marginTop: 20, justifyContent: 'space-between' }}>
           <div>
