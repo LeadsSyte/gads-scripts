@@ -71,7 +71,8 @@ export default function AutoWrite() {
     try {
       const data = await collectResearchData(client, { days: 90 });
       setResearch(data);
-      const result = await generateTopicRecommendations(client, data);
+      const targetArticles = Math.max(1, Math.min(client.pages_per_month || 4, 50));
+      const result = await generateTopicRecommendations(client, data, { targetArticles });
       const sorted = (result.opportunities || [])
         .slice()
         .sort((a, b) => (a.priority || 99) - (b.priority || 99));
@@ -191,30 +192,48 @@ export default function AutoWrite() {
 
       {/* Client picker grid */}
       <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '.08em', color: 'var(--text-dim)', margin: '6px 0 8px' }}>
-        Pick a client to plan content for
+        Click a client to research topics from Search Console
       </div>
-      <div style={{ display: 'grid', gap: 8, gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', marginBottom: 20 }}>
+      <div style={{ display: 'grid', gap: 8, gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', marginBottom: 20 }}>
         {withGsc.map(c => {
           const isActive = c.id === activeId;
+          const isLoading = researchBusy && activeId === c.id;
           const direction = directionPreview(c.internal_notes);
           return (
             <button
               key={c.id}
-              onClick={() => startResearch(c)}
+              onClick={() => {
+                if (isActive && plan) return; // Already researched, don't re-run accidentally
+                if (!confirm(`Research & plan ${c.pages_per_month || 4} topics for "${c.name}" from Search Console data?`)) return;
+                startResearch(c);
+              }}
               disabled={researchBusy || writingIdx !== null}
               style={{
                 textAlign: 'left', padding: 12, borderRadius: 'var(--radius)',
                 background: isActive ? 'var(--surface-2)' : 'var(--surface)',
                 border: '1px solid ' + (isActive ? ACCENT : 'var(--border)'),
-                color: 'var(--text)', cursor: researchBusy ? 'wait' : 'pointer'
+                color: 'var(--text)',
+                cursor: (researchBusy || writingIdx !== null) ? 'wait' : 'pointer',
+                opacity: isLoading ? 0.7 : 1,
+                position: 'relative'
               }}
             >
-              <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {c.name}
+              <div className="row" style={{ justifyContent: 'space-between', marginBottom: 2 }}>
+                <div style={{ fontWeight: 600, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {c.name}
+                </div>
+                {isLoading && <div className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} />}
+                {isActive && plan && !isLoading && (
+                  <span style={{ fontSize: 9, color: 'var(--green)' }}>
+                    {doneCount}/{plan.opportunities.length} done
+                  </span>
+                )}
               </div>
               <div className="muted" style={{ fontSize: 10 }}>
-                {c.pages_per_month || 4} pages/mo
-                {direction && ' · direction set'}
+                {isLoading
+                  ? 'Researching topics…'
+                  : `${c.pages_per_month || 4} articles · click to research`}
+                {!isLoading && direction && ' · direction set'}
               </div>
             </button>
           );
@@ -253,15 +272,42 @@ export default function AutoWrite() {
       {plan && activeClient && (
         <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
           <div style={{ padding: '14px 16px', borderBottom: '1px solid var(--border)', background: 'var(--surface-2)' }}>
+            {/* Progress summary bar */}
+            <div className="row" style={{ gap: 16, marginBottom: 10, flexWrap: 'wrap' }}>
+              <div style={{ fontSize: 11 }}>
+                <span className="muted">Planned:</span>{' '}
+                <strong>{plan.opportunities.length}</strong>
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--green)' }}>
+                <span className="muted">Written:</span>{' '}
+                <strong>{doneCount}</strong>
+              </div>
+              {pendingCount > 0 && (
+                <div style={{ fontSize: 11, color: ACCENT }}>
+                  <span className="muted">Remaining:</span>{' '}
+                  <strong>{pendingCount}</strong>
+                </div>
+              )}
+              {errorCount > 0 && (
+                <div style={{ fontSize: 11, color: 'var(--red)' }}>
+                  <span className="muted">Failed:</span>{' '}
+                  <strong>{errorCount}</strong>
+                </div>
+              )}
+            </div>
+            {/* Overall progress bar */}
+            <div style={{ height: 6, background: 'var(--surface)', borderRadius: 3, overflow: 'hidden', marginBottom: 10 }}>
+              <div style={{
+                width: plan.opportunities.length > 0 ? Math.round((doneCount / plan.opportunities.length) * 100) + '%' : '0%',
+                height: '100%', background: 'var(--green)', transition: 'width .4s'
+              }} />
+            </div>
             <div className="row" style={{ justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
               <div>
                 <strong>{activeClient.name}</strong>
-                <span className="muted" style={{ marginLeft: 10, fontSize: 12 }}>
-                  {plan.opportunities.length} topics planned
-                </span>
-                {doneCount > 0 && (
+                {pendingCount === 0 && doneCount > 0 && (
                   <span style={{ marginLeft: 10, color: 'var(--green)', fontSize: 12 }}>
-                    {doneCount} written
+                    All articles complete ✓
                   </span>
                 )}
               </div>

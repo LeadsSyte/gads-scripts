@@ -148,10 +148,11 @@ Rules:
 - Identify content gaps where multiple related queries share a theme.
 - Use REAL numbers from the provided data — don't invent positions or impressions.
 - Consider the brand's industry, location, and audience when framing angles.
-- Return 8-12 best opportunities. Quality over quantity.
-- Priority field: 1 = highest urgency, 12 = lowest.`;
+- Return THE EXACT NUMBER of opportunities requested by the user (see TARGET_ARTICLES below). Quality over quantity — but hit the target count. If there aren't enough strong GSC signals, use your SEO expertise to suggest topical gaps based on the brand's industry.
+- Priority field: 1 = highest urgency, N = lowest.`;
 
-export async function generateTopicRecommendations(client, research) {
+export async function generateTopicRecommendations(client, research, { targetArticles } = {}) {
+  const target = targetArticles || client.pages_per_month || 4;
   const summary = {
     client: client.name,
     industry: client.industry || '',
@@ -190,13 +191,16 @@ export async function generateTopicRecommendations(client, research) {
     ? `\n\nMANUAL DIRECTION FROM ACCOUNT MANAGER (takes priority over pure data-driven ranking):\n"""\n${manualDirection}\n"""\n\nWhen this direction is present, you MUST:\n- Prioritize opportunities that align with it, even if their heuristic score is lower.\n- Explicitly reference the direction in the "summary" field.\n- Use it to shape the "suggested_angle" for every opportunity.\nIf the direction conflicts with a high-score opportunity, bias toward the direction unless that would ignore a major quick-win (pos 5-15, >1000 impressions).`
     : '';
 
-  const userMessage = `BRAND CONTEXT:
+  const userMessage = `TARGET_ARTICLES: ${target}
+Return exactly ${target} content opportunities.
+
+BRAND CONTEXT:
 ${JSON.stringify(summary, null, 2)}
 
 SEARCH CONSOLE DATA (top 40 scored opportunities from last ${research.days} days):
 ${JSON.stringify(opportunities, null, 2)}${directionBlock}
 
-Analyze the data and return the JSON structure described in the system prompt.`;
+Analyze the data and return the JSON structure described in the system prompt. Remember: return exactly ${target} opportunities.`;
 
   const text = await claudeComplete({
     system: RESEARCH_SYSTEM,
