@@ -94,6 +94,89 @@ function statusClass(s) {
   return { open: 'orange', done: 'blue', verified: 'green', failed: 'red' }[s] || '';
 }
 
+// Expandable task card for the pipeline view — shows priority, description,
+// copy-paste fix in a code block, and action buttons.
+function TaskCard({ task: t, onUpdate, onVerify, busy, buildPushItem }) {
+  const [open, setOpen] = React.useState(false);
+  const copyFix = () => navigator.clipboard.writeText(t.copy_paste_fix || '').catch(() => {});
+
+  return (
+    <div style={{
+      padding: '10px 14px', borderBottom: '1px solid var(--border)',
+      background: open ? 'var(--surface-2)' : undefined
+    }}>
+      <div
+        style={{ cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}
+        onClick={() => setOpen(v => !v)}
+      >
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontWeight: 600, fontSize: 13 }}>{t.title}</div>
+          <div className="muted" style={{ fontSize: 10, marginTop: 2 }}>
+            {t.page_url || ''}
+          </div>
+        </div>
+        <div className="row" style={{ gap: 6, flexShrink: 0 }}>
+          <span className={'badge badge-' + (t.priority || 'medium')} style={{
+            fontSize: 9, padding: '2px 7px',
+            background: { critical: 'rgba(255,77,77,.12)', high: 'rgba(255,159,67,.12)', medium: 'rgba(77,171,255,.12)', low: 'rgba(52,211,153,.12)' }[t.priority] || 'var(--surface-2)',
+            color: { critical: 'var(--red)', high: 'var(--orange)', medium: 'var(--blue)', low: 'var(--green)' }[t.priority] || 'var(--text-muted)',
+            border: '1px solid ' + ({ critical: 'rgba(255,77,77,.2)', high: 'rgba(255,159,67,.2)', medium: 'rgba(77,171,255,.2)', low: 'rgba(52,211,153,.2)' }[t.priority] || 'var(--border)'),
+            borderRadius: 4, textTransform: 'uppercase', fontWeight: 700
+          }}>{t.priority}</span>
+          <span className={'badge badge-' + (t.status || 'open')} style={{
+            fontSize: 9, padding: '2px 7px', borderRadius: 4, textTransform: 'uppercase', fontWeight: 700,
+            background: { open: 'rgba(255,107,53,.12)', done: 'rgba(52,211,153,.12)', verified: 'rgba(167,139,250,.12)', failed: 'rgba(255,77,77,.12)' }[t.status] || 'var(--surface-2)',
+            color: { open: 'var(--accent)', done: 'var(--green)', verified: 'var(--purple)', failed: 'var(--red)' }[t.status] || 'var(--text-muted)',
+            border: '1px solid ' + ({ open: 'rgba(255,107,53,.2)', done: 'rgba(52,211,153,.2)', verified: 'rgba(167,139,250,.2)', failed: 'rgba(255,77,77,.2)' }[t.status] || 'var(--border)')
+          }}>{t.status}</span>
+          <span className="muted" style={{ fontSize: 9 }}>{open ? '▼' : '▶'}</span>
+        </div>
+      </div>
+
+      {open && (
+        <div style={{ marginTop: 10 }}>
+          {t.description && (
+            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8, lineHeight: 1.5 }}>
+              {t.description}
+            </div>
+          )}
+          {t.copy_paste_fix && (
+            <div style={{ position: 'relative' }}>
+              <div className="row" style={{ justifyContent: 'space-between', marginBottom: 4 }}>
+                <span style={{ fontSize: 10, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--text-dim)' }}>
+                  Copy-paste fix
+                </span>
+                <button onClick={copyFix} style={{
+                  fontSize: 10, padding: '2px 8px', background: 'var(--surface-3)',
+                  border: '1px solid var(--border)', borderRadius: 4, color: 'var(--text-muted)', cursor: 'pointer'
+                }}>Copy</button>
+              </div>
+              <pre style={{
+                background: '#0d0e11', border: '1px solid var(--border)', borderRadius: 8,
+                padding: 12, fontFamily: 'JetBrains Mono, monospace', fontSize: 11,
+                lineHeight: 1.6, color: '#c8d0d8', overflowX: 'auto', whiteSpace: 'pre-wrap',
+                maxHeight: 200
+              }}>{t.copy_paste_fix}</pre>
+            </div>
+          )}
+          <div className="row" style={{ gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
+            {t.status === 'open' && <button onClick={() => onUpdate(t.id, { status: 'done' })} style={{ fontSize: 11, padding: '4px 10px' }}>Mark Done</button>}
+            {t.status === 'done' && <button onClick={() => onVerify(t)} disabled={busy} style={{ fontSize: 11, padding: '4px 10px' }}>Verify</button>}
+            {t.copy_paste_fix && <PushToCmsButton item={buildPushItem(t)} label="Push to CMS" />}
+            <MarkImplementedButton
+              module="technical"
+              changeType={t.fix_type || 'fix'}
+              pageUrl={t.page_url}
+              title={t.title}
+              description={t.copy_paste_fix || t.description || ''}
+            />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function TechnicalSEO({ sub }) {
   const clients = useClients(s => s.clients);
   const client = useClients(s => s.current());
@@ -216,6 +299,16 @@ export default function TechnicalSEO({ sub }) {
     ];
   }, [techClients, techImpls, tasks, currentMonth]);
 
+  const [expandedClient, setExpandedClient] = useState(null);
+
+  // Get tasks for a specific client, sorted by priority (critical first).
+  function getClientTasks(clientId) {
+    const priorityOrder = { critical: 0, high: 1, medium: 2, low: 3 };
+    return tasks
+      .filter(t => t.client_id === clientId)
+      .sort((a, b) => (priorityOrder[a.priority] ?? 4) - (priorityOrder[b.priority] ?? 4));
+  }
+
   // -------- Subviews --------
   if (sub === 'Dashboard') {
     const counts = {
@@ -245,11 +338,7 @@ export default function TechnicalSEO({ sub }) {
           sections={techPipeline}
           onAction={(c, action) => {
             if (action === 'scan') {
-              // Select the client and immediately trigger the scan.
               useClients.getState().select(c.id);
-              // runScan reads `client` from zustand state, but the state
-              // update from select() hasn't re-rendered yet. So we call
-              // a version that takes the client explicitly.
               runScanForClient(c);
             }
           }}
@@ -259,6 +348,26 @@ export default function TechnicalSEO({ sub }) {
             { key: 'scan', label: 'Re-scan', color: ACCENT,
               condition: (c, section) => section === 'verified-on-site' }
           ]}
+          onExpandClient={(c) => setExpandedClient(prev => prev === c.id ? null : c.id)}
+          expandedId={expandedClient}
+          renderExpanded={(c) => {
+            const cTasks = getClientTasks(c.id);
+            if (cTasks.length === 0) {
+              return <div className="muted" style={{ padding: 12, fontSize: 12 }}>No tasks yet. Click Run Scan to generate.</div>;
+            }
+            // Show top 10 highest priority tasks with expandable fixes.
+            const topTasks = cTasks.slice(0, 10);
+            return (
+              <div>
+                <div className="muted" style={{ padding: '8px 14px 4px', fontSize: 11 }}>
+                  Showing top {topTasks.length} of {cTasks.length} tasks (highest priority first)
+                </div>
+                {topTasks.map(t => (
+                  <TaskCard key={t.id} task={t} onUpdate={updateTask} onVerify={handleVerify} busy={busy} buildPushItem={buildPushItem} />
+                ))}
+              </div>
+            );
+          }}
         />
 
         {/* Task status counts */}

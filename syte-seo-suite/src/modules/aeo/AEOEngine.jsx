@@ -49,6 +49,84 @@ ${pageHtml}`
   return parsed?.optimizations || [];
 }
 
+// Expandable optimization card for a single page — shows each optimization
+// with type badge, description, and copy-paste ready code block.
+const OPT_TYPE_COLORS = {
+  schema: { bg: 'rgba(167,139,250,.12)', color: 'var(--purple)', border: 'rgba(167,139,250,.2)' },
+  content: { bg: 'rgba(0,212,170,.12)', color: 'var(--teal)', border: 'rgba(0,212,170,.2)' },
+  meta: { bg: 'rgba(77,171,255,.12)', color: 'var(--blue)', border: 'rgba(77,171,255,.2)' },
+  structure: { bg: 'rgba(255,159,67,.12)', color: 'var(--orange)', border: 'rgba(255,159,67,.2)' }
+};
+
+function OptPageCard({ result: r }) {
+  const [open, setOpen] = React.useState(false);
+  const opts = Array.isArray(r.optimizations) ? r.optimizations : [];
+  const copyAll = () => {
+    const text = opts.map((o, i) =>
+      `[${i + 1}] ${o.name || o.title || ''} (${o.type || ''})\n${o.description || ''}\n${o.where ? 'Where: ' + o.where + '\n' : ''}\n${o.implementation || o.code || ''}\n`
+    ).join('\n' + '─'.repeat(40) + '\n\n');
+    navigator.clipboard.writeText(text).catch(() => {});
+  };
+
+  return (
+    <div style={{ borderBottom: '1px solid var(--border)' }}>
+      <div
+        style={{ padding: '10px 14px', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
+        onClick={() => setOpen(v => !v)}
+      >
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontWeight: 600, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {r.url?.replace(/^https?:\/\//, '').replace(/\/$/, '') || 'Page'}
+          </div>
+        </div>
+        <div className="row" style={{ gap: 8, flexShrink: 0 }}>
+          <span style={{ fontSize: 11, color: 'var(--teal)', background: 'rgba(0,212,170,.08)', padding: '2px 8px', borderRadius: 12 }}>
+            {opts.length} optimizations
+          </span>
+          <button onClick={(e) => { e.stopPropagation(); copyAll(); }} style={{ fontSize: 10, padding: '2px 8px' }}>Copy All</button>
+          <span className="muted" style={{ fontSize: 9 }}>{open ? '▼' : '▶'}</span>
+        </div>
+      </div>
+      {r.error && <div style={{ padding: '0 14px 8px', color: 'var(--red)', fontSize: 12 }}>{r.error}</div>}
+      {open && opts.map((o, i) => {
+        const typeColors = OPT_TYPE_COLORS[o.type] || OPT_TYPE_COLORS.content;
+        const code = o.implementation || o.code || '';
+        return (
+          <div key={i} style={{ margin: '0 14px 10px', padding: 12, background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 'var(--radius)' }}>
+            <div className="row" style={{ gap: 8, marginBottom: 6 }}>
+              <span style={{
+                fontSize: 9, fontWeight: 700, letterSpacing: '.05em', padding: '2px 7px', borderRadius: 4,
+                textTransform: 'uppercase', background: typeColors.bg, color: typeColors.color,
+                border: '1px solid ' + typeColors.border
+              }}>{o.type || 'content'}</span>
+              <span style={{ fontWeight: 600, fontSize: 13 }}>{o.name || o.title || 'Optimization'}</span>
+            </div>
+            {o.description && <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>{o.description}</div>}
+            {o.where && <div style={{ fontSize: 11, color: 'var(--teal)', marginBottom: 6 }}>📍 {o.where}</div>}
+            {code && (
+              <div>
+                <div className="row" style={{ justifyContent: 'space-between', marginBottom: 4 }}>
+                  <span style={{ fontSize: 10, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--text-dim)' }}>Copy-paste ready</span>
+                  <button onClick={() => navigator.clipboard.writeText(code).catch(() => {})} style={{
+                    fontSize: 10, padding: '2px 8px', background: 'var(--surface-3)',
+                    border: '1px solid var(--border)', borderRadius: 4, color: 'var(--text-muted)', cursor: 'pointer'
+                  }}>Copy</button>
+                </div>
+                <pre style={{
+                  background: '#0d0e11', border: '1px solid var(--border)', borderRadius: 8,
+                  padding: 12, fontFamily: 'JetBrains Mono, monospace', fontSize: 11,
+                  lineHeight: 1.6, color: '#c8d0d8', overflowX: 'auto', whiteSpace: 'pre-wrap',
+                  maxHeight: 200
+                }}>{code}</pre>
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 export default function AEOEngine({ sub }) {
   const clients = useClients(s => s.clients);
   const client = useClients(s => s.current());
@@ -251,6 +329,15 @@ export default function AEOEngine({ sub }) {
     ];
   }, [aeoClients, aeoImpls, results, currentMonth]);
 
+  const [expandedClient, setExpandedClient] = useState(null);
+
+  // Get results for a client — returns array of page results sorted by # of optimizations (most first).
+  function getClientResults(clientId) {
+    return Object.values(results)
+      .filter(r => r.client_id === clientId)
+      .sort((a, b) => (b.optimizations?.length || 0) - (a.optimizations?.length || 0));
+  }
+
   // -------- Subviews --------
   if (sub === 'Run Optimizations') {
     return (
@@ -284,6 +371,30 @@ export default function AEOEngine({ sub }) {
             { key: 'run', label: 'Re-run', color: ACCENT,
               condition: (c, section) => section === 'verified-on-site' }
           ]}
+          onExpandClient={(c) => setExpandedClient(prev => prev === c.id ? null : c.id)}
+          expandedId={expandedClient}
+          renderExpanded={(c) => {
+            const cResults = getClientResults(c.id);
+            if (cResults.length === 0) {
+              return <div className="muted" style={{ padding: 12, fontSize: 12 }}>No optimizations yet. Click Run Optimizations to generate.</div>;
+            }
+            const totalOpts = cResults.reduce((a, r) => a + (r.optimizations?.length || 0), 0);
+            return (
+              <div>
+                <div className="muted" style={{ padding: '8px 14px 4px', fontSize: 11 }}>
+                  {totalOpts} optimizations across {cResults.length} page{cResults.length > 1 ? 's' : ''}
+                </div>
+                {cResults.slice(0, 5).map(r => (
+                  <OptPageCard key={r.url} result={r} client={c} />
+                ))}
+                {cResults.length > 5 && (
+                  <div className="muted" style={{ padding: '8px 14px', fontSize: 11 }}>
+                    …and {cResults.length - 5} more pages. View all in Latest Results.
+                  </div>
+                )}
+              </div>
+            );
+          }}
         />
 
         <div style={{ borderTop: '1px solid var(--border)', marginTop: 20, paddingTop: 16 }}>
@@ -320,34 +431,15 @@ export default function AEOEngine({ sub }) {
             </button>
           )}
         </div>
-        {mine.length === 0 && <div className="muted">No results yet.</div>}
+        {mine.length === 0 && <div className="muted">No results yet. Run optimizations from the pipeline above.</div>}
+        {mine.length > 0 && (
+          <div className="muted" style={{ marginBottom: 10, fontSize: 12 }}>
+            {mine.reduce((a, r) => a + (r.optimizations?.length || 0), 0)} total optimizations across {mine.length} pages
+          </div>
+        )}
         {mine.map(r => (
-          <div className="card" key={r.url} style={{ marginBottom: 14 }}>
-            <div className="row" style={{ justifyContent: 'space-between' }}>
-              <strong>{r.url}</strong>
-              <span className="muted" style={{ fontSize: 11 }}>{new Date(r.generated_at).toLocaleString()}</span>
-            </div>
-            {r.error && <div style={{ color: 'var(--red)', fontSize: 12 }}>{r.error}</div>}
-            {(r.optimizations || []).map((o, i) => (
-              <details key={i} style={{ marginTop: 10 }}>
-                <summary>
-                  <span className="badge teal" style={{ marginRight: 8 }}>{o.type}</span>
-                  {o.title}
-                </summary>
-                <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>Placement: {o.placement} · {o.reason}</div>
-                <pre style={{ background: 'var(--bg)', padding: 10, marginTop: 6, fontSize: 11, overflowX: 'auto' }}>{o.code}</pre>
-                <div className="row" style={{ marginTop: 6, gap: 10, flexWrap: 'wrap' }}>
-                  <PushToCmsButton item={buildOptItem(r.url, o)} />
-                  <MarkImplementedButton
-                    module="aeo"
-                    changeType={o.type || 'aeo_optimization'}
-                    pageUrl={r.url}
-                    title={o.title}
-                    description={o.code || ''}
-                  />
-                </div>
-              </details>
-            ))}
+          <div className="card" key={r.url} style={{ marginBottom: 10, padding: 0, overflow: 'hidden' }}>
+            <OptPageCard result={r} />
           </div>
         ))}
       </div>
