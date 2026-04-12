@@ -134,9 +134,15 @@ export function technicalPipelineStatus(client, implementations, tasks, month) {
 export function aeoPipelineStatus(client, implementations, aeoResults, month) {
   const m = month || thisMonth();
 
-  const readiness = readinessFor(client, 'aeo');
-  if (readiness.status === 'empty') {
-    return { section: 'credentials-missing', detail: readiness.missing.map(f => f.label).join(', ') };
+  // AEO optimizations need a page source — either sitemap URL or GA4 property.
+  // Without one, there are no pages to optimize.
+  const hasSitemap = !!(client.sitemap_url || client.sitemap_raw);
+  const hasGa4 = !!client.ga4_property_id;
+  if (!hasSitemap && !hasGa4) {
+    const missing = [];
+    if (!hasSitemap) missing.push('Sitemap URL');
+    if (!hasGa4)     missing.push('GA4 Property');
+    return { section: 'credentials-missing', detail: 'Needs: ' + missing.join(' or ') };
   }
 
   const monthImpls = (implementations || []).filter(
