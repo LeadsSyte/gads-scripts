@@ -33,29 +33,34 @@ function loadTeam() { try { return JSON.parse(localStorage.getItem(TEAM_KEY) || 
 function saveTeam(t) { localStorage.setItem(TEAM_KEY, JSON.stringify(t)); }
 
 const TRIAGE_SYSTEM = `
-You are a senior technical SEO engineer. You receive raw site-audit data (either WebCEO audit JSON or Google Search Console query data) and must produce a prioritised, copy-paste actionable task list.
+You are a senior technical SEO engineer. You receive raw site-audit data (WebCEO audit JSON or Google Search Console data) and must produce a prioritised task list focused on the BIGGEST WINS and EASIEST FIXES first.
 
 Return ONLY valid JSON in this shape:
 {
   "tasks": [
     {
       "title": "short imperative title",
-      "description": "why it matters, plain English",
+      "description": "why it matters + expected impact, plain English",
       "priority": "critical|high|medium|low",
       "page_url": "https://...",
-      "fix_type": "meta_title|meta_description|canonical|schema|internal_link|h1|image_alt|redirect|other",
-      "copy_paste_fix": "the literal string/HTML to paste into the page"
+      "fix_type": "meta_title|meta_description|canonical|schema|internal_link|h1|image_alt|redirect|robots|sitemap|page_speed|structured_data|other",
+      "copy_paste_fix": "the literal string/HTML/code to paste into the page or CMS",
+      "impact": "high|medium|low",
+      "effort": "quick|moderate|complex"
     }
   ]
 }
 
-Rules:
-- Critical = indexing/canonical/redirect loops, broken pages.
-- High = missing H1, broken meta title, 4xx errors.
-- Medium = weak meta descriptions, thin content, missing alt text.
-- Low = minor polish.
-- Every task must include a copy_paste_fix unless fix_type is "other".
-- Max 25 tasks.
+PRIORITIZATION RULES (biggest wins first):
+- Lead with quick wins that have high impact (e.g. missing meta titles on high-traffic pages, broken canonical tags, indexing issues).
+- Critical = indexing blocked, canonical loops, redirect chains, robots.txt errors, broken pages returning 4xx/5xx.
+- High = missing/duplicate H1, broken meta title on key pages, missing schema on service pages, noindex on pages that should be indexed.
+- Medium = weak meta descriptions, missing alt text, thin content pages, slow pages, missing breadcrumb schema.
+- Low = minor polish, cosmetic heading issues, optional schema types.
+- Every task MUST include a copy_paste_fix with the literal code/text to implement (except fix_type "other").
+- Sort tasks: critical first, then high + quick effort, then high + moderate, then medium, then low.
+- Max 20 tasks — focus on quality over quantity. Better to have 10 excellent actionable tasks than 20 vague ones.
+- Each copy_paste_fix must be COMPLETE — a developer or AM should be able to paste it directly into the CMS without editing.
 `.trim();
 
 async function triageAudit(auditData, clientUrl) {
@@ -129,6 +134,9 @@ function TaskCard({ task: t, onUpdate, onVerify, busy, buildPushItem }) {
             color: { open: 'var(--accent)', done: 'var(--green)', verified: 'var(--purple)', failed: 'var(--red)' }[t.status] || 'var(--text-muted)',
             border: '1px solid ' + ({ open: 'rgba(255,107,53,.2)', done: 'rgba(52,211,153,.2)', verified: 'rgba(167,139,250,.2)', failed: 'rgba(255,77,77,.2)' }[t.status] || 'var(--border)')
           }}>{t.status}</span>
+          {t.effort === 'quick' && (
+            <span style={{ fontSize: 9, padding: '2px 7px', borderRadius: 4, background: 'rgba(52,211,153,.12)', color: 'var(--green)', border: '1px solid rgba(52,211,153,.2)', fontWeight: 700 }}>⚡ QUICK WIN</span>
+          )}
           <span className="muted" style={{ fontSize: 9 }}>{open ? '▼' : '▶'}</span>
         </div>
       </div>
@@ -208,39 +216,79 @@ export default function TechnicalSEO({ sub }) {
     return clients.filter(c => !byClient[c.id] || new Date(byClient[c.id]).getTime() < cutoff);
   }, [tasks, clients]);
 
-  // Core scan logic — accepts a client explicitly so it can be called both
-  // from the "New Scan" tab (uses the zustand-selected client) and from
-  // the pipeline card's "Run Scan" button (passes the client directly).
+  // Full Technical SEO scan pipeline — WebCEO primary, GSC secondary.
+  // Steps: 1) Fetch audit data  2) AI triage & prioritize  3) Generate tasks
   async function runScanForClient(c) {
     if (!c) { setErr('Select a client first.'); return; }
     setBusy(true); setErr(''); setMsg('');
     try {
+      // STEP 1: Fetch audit data (WebCEO first, GSC fallback)
       let auditData = null;
+      let dataSource = '';
+
       if (c.wceo_project_id) {
-        setMsg('Fetching WebCEO audit for ' + c.name + '…');
-        auditData = await getAudit(c.wceo_project_id);
-      } else if (c.gsc_property) {
-        setMsg('Fetching GSC data for ' + c.name + '…');
-        await ensureToken([SCOPES.gsc]);
-        auditData = await querySearchAnalytics(c.gsc_property, { days: 28, dimensions: ['page'], rowLimit: 500 });
-      } else {
-        throw new Error(c.name + ' needs either a WebCEO Project ID or a GSC Property.');
+        setMsg(`Step 1/3 — Fetching WebCEO audit for ${c.name}…`);
+        try {
+          auditData = await getAudit(c.wceo_project_id);
+          dataSource = 'WebCEO';
+          setMsg(`Step 1/3 — WebCEO audit loaded ✓`);
+        } catch (e) {
+          setMsg(`Step 1/3 — WebCEO failed (${e.message.slice(0, 60)}), trying GSC…`);
+        }
       }
-      setMsg('Running Claude triage for ' + c.name + '…');
+
+      if (!auditData && c.gsc_property) {
+        setMsg(`Step 1/3 — Fetching GSC data for ${c.name}…`);
+        try {
+          await ensureToken([SCOPES.gsc]);
+          auditData = await querySearchAnalytics(c.gsc_property, { days: 28, dimensions: ['page'], rowLimit: 500 });
+          dataSource = 'GSC';
+          setMsg(`Step 1/3 — GSC data loaded ✓`);
+        } catch (e) {
+          setMsg(`Step 1/3 — GSC failed: ${e.message.slice(0, 60)}`);
+        }
+      }
+
+      if (!auditData) {
+        throw new Error(`${c.name}: No audit data available. ` +
+          (!c.wceo_project_id && !c.gsc_property
+            ? 'Add a WebCEO Project ID or GSC Property in the client settings.'
+            : 'Both WebCEO and GSC returned errors — check your API keys and permissions.'));
+      }
+
+      // STEP 2: AI triage — send audit data to Claude for prioritized task generation
+      setMsg(`Step 2/3 — AI analyzing ${dataSource} data for ${c.name} (biggest wins first)…`);
       const triaged = await triageAudit(auditData, c.url);
 
-      // Round-robin assign to team.
+      if (!triaged.length) {
+        setMsg(`No issues found for ${c.name} — site looks clean from ${dataSource} data.`);
+        setBusy(false);
+        return;
+      }
+
+      // STEP 3: Create tasks (already sorted by priority from Claude)
+      setMsg(`Step 3/3 — Creating ${triaged.length} tasks for ${c.name}…`);
       const newTasks = triaged.map((t, i) => ({
         id: crypto.randomUUID(),
         client_id: c.id,
         client_name: c.name,
         assignee: team.length ? team[i % team.length] : '',
         status: 'open',
+        data_source: dataSource,
         created_at: new Date().toISOString(),
         ...t
       }));
       setTasks(prev => [...newTasks, ...prev]);
-      setMsg(`Added ${newTasks.length} tasks for ${c.name}.`);
+
+      const critical = newTasks.filter(t => t.priority === 'critical').length;
+      const high = newTasks.filter(t => t.priority === 'high').length;
+      const quickWins = newTasks.filter(t => t.effort === 'quick').length;
+      setMsg(
+        `Added ${newTasks.length} tasks for ${c.name} from ${dataSource}` +
+        (critical ? ` · ${critical} critical` : '') +
+        (high ? ` · ${high} high priority` : '') +
+        (quickWins ? ` · ${quickWins} quick wins` : '')
+      );
     } catch (e) { setErr(e.message); }
     finally { setBusy(false); }
   }

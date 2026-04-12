@@ -155,40 +155,100 @@ export default function AEOEngine({ sub }) {
     } catch (e) { setErr(e.message); }
   }
 
-  // Called from the pipeline card's "Run Optimizations" button.
-  // Selects the client, auto-pulls URLs from sitemap or client URL, then runs.
+  // Full AEO pipeline — ported from old Syte AEO Engine v2.
+  // Steps: 1) Fetch sitemap  2) Pull GA4 page data  3) Prioritize  4) Batch optimize
   async function runForClient(c) {
     if (!c) return;
     setBusy(true); setErr(''); setProgress('');
     try {
-      let pageList = [];
-      if (c.sitemap_url) {
-        setProgress('Fetching sitemap for ' + c.name + '…');
-        pageList = await fetchSitemapUrls(c.sitemap_url).catch(() => []);
-        pageList = pageList.slice(0, 30);
+      // STEP 1: Fetch sitemap (with pasted XML fallback)
+      setProgress('Step 1/4 — Fetching sitemap for ' + c.name + '…');
+      let sitemapUrls = await fetchSitemapUrls(c.sitemap_url, c.sitemap_raw).catch(() => []);
+      if (!sitemapUrls.length && c.url) {
+        // Last resort: use the homepage
+        sitemapUrls = [c.url.replace(/\/$/, '') + '/'];
+        setProgress('No sitemap found — using homepage URL only');
       }
-      if (!pageList.length && c.url) {
-        pageList = [c.url.replace(/\/$/, '') + '/'];
-      }
-      if (!pageList.length) {
-        setErr(c.name + ' has no sitemap URL or website URL to scan.');
+      if (!sitemapUrls.length) {
+        setErr(c.name + ' has no sitemap URL, pasted XML, or website URL.');
         setBusy(false);
         return;
       }
-      setUrls(pageList.join('\n'));
-      setProgress('Generating AEO for ' + c.name + ' (' + pageList.length + ' pages)…');
+      setProgress(`Step 1/4 — ${sitemapUrls.length} pages from sitemap ✓`);
 
+      // STEP 2: Pull GA4 page data for prioritization (if available)
+      let ga4Rows = [];
+      if (c.ga4_property_id) {
+        setProgress('Step 2/4 — Pulling GA4 data for ' + c.name + '…');
+        try {
+          await ensureToken([SCOPES.ga4]);
+          const report = await runReport(c.ga4_property_id, 30);
+          ga4Rows = (report.rows || [])
+            .map(r => ({
+              path: r.dimensionValues?.[0]?.value || '',
+              sessions: Number(r.metricValues?.[0]?.value || 0),
+              engagement: r.metricValues?.[1]?.value ? (parseFloat(r.metricValues[1].value) * 100).toFixed(1) + '%' : ''
+            }))
+            .filter(r => r.path && r.path !== '(not set)' && r.sessions > 0)
+            .sort((a, b) => b.sessions - a.sessions);
+          setProgress(`Step 2/4 — ${ga4Rows.length} pages from GA4 ✓`);
+        } catch (e) {
+          setProgress('Step 2/4 — GA4 skipped: ' + e.message.slice(0, 80));
+        }
+      } else {
+        setProgress('Step 2/4 — No GA4 property, using sitemap order');
+      }
+
+      // STEP 3: Prioritize — merge sitemap with GA4, rank by traffic
+      setProgress('Step 3/4 — Prioritizing pages…');
+      const baseUrl = (c.url || '').replace(/\/$/, '');
+      const ga4ByPath = new Map(ga4Rows.map(r => [r.path, r]));
+
+      const prioritized = sitemapUrls.map(url => {
+        let path;
+        try { path = new URL(url).pathname; } catch { path = url; }
+        const ga4 = ga4ByPath.get(path) || ga4ByPath.get(path + '/') || ga4ByPath.get(path.replace(/\/$/, ''));
+        return {
+          url, path,
+          sessions: ga4?.sessions || 0,
+          engagement: ga4?.engagement || '',
+          priority: (ga4?.sessions || 0) > 100 ? 'high' : (ga4?.sessions || 0) > 20 ? 'medium' : 'low'
+        };
+      }).sort((a, b) => b.sessions - a.sessions);
+
+      // Also add GA4 pages not in sitemap (they still exist on the site)
+      for (const row of ga4Rows) {
+        if (!prioritized.some(p => p.path === row.path || p.path === row.path + '/')) {
+          prioritized.push({
+            url: baseUrl + row.path,
+            path: row.path,
+            sessions: row.sessions,
+            engagement: row.engagement,
+            priority: row.sessions > 100 ? 'high' : row.sessions > 20 ? 'medium' : 'low'
+          });
+        }
+      }
+
+      // Take top N pages (client's pages_per_month or 15)
+      const maxPages = c.pages_per_month || 15;
+      const targets = prioritized.slice(0, maxPages);
+      setUrls(targets.map(t => t.url).join('\n'));
+      setProgress(`Step 3/4 — ${targets.length} pages selected (${prioritized.length} total) ✓`);
+
+      // STEP 4: Generate AEO optimizations in batches
       const newResults = { ...results };
-      for (let i = 0; i < pageList.length; i += BATCH_SIZE) {
-        const batch = pageList.slice(i, i + BATCH_SIZE);
-        setProgress(`${c.name}: Batch ${Math.floor(i / BATCH_SIZE) + 1} / ${Math.ceil(pageList.length / BATCH_SIZE)}`);
+      for (let i = 0; i < targets.length; i += BATCH_SIZE) {
+        const batch = targets.slice(i, i + BATCH_SIZE);
+        setProgress(`Step 4/4 — ${c.name}: Optimizing pages ${i + 1}–${Math.min(i + BATCH_SIZE, targets.length)} of ${targets.length}…`);
         const batchResults = await Promise.all(
-          batch.map(u => generateForPage(u, c).catch(e => ({ error: e.message })))
+          batch.map(t => generateForPage(t.url, c).catch(e => ({ error: e.message })))
         );
-        batch.forEach((u, j) => {
-          const key = c.id + '::' + u;
+        batch.forEach((t, j) => {
+          const key = c.id + '::' + t.url;
           newResults[key] = {
-            url: u, client_id: c.id, generated_at: new Date().toISOString(),
+            url: t.url, path: t.path, client_id: c.id,
+            sessions: t.sessions, priority: t.priority,
+            generated_at: new Date().toISOString(),
             optimizations: Array.isArray(batchResults[j]) ? batchResults[j] : [],
             error: batchResults[j]?.error || null
           };
@@ -196,19 +256,25 @@ export default function AEOEngine({ sub }) {
         setResults({ ...newResults });
       }
       setHistory(prev => [
-        { id: crypto.randomUUID(), client_id: c.id, client_name: c.name, count: pageList.length, created_at: new Date().toISOString() },
+        { id: crypto.randomUUID(), client_id: c.id, client_name: c.name,
+          count: targets.length, created_at: new Date().toISOString() },
         ...prev
       ]);
-      setProgress(`Done. Generated for ${pageList.length} pages for ${c.name}.`);
+      const totalOpts = targets.reduce((a, t) => {
+        const r = newResults[c.id + '::' + t.url];
+        return a + (r?.optimizations?.length || 0);
+      }, 0);
+      setProgress(`Done. ${totalOpts} optimizations across ${targets.length} pages for ${c.name}.`);
     } catch (e) { setErr(e.message); }
     finally { setBusy(false); }
   }
 
   async function pullFromSitemap() {
-    if (!client?.sitemap_url) { setErr('Client has no sitemap URL.'); return; }
+    if (!client?.sitemap_url && !client?.sitemap_raw) { setErr('Client has no sitemap URL or pasted XML.'); return; }
     setBusy(true); setErr(''); setProgress('Fetching sitemap…');
     try {
-      const locs = await fetchSitemapUrls(client.sitemap_url);
+      const locs = await fetchSitemapUrls(client.sitemap_url, client.sitemap_raw);
+      if (!locs.length) throw new Error('No URLs found — check the sitemap URL or paste XML in the client settings.');
       setUrls(locs.slice(0, 50).join('\n'));
       setProgress(`Loaded ${locs.length} URLs (showing first 50).`);
     } catch (e) { setErr(e.message); }
