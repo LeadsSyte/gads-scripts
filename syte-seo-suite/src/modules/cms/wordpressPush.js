@@ -15,14 +15,28 @@ function slugFromUrl(pageUrl) {
 // Parse the raw Claude output into body vs metadata sections so we only
 // push clean article HTML to WordPress, not the meta/schema/QA blocks.
 function parseArticleBody(raw) {
-  if (!raw) return { body: '', metaTitle: '', metaDesc: '', keyword: '' };
+  if (!raw) return { body: '', metaTitle: '', metaDesc: '' };
 
-  const metaTitleMatch = raw.match(/\*?\*?Meta Title\*?\*?:?\s*(.+)/i);
-  const metaDescMatch  = raw.match(/\*?\*?Meta Description\*?\*?:?\s*(.+)/i);
+  let text = raw;
+
+  // Strip code fences: ```html ... ``` or ``` ... ```
+  text = text.replace(/^```(?:html)?\s*\n?/i, '').replace(/\n?```\s*$/i, '');
+  // If the whole thing is wrapped in a single code fence, strip it.
+  if (/^```/.test(text)) {
+    text = text.replace(/^```(?:html)?\s*\n/i, '');
+    const lastFence = text.lastIndexOf('```');
+    if (lastFence > 0) text = text.slice(0, lastFence);
+  }
+
+  const metaTitleMatch = text.match(/\*?\*?Meta Title\*?\*?:?\s*(.+)/i);
+  const metaDescMatch  = text.match(/\*?\*?Meta Description\*?\*?:?\s*(.+)/i);
 
   // The article body is everything before the first **Meta Title or ```json.
-  const bodyEnd = raw.search(/\*?\*?Meta Title\*?\*?:|```json/i);
-  const body = bodyEnd > 0 ? raw.slice(0, bodyEnd).trim() : raw;
+  const bodyEnd = text.search(/\*?\*?Meta Title\*?\*?:|```json/i);
+  let body = bodyEnd > 0 ? text.slice(0, bodyEnd).trim() : text.trim();
+
+  // Strip any remaining code fences inside the body.
+  body = body.replace(/```(?:html)?\s*\n?/gi, '').replace(/\n?```/g, '');
 
   return {
     body,
@@ -31,9 +45,24 @@ function parseArticleBody(raw) {
   };
 }
 
-// Convert Markdown → HTML so WordPress renders headings, bold, lists properly.
+// Convert Markdown → HTML. If the content is already HTML (starts with a
+// tag like <h1> or <p>), pass it through with minimal cleanup instead of
+// double-converting.
 function markdownToHtml(md) {
   if (!md) return '';
+
+  // Detect if the content is already HTML.
+  const trimmed = md.trim();
+  const isAlreadyHtml = /^<(?:h[1-6]|p|div|section|article|ul|ol|table|!DOCTYPE)/i.test(trimmed);
+
+  if (isAlreadyHtml) {
+    // Already HTML — just clean up any stray markdown artifacts.
+    return trimmed
+      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+      .replace(/\*(.+?)\*/g, '<em>$1</em>');
+  }
+
+  // Markdown → HTML conversion.
   return md
     .replace(/^#### (.+)$/gm, '<h4>$1</h4>')
     .replace(/^### (.+)$/gm, '<h3>$1</h3>')
