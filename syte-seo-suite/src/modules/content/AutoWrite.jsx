@@ -8,6 +8,7 @@ import {
 } from './topicResearch.js';
 import { buildSystemPrompt, TAB_PROMPTS } from './prompts.js';
 import GenerateImageButton from '../../components/GenerateImageButton.jsx';
+import PushToCmsButton from '../../components/PushToCmsButton.jsx';
 import PipelineView from '../../components/PipelineView.jsx';
 import { contentPipelineStatus } from '../../lib/pipelineStatus.js';
 import { listAllImplementations } from '../../lib/supabase.js';
@@ -78,6 +79,17 @@ export default function AutoWrite() {
     listAllImplementations().then(setImplementations).catch(() => {});
   }, []);
 
+  // Warn before navigating away during active writing.
+  useEffect(() => {
+    if (writingIdx === null && !researchBusy) return;
+    const handler = (e) => {
+      e.preventDefault();
+      e.returnValue = 'Article writing is in progress. Are you sure you want to leave?';
+    };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, [writingIdx, researchBusy]);
+
   // Compute pipeline sections.
   const pipelineSections = useMemo(() => {
     const buckets = {
@@ -93,10 +105,19 @@ export default function AutoWrite() {
     return [
       { key: 'verified-on-site', label: 'Verified on Site', color: 'var(--green)', borderColor: 'var(--green)', clients: buckets['verified-on-site'] },
       { key: 'articles-written', label: 'Articles Written', color: 'var(--blue)', borderColor: 'var(--blue)', clients: buckets['articles-written'] },
-      { key: 'no-articles', label: 'No Articles Yet', color: 'var(--text-muted)', borderColor: 'var(--border)', clients: buckets['no-articles'] },
-      { key: 'credentials-missing', label: 'Credentials Missing', color: 'var(--red)', borderColor: 'var(--red)', clients: buckets['credentials-missing'] }
+      { key: 'no-articles', label: 'No Articles Yet', color: 'var(--text-muted)', borderColor: 'var(--border)', clients: buckets['no-articles'], collapsed: true },
+      { key: 'credentials-missing', label: 'Credentials Missing', color: 'var(--red)', borderColor: 'var(--red)', clients: buckets['credentials-missing'], collapsed: true }
     ];
   }, [contentClients, implementations, currentMonth]);
+
+  // Expanded client in the pipeline (for viewing articles in "Articles Written").
+  const [expandedPipelineClient, setExpandedPipelineClient] = useState(null);
+
+  // Get articles for a specific client from content history.
+  function getClientArticles(clientId) {
+    const history = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]');
+    return history.filter(h => h.client_id === clientId && (h.created_at || '').slice(0, 7) === currentMonth);
+  }
 
   // ─── Phase 1: Research ───────────────────────────────
   async function startResearch(client) {
@@ -205,12 +226,7 @@ export default function AutoWrite() {
         sections={pipelineSections}
         onAction={(client, action) => {
           if (action === 'generate') {
-            setShowPipeline(false);
             startResearch(client);
-          }
-          if (action === 'verify') {
-            // Re-run verification for this client — handled by the Mark Implemented button.
-            setActiveId(client.id);
           }
         }}
         actions={[
@@ -219,6 +235,63 @@ export default function AutoWrite() {
           { key: 'generate', label: 'Generate More', color: ACCENT,
             condition: (c, section) => section === 'verified-on-site' }
         ]}
+        expandedId={expandedPipelineClient}
+        onExpandClient={(client) => {
+          setExpandedPipelineClient(prev => prev === client.id ? null : client.id);
+        }}
+        renderExpanded={(client) => {
+          const articles = getClientArticles(client.id);
+          if (articles.length === 0) {
+            return <div className="muted" style={{ padding: 12, fontSize: 12 }}>No articles found for this month.</div>;
+          }
+          const hasWp = client.cms_type === 'WordPress' && client.wp_url && client.wp_username && client.wp_app_password;
+          return (
+            <div>
+              {articles.map((a, i) => (
+                <div key={a.id || i} style={{ padding: '10px 14px', borderBottom: '1px solid var(--border)' }}>
+                  <div className="row" style={{ justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontWeight: 600, fontSize: 13 }}>{a.topic || a.keyword || 'Untitled'}</div>
+                      <div className="muted" style={{ fontSize: 10 }}>
+                        {a.tab || 'Auto Write'} · {new Date(a.created_at).toLocaleDateString('en-ZA')}
+                        {a.opportunity_type && <span className="badge" style={{ marginLeft: 6, fontSize: 8 }}>{a.opportunity_type}</span>}
+                      </div>
+                    </div>
+                    <div className="row" style={{ gap: 6, flexShrink: 0, flexWrap: 'wrap' }}>
+                      {hasWp && (
+                        <PushToCmsButton
+                          item={{
+                            module: 'content',
+                            page_url: client.url || '',
+                            page_title: a.topic || a.keyword || 'Article',
+                            change_type: 'article',
+                            payload: { html: a.output, meta_title: a.topic, primary_keyword: a.keyword }
+                          }}
+                          label="Push to WP"
+                        />
+                      )}
+                      <button onClick={() => {
+                        const blob = new Blob([a.output || ''], { type: 'text/plain' });
+                        const url = URL.createObjectURL(blob);
+                        const el = document.createElement('a');
+                        el.href = url; el.download = (a.topic || 'article') + '.txt';
+                        el.click(); URL.revokeObjectURL(url);
+                      }} style={{ fontSize: 10, padding: '4px 8px' }}>.txt</button>
+                    </div>
+                  </div>
+                  {a.output && (
+                    <details style={{ marginTop: 6 }}>
+                      <summary className="muted" style={{ fontSize: 10, cursor: 'pointer' }}>Preview</summary>
+                      <pre style={{ marginTop: 4, padding: 8, background: 'var(--bg)', fontSize: 10, whiteSpace: 'pre-wrap', maxHeight: 200, overflowY: 'auto', borderRadius: 4 }}>
+                        {a.output.slice(0, 1500)}{a.output.length > 1500 ? '…' : ''}
+                      </pre>
+                    </details>
+                  )}
+                </div>
+              ))}
+            </div>
+          );
+        }}
       />
 
       {/* Research status banner — shown at the TOP so it's always visible
