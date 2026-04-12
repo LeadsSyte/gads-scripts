@@ -9,6 +9,7 @@ import {
 import { buildSystemPrompt, TAB_PROMPTS } from './prompts.js';
 import GenerateImageButton from '../../components/GenerateImageButton.jsx';
 import PushToCmsButton from '../../components/PushToCmsButton.jsx';
+import MarkImplementedButton from '../../components/MarkImplementedButton.jsx';
 import PipelineView from '../../components/PipelineView.jsx';
 import { contentPipelineStatus } from '../../lib/pipelineStatus.js';
 import { listAllImplementations } from '../../lib/supabase.js';
@@ -270,6 +271,13 @@ export default function AutoWrite() {
                           label="Push to WP"
                         />
                       )}
+                      <MarkImplementedButton
+                        module="content"
+                        changeType="article"
+                        pageUrl={client.url || ''}
+                        title={a.topic || a.keyword || 'Article'}
+                        description={`Article: ${a.topic || ''}`}
+                      />
                       <button onClick={() => {
                         const blob = new Blob([a.output || ''], { type: 'text/plain' });
                         const url = URL.createObjectURL(blob);
