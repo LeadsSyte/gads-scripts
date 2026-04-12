@@ -181,8 +181,17 @@ export default function AEOEngine({ sub }) {
       if (c.ga4_property_id) {
         setProgress('Step 2/4 — Pulling GA4 data for ' + c.name + '…');
         try {
-          await ensureToken([SCOPES.ga4]);
-          const report = await runReport(c.ga4_property_id, 30);
+          // Timeout the entire GA4 flow at 15 seconds — if the OAuth popup
+          // opens and the user doesn't interact, or the API hangs, we skip
+          // gracefully rather than blocking the whole pipeline.
+          const ga4Promise = (async () => {
+            await ensureToken([SCOPES.ga4]);
+            return runReport(c.ga4_property_id, 30);
+          })();
+          const timeout = new Promise((_, reject) =>
+            setTimeout(() => reject(new Error('GA4 timed out after 15s')), 15000)
+          );
+          const report = await Promise.race([ga4Promise, timeout]);
           ga4Rows = (report.rows || [])
             .map(r => ({
               path: r.dimensionValues?.[0]?.value || '',
@@ -193,7 +202,8 @@ export default function AEOEngine({ sub }) {
             .sort((a, b) => b.sessions - a.sessions);
           setProgress(`Step 2/4 — ${ga4Rows.length} pages from GA4 ✓`);
         } catch (e) {
-          setProgress('Step 2/4 — GA4 skipped: ' + e.message.slice(0, 80));
+          // GA4 is optional — skip gracefully and continue with sitemap order
+          setProgress('Step 2/4 — GA4 skipped (' + e.message.slice(0, 60) + '), using sitemap order');
         }
       } else {
         setProgress('Step 2/4 — No GA4 property, using sitemap order');

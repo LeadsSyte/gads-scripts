@@ -117,8 +117,9 @@ export function technicalPipelineStatus(client, implementations, tasks, month) {
     if (verified.length > 0) parts.push(verified.length + ' verified');
     if (open > 0) parts.push(open + ' open');
     return {
-      // Only promote to "fixes-generated" when all tasks are complete.
-      section: allTasksDone ? 'fixes-generated' : 'not-scanned',
+      // "fixes-generated" = a scan was run and tasks exist (regardless of
+      // whether they're all done). "not-scanned" is ONLY for zero tasks.
+      section: 'fixes-generated',
       summary: parts.join(' · '),
       detail: allTasksDone
         ? 'All tasks completed, awaiting verification'
