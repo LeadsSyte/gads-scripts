@@ -27,7 +27,26 @@ export default function MarkImplementedButton({
 
   async function handleClick() {
     if (!client) { setErr('Select a client first.'); return; }
-    if (!pageUrl) { setErr('No page URL — can\'t verify without one.'); return; }
+
+    // Always ask for the actual page URL — the default might just be the
+    // client's homepage which won't contain the specific article/change.
+    // Pre-fill with a slug derived from the title if we only have a base URL.
+    let suggestedUrl = pageUrl || client.url || '';
+    const baseOnly = suggestedUrl && !suggestedUrl.replace(/^https?:\/\//, '').includes('/') ||
+                     suggestedUrl.replace(/\/$/, '').split('/').length <= 3;
+    if (baseOnly && title) {
+      const slug = title.toLowerCase()
+        .replace(/[^a-z0-9\s-]/g, '')
+        .replace(/\s+/g, '-')
+        .slice(0, 60);
+      suggestedUrl = suggestedUrl.replace(/\/$/, '') + '/' + slug + '/';
+    }
+
+    const actualUrl = prompt(
+      'Enter the live URL where this was published:',
+      suggestedUrl
+    );
+    if (!actualUrl) return; // user cancelled
 
     const implementedBy = prompt('Who implemented this change?', 'Team member') || 'Unknown';
 
@@ -37,7 +56,7 @@ export default function MarkImplementedButton({
         client_id: client.id,
         module,
         change_type: changeType,
-        page_url: pageUrl,
+        page_url: actualUrl.trim(),
         title: title || 'Untitled change',
         description: (description || '').slice(0, 2000),
         implemented_by: implementedBy,
