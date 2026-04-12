@@ -6,6 +6,7 @@ import PushToCmsButton from '../../components/PushToCmsButton.jsx';
 import ClientCardsGrid from '../../components/ClientCardsGrid.jsx';
 import TopicResearch from './TopicResearch.jsx';
 import AutoWrite from './AutoWrite.jsx';
+import GenerateImageButton from '../../components/GenerateImageButton.jsx';
 
 const ACCENT = '#c8ff00';
 const HISTORY_KEY = 'syte-suite-content-history';
@@ -257,6 +258,9 @@ function ParsedOutput({ output, topic, pushItem, exportTxt, exportDocx, systemPr
                 </summary>
                 <div className="stream-output" style={{ marginTop: 8, maxHeight: 500 }}>{sections.body}</div>
               </details>
+
+              {/* Hero image generator — opt-in, only renders if an image API key is configured */}
+              <GenerateImageButton title={topic} keyword={sections.metaTitle || topic} />
             </div>
 
             <SectionCard title="FAQ Schema (JSON-LD)" content={sections.faqSchema} accent="var(--purple)" mono />

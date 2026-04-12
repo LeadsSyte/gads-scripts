@@ -7,6 +7,7 @@ import {
   buildArticleResearchContext
 } from './topicResearch.js';
 import { buildSystemPrompt, TAB_PROMPTS } from './prompts.js';
+import GenerateImageButton from '../../components/GenerateImageButton.jsx';
 
 const ACCENT = '#c8ff00';
 const HISTORY_KEY = 'syte-suite-content-history';
@@ -409,6 +410,7 @@ export default function AutoWrite() {
                       fontSize: 11, overflowX: 'auto', whiteSpace: 'pre-wrap',
                       maxHeight: 400, borderRadius: 6
                     }}>{state.output}</pre>
+                    <GenerateImageButton title={opp.topic_title} keyword={opp.primary_keyword} />
                   </details>
                 )}
               </div>
