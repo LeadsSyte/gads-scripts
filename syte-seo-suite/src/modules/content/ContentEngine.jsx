@@ -55,6 +55,141 @@ const SCORE_KEYS = [
   ['internal_linking',    'Internal Linking']
 ];
 
+// Parse the raw Claude output into labeled sections so each piece can be
+// copied individually. The model outputs in a predictable order:
+//   1. HTML article body
+//   2. **Meta Title:** ...
+//   3. **Meta Description:** ...
+//   4. **AEO Summary Block:** ...
+//   5. **FAQ Schema (JSON-LD):** ```json ... ```
+//   6. QA JSON block ```json { "keyword_integration": ... } ```
+
+function parseOutputSections(raw) {
+  if (!raw) return null;
+
+  const metaTitleMatch = raw.match(/\*?\*?Meta Title\*?\*?:?\s*(.+)/i);
+  const metaDescMatch  = raw.match(/\*?\*?Meta Description\*?\*?:?\s*(.+)/i);
+  const aeoMatch       = raw.match(/\*?\*?AEO Summary Block\*?\*?:?\s*([\s\S]*?)(?=\n\*?\*?(?:FAQ|Meta|```)|$)/i);
+
+  // Extract all JSON code blocks. The last one is the QA block, the second-to-last is FAQ schema.
+  const jsonBlocks = [];
+  const jsonRe = /```json\s*([\s\S]*?)```/gi;
+  let m;
+  while ((m = jsonRe.exec(raw)) !== null) jsonBlocks.push(m[1].trim());
+
+  const qaBlock = jsonBlocks.length > 0 ? jsonBlocks[jsonBlocks.length - 1] : null;
+  const faqBlock = jsonBlocks.length > 1 ? jsonBlocks[jsonBlocks.length - 2] : null;
+
+  // The article body is everything before the first **Meta Title or **AEO or ```json.
+  const bodyEnd = raw.search(/\*?\*?Meta Title\*?\*?:|```json/i);
+  const body = bodyEnd > 0 ? raw.slice(0, bodyEnd).trim() : raw;
+
+  return {
+    body,
+    metaTitle: metaTitleMatch ? metaTitleMatch[1].trim().replace(/\*+/g, '') : null,
+    metaDesc:  metaDescMatch  ? metaDescMatch[1].trim().replace(/\*+/g, '') : null,
+    aeoSummary: aeoMatch ? aeoMatch[1].trim() : null,
+    faqSchema: faqBlock,
+    qaBlock
+  };
+}
+
+function CopyButton({ text, label = 'Copy' }) {
+  const [copied, setCopied] = React.useState(false);
+  function copy() {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    }).catch(() => {});
+  }
+  return (
+    <button onClick={copy} style={{ fontSize: 11, padding: '3px 10px' }}>
+      {copied ? 'Copied ✓' : label}
+    </button>
+  );
+}
+
+function SectionCard({ title, content, accent, mono }) {
+  if (!content) return null;
+  return (
+    <div style={{
+      marginBottom: 10, padding: 12,
+      background: 'var(--surface-2)', border: '1px solid var(--border)',
+      borderLeft: '3px solid ' + (accent || 'var(--border)'),
+      borderRadius: 'var(--radius)'
+    }}>
+      <div className="row" style={{ justifyContent: 'space-between', marginBottom: 6 }}>
+        <strong style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '.05em', color: accent || 'var(--text-muted)' }}>
+          {title}
+        </strong>
+        <CopyButton text={content} />
+      </div>
+      {mono ? (
+        <pre style={{ fontSize: 11, whiteSpace: 'pre-wrap', margin: 0, color: 'var(--text)', maxHeight: 300, overflowY: 'auto' }}>{content}</pre>
+      ) : (
+        <div style={{ fontSize: 13, color: 'var(--text)', lineHeight: 1.5 }}>{content}</div>
+      )}
+    </div>
+  );
+}
+
+function ParsedOutput({ output, topic, pushItem, exportTxt, exportDocx }) {
+  const sections = React.useMemo(() => parseOutputSections(output), [output]);
+  const [showRaw, setShowRaw] = React.useState(false);
+
+  if (!sections) return null;
+
+  return (
+    <>
+      <div className="card" style={{ marginBottom: 16 }}>
+        <div className="row" style={{ justifyContent: 'space-between', marginBottom: 12 }}>
+          <strong>Generated Content</strong>
+          <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+            <button onClick={() => exportTxt(output, topic || 'article')}>Export .txt</button>
+            <button onClick={() => exportDocx(output, topic || 'article')}>Export .docx</button>
+            {pushItem && <PushToCmsButton item={pushItem} />}
+            <button onClick={() => setShowRaw(v => !v)} style={{ fontSize: 11 }}>
+              {showRaw ? 'Parsed view' : 'Raw output'}
+            </button>
+          </div>
+        </div>
+
+        {showRaw ? (
+          <div className="stream-output">{output}</div>
+        ) : (
+          <>
+            <SectionCard title="Meta Title" content={sections.metaTitle} accent="var(--blue)" />
+            <SectionCard title="Meta Description" content={sections.metaDesc} accent="var(--blue)" />
+            <SectionCard title="AEO Summary Block" content={sections.aeoSummary} accent="var(--teal)" />
+
+            <div style={{
+              marginBottom: 10, padding: 12,
+              background: 'var(--surface-2)', border: '1px solid var(--border)',
+              borderLeft: '3px solid var(--mod-content)',
+              borderRadius: 'var(--radius)'
+            }}>
+              <div className="row" style={{ justifyContent: 'space-between', marginBottom: 6 }}>
+                <strong style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '.05em', color: 'var(--mod-content)' }}>
+                  Article Body
+                </strong>
+                <CopyButton text={sections.body} />
+              </div>
+              <details>
+                <summary className="muted" style={{ fontSize: 11, cursor: 'pointer' }}>
+                  Show article ({Math.round(sections.body.length / 5)} words approx.)
+                </summary>
+                <div className="stream-output" style={{ marginTop: 8, maxHeight: 500 }}>{sections.body}</div>
+              </details>
+            </div>
+
+            <SectionCard title="FAQ Schema (JSON-LD)" content={sections.faqSchema} accent="var(--purple)" mono />
+          </>
+        )}
+      </div>
+    </>
+  );
+}
+
 export default function ContentEngine({ sub, setSub }) {
   const client = useClients(s => s.current());
   const allClients = useClients(s => s.clients);
@@ -287,19 +422,13 @@ export default function ContentEngine({ sub, setSub }) {
         {err && <div style={{ color: 'var(--red)', marginTop: 10 }}>{err}</div>}
       </div>
 
-      {output && (
-        <div className="card" style={{ marginBottom: 16 }}>
-          <div className="row" style={{ justifyContent: 'space-between', marginBottom: 10 }}>
-            <strong>Output</strong>
-            <div className="row">
-              <button onClick={() => exportTxt(output, topic || 'article')}>Export .txt</button>
-              <button onClick={() => exportDocx(output, topic || 'article')}>Export .docx</button>
-              {pushItem && <PushToCmsButton item={pushItem} />}
-            </div>
-          </div>
-          <div className="stream-output">{output}</div>
-        </div>
-      )}
+      {output && <ParsedOutput
+        output={output}
+        topic={topic}
+        pushItem={pushItem}
+        exportTxt={exportTxt}
+        exportDocx={exportDocx}
+      />}
 
       {scores && (
         <div className="card">

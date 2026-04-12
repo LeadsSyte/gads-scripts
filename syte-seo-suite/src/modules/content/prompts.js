@@ -19,6 +19,10 @@ HARD RULES:
 - Include E-E-A-T signals: author expertise, first-hand experience, credentials, citations.
 - Use <h2>/<h3> hierarchy. Never skip heading levels.
 - Output clean HTML (no markdown fences) unless another format is explicitly requested.
+- MANDATORY: Include at least 2 internal links from the brand's link pool below. Use descriptive anchor text, NEVER "click here" or "read more". If no link pool is provided, state "(No internal links available)" in a comment.
+- MANDATORY: Attribute the article to the brand's default author with their credentials in the opening or closing paragraph. If no author is set, skip this rule.
+- MANDATORY: When the topic allows, include at least one step-by-step guide OR numbered how-to section. This is a core differentiator vs AI-generated fluff.
+- MANDATORY: Every statistic, percentage, or data point must have an inline citation (source name + year at minimum). Do not present unverified numbers as fact.
 `.trim();
 
 export const COMPLIANCE_RULES = `
