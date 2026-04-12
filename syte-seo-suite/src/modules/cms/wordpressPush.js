@@ -2,7 +2,9 @@
 // so Wordfence, Cloudflare, and CORS never block them.
 // CRITICAL: every created post uses status=draft. NEVER publish.
 
-import { wpRequest, findBySlug, updatePostMeta, createDraftPost } from './wpApi.js';
+import { wpRequest, findBySlug, updatePostMeta, createDraftPost, uploadMedia } from './wpApi.js';
+import { generateHeroImage } from '../content/imageGen.js';
+import { loadSettings } from '../../lib/settings.js';
 
 function slugFromUrl(pageUrl) {
   try {
@@ -123,26 +125,48 @@ export async function pushContentToWordPress(client, item) {
   const metaDesc = parsed.metaDesc || p.meta_description || '';
   const keyword = p.primary_keyword || '';
 
-  // Create the draft post with clean HTML content only.
+  // Include meta in the initial creation call (requires the PHP snippet
+  // on the WP side to register these keys for REST). Also try a follow-up
+  // update as belt-and-suspenders.
+  const metaFields = {
+    rank_math_focus_keyword:   keyword,
+    rank_math_title:           metaTitle,
+    rank_math_description:     metaDesc,
+    _yoast_wpseo_title:       metaTitle,
+    _yoast_wpseo_metadesc:    metaDesc,
+    _yoast_wpseo_focuskw:     keyword
+  };
+
+  // Auto-generate and upload a featured image if an image API key is set.
+  let featuredMediaId = null;
+  const settings = loadSettings();
+  const hasImageApi = !!(settings.openaiKey || settings.googleAiKey);
+  if (hasImageApi) {
+    try {
+      const img = await generateHeroImage(title, keyword, client);
+      // Strip the data URL prefix to get pure base64.
+      const base64 = img.dataUrl.replace(/^data:image\/\w+;base64,/, '');
+      const safeName = (title || 'hero').replace(/[^a-z0-9]+/gi, '-').slice(0, 50) + '.png';
+      const attachment = await uploadMedia(client, base64, safeName);
+      featuredMediaId = attachment.id;
+    } catch (e) {
+      console.warn('Featured image generation/upload failed (post still created):', e.message);
+    }
+  }
+
   const created = await createDraftPost(client, {
     title,
     content: cleanHtml,
-    status: 'draft' // HARD CONSTRAINT — never publish
+    status: 'draft', // HARD CONSTRAINT — never publish
+    meta: metaFields,
+    featured_media: featuredMediaId || undefined
   });
 
-  // Set Yoast + RankMath meta fields on the newly created post.
+  // Follow-up meta update as fallback in case the initial meta didn't stick.
   try {
-    await updatePostMeta(client, 'posts', created.id, {
-      _yoast_wpseo_title:       metaTitle,
-      _yoast_wpseo_metadesc:    metaDesc,
-      _yoast_wpseo_focuskw:     keyword,
-      rank_math_title:           metaTitle,
-      rank_math_description:     metaDesc,
-      rank_math_focus_keyword:   keyword
-    });
+    await updatePostMeta(client, 'posts', created.id, metaFields);
   } catch (e) {
-    // Meta update failing shouldn't block the draft creation.
-    console.warn('Meta update failed (post still created):', e.message);
+    console.warn('Follow-up meta update failed:', e.message);
   }
 
   const adminUrl = client.wp_url.replace(/\/+$/, '') + '/wp-admin/post.php?post=' + created.id + '&action=edit';

@@ -38,17 +38,33 @@ export async function handler(event) {
   const fullUrl = base + '/wp-json/' + path.replace(/^\/+/, '');
 
   // Build auth header if credentials provided.
-  const reqHeaders = { 'Content-Type': 'application/json' };
+  const reqHeaders = {};
   if (username && appPassword) {
     reqHeaders['Authorization'] = 'Basic ' + Buffer.from(username + ':' + appPassword).toString('base64');
   }
 
+  // Handle media uploads: decode base64 and send as binary.
+  const { isMediaUpload, mediaBase64, mediaFilename } = payload;
+
   try {
-    const res = await fetch(fullUrl, {
-      method: method || 'GET',
-      headers: reqHeaders,
-      body: body ? JSON.stringify(body) : undefined
-    });
+    let res;
+    if (isMediaUpload && mediaBase64) {
+      const imageBuffer = Buffer.from(mediaBase64, 'base64');
+      reqHeaders['Content-Type'] = 'image/png';
+      reqHeaders['Content-Disposition'] = 'attachment; filename="' + (mediaFilename || 'image.png') + '"';
+      res = await fetch(fullUrl, {
+        method: 'POST',
+        headers: reqHeaders,
+        body: imageBuffer
+      });
+    } else {
+      reqHeaders['Content-Type'] = 'application/json';
+      res = await fetch(fullUrl, {
+        method: method || 'GET',
+        headers: reqHeaders,
+        body: body ? JSON.stringify(body) : undefined
+      });
+    }
 
     const text = await res.text();
 

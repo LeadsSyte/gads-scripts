@@ -62,10 +62,48 @@ export async function updatePostMeta(client, type, postId, meta) {
   });
 }
 
-export async function createDraftPost(client, { title, content, status = 'draft' }) {
+export async function createDraftPost(client, { title, content, status = 'draft', meta, featured_media }) {
+  const body = { title, content, status };
+  if (meta) body.meta = meta;
+  if (featured_media) body.featured_media = featured_media;
   return wpRequest(client, {
     method: 'POST',
     path: 'wp/v2/posts',
-    body: { title, content, status }
+    body
   });
+}
+
+// Upload an image to the WordPress media library. Returns the attachment
+// object including the ID needed for featured_media.
+// imageData: base64 string (without the data:image/png;base64, prefix)
+// filename: e.g. "hero-image.png"
+export async function uploadMedia(client, imageData, filename) {
+  if (!client.wp_url) throw new Error('Client has no WP Site URL set.');
+
+  // We need to send the image as binary through our proxy.
+  // The proxy handles JSON, so we send the base64 data and let
+  // the proxy decode and forward it.
+  const res = await fetch('/.netlify/functions/wp-proxy', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      wpUrl: client.wp_url,
+      username: client.wp_username || '',
+      appPassword: client.wp_app_password || '',
+      method: 'POST',
+      path: 'wp/v2/media',
+      isMediaUpload: true,
+      mediaBase64: imageData,
+      mediaFilename: filename || 'syte-hero.png'
+    })
+  });
+
+  const text = await res.text();
+  let data;
+  try { data = JSON.parse(text); } catch { data = text; }
+  if (!res.ok) {
+    const msg = typeof data === 'object' ? (data.message || data.error || JSON.stringify(data)) : text;
+    throw new Error('Media upload ' + res.status + ': ' + msg);
+  }
+  return data;
 }
