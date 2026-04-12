@@ -1,5 +1,5 @@
 /**
- * SYTE OPTIMIZATION CORE v4.4.0
+ * SYTE OPTIMIZATION CORE v4.5.0
  * ============================
  * This file is the CORE engine — hosted centrally and fetched by each client's loader script.
  * DO NOT paste this into Google Ads Scripts directly.
@@ -13,7 +13,20 @@
  * When you improve this core, ALL client accounts get the update on their next scheduled run.
  *
  * Author: Syte Digital Agency (syte.co.za)
- * Version: 4.4.0
+ * Version: 4.5.0
+ *
+ * CHANGELOG v4.5.0 — INTERACTIVE FLAGGED REVIEW + CONVERSATIONAL INSTRUCTIONS:
+ * - NEW: Flagged review terms are now stored in PendingChanges JSON (flagged_review category)
+ * - NEW: "Review & Negate Flagged Terms" button in approval email links to interactive webapp page
+ * - NEW: Interactive flagged review page with per-term checkboxes for negate/keep selection
+ * - NEW: "Talk to the Optimization" — natural language instruction box on flagged review page.
+ *   Users can type instructions like "negate all competitor names but keep facebook" and Claude
+ *   interprets them against the flagged terms list to determine which to negate/keep.
+ * - NEW: AI instructions can also remove N-gram negatives (e.g., "don't negative facebook")
+ * - NEW: flagged_review_negations approval category — selected flagged terms are applied as
+ *   negatives on the next script run after approval
+ * - NEW: _findPendingRow() helper in webapp for shared row lookup logic
+ * - NEW: _getApiKey() helper in webapp reads ANTHROPIC_API_KEY from Config tab
  *
  * CHANGELOG v4.4.0 — EVAL STEP + APPROVAL SYSTEM + CLIENT CONTEXT:
  * - NEW: Collect-only mode — all optimization functions now collect proposed changes WITHOUT
@@ -1464,7 +1477,7 @@ function _sendWeeklyReviewEmail(accountName, claudeResponse, changeLogSummary) {
   // Header
   email += '<div style="background:linear-gradient(135deg,#1a1a2e,#16213e);color:white;padding:24px;border-radius:8px 8px 0 0;">';
   email += '<h1 style="margin:0;font-size:22px;">🤖 Syte Script — Weekly Self-Improvement Report</h1>';
-  email += '<p style="margin:6px 0 0;opacity:0.8;">' + accountName + ' | ' + today + ' | Core v4.4.0</p>';
+  email += '<p style="margin:6px 0 0;opacity:0.8;">' + accountName + ' | ' + today + ' | Core v4.5.0</p>';
   email += '</div>';
 
   // Change log stats banner
@@ -2842,6 +2855,13 @@ function _sendReport(results, duration, evalResult, pendingRunId) {
   if (results.smartReviewTerms.length > 0) {
     email += '<div style="padding:15px;background:#e3f2fd;"><h3 style="color:#1565c0;">AI Flagged for Review</h3>';
     email += '<p style="font-size:12px;color:#666;">These terms were flagged as ambiguous by the AI. Please review and manually negate or keep.</p>';
+
+    // v4.5.0: Interactive review button — links to webapp where user can select terms to negate or give natural language instructions
+    if (pendingRunId && CONFIG.APPROVAL_WEBAPP_URL) {
+      email += '<a href="' + CONFIG.APPROVAL_WEBAPP_URL + '?view=flagged_review&runId=' + pendingRunId + '" target="_blank" style="display:inline-block;padding:10px 18px;margin:8px 0;border-radius:6px;color:white;text-decoration:none;font-weight:bold;font-size:13px;background:#1565c0;">Review & Negate Flagged Terms (' + results.smartReviewTerms.length + ')</a>';
+      email += '<p style="font-size:11px;color:#888;margin:4px 0 10px;">Click above to select which terms to negate, or type natural language instructions (e.g. "negate all competitor names but keep facebook").</p>';
+    }
+
     email += '<table style="width:100%;border-collapse:collapse;font-size:13px;">';
     email += '<tr style="background:#bbdefb;"><th style="padding:6px;text-align:left;">Search Term</th><th style="padding:6px;text-align:right;">Cost</th><th style="padding:6px;text-align:right;">Clicks</th><th style="padding:6px;text-align:left;">Reason</th></tr>';
     for (var sr = 0; sr < results.smartReviewTerms.length; sr++) {
@@ -2875,7 +2895,7 @@ function _sendReport(results, duration, evalResult, pendingRunId) {
     email += '</ul></div>';
   }
 
-  email += '<div style="padding:15px;color:#666;font-size:12px;"><p>Completed in ' + duration.toFixed(1) + 's | Core v4.4.0 | Syte Digital Agency</p></div></body></html>';
+  email += '<div style="padding:15px;color:#666;font-size:12px;"><p>Completed in ' + duration.toFixed(1) + 's | Core v4.5.0 | Syte Digital Agency</p></div></body></html>';
 
   var recipients = CONFIG.EMAIL_ADDRESSES || [CONFIG.EMAIL_RECIPIENT || 'michaelh@syte.co.za'];
   if (typeof recipients === 'string') recipients = [recipients];
@@ -3193,6 +3213,10 @@ function _writePendingChanges(results, evalResult) {
     shopping_pmax: {
       shoppingProductsPaused: results.shoppingProductsPaused || [],
       pmaxSearchTermsNegated: results.pmaxSearchTermsNegated || []
+    },
+    flagged_review: {
+      terms: results.smartReviewTerms || [],
+      selectedForNegation: []  // populated by webapp when user reviews
     }
   };
 
@@ -3276,7 +3300,7 @@ function _checkAndApplyPendingChanges(results) {
  */
 function _applyApprovedChanges(changesObj, approvedCategories, results) {
   var categories = approvedCategories === 'all'
-    ? ['keyword_pauses', 'search_term_negations', 'winner_promotions', 'auto_optimizations', 'shopping_pmax']
+    ? ['keyword_pauses', 'search_term_negations', 'winner_promotions', 'auto_optimizations', 'shopping_pmax', 'flagged_review_negations']
     : approvedCategories.split(',').map(function(c) { return c.trim(); });
 
   var appliedCount = 0;
@@ -3402,6 +3426,22 @@ function _applyApprovedChanges(changesObj, approvedCategories, results) {
     });
 
     _log('INFO', 'Applied auto-optimizations');
+  }
+
+  // === FLAGGED REVIEW NEGATIONS (v4.5.0) ===
+  if (categories.indexOf('flagged_review_negations') !== -1 && changesObj.flagged_review) {
+    var frData = changesObj.flagged_review;
+    var selectedTerms = frData.selectedForNegation || [];
+    if (selectedTerms.length > 0) {
+      var negativeListSpendFR = _getOrCreateNegativeList(CONFIG.NEGATIVE_LIST_NAME_SPEND);
+      selectedTerms.forEach(function(s) {
+        try {
+          if (negativeListSpendFR) { negativeListSpendFR.addNegativeKeyword('[' + s.term + ']'); appliedCount++; }
+          _logChange({ functionName: 'approval_apply', entity: s.term, entityType: 'FLAGGED_REVIEW_NEGATIVE', reason: 'Approved flagged review negate: ' + (s.reason || ''), spend: s.cost || 0, conversions: 0 });
+        } catch (e) { _log('WARN', 'Apply flagged review negation failed: ' + s.term + ' — ' + e.message); }
+      });
+      _log('INFO', 'Applied ' + selectedTerms.length + ' flagged review negations');
+    }
   }
 
   // === SHOPPING/PMAX ===
