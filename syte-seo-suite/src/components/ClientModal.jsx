@@ -44,6 +44,7 @@ const BASE_FIELDS = [
 const REPORTING_FIELDS = [
   ['reporting_email',    'Reporting Email',    'input'],
   ['start_date',         'Start Date with Syte', 'date'],
+  ['looker_url',         'Looker Dashboard URL', 'input'],
   ['rankscale_url',      'Rankscale Share URL (optional)', 'input']
 ];
 

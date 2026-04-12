@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { useClients } from '../../store/useClients.js';
 import { claudeComplete, extractJSON } from '../../lib/anthropic.js';
 import { listAeoSnapshots, logReportSent } from '../../lib/supabase.js';
-import { ALICE_SYSTEM, MICROSITE_SYSTEM, QA_SYSTEM, buildAlicePayload } from './reportPrompts.js';
+import { ALICE_SYSTEM, MICROSITE_SYSTEM, QA_SYSTEM, buildAlicePayload, getWorkSummary } from './reportPrompts.js';
 import { buildMicrositeHtml, downloadMicrosite } from './microsite.js';
 
 const ACCENT = '#a78bfa';
@@ -33,10 +33,9 @@ export default function MonthlyReport() {
   const client = useClients(s => s.current());
   const [month, setMonth] = useState(thisMonth());
   const [form, setForm] = useState({});
-  const [tone, setTone] = useState('mixed');
-  const [includeAlg, setIncludeAlg] = useState(false);
   const [algContext, setAlgContext] = useState('');
   const [aeoSnap, setAeoSnap] = useState(null);
+  const [workSummary, setWorkSummary] = useState(null);
   const [phase, setPhase] = useState('idle'); // idle | alice | micro | qa | review
   const [err, setErr] = useState('');
   const [email, setEmail] = useState({ subject: '', body: '' });
@@ -53,16 +52,19 @@ export default function MonthlyReport() {
     setPhase('idle');
     setForm({
       hasSeo: client?.does_content !== false || client?.does_technical !== false,
-      hasAeo: client?.does_aeo !== false
+      hasAeo: client?.does_aeo !== false,
+      industry: client?.industry || ''
     });
+    if (client?.id) setWorkSummary(getWorkSummary(client.id, month));
   }, [client?.id]);
 
   useEffect(() => {
-    if (!client) { setAeoSnap(null); return; }
+    if (!client) { setAeoSnap(null); setWorkSummary(null); return; }
     listAeoSnapshots(client.id).then(rows => {
       const match = rows.find(r => r.month === month) || null;
       setAeoSnap(match);
     }).catch(() => {});
+    setWorkSummary(getWorkSummary(client.id, month));
   }, [client?.id, month]);
 
   const update = (k, v) => setForm(prev => ({ ...prev, [k]: v }));
@@ -83,13 +85,12 @@ export default function MonthlyReport() {
 
     const payload = buildAlicePayload({
       clientName: client.name,
+      industry: client.industry || '',
       goals: client.context,
-      tone,
       month: monthLabel(month),
-      includeAlgorithm: includeAlg,
       algorithmContext: algContext,
       ...form
-    }, aeoSnap);
+    }, aeoSnap, workSummary);
 
     try {
       // 1. Alice email
@@ -263,32 +264,74 @@ export default function MonthlyReport() {
         </div>
       )}
 
-      {/* Step 4: tone */}
+      {/* What Syte Did This Month (auto-pulled) */}
+      {workSummary && (
+        <div className="card" style={{ marginBottom: 14 }}>
+          <strong>What Syte Did This Month</strong>
+          <span className="badge green" style={{ marginLeft: 10, fontSize: 9 }}>Auto-pulled from suite</span>
+          <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {workSummary.content.summary && (
+              <div className="row" style={{ gap: 8 }}>
+                <span style={{ color: 'var(--mod-content)', fontSize: 11, fontWeight: 600, minWidth: 80 }}>Content</span>
+                <span style={{ fontSize: 13 }}>{workSummary.content.summary}</span>
+                {workSummary.content.topics?.length > 0 && (
+                  <span className="muted" style={{ fontSize: 11 }}>({workSummary.content.topics.slice(0, 3).join(', ')})</span>
+                )}
+              </div>
+            )}
+            {workSummary.technical.summary && (
+              <div className="row" style={{ gap: 8 }}>
+                <span style={{ color: 'var(--mod-technical)', fontSize: 11, fontWeight: 600, minWidth: 80 }}>Technical</span>
+                <span style={{ fontSize: 13 }}>{workSummary.technical.summary}</span>
+              </div>
+            )}
+            {workSummary.aeo.summary && (
+              <div className="row" style={{ gap: 8 }}>
+                <span style={{ color: 'var(--mod-aeo)', fontSize: 11, fontWeight: 600, minWidth: 80 }}>AEO</span>
+                <span style={{ fontSize: 13 }}>{workSummary.aeo.summary}</span>
+              </div>
+            )}
+            {workSummary.implementations.summary && (
+              <div className="row" style={{ gap: 8 }}>
+                <span style={{ color: 'var(--green)', fontSize: 11, fontWeight: 600, minWidth: 80 }}>Verified</span>
+                <span style={{ fontSize: 13 }}>{workSummary.implementations.summary}</span>
+              </div>
+            )}
+            {!workSummary.content.summary && !workSummary.technical.summary && !workSummary.aeo.summary && (
+              <div className="muted" style={{ fontSize: 12 }}>No tracked work for this month yet. Generate articles, run scans, or run AEO optimizations first.</div>
+            )}
+          </div>
+          <div style={{ marginTop: 10 }}>
+            <label>Additional work (not tracked in suite)</label>
+            <textarea
+              value={form.additionalWork || ''}
+              onChange={e => update('additionalWork', e.target.value)}
+              rows={2}
+              placeholder="e.g. Migrated blog to new CMS, set up Google Business Profile, manual link building…"
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Looker + context */}
       <div className="card" style={{ marginBottom: 14 }}>
-        <div className="grid-2">
-          <div>
-            <label>Tone</label>
-            <select value={tone} onChange={e => setTone(e.target.value)}>
-              <option value="positive">Positive — lead with wins</option>
-              <option value="mixed">Mixed — honest but optimistic</option>
-              <option value="recovery">Recovery — explain + what we're doing</option>
-            </select>
-          </div>
-          <div>
-            <label>Algorithm updates</label>
-            <div className="row" style={{ gap: 10, marginTop: 4 }}>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 6, textTransform: 'none', margin: 0 }}>
-                <input type="checkbox" checked={includeAlg} onChange={e => setIncludeAlg(e.target.checked)} style={{ width: 'auto' }} />
-                Include
-              </label>
-            </div>
-          </div>
-          {includeAlg && (
-            <div style={{ gridColumn: 'span 2' }}>
-              <label>Context / algorithm updates</label>
-              <textarea value={algContext} onChange={e => setAlgContext(e.target.value)} rows={2} />
-            </div>
+        <div className="row" style={{ justifyContent: 'space-between', marginBottom: 10 }}>
+          <strong>Report Settings</strong>
+          {client.looker_url && (
+            <a href={client.looker_url} target="_blank" rel="noreferrer" style={{ color: ACCENT, fontSize: 12 }}>
+              Open Looker Dashboard →
+            </a>
           )}
+        </div>
+        <div>
+          <label>Tone</label>
+          <div className="muted" style={{ fontSize: 12, padding: '6px 0' }}>
+            Auto-detect: always positive-first. Dips acknowledged with action plan.
+          </div>
+        </div>
+        <div style={{ marginTop: 8 }}>
+          <label>Algorithm / market context (optional)</label>
+          <textarea value={algContext} onChange={e => setAlgContext(e.target.value)} rows={2} placeholder="e.g. Google March 2025 core update rolled out mid-month…" />
         </div>
 
         <div className="row" style={{ justifyContent: 'space-between', marginTop: 14 }}>

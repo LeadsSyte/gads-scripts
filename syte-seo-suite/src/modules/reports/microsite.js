@@ -18,6 +18,10 @@ function scoreColor(s) {
 export function buildMicrositeHtml({ micro, client, monthLabel, rankscale }) {
   const aeo = micro?.aeoSection || {};
   const showAeo = !!aeo.show;
+  const ppc = micro?.ppcEquivalent || {};
+  const showPpc = !!ppc.show;
+  const work = micro?.workDone || {};
+  const showWork = !!work.show && (work.items || []).length > 0;
 
   const highlights = (micro?.highlights || []).map(h => `
     <div class="metric">
@@ -167,6 +171,24 @@ export function buildMicrositeHtml({ micro, client, monthLabel, rankscale }) {
     border-radius: 8px; text-decoration: none; font-weight: 600; font-size: 13px;
   }
 
+  .work-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-top: 16px; }
+  .work-card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 16px; border-left: 3px solid var(--accent);
+  }
+  .work-cat { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--accent); margin-bottom: 4px; }
+  .work-summary { font-size: 15px; font-weight: 600; }
+  .work-detail { font-size: 12px; color: var(--muted); margin-top: 4px; }
+
+  .ppc-card {
+    background: linear-gradient(135deg, rgba(52, 211, 153, .08), rgba(167, 139, 250, .06));
+    border: 1px solid rgba(52, 211, 153, .3); border-radius: 12px;
+    padding: 24px; margin-top: 16px; text-align: center;
+  }
+  .ppc-value { font-family: 'Instrument Serif', serif; font-size: 48px; color: var(--green); line-height: 1; }
+  .ppc-label { color: var(--muted); font-size: 13px; margin-top: 8px; }
+  .ppc-detail { color: var(--muted); font-size: 12px; margin-top: 4px; }
+
   .next {
     background: var(--surface); border: 1px solid var(--border);
     border-left: 4px solid var(--accent); padding: 20px 24px; border-radius: 10px;
@@ -210,6 +232,31 @@ export function buildMicrositeHtml({ micro, client, monthLabel, rankscale }) {
     <section>
       <h2>Top Performing Pages</h2>
       <ul class="pages">${topPages}</ul>
+    </section>` : ''}
+
+    ${showWork ? `
+    <section>
+      <h2>What Syte Did This Month</h2>
+      <div class="work-grid">
+        ${(work.items || []).map(w => `
+          <div class="work-card">
+            <div class="work-cat">${esc(w.category)}</div>
+            <div class="work-summary">${esc(w.summary)}</div>
+            ${w.detail ? `<div class="work-detail">${esc(w.detail)}</div>` : ''}
+          </div>
+        `).join('')}
+      </div>
+    </section>` : ''}
+
+    ${showPpc ? `
+    <section>
+      <h2>PPC Equivalent Value</h2>
+      <div class="ppc-card">
+        <div class="ppc-value">${esc(ppc.value)}</div>
+        <div class="ppc-label">Estimated Google Ads equivalent for your organic traffic</div>
+        <div class="ppc-detail">${esc(ppc.clicks || '')} organic clicks × ${esc(ppc.avgCpc || '')} avg. CPC</div>
+      </div>
+      <p class="narrative" style="margin-top:16px;font-size:14px">${esc(ppc.narrative || '')}</p>
     </section>` : ''}
 
     ${showAeo ? `
