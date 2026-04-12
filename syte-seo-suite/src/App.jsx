@@ -9,6 +9,7 @@ import CMSPush from './modules/cms/CMSPush.jsx';
 import ReportsModule from './modules/reports/ReportsModule.jsx';
 import ClientsMaster from './modules/clients/ClientsMaster.jsx';
 import ImplementationProgress from './modules/clients/ImplementationProgress.jsx';
+import Approvals from './modules/clients/Approvals.jsx';
 import { useClients } from './store/useClients.js';
 import { getStoredApiKey } from './lib/auth.js';
 import { needsMigration, countLegacyClients, runMigration } from './lib/migration.js';
@@ -112,10 +113,9 @@ export default function App() {
             Supabase not configured — running on localStorage fallback. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in .env to enable sync.
           </div>
         )}
-        {module === 'clients'   && (sub === 'Implementation Progress'
-          ? <ImplementationProgress />
-          : <ClientsMaster />
-        )}
+        {module === 'clients' && sub === 'Implementation Progress' && <ImplementationProgress />}
+        {module === 'clients' && sub === 'Approvals' && <Approvals />}
+        {module === 'clients' && sub !== 'Implementation Progress' && sub !== 'Approvals' && <ClientsMaster />}
         {module === 'content'   && <ContentEngine sub={sub} setSub={setSub} />}
         {module === 'technical' && <TechnicalSEO sub={sub} />}
         {module === 'aeo'       && <AEOEngine sub={sub} />}

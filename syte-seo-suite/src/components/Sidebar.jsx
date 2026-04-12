@@ -11,7 +11,7 @@ const MODULES = [
 ];
 
 const SUB_NAVS = {
-  clients:   ['All Clients', 'Implementation Progress'],
+  clients:   ['All Clients', 'Approvals', 'Implementation Progress'],
   content:   ['Auto Write', 'Topic Research', 'New Article', 'Rewrite & Expand', 'Metadata & Schema', 'Editorial Feedback', 'Clients', 'History'],
   technical: ['Dashboard', 'Task Board', 'New Scan', 'Clients', 'Team', 'Settings'],
   aeo:       ['Run Optimizations', 'Latest Results', 'Clients', 'Settings', 'History'],

@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { useClients } from '../../store/useClients.js';
 import { claudeStream } from '../../lib/anthropic.js';
 import {
@@ -8,6 +8,9 @@ import {
 } from './topicResearch.js';
 import { buildSystemPrompt, TAB_PROMPTS } from './prompts.js';
 import GenerateImageButton from '../../components/GenerateImageButton.jsx';
+import PipelineView from '../../components/PipelineView.jsx';
+import { contentPipelineStatus } from '../../lib/pipelineStatus.js';
+import { listAllImplementations } from '../../lib/supabase.js';
 
 const ACCENT = '#c8ff00';
 const HISTORY_KEY = 'syte-suite-content-history';
@@ -53,6 +56,9 @@ export default function AutoWrite() {
   // Batch mode — writing all remaining articles sequentially.
   const [batchMode, setBatchMode] = useState(false);
 
+  const [implementations, setImplementations] = useState([]);
+  const [showPipeline, setShowPipeline] = useState(true);
+
   const contentClients = useMemo(
     () => allClients.filter(c => c.does_content !== false),
     [allClients]
@@ -63,6 +69,34 @@ export default function AutoWrite() {
   );
   const withGsc = contentClients.filter(c => c.gsc_property);
   const withoutGsc = contentClients.filter(c => !c.gsc_property);
+
+  const currentMonth = new Date().toISOString().slice(0, 7);
+  const monthLabel = new Date().toLocaleString('en-US', { month: 'long', year: 'numeric' });
+
+  // Load implementations for pipeline view.
+  useEffect(() => {
+    listAllImplementations().then(setImplementations).catch(() => {});
+  }, []);
+
+  // Compute pipeline sections.
+  const pipelineSections = useMemo(() => {
+    const buckets = {
+      'verified-on-site': [],
+      'articles-written': [],
+      'no-articles': [],
+      'credentials-missing': []
+    };
+    for (const c of contentClients) {
+      const status = contentPipelineStatus(c, implementations, currentMonth);
+      buckets[status.section]?.push({ client: c, summary: status.summary, detail: status.detail });
+    }
+    return [
+      { key: 'verified-on-site', label: 'Verified on Site', color: 'var(--green)', borderColor: 'var(--green)', clients: buckets['verified-on-site'] },
+      { key: 'articles-written', label: 'Articles Written', color: 'var(--blue)', borderColor: 'var(--blue)', clients: buckets['articles-written'] },
+      { key: 'no-articles', label: 'No Articles Yet', color: 'var(--text-muted)', borderColor: 'var(--border)', clients: buckets['no-articles'] },
+      { key: 'credentials-missing', label: 'Credentials Missing', color: 'var(--red)', borderColor: 'var(--red)', clients: buckets['credentials-missing'] }
+    ];
+  }, [contentClients, implementations, currentMonth]);
 
   // ─── Phase 1: Research ───────────────────────────────
   async function startResearch(client) {
@@ -164,30 +198,37 @@ export default function AutoWrite() {
     <div>
       <style>{`@keyframes pulse { 0%,100% { opacity:.5; } 50% { opacity:1; } }`}</style>
 
-      <div className="row" style={{ justifyContent: 'space-between', marginBottom: 14, flexWrap: 'wrap', gap: 10 }}>
-        <div>
-          <h2 style={{ margin: 0 }}>Auto Write</h2>
-          <div className="muted" style={{ fontSize: 12, marginTop: 4, maxWidth: 720 }}>
-            Pick a client → research topics from Search Console → write articles one by one
-            (or batch). Each article uses live ranking data and the client's Manual Content
-            Direction if set.
-          </div>
-        </div>
-      </div>
+      {/* Pipeline view — monthly workflow sections */}
+      <PipelineView
+        title={`Content Engine — ${monthLabel}`}
+        month={monthLabel}
+        sections={pipelineSections}
+        onAction={(client, action) => {
+          if (action === 'generate') {
+            setShowPipeline(false);
+            startResearch(client);
+          }
+          if (action === 'verify') {
+            // Re-run verification for this client — handled by the Mark Implemented button.
+            setActiveId(client.id);
+          }
+        }}
+        actions={[
+          { key: 'generate', label: 'Generate Articles', color: ACCENT,
+            condition: (c, section) => section !== 'credentials-missing' && section !== 'verified-on-site' },
+          { key: 'generate', label: 'Generate More', color: ACCENT,
+            condition: (c, section) => section === 'verified-on-site' }
+        ]}
+      />
 
-      {/* Stats */}
-      <div className="grid-3" style={{ marginBottom: 14 }}>
-        <div className="card" style={{ padding: 14 }}>
-          <div className="muted" style={{ fontSize: 10, textTransform: 'uppercase' }}>Content clients</div>
-          <div style={{ fontFamily: 'Instrument Serif, serif', fontSize: 32, lineHeight: 1 }}>{contentClients.length}</div>
-        </div>
-        <div className="card" style={{ padding: 14, borderColor: 'var(--green)' }}>
-          <div className="muted" style={{ fontSize: 10, textTransform: 'uppercase' }}>Ready (GSC set)</div>
-          <div style={{ fontFamily: 'Instrument Serif, serif', fontSize: 32, lineHeight: 1, color: 'var(--green)' }}>{withGsc.length}</div>
-        </div>
-        <div className="card" style={{ padding: 14, borderColor: withoutGsc.length ? 'var(--orange)' : 'var(--border)' }}>
-          <div className="muted" style={{ fontSize: 10, textTransform: 'uppercase' }}>Need GSC</div>
-          <div style={{ fontFamily: 'Instrument Serif, serif', fontSize: 32, lineHeight: 1, color: withoutGsc.length ? 'var(--orange)' : 'var(--text-muted)' }}>{withoutGsc.length}</div>
+      <div style={{ borderTop: '1px solid var(--border)', marginTop: 20, paddingTop: 20 }}>
+        <div className="row" style={{ justifyContent: 'space-between', marginBottom: 14, flexWrap: 'wrap', gap: 10 }}>
+          <div>
+            <h3 style={{ margin: 0 }}>Write Articles</h3>
+            <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+              Pick a client below to research + write, or click "Generate Articles" on any card above.
+            </div>
+          </div>
         </div>
       </div>
 
