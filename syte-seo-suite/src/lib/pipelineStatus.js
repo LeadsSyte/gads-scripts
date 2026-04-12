@@ -23,30 +23,44 @@ export function contentPipelineStatus(client, implementations, month) {
     return { section: 'credentials-missing', detail: readiness.missing.map(f => f.label).join(', ') };
   }
 
-  // Check if this client has verified implementations this month.
+  // Gather this month's implementations + articles.
   const monthImpls = (implementations || []).filter(
     i => i.client_id === client.id && i.module === 'content' &&
       (i.implemented_at || i.created_at || '').slice(0, 7) === m
   );
   const verified = monthImpls.filter(i => i.verification_status === 'verified');
-  if (verified.length > 0) {
-    return {
-      section: 'verified-on-site',
-      summary: verified.length + ' verified',
-      detail: verified.map(v => v.title).slice(0, 3).join(', ')
-    };
-  }
 
-  // Check if articles were generated this month (from localStorage history).
   const history = loadContentHistory();
   const monthArticles = history.filter(
     h => h.client_id === client.id && (h.created_at || '').slice(0, 7) === m
   );
-  if (monthArticles.length > 0) {
+
+  const required = client.pages_per_month || 4;
+  const written = monthArticles.length;
+  const verifiedCount = verified.length;
+  const quotaMet = written >= required;
+
+  // Only move to "verified-on-site" when ALL required articles are done
+  // AND at least one is verified. Until then stay in the working section.
+  if (quotaMet && verifiedCount > 0) {
     return {
-      section: 'articles-written',
-      summary: monthArticles.length + ' articles',
-      detail: 'Generated, awaiting upload to site'
+      section: 'verified-on-site',
+      summary: verifiedCount + ' verified',
+      detail: verified.map(v => v.title).slice(0, 3).join(', ') +
+        (written > verifiedCount ? ' · ' + (written - verifiedCount) + ' awaiting verification' : '')
+    };
+  }
+
+  // Articles written but quota not yet met → stay in working section with progress.
+  if (written > 0) {
+    const parts = [written + '/' + required + ' articles'];
+    if (verifiedCount > 0) parts.push(verifiedCount + ' verified');
+    return {
+      section: quotaMet ? 'articles-written' : 'no-articles',
+      summary: parts.join(' · '),
+      detail: quotaMet
+        ? 'All ' + required + ' articles generated, awaiting upload to site'
+        : written + ' of ' + required + ' articles written — ' + (required - written) + ' remaining'
     };
   }
 
@@ -67,7 +81,16 @@ export function technicalPipelineStatus(client, implementations, tasks, month) {
       (i.implemented_at || i.created_at || '').slice(0, 7) === m
   );
   const verified = monthImpls.filter(i => i.verification_status === 'verified');
-  if (verified.length > 0) {
+
+  const clientTasks = (tasks || []).filter(
+    t => t.client_id === client.id && (t.created_at || '').slice(0, 7) === m
+  );
+  const open = clientTasks.filter(t => t.status === 'open').length;
+  const done = clientTasks.filter(t => t.status === 'done' || t.status === 'verified').length;
+  const allTasksDone = clientTasks.length > 0 && open === 0;
+
+  // Only "verified-on-site" when ALL tasks are done (none open) and verifications exist.
+  if (allTasksDone && verified.length > 0) {
     return {
       section: 'verified-on-site',
       summary: verified.length + ' verified',
@@ -75,16 +98,18 @@ export function technicalPipelineStatus(client, implementations, tasks, month) {
     };
   }
 
-  const clientTasks = (tasks || []).filter(
-    t => t.client_id === client.id && (t.created_at || '').slice(0, 7) === m
-  );
   if (clientTasks.length > 0) {
-    const open = clientTasks.filter(t => t.status === 'open').length;
-    const done = clientTasks.filter(t => t.status === 'done').length;
+    const parts = [clientTasks.length + ' tasks'];
+    if (done > 0) parts.push(done + ' done');
+    if (verified.length > 0) parts.push(verified.length + ' verified');
+    if (open > 0) parts.push(open + ' open');
     return {
-      section: 'fixes-generated',
-      summary: clientTasks.length + ' tasks',
-      detail: `${open} open · ${done} done`
+      // Only promote to "fixes-generated" when all tasks are complete.
+      section: allTasksDone ? 'fixes-generated' : 'not-scanned',
+      summary: parts.join(' · '),
+      detail: allTasksDone
+        ? 'All tasks completed, awaiting verification'
+        : open + ' of ' + clientTasks.length + ' tasks still open'
     };
   }
 
@@ -106,7 +131,16 @@ export function aeoPipelineStatus(client, implementations, aeoResults, month) {
       (i.implemented_at || i.created_at || '').slice(0, 7) === m
   );
   const verified = monthImpls.filter(i => i.verification_status === 'verified');
-  if (verified.length > 0) {
+
+  // Check if AEO optimizations were generated this month.
+  const monthResults = Object.values(aeoResults || {}).filter(
+    r => r.client_id === client.id && (r.generated_at || '').slice(0, 7) === m
+  );
+  const totalOpts = monthResults.reduce((a, r) => a + (r.optimizations?.length || 0), 0);
+  const allImplemented = totalOpts > 0 && verified.length >= totalOpts;
+
+  // Only "verified-on-site" when all optimizations are implemented + verified.
+  if (allImplemented && verified.length > 0) {
     return {
       section: 'verified-on-site',
       summary: verified.length + ' verified',
@@ -114,16 +148,18 @@ export function aeoPipelineStatus(client, implementations, aeoResults, month) {
     };
   }
 
-  // Check if AEO optimizations were generated this month.
-  const monthResults = Object.values(aeoResults || {}).filter(
-    r => r.client_id === client.id && (r.generated_at || '').slice(0, 7) === m
-  );
   if (monthResults.length > 0) {
-    const totalOpts = monthResults.reduce((a, r) => a + (r.optimizations?.length || 0), 0);
+    const parts = [totalOpts + ' optimizations'];
+    if (verified.length > 0) parts.push(verified.length + ' verified');
+    const remaining = totalOpts - verified.length;
+    if (remaining > 0) parts.push(remaining + ' awaiting implementation');
     return {
-      section: 'optimizations-generated',
-      summary: totalOpts + ' optimizations',
-      detail: 'Generated, awaiting implementation'
+      // Only promote when all are verified; otherwise stay in working section.
+      section: allImplemented ? 'optimizations-generated' : 'not-run',
+      summary: parts.join(' · '),
+      detail: verified.length > 0
+        ? verified.length + ' of ' + totalOpts + ' optimizations verified'
+        : 'Generated, awaiting implementation'
     };
   }
 
