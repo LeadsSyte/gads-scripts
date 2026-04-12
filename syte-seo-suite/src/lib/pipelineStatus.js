@@ -39,28 +39,41 @@ export function contentPipelineStatus(client, implementations, month) {
   const written = monthArticles.length;
   const verifiedCount = verified.length;
   const quotaMet = written >= required;
+  const allVerified = verifiedCount >= required;
 
-  // Only move to "verified-on-site" when ALL required articles are done
-  // AND at least one is verified. Until then stay in the working section.
-  if (quotaMet && verifiedCount > 0) {
+  // "Verified on Site" = ALL required articles are verified on the live site.
+  if (allVerified) {
+    const extra = verifiedCount - required;
     return {
       section: 'verified-on-site',
       summary: verifiedCount + ' verified',
       detail: verified.map(v => v.title).slice(0, 3).join(', ') +
-        (written > verifiedCount ? ' · ' + (written - verifiedCount) + ' awaiting verification' : '')
+        (extra > 0 ? ' (+' + extra + ' bonus)' : '')
     };
   }
 
-  // Articles written but quota not yet met → stay in working section with progress.
+  // "Articles Written" = ALL required articles are written, but not all verified yet.
+  if (quotaMet) {
+    const parts = [written + ' written'];
+    if (verifiedCount > 0) parts.push(verifiedCount + '/' + required + ' verified');
+    else parts.push('0 verified');
+    return {
+      section: 'articles-written',
+      summary: parts.join(' · '),
+      detail: verifiedCount > 0
+        ? verifiedCount + ' of ' + required + ' verified — ' + (required - verifiedCount) + ' awaiting verification'
+        : 'All ' + required + ' articles written, awaiting upload & verification'
+    };
+  }
+
+  // In progress — some articles written but quota not met.
   if (written > 0) {
     const parts = [written + '/' + required + ' articles'];
     if (verifiedCount > 0) parts.push(verifiedCount + ' verified');
     return {
-      section: quotaMet ? 'articles-written' : 'no-articles',
+      section: 'no-articles',
       summary: parts.join(' · '),
-      detail: quotaMet
-        ? 'All ' + required + ' articles generated, awaiting upload to site'
-        : written + ' of ' + required + ' articles written — ' + (required - written) + ' remaining'
+      detail: written + ' of ' + required + ' articles written — ' + (required - written) + ' remaining'
     };
   }
 
