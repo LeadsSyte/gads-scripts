@@ -11,51 +11,78 @@ import { corsFetchText } from './corsProxy.js';
 import { claudeComplete } from './anthropic.js';
 import { updateImplementation } from './supabase.js';
 
-// Try to fetch the page HTML. First try direct/CORS proxy (for published
-// pages). If the URL is on a WordPress site with credentials, fall back
-// to fetching the post content via the WP REST API through our proxy.
+// Try to fetch the page content. For WordPress sites with credentials,
+// ALWAYS prefer the REST API — it bypasses Wordfence, Cloudflare, and
+// works for drafts. Only fall back to public CORS fetch for non-WP sites.
 async function fetchPageContent(impl, client) {
-  // 1. Try public fetch first (works for published pages).
+  const slug = (impl.page_url || '').split('/').filter(Boolean).pop() || '';
+
+  // 1. WordPress REST API (preferred — reliable, authenticated, WAF-proof).
+  if (client?.wp_url && client?.wp_username && client?.wp_app_password) {
+    const wpBase = client.wp_url.replace(/\/+$/, '');
+
+    // Strategy A: find by slug (most reliable when URL is correct).
+    if (slug) {
+      for (const type of ['posts', 'pages']) {
+        try {
+          const res = await fetch('/.netlify/functions/wp-proxy', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              wpUrl: wpBase, username: client.wp_username,
+              appPassword: client.wp_app_password, method: 'GET',
+              path: 'wp/v2/' + type + '?slug=' + encodeURIComponent(slug) + '&status=any'
+            })
+          });
+          if (res.ok) {
+            const results = await res.json();
+            if (Array.isArray(results) && results.length > 0) {
+              const post = results[0];
+              const html = (post.title?.rendered || '') + '\n' + (post.content?.rendered || '');
+              return { html, source: 'wp-api-slug', wpStatus: post.status, wpId: post.id, wpSlug: post.slug };
+            }
+          }
+        } catch {}
+      }
+    }
+
+    // Strategy B: search by title (fallback if slug doesn't match).
+    const searchTitle = (impl.title || '').replace(/[|–—]/g, ' ').trim().slice(0, 50);
+    if (searchTitle) {
+      try {
+        const res = await fetch('/.netlify/functions/wp-proxy', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            wpUrl: wpBase, username: client.wp_username,
+            appPassword: client.wp_app_password, method: 'GET',
+            path: 'wp/v2/posts?search=' + encodeURIComponent(searchTitle) + '&per_page=5&status=any'
+          })
+        });
+        if (res.ok) {
+          const posts = await res.json();
+          if (Array.isArray(posts) && posts.length > 0) {
+            // Prefer slug match, then first result.
+            const match = posts.find(p => p.slug === slug) || posts[0];
+            const html = (match.title?.rendered || '') + '\n' + (match.content?.rendered || '');
+            if (html.length > 100) {
+              return { html, source: 'wp-api-search', wpStatus: match.status, wpId: match.id, wpSlug: match.slug };
+            }
+          }
+        }
+      } catch {}
+    }
+  }
+
+  // 2. Public fetch via CORS proxy (non-WP sites, or WP without credentials).
   try {
     const html = await corsFetchText(impl.page_url);
-    // If we got a meaningful page (not a login redirect or 404 body).
     if (html.length > 500 && !/<title>.*Log In.*<\/title>/i.test(html)) {
       return { html, source: 'public' };
     }
   } catch {}
 
-  // 2. If client has WP credentials, try fetching the post via REST API.
-  if (client?.wp_url && client?.wp_username && client?.wp_app_password) {
-    try {
-      // Try to find the post by searching for the title.
-      const searchTitle = (impl.title || '').slice(0, 50);
-      const res = await fetch('/.netlify/functions/wp-proxy', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          wpUrl: client.wp_url.replace(/\/+$/, ''),
-          username: client.wp_username,
-          appPassword: client.wp_app_password,
-          method: 'GET',
-          path: 'wp/v2/posts?search=' + encodeURIComponent(searchTitle) + '&per_page=5&status=any'
-        })
-      });
-      if (res.ok) {
-        const posts = await res.json();
-        if (Array.isArray(posts) && posts.length > 0) {
-          // Pick the best match — prefer exact URL match, then first result.
-          const slug = impl.page_url.split('/').filter(Boolean).pop() || '';
-          const match = posts.find(p => p.slug === slug || p.link === impl.page_url) || posts[0];
-          const content = (match.content?.rendered || '') + (match.title?.rendered || '');
-          if (content.length > 100) {
-            return { html: content, source: 'wp-api', wpStatus: match.status, wpId: match.id };
-          }
-        }
-      }
-    } catch {}
-  }
-
-  // 3. Last resort — try the CORS proxy again with a longer timeout.
+  // 3. Last resort CORS with different proxies.
   try {
     const html = await corsFetchText(impl.page_url);
     return { html, source: 'cors-fallback' };
@@ -93,27 +120,34 @@ export async function verifyImplementation(impl, client) {
     : '';
 
   const truncated = pageData.html.slice(0, 40000);
-  const prompt = `You are verifying whether a specific SEO change has been implemented on a live website.
+  const wpNote = pageData.wpSlug
+    ? `\n- WordPress post slug: ${pageData.wpSlug} (ID: ${pageData.wpId})`
+    : '';
+  const prompt = `You are verifying whether an article or SEO change exists on a website.
 
 CHANGE TO VERIFY:
 - Module: ${impl.module}
 - Type: ${impl.change_type}
-- Title: ${impl.title || ''}
-- Description of the change: ${impl.description || ''}
-- Content source: ${pageData.source}${draftNote}
+- Title/topic: ${impl.title || ''}
+- Additional context: ${impl.description || '(none)'}
+- Content source: ${pageData.source}${wpNote}${draftNote}
 
-PAGE HTML (truncated to 40k chars):
+PAGE CONTENT:
 ${truncated}
 
-Check whether the described change is present in the HTML above.
-For articles: verify the title, key headings, and content themes match — don't require exact word-for-word match since WordPress may reformat the HTML.
+VERIFICATION RULES:
+- For articles: the page has the article if the main body contains substantial content about the same TOPIC. The H1 and meta title may differ slightly — that's normal SEO practice. Look for matching key themes, not exact title strings.
+- For schema changes: check for the JSON-LD script tag.
+- For meta changes: check the <title> tag or meta description.
+- If content was fetched via wp-api (WordPress REST API), the HTML is the raw post body — check for the article content directly.
+- A WordPress draft that contains the article counts as "implemented" (it exists, just not published yet).
 
 Return ONLY valid JSON (no prose, no code fences):
 {
   "implemented": true or false,
   "confidence": "high" | "medium" | "low",
-  "evidence": "1-2 sentences: what you found (or didn't find) in the HTML that confirms/denies the implementation",
-  "suggestion": "if not implemented: what specifically is missing. if implemented: empty string"
+  "evidence": "1-2 sentences: what you found that confirms/denies",
+  "suggestion": "if not implemented: what is missing. if implemented: empty string"
 }`;
 
   try {

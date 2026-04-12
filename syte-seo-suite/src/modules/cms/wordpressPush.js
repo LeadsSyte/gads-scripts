@@ -107,7 +107,9 @@ export async function pushMetaToWordPress(client, item) {
 
   await updatePostMeta(client, type, record.id, meta);
   const adminUrl = client.wp_url.replace(/\/+$/, '') + '/wp-admin/post.php?post=' + record.id + '&action=edit';
-  return { ok: true, admin_url: adminUrl, link: record.link };
+  const baseUrl = client.wp_url.replace(/\/+$/, '');
+  const realLink = record.slug ? baseUrl + '/' + record.slug + '/' : record.link || '';
+  return { ok: true, admin_url: adminUrl, link: realLink };
 }
 
 export async function pushContentToWordPress(client, item) {
@@ -177,7 +179,16 @@ export async function pushContentToWordPress(client, item) {
   }
 
   const adminUrl = client.wp_url.replace(/\/+$/, '') + '/wp-admin/post.php?post=' + created.id + '&action=edit';
-  return { ok: true, admin_url: adminUrl, link: created.link };
+
+  // WordPress drafts return `link` as a preview URL (?p=123), not the
+  // real permalink. Build the actual URL from the slug WordPress assigned
+  // so downstream verification checks the right page.
+  const baseUrl = client.wp_url.replace(/\/+$/, '');
+  const realLink = created.slug
+    ? baseUrl + '/' + created.slug + '/'
+    : created.link || '';
+
+  return { ok: true, admin_url: adminUrl, link: realLink, wp_id: created.id, wp_slug: created.slug };
 }
 
 export async function pushToWordPress(client, item) {
