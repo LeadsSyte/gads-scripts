@@ -4,8 +4,10 @@ import { claudeComplete, extractJSON } from '../../lib/anthropic.js';
 import { corsFetchText } from '../../lib/corsProxy.js';
 import PushToCmsButton from '../../components/PushToCmsButton.jsx';
 import MarkImplementedButton from '../../components/MarkImplementedButton.jsx';
+import PipelineView from '../../components/PipelineView.jsx';
+import { technicalPipelineStatus } from '../../lib/pipelineStatus.js';
 import { getAudit, syncWebceoClients } from './webceo.js';
-import { upsertClient } from '../../lib/supabase.js';
+import { upsertClient, listAllImplementations } from '../../lib/supabase.js';
 import { querySearchAnalytics } from './gsc.js';
 import { ensureToken, SCOPES, getToken, clearToken } from './googleAuth.js';
 
@@ -180,6 +182,35 @@ export default function TechnicalSEO({ sub }) {
     };
   }
 
+  // -------- Pipeline state --------
+  const [techImpls, setTechImpls] = useState([]);
+  useEffect(() => {
+    listAllImplementations().then(setTechImpls).catch(() => {});
+  }, []);
+
+  const currentMonth = new Date().toISOString().slice(0, 7);
+  const monthLabel = new Date().toLocaleString('en-US', { month: 'long', year: 'numeric' });
+
+  const techClients = clients.filter(c => c.does_technical !== false);
+  const techPipeline = useMemo(() => {
+    const buckets = {
+      'verified-on-site': [],
+      'fixes-generated': [],
+      'not-scanned': [],
+      'credentials-missing': []
+    };
+    for (const c of techClients) {
+      const status = technicalPipelineStatus(c, techImpls, tasks, currentMonth);
+      buckets[status.section]?.push({ client: c, summary: status.summary, detail: status.detail });
+    }
+    return [
+      { key: 'verified-on-site',   label: 'Fixes Verified on Site', color: 'var(--green)',      borderColor: 'var(--green)',      clients: buckets['verified-on-site'] },
+      { key: 'fixes-generated',    label: 'Fixes Generated',        color: 'var(--blue)',       borderColor: 'var(--blue)',       clients: buckets['fixes-generated'] },
+      { key: 'not-scanned',        label: 'Not Scanned Yet',        color: 'var(--text-muted)', borderColor: 'var(--border)',      clients: buckets['not-scanned'] },
+      { key: 'credentials-missing', label: 'Credentials Missing',   color: 'var(--red)',        borderColor: 'var(--red)',        clients: buckets['credentials-missing'] }
+    ];
+  }, [techClients, techImpls, tasks, currentMonth]);
+
   // -------- Subviews --------
   if (sub === 'Dashboard') {
     const counts = {
@@ -190,25 +221,48 @@ export default function TechnicalSEO({ sub }) {
     };
     return (
       <div className="content-area">
-        <h2 style={{ marginTop: 0 }}>Technical SEO Dashboard</h2>
-        <div className="grid-4" style={{ marginBottom: 20 }}>
-          {STATUS_ORDER.map(s => (
-            <div className="card" key={s}>
-              <div className="muted" style={{ fontSize: 11, textTransform: 'uppercase' }}>{s}</div>
-              <div style={{ fontSize: 36, fontFamily: 'Instrument Serif, serif' }}>{counts[s]}</div>
-            </div>
-          ))}
+        {/* Pipeline view */}
+        <PipelineView
+          title={`Technical SEO — ${monthLabel}`}
+          month={monthLabel}
+          sections={techPipeline}
+          onAction={(client, action) => {
+            if (action === 'scan') {
+              useClients.getState().select(client.id);
+            }
+          }}
+          actions={[
+            { key: 'scan', label: 'Run Scan', color: ACCENT,
+              condition: (c, section) => section !== 'credentials-missing' && section !== 'verified-on-site' },
+            { key: 'scan', label: 'Re-scan', color: ACCENT,
+              condition: (c, section) => section === 'verified-on-site' }
+          ]}
+        />
+
+        {/* Task status counts */}
+        <div style={{ borderTop: '1px solid var(--border)', marginTop: 20, paddingTop: 16 }}>
+          <h3 style={{ margin: '0 0 12px' }}>Task Status</h3>
+          <div className="grid-4">
+            {STATUS_ORDER.map(s => (
+              <div className="card" key={s}>
+                <div className="muted" style={{ fontSize: 11, textTransform: 'uppercase' }}>{s}</div>
+                <div style={{ fontSize: 36, fontFamily: 'Instrument Serif, serif' }}>{counts[s]}</div>
+              </div>
+            ))}
+          </div>
         </div>
-        <div className="card">
-          <h3 style={{ marginTop: 0 }}>Clients needing refresh ({staleClients.length})</h3>
-          {staleClients.length === 0 && <div className="muted">All clients scanned in the last {STALE_DAYS} days.</div>}
-          {staleClients.map(c => (
-            <div key={c.id} className="row" style={{ justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid var(--border)' }}>
-              <span>{c.name}</span>
-              <span className="badge orange">stale</span>
-            </div>
-          ))}
-        </div>
+
+        {staleClients.length > 0 && (
+          <div className="card" style={{ marginTop: 16 }}>
+            <h3 style={{ marginTop: 0 }}>Clients needing refresh ({staleClients.length})</h3>
+            {staleClients.map(c => (
+              <div key={c.id} className="row" style={{ justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid var(--border)' }}>
+                <span>{c.name}</span>
+                <span className="badge orange">stale</span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     );
   }

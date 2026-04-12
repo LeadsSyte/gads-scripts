@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useClients } from '../../store/useClients.js';
 import { claudeComplete, extractJSON } from '../../lib/anthropic.js';
 import { corsFetchText } from '../../lib/corsProxy.js';
@@ -6,6 +6,9 @@ import PushToCmsButton from '../../components/PushToCmsButton.jsx';
 import { pushItemInline } from '../cms/pushAction.js';
 import ClientCardsGrid from '../../components/ClientCardsGrid.jsx';
 import MarkImplementedButton from '../../components/MarkImplementedButton.jsx';
+import PipelineView from '../../components/PipelineView.jsx';
+import { aeoPipelineStatus } from '../../lib/pipelineStatus.js';
+import { listAllImplementations } from '../../lib/supabase.js';
 import { AEO_SYSTEM, AEO_TYPES } from './aeoTypes.js';
 import { fetchSitemapUrls } from './sitemap.js';
 import { listAccountSummaries, runReport } from './ga4.js';
@@ -170,11 +173,58 @@ export default function AEOEngine({ sub }) {
     setBusy(false);
   }
 
+  // -------- Pipeline state --------
+  const [aeoImpls, setAeoImpls] = useState([]);
+  useEffect(() => {
+    listAllImplementations().then(setAeoImpls).catch(() => {});
+  }, []);
+
+  const currentMonth = new Date().toISOString().slice(0, 7);
+  const monthLabel = new Date().toLocaleString('en-US', { month: 'long', year: 'numeric' });
+  const aeoClients = clients.filter(c => c.does_aeo !== false);
+
+  const aeoPipeline = useMemo(() => {
+    const buckets = {
+      'verified-on-site': [],
+      'optimizations-generated': [],
+      'not-run': [],
+      'credentials-missing': []
+    };
+    for (const c of aeoClients) {
+      const status = aeoPipelineStatus(c, aeoImpls, results, currentMonth);
+      buckets[status.section]?.push({ client: c, summary: status.summary, detail: status.detail });
+    }
+    return [
+      { key: 'verified-on-site',        label: 'Verified on Site',        color: 'var(--green)',      borderColor: 'var(--green)',      clients: buckets['verified-on-site'] },
+      { key: 'optimizations-generated', label: 'Optimizations Generated', color: 'var(--blue)',       borderColor: 'var(--blue)',       clients: buckets['optimizations-generated'] },
+      { key: 'not-run',                 label: 'Not Run Yet',             color: 'var(--text-muted)', borderColor: 'var(--border)',      clients: buckets['not-run'] },
+      { key: 'credentials-missing',     label: 'Credentials Missing',     color: 'var(--red)',        borderColor: 'var(--red)',        clients: buckets['credentials-missing'] }
+    ];
+  }, [aeoClients, aeoImpls, results, currentMonth]);
+
   // -------- Subviews --------
   if (sub === 'Run Optimizations') {
     return (
       <div className="content-area">
-        <h2 style={{ marginTop: 0 }}>Run AEO Optimizations</h2>
+        {/* Pipeline overview */}
+        <PipelineView
+          title={`AEO Engine — ${monthLabel}`}
+          month={monthLabel}
+          sections={aeoPipeline}
+          onAction={(c, action) => {
+            if (action === 'run') useClients.getState().select(c.id);
+          }}
+          actions={[
+            { key: 'run', label: 'Run Optimizations', color: ACCENT,
+              condition: (c, section) => section !== 'credentials-missing' && section !== 'verified-on-site' },
+            { key: 'run', label: 'Re-run', color: ACCENT,
+              condition: (c, section) => section === 'verified-on-site' }
+          ]}
+        />
+
+        <div style={{ borderTop: '1px solid var(--border)', marginTop: 20, paddingTop: 16 }}>
+          <h3 style={{ margin: '0 0 12px' }}>Run for Selected Client</h3>
+        </div>
         <div className="card">
           <div className="row" style={{ gap: 10, marginBottom: 12 }}>
             <button onClick={pullFromSitemap} disabled={!client || busy}>Pull from Sitemap</button>
