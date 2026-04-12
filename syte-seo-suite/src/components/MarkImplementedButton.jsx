@@ -30,7 +30,8 @@ export default function MarkImplementedButton({
 
     // Always ask for the actual page URL — the default might just be the
     // client's homepage which won't contain the specific article/change.
-    // Pre-fill with a slug derived from the title if we only have a base URL.
+    // Prefer the live_url from a previous CMS push (the real WordPress
+    // permalink), then fall back to deriving a slug from the title.
     let suggestedUrl = pageUrl || client.url || '';
     const baseOnly = suggestedUrl && !suggestedUrl.replace(/^https?:\/\//, '').includes('/') ||
                      suggestedUrl.replace(/\/$/, '').split('/').length <= 3;
@@ -41,6 +42,10 @@ export default function MarkImplementedButton({
         .replace(/-+/g, '-');
       suggestedUrl = suggestedUrl.replace(/\/$/, '') + '/' + slug + '/';
     }
+    // NOTE: The slug above is a best-guess. WordPress may have generated a
+    // different slug from the meta title. If you pushed this via CMS Push,
+    // the real URL appears next to the "Review in admin" link — paste THAT
+    // here instead of accepting the suggested one.
 
     const actualUrl = prompt(
       'Enter the live URL where this was published:',

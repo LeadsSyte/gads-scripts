@@ -113,6 +113,9 @@ export default function AutoWrite() {
 
   // Expanded client in the pipeline (for viewing articles in "Articles Written").
   const [expandedPipelineClient, setExpandedPipelineClient] = useState(null);
+  // Track real WordPress permalinks per article so MarkImplementedButton
+  // verifies the correct URL instead of re-deriving a mismatched slug.
+  const [pushedUrls, setPushedUrls] = useState({});
 
   // Get articles for a specific client from content history.
   function getClientArticles(clientId) {
@@ -269,12 +272,13 @@ export default function AutoWrite() {
                             payload: { html: a.output, meta_title: a.topic, primary_keyword: a.keyword }
                           }}
                           label="Push to WP"
+                          onSuccess={r => { if (r?.live_url) setPushedUrls(prev => ({ ...prev, [a.id || i]: r.live_url })); }}
                         />
                       )}
                       <MarkImplementedButton
                         module="content"
                         changeType="article"
-                        pageUrl={client.url || ''}
+                        pageUrl={pushedUrls[a.id || i] || client.url || ''}
                         title={a.topic || a.keyword || 'Article'}
                         description={`Article: ${a.topic || ''}`}
                       />

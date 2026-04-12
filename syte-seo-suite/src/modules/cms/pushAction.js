@@ -50,9 +50,12 @@ export async function pushItemInline(client, item) {
     await updateCmsQueueItem(row.id, {
       status: 'pushed',
       pushed_at: new Date().toISOString(),
-      payload: { ...(row.payload || {}), admin_url: result.admin_url || '' }
+      // Store BOTH the admin edit URL and the actual public permalink so
+      // downstream verification uses the real WordPress URL, not a re-derived slug.
+      page_url: result.link || row.page_url,
+      payload: { ...(row.payload || {}), admin_url: result.admin_url || '', live_url: result.link || '' }
     });
-    return { ok: true, admin_url: result.admin_url || '', id: row.id };
+    return { ok: true, admin_url: result.admin_url || '', live_url: result.link || '', id: row.id };
   } catch (e) {
     await updateCmsQueueItem(row.id, { status: 'failed', error_msg: e.message });
     throw e;

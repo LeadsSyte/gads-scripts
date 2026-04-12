@@ -179,6 +179,9 @@ function ParsedOutput({ output, topic, pushItem, exportTxt, exportDocx, systemPr
   const [revision, setRevision] = React.useState('');
   const [revising, setRevising] = React.useState(false);
   const [revisionHistory, setRevisionHistory] = React.useState([]);
+  // Track the real WordPress permalink returned after a CMS push so the
+  // Mark Implemented verifier checks the right URL, not a re-derived slug.
+  const [pushedLiveUrl, setPushedLiveUrl] = React.useState('');
 
   if (!sections) return null;
 
@@ -226,7 +229,7 @@ function ParsedOutput({ output, topic, pushItem, exportTxt, exportDocx, systemPr
           <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
             <button onClick={() => exportTxt(output, topic || 'article')}>Export .txt</button>
             <button onClick={() => exportDocx(output, topic || 'article')}>Export .docx</button>
-            {pushItem && <PushToCmsButton item={pushItem} />}
+            {pushItem && <PushToCmsButton item={pushItem} onSuccess={r => { if (r?.live_url) setPushedLiveUrl(r.live_url); }} />}
             <button onClick={() => setShowRaw(v => !v)} style={{ fontSize: 11 }}>
               {showRaw ? 'Parsed view' : 'Raw output'}
             </button>
@@ -268,7 +271,7 @@ function ParsedOutput({ output, topic, pushItem, exportTxt, exportDocx, systemPr
                 <MarkImplementedButton
                   module="content"
                   changeType="article"
-                  pageUrl={url || undefined}
+                  pageUrl={pushedLiveUrl || url || undefined}
                   title={sections.metaTitle || topic || 'Article'}
                   description={`Meta: ${sections.metaTitle || ''} | ${sections.metaDesc || ''}`}
                 />

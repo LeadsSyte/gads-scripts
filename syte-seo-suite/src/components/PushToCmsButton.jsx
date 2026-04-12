@@ -48,6 +48,11 @@ export default function PushToCmsButton({ item, label = 'Push to CMS', onSuccess
           Review in admin →
         </a>
       )}
+      {result?.live_url && (
+        <a href={result.live_url} target="_blank" rel="noreferrer" style={{ color: 'var(--text-muted)', fontSize: 11 }}>
+          {result.live_url.replace(/^https?:\/\//, '').replace(/\/$/, '')}
+        </a>
+      )}
       {err && <span style={{ color: 'var(--red)', fontSize: 12 }}>{err}</span>}
     </span>
   );
