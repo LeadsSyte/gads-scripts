@@ -69,10 +69,18 @@ export default function MarkImplementedButton({
       });
 
       setPhase('verifying');
-      const status = await verifyImplementation(impl);
+      const status = await verifyImplementation(impl, client);
+      // Re-read the updated impl from the updateImplementation call inside
+      // verifyImplementation — the original `impl` object is stale and won't
+      // have verification_detail set on it.
+      // We pass the detail through the status return, but the canonical
+      // detail is now on the Supabase/localStorage record. For the inline
+      // display, use a sensible message based on what we know.
       setResult({
         status,
-        detail: impl.verification_detail || (status === 'verified' ? 'Change confirmed on the live page.' : 'Change not found.'),
+        detail: status === 'verified'
+          ? 'Change confirmed on the live page.'
+          : 'Change not found — the page may be a draft, behind a login, or the content differs from what was expected. Click Re-verify after publishing.',
         impl
       });
       setPhase('done');
