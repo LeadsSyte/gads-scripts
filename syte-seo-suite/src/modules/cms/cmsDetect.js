@@ -44,12 +44,22 @@ export async function detectCms(url) {
 }
 
 export async function testWordPress(wpUrl, username, appPassword) {
-  const base = trimUrl(wpUrl);
-  const auth = 'Basic ' + btoa(username + ':' + appPassword);
-  const res = await fetch(base + '/wp-json/wp/v2/users/me', {
-    headers: { Authorization: auth }
+  // Route through the Netlify wp-proxy to bypass Wordfence/Cloudflare/CORS.
+  const res = await fetch('/.netlify/functions/wp-proxy', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      wpUrl: trimUrl(wpUrl),
+      username,
+      appPassword,
+      method: 'GET',
+      path: 'wp/v2/users/me'
+    })
   });
-  if (!res.ok) throw new Error('WordPress auth failed: ' + res.status);
+  if (!res.ok) {
+    const txt = await res.text().catch(() => '');
+    throw new Error('WordPress auth failed: ' + res.status + ' ' + txt.slice(0, 200));
+  }
   const j = await res.json();
   return j.name || j.slug || 'connected';
 }
