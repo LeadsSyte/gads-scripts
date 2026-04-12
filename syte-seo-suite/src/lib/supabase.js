@@ -254,3 +254,64 @@ export async function listSentReports(clientId) {
   const list = JSON.parse(localStorage.getItem(LS_PREFIX + 'report_log') || '[]');
   return clientId ? list.filter(r => r.client_id === clientId) : list;
 }
+
+// ---------------------------------------------------------------------------
+// Implementation tracking — cross-module change verification.
+// ---------------------------------------------------------------------------
+
+export async function logImplementation(row) {
+  if (supabase) {
+    const { data, error } = await supabase
+      .from('syte_suite_implementations')
+      .insert(row)
+      .select()
+      .single();
+    if (error) throw error;
+    return data;
+  }
+  const list = JSON.parse(localStorage.getItem(LS_PREFIX + 'implementations') || '[]');
+  row.id = crypto.randomUUID();
+  row.created_at = new Date().toISOString();
+  row.implemented_at = row.implemented_at || new Date().toISOString();
+  row.verification_status = 'pending';
+  list.push(row);
+  localStorage.setItem(LS_PREFIX + 'implementations', JSON.stringify(list));
+  return row;
+}
+
+export async function updateImplementation(id, patch) {
+  if (supabase) {
+    const { data, error } = await supabase
+      .from('syte_suite_implementations')
+      .update(patch)
+      .eq('id', id)
+      .select()
+      .single();
+    if (error) throw error;
+    return data;
+  }
+  const list = JSON.parse(localStorage.getItem(LS_PREFIX + 'implementations') || '[]');
+  const idx = list.findIndex(r => r.id === id);
+  if (idx >= 0) list[idx] = { ...list[idx], ...patch };
+  localStorage.setItem(LS_PREFIX + 'implementations', JSON.stringify(list));
+  return list[idx];
+}
+
+export async function listImplementations(clientId) {
+  if (supabase) {
+    let q = supabase
+      .from('syte_suite_implementations')
+      .select('*')
+      .order('created_at', { ascending: false });
+    if (clientId) q = q.eq('client_id', clientId);
+    const { data, error } = await q;
+    if (error) throw error;
+    return data || [];
+  }
+  const list = JSON.parse(localStorage.getItem(LS_PREFIX + 'implementations') || '[]');
+  return clientId ? list.filter(r => r.client_id === clientId) : list;
+}
+
+export async function listAllImplementations() {
+  return listImplementations(null);
+}

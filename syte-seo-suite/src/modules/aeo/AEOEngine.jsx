@@ -5,6 +5,7 @@ import { corsFetchText } from '../../lib/corsProxy.js';
 import PushToCmsButton from '../../components/PushToCmsButton.jsx';
 import { pushItemInline } from '../cms/pushAction.js';
 import ClientCardsGrid from '../../components/ClientCardsGrid.jsx';
+import MarkImplementedButton from '../../components/MarkImplementedButton.jsx';
 import { AEO_SYSTEM, AEO_TYPES } from './aeoTypes.js';
 import { fetchSitemapUrls } from './sitemap.js';
 import { listAccountSummaries, runReport } from './ga4.js';
@@ -221,8 +222,15 @@ export default function AEOEngine({ sub }) {
                 </summary>
                 <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>Placement: {o.placement} · {o.reason}</div>
                 <pre style={{ background: 'var(--bg)', padding: 10, marginTop: 6, fontSize: 11, overflowX: 'auto' }}>{o.code}</pre>
-                <div style={{ marginTop: 6 }}>
+                <div className="row" style={{ marginTop: 6, gap: 10, flexWrap: 'wrap' }}>
                   <PushToCmsButton item={buildOptItem(r.url, o)} />
+                  <MarkImplementedButton
+                    module="aeo"
+                    changeType={o.type || 'aeo_optimization'}
+                    pageUrl={r.url}
+                    title={o.title}
+                    description={o.code || ''}
+                  />
                 </div>
               </details>
             ))}

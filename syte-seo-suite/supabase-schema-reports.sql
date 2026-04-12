@@ -50,3 +50,27 @@ alter table syte_suite_report_log  disable row level security;
 -- Separate from internal_notes (Manual Content Direction) which is monthly
 -- topic steering. This field is non-negotiable in every generation.
 alter table syte_suite_clients add column if not exists content_rules text;
+
+-- Implementation tracking across all modules. One row per change that a
+-- team member marks as "uploaded to the website". The AI verification
+-- scanner checks the live site and flips status to verified or failed.
+create table if not exists syte_suite_implementations (
+  id uuid primary key default gen_random_uuid(),
+  client_id uuid references syte_suite_clients(id) on delete cascade,
+  module text not null,            -- 'content' | 'aeo' | 'technical'
+  change_type text,                -- 'article' | 'schema' | 'meta' | 'fix' | 'aeo_optimization'
+  page_url text,
+  title text,                      -- what was implemented
+  description text,                -- details / the actual change
+  implemented_by text,             -- who clicked the button
+  implemented_at timestamptz default now(),
+  verification_status text default 'pending', -- 'pending' | 'verified' | 'failed'
+  verification_detail text,        -- Claude's explanation of what it found
+  verified_at timestamptz,
+  created_at timestamptz default now()
+);
+
+alter table syte_suite_implementations disable row level security;
+
+create index if not exists syte_suite_impl_client_idx
+  on syte_suite_implementations(client_id, created_at desc);

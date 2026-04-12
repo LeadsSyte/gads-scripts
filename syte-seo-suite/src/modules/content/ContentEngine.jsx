@@ -7,6 +7,7 @@ import ClientCardsGrid from '../../components/ClientCardsGrid.jsx';
 import TopicResearch from './TopicResearch.jsx';
 import AutoWrite from './AutoWrite.jsx';
 import GenerateImageButton from '../../components/GenerateImageButton.jsx';
+import MarkImplementedButton from '../../components/MarkImplementedButton.jsx';
 
 const ACCENT = '#c8ff00';
 const HISTORY_KEY = 'syte-suite-content-history';
@@ -261,6 +262,17 @@ function ParsedOutput({ output, topic, pushItem, exportTxt, exportDocx, systemPr
 
               {/* Hero image generator — opt-in, only renders if an image API key is configured */}
               <GenerateImageButton title={topic} keyword={sections.metaTitle || topic} />
+
+              {/* Mark as implemented + AI verification */}
+              <div style={{ marginTop: 10 }}>
+                <MarkImplementedButton
+                  module="content"
+                  changeType="article"
+                  pageUrl={url || undefined}
+                  title={sections.metaTitle || topic || 'Article'}
+                  description={`Meta: ${sections.metaTitle || ''} | ${sections.metaDesc || ''}`}
+                />
+              </div>
             </div>
 
             <SectionCard title="FAQ Schema (JSON-LD)" content={sections.faqSchema} accent="var(--purple)" mono />
@@ -329,6 +341,7 @@ export default function ContentEngine({ sub, setSub }) {
   // can send them as conversation context to Claude.
   const [lastSystem, setLastSystem] = useState('');
   const [lastUserPrompt, setLastUserPrompt] = useState('');
+  const [expandedClient, setExpandedClient] = useState(null);
 
   const tab = sub || 'Auto Write';
   const scores = useMemo(() => (output ? extractJSON(output) : null), [output]);
@@ -446,26 +459,102 @@ export default function ContentEngine({ sub, setSub }) {
   }
 
   if (tab === 'History') {
+    // Group history entries by client, show as summary cards.
+    const byClient = {};
+    for (const h of history) {
+      const key = h.client_id || h.client_name || 'Unknown';
+      if (!byClient[key]) byClient[key] = { name: h.client_name || 'Unknown', items: [] };
+      byClient[key].items.push(h);
+    }
+    const clientGroups = Object.values(byClient).sort((a, b) => b.items.length - a.items.length);
     return (
       <div className="content-area">
-        <h2 style={{ marginTop: 0 }}>Content History</h2>
+        <div className="row" style={{ justifyContent: 'space-between', marginBottom: 14 }}>
+          <h2 style={{ margin: 0 }}>Content History</h2>
+          <span className="muted" style={{ fontSize: 12 }}>{history.length} articles total</span>
+        </div>
         {history.length === 0 && <div className="muted">No generations yet.</div>}
-        {history.map(h => (
-          <div key={h.id} className="card" style={{ marginBottom: 12 }}>
-            <div className="row" style={{ justifyContent: 'space-between' }}>
-              <div>
-                <strong>{h.topic || h.keyword || h.tab}</strong>
-                <div className="muted" style={{ fontSize: 12 }}>
-                  {h.client_name} · {h.tab} · {new Date(h.created_at).toLocaleString()}
+
+        {/* Client summary cards */}
+        <div style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', marginBottom: 20 }}>
+          {clientGroups.map(g => {
+            const types = {};
+            for (const h of g.items) {
+              const t = h.opportunity_type || h.tab || 'article';
+              types[t] = (types[t] || 0) + 1;
+            }
+            const isExpanded = expandedClient === g.name;
+            return (
+              <div
+                key={g.name}
+                className="card"
+                style={{
+                  padding: 14, cursor: 'pointer',
+                  borderColor: isExpanded ? ACCENT : 'var(--border)'
+                }}
+                onClick={() => setExpandedClient(isExpanded ? null : g.name)}
+              >
+                <div className="row" style={{ justifyContent: 'space-between', marginBottom: 6 }}>
+                  <strong style={{ fontSize: 14 }}>{g.name}</strong>
+                  <span style={{ fontFamily: 'Instrument Serif, serif', fontSize: 24, color: ACCENT }}>
+                    {g.items.length}
+                  </span>
+                </div>
+                <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+                  {Object.entries(types).map(([type, count]) => (
+                    <span key={type} className="badge" style={{ fontSize: 9 }}>
+                      {count} {type}
+                    </span>
+                  ))}
+                </div>
+                <div className="muted" style={{ fontSize: 10, marginTop: 6 }}>
+                  Latest: {new Date(g.items[0].created_at).toLocaleDateString('en-ZA')}
                 </div>
               </div>
-              <div className="row">
-                <button onClick={() => exportTxt(h.output, h.topic || 'article')}>.txt</button>
-                <button onClick={() => exportDocx(h.output, h.topic || 'article')}>.docx</button>
+            );
+          })}
+        </div>
+
+        {/* Expanded client detail */}
+        {expandedClient && byClient[Object.keys(byClient).find(k => byClient[k].name === expandedClient)] && (() => {
+          const group = clientGroups.find(g => g.name === expandedClient);
+          if (!group) return null;
+          return (
+            <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+              <div style={{ padding: '12px 16px', background: 'var(--surface-2)', borderBottom: '1px solid var(--border)' }}>
+                <div className="row" style={{ justifyContent: 'space-between' }}>
+                  <strong>{group.name}</strong>
+                  <button onClick={() => setExpandedClient(null)} style={{ fontSize: 11 }}>Close</button>
+                </div>
               </div>
+              {group.items.map(h => (
+                <div key={h.id} style={{ padding: '10px 16px', borderBottom: '1px solid var(--border)' }}>
+                  <div className="row" style={{ justifyContent: 'space-between' }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontWeight: 600, fontSize: 13 }}>{h.topic || h.keyword || h.tab}</div>
+                      <div className="muted" style={{ fontSize: 11 }}>
+                        {h.tab} · {new Date(h.created_at).toLocaleString()}
+                        {h.opportunity_type && <span className="badge" style={{ marginLeft: 8, fontSize: 9 }}>{h.opportunity_type}</span>}
+                      </div>
+                    </div>
+                    <div className="row" style={{ gap: 6, flexShrink: 0 }}>
+                      <button onClick={(e) => { e.stopPropagation(); exportTxt(h.output, h.topic || 'article'); }} style={{ fontSize: 11, padding: '3px 8px' }}>.txt</button>
+                      <button onClick={(e) => { e.stopPropagation(); exportDocx(h.output, h.topic || 'article'); }} style={{ fontSize: 11, padding: '3px 8px' }}>.docx</button>
+                    </div>
+                  </div>
+                  {h.output && (
+                    <details style={{ marginTop: 6 }}>
+                      <summary className="muted" style={{ fontSize: 10, cursor: 'pointer' }}>Preview</summary>
+                      <pre style={{ marginTop: 6, padding: 10, background: 'var(--bg)', fontSize: 11, overflowX: 'auto', whiteSpace: 'pre-wrap', maxHeight: 300, borderRadius: 6 }}>
+                        {h.output.slice(0, 2000)}{h.output.length > 2000 ? '…' : ''}
+                      </pre>
+                    </details>
+                  )}
+                </div>
+              ))}
             </div>
-          </div>
-        ))}
+          );
+        })()}
       </div>
     );
   }

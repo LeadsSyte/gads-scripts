@@ -3,6 +3,7 @@ import { useClients } from '../../store/useClients.js';
 import { claudeComplete, extractJSON } from '../../lib/anthropic.js';
 import { corsFetchText } from '../../lib/corsProxy.js';
 import PushToCmsButton from '../../components/PushToCmsButton.jsx';
+import MarkImplementedButton from '../../components/MarkImplementedButton.jsx';
 import { getAudit, syncWebceoClients } from './webceo.js';
 import { upsertClient } from '../../lib/supabase.js';
 import { querySearchAnalytics } from './gsc.js';
@@ -243,6 +244,17 @@ export default function TechnicalSEO({ sub }) {
                       <summary className="muted" style={{ fontSize: 11, cursor: 'pointer' }}>Copy-paste fix</summary>
                       <pre style={{ background: 'var(--bg)', padding: 8, marginTop: 6, fontSize: 11, overflowX: 'auto' }}>{t.copy_paste_fix}</pre>
                     </details>
+                  )}
+                  {(status === 'done' || status === 'open') && t.page_url && (
+                    <div style={{ marginTop: 6 }}>
+                      <MarkImplementedButton
+                        module="technical"
+                        changeType={t.fix_type || 'fix'}
+                        pageUrl={t.page_url}
+                        title={t.title}
+                        description={t.copy_paste_fix || t.description || ''}
+                      />
+                    </div>
                   )}
                 </div>
               ))}
