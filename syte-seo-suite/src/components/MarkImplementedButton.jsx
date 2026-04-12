@@ -38,7 +38,7 @@ export default function MarkImplementedButton({
       const slug = title.toLowerCase()
         .replace(/[^a-z0-9\s-]/g, '')
         .replace(/\s+/g, '-')
-        .slice(0, 60);
+        .replace(/-+/g, '-');
       suggestedUrl = suggestedUrl.replace(/\/$/, '') + '/' + slug + '/';
     }
 
