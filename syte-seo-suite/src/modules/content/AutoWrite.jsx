@@ -221,20 +221,31 @@ export default function AutoWrite() {
         ]}
       />
 
-      <div style={{ borderTop: '1px solid var(--border)', marginTop: 20, paddingTop: 20 }}>
-        <div className="row" style={{ justifyContent: 'space-between', marginBottom: 14, flexWrap: 'wrap', gap: 10 }}>
-          <div>
-            <h3 style={{ margin: 0 }}>Write Articles</h3>
-            <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
-              Pick a client below to research + write, or click "Generate Articles" on any card above.
-            </div>
+      {/* Research status banner — shown at the TOP so it's always visible
+          regardless of how many pipeline cards are below */}
+      {researchBusy && (
+        <div className="card" style={{ borderLeft: '4px solid var(--blue)', marginTop: 14 }}>
+          <div className="row" style={{ gap: 10 }}>
+            <div className="spinner" />
+            <span style={{ fontSize: 13 }}>
+              Researching topics for <strong>{activeClient?.name || '…'}</strong>…
+            </span>
           </div>
         </div>
-      </div>
+      )}
+      {researchErr && (
+        <div className="card" style={{ borderLeft: '4px solid var(--red)', marginTop: 14 }}>
+          <strong style={{ color: 'var(--red)' }}>Research error</strong>
+          <div style={{ fontSize: 12, marginTop: 6 }}>{researchErr}</div>
+          <div className="muted" style={{ fontSize: 11, marginTop: 6 }}>
+            Common causes: Google token expired (refresh the page and sign in again), no Search Console property set on this client, or the client's GSC property has no data for the last 90 days.
+          </div>
+        </div>
+      )}
 
       {/* Client picker grid */}
-      <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '.08em', color: 'var(--text-dim)', margin: '6px 0 8px' }}>
-        Click a client to research topics from Search Console
+      <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '.08em', color: 'var(--text-dim)', margin: '14px 0 8px' }}>
+        Or click a client to research topics from Search Console
       </div>
       <div style={{ display: 'grid', gap: 8, gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', marginBottom: 20 }}>
         {withGsc.map(c => {
@@ -289,24 +300,6 @@ export default function AutoWrite() {
             {withoutGsc.slice(0, 8).map(c => c.name).join(', ')}
             {withoutGsc.length > 8 && ` +${withoutGsc.length - 8} more`}
           </div>
-        </div>
-      )}
-
-      {/* Research phase */}
-      {researchBusy && (
-        <div className="card" style={{ borderLeft: '4px solid var(--blue)' }}>
-          <div className="row" style={{ gap: 10 }}>
-            <div className="spinner" />
-            <span style={{ fontSize: 13 }}>
-              Researching topics for <strong>{activeClient?.name}</strong>…
-            </span>
-          </div>
-        </div>
-      )}
-      {researchErr && (
-        <div className="card" style={{ borderLeft: '4px solid var(--red)' }}>
-          <strong style={{ color: 'var(--red)' }}>Research error</strong>
-          <div style={{ fontSize: 12, marginTop: 6 }}>{researchErr}</div>
         </div>
       )}
 
