@@ -23,6 +23,8 @@ HARD RULES:
 - MANDATORY: Attribute the article to the brand's default author with their credentials in the opening or closing paragraph. If no author is set, skip this rule.
 - MANDATORY: When the topic allows, include at least one step-by-step guide OR numbered how-to section. This is a core differentiator vs AI-generated fluff.
 - MANDATORY: Every statistic, percentage, or data point must have an inline citation (source name + year at minimum). Do not present unverified numbers as fact.
+- MANDATORY: Include at least one contextual call-to-action (CTA) relevant to the client's services. Place it naturally, not as an afterthought. Match the CTA to the audience intent (informational = "learn more" style, transactional = "get started" / "contact us" style).
+- MANDATORY: ONLY use URLs from the brand's internal link pool listed below. Do NOT invent, guess, or hallucinate URLs that might not exist. If a URL isn't in the pool, don't link to it.
 `.trim();
 
 export const COMPLIANCE_RULES = `
@@ -66,6 +68,17 @@ BRAND CONTEXT:
 ${(client.internal_links || '').split('\n').filter(Boolean).map(l => '  - ' + l.trim()).join('\n')}
 `.trim() : '';
 
+  // Content rules — always-enforced restrictions. These are hard constraints
+  // the client has (e.g. gambling compliance, factual accuracy). They NEVER
+  // get relaxed, even if the Manual Direction or research context conflicts.
+  const contentRules = (client?.content_rules || '').trim();
+  const rulesBlock = contentRules ? `
+CLIENT-SPECIFIC RULES (NEVER VIOLATE — these override everything else):
+${contentRules.split('\n').filter(Boolean).map(r => '- ' + r.trim()).join('\n')}
+
+These rules are non-negotiable. If any other instruction conflicts with them, the rules win. Every article for this client MUST comply.
+`.trim() : '';
+
   // Manual direction from the client record — if the account manager has
   // set one, every article for this client must honor it literally.
   const manualDirection = (client?.internal_notes || '').trim();
@@ -74,7 +87,7 @@ MANUAL CONTENT DIRECTION (from account manager — must be followed):
 """
 ${manualDirection}
 """
-This direction overrides any conflicting default instructions. Apply it to the angle, examples, tone, and structure of the article.
+This direction steers the topic angle, examples, tone, and structure of the article. It does NOT override the client-specific rules above.
 `.trim() : '';
 
   // Research block is injected only when the topic came through the
@@ -104,7 +117,7 @@ RANKING-AWARE WRITING RULES:
 - Naturally weave in the related queries above throughout the body so the article captures long-tail variations the brand already has traction for.
 `.trim() : '';
 
-  return [CORE_RULES, brandBlock, directionBlock, researchBlock, COMPLIANCE_RULES, QA_RULES, extra].filter(Boolean).join('\n\n');
+  return [CORE_RULES, brandBlock, rulesBlock, directionBlock, researchBlock, COMPLIANCE_RULES, QA_RULES, extra].filter(Boolean).join('\n\n');
 }
 
 export const TAB_PROMPTS = {

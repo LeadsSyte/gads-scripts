@@ -22,11 +22,49 @@ function escapeHtml(s = '') {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-// Minimal .docx export — wraps HTML in a Word-compatible XML envelope.
-function exportDocx(html, filename) {
+// Convert Markdown → HTML so .docx export preserves headings, bold, lists.
+function markdownToHtml(md) {
+  if (!md) return '';
+  return md
+    .replace(/^#### (.+)$/gm, '<h4>$1</h4>')
+    .replace(/^### (.+)$/gm, '<h3>$1</h3>')
+    .replace(/^## (.+)$/gm, '<h2>$1</h2>')
+    .replace(/^# (.+)$/gm, '<h1>$1</h1>')
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*(.+?)\*/g, '<em>$1</em>')
+    .replace(/^[-*] (.+)$/gm, '<li>$1</li>')
+    .replace(/(<li>[\s\S]*?<\/li>)/gm, (match) => '<ul>' + match + '</ul>')
+    .replace(/<\/ul>\s*<ul>/g, '')
+    .replace(/^\d+\. (.+)$/gm, '<li>$1</li>')
+    .replace(/```[\s\S]*?```/g, m => '<pre>' + m.slice(3, -3).trim() + '</pre>')
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\n{2,}/g, '</p><p>')
+    .replace(/^(?!<[hluop])(.+)$/gm, '<p>$1</p>')
+    .replace(/<p><\/p>/g, '');
+}
+
+// .docx export — converts Markdown to HTML first so Word preserves headings,
+// bold, and list structure. Uses the "save as .doc" HTML envelope trick.
+function exportDocx(rawContent, filename) {
+  const html = markdownToHtml(rawContent);
   const src = `<!DOCTYPE html><html xmlns:o="urn:schemas-microsoft-com:office:office"
     xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">
-    <head><meta charset="utf-8"></head><body>${html}</body></html>`;
+    <head><meta charset="utf-8">
+    <style>
+      body { font-family: Calibri, Arial, sans-serif; font-size: 11pt; line-height: 1.5; color: #222; }
+      h1 { font-size: 18pt; font-weight: bold; margin: 12pt 0 6pt; }
+      h2 { font-size: 14pt; font-weight: bold; margin: 10pt 0 4pt; }
+      h3 { font-size: 12pt; font-weight: bold; margin: 8pt 0 4pt; }
+      p { margin: 6pt 0; }
+      ul, ol { margin: 6pt 0 6pt 24pt; }
+      li { margin: 2pt 0; }
+      pre { background: #f5f5f5; padding: 8pt; font-family: Consolas, monospace; font-size: 9pt; }
+      code { background: #f5f5f5; padding: 1pt 3pt; font-family: Consolas, monospace; font-size: 9pt; }
+      table { border-collapse: collapse; width: 100%; margin: 8pt 0; }
+      th, td { border: 1px solid #ccc; padding: 6pt 8pt; text-align: left; font-size: 10pt; }
+      th { background: #f0f0f0; font-weight: bold; }
+    </style>
+    </head><body>${html}</body></html>`;
   const blob = new Blob(['\ufeff', src], { type: 'application/msword' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -133,11 +171,50 @@ function SectionCard({ title, content, accent, mono }) {
   );
 }
 
-function ParsedOutput({ output, topic, pushItem, exportTxt, exportDocx }) {
+function ParsedOutput({ output, topic, pushItem, exportTxt, exportDocx, systemPrompt, userPrompt, onOutputUpdate }) {
   const sections = React.useMemo(() => parseOutputSections(output), [output]);
   const [showRaw, setShowRaw] = React.useState(false);
+  const [revision, setRevision] = React.useState('');
+  const [revising, setRevising] = React.useState(false);
+  const [revisionHistory, setRevisionHistory] = React.useState([]);
 
   if (!sections) return null;
+
+  async function applyRevision() {
+    if (!revision.trim()) return;
+    setRevising(true);
+    try {
+      // Send: system prompt + original generation + current output + revision instruction.
+      // Claude sees the full conversation and applies the edit surgically.
+      let buf = '';
+      await claudeStream({
+        system: systemPrompt || '',
+        messages: [
+          ...(userPrompt ? [{ role: 'user', content: userPrompt }] : []),
+          { role: 'assistant', content: output },
+          { role: 'user', content: `REVISION REQUEST: ${revision.trim()}\n\nApply this revision to the article above. Return the COMPLETE revised article (not just the changed section) with all metadata, schema, and QA JSON intact. Do not explain what you changed — just output the revised version.` }
+        ],
+        max_tokens: 8000,
+        temperature: 0.5,
+        onDelta: (t) => { buf += t; }
+      });
+      // Save the old version so the user can undo.
+      setRevisionHistory(prev => [output, ...prev]);
+      onOutputUpdate?.(buf);
+      setRevision('');
+    } catch (e) {
+      alert('Revision failed: ' + e.message);
+    } finally {
+      setRevising(false);
+    }
+  }
+
+  function undoRevision() {
+    if (revisionHistory.length === 0) return;
+    const [prev, ...rest] = revisionHistory;
+    onOutputUpdate?.(prev);
+    setRevisionHistory(rest);
+  }
 
   return (
     <>
@@ -185,6 +262,44 @@ function ParsedOutput({ output, topic, pushItem, exportTxt, exportDocx }) {
             <SectionCard title="FAQ Schema (JSON-LD)" content={sections.faqSchema} accent="var(--purple)" mono />
           </>
         )}
+
+        {/* Revision chat — type a refinement instruction without regenerating from scratch */}
+        <div style={{
+          marginTop: 14, paddingTop: 14,
+          borderTop: '1px solid var(--border)'
+        }}>
+          <div className="row" style={{ justifyContent: 'space-between', marginBottom: 6 }}>
+            <strong style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '.05em', color: 'var(--text-muted)' }}>
+              Revise Article
+            </strong>
+            {revisionHistory.length > 0 && (
+              <button onClick={undoRevision} style={{ fontSize: 10, padding: '3px 10px' }}>
+                Undo last revision ({revisionHistory.length})
+              </button>
+            )}
+          </div>
+          <div className="row" style={{ gap: 8 }}>
+            <input
+              value={revision}
+              onChange={e => setRevision(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); applyRevision(); } }}
+              placeholder='e.g. "Make the intro shorter" · "Add more detail to section 3" · "Rewrite in a more formal tone"'
+              disabled={revising}
+              style={{ flex: 1 }}
+            />
+            <button
+              onClick={applyRevision}
+              disabled={revising || !revision.trim()}
+              className="primary"
+              style={{ background: 'var(--mod-content)', borderColor: 'var(--mod-content)', color: '#0a0a0c', whiteSpace: 'nowrap' }}
+            >
+              {revising ? 'Revising…' : 'Apply'}
+            </button>
+          </div>
+          <div className="muted" style={{ fontSize: 10, marginTop: 4 }}>
+            Claude sees the full article + your instruction and returns the revised version. Hit Enter or click Apply.
+          </div>
+        </div>
       </div>
     </>
   );
@@ -206,6 +321,10 @@ export default function ContentEngine({ sub, setSub }) {
   // research context here and the next generation uses it in the system
   // prompt. Stays alive across tab switches inside Content Engine.
   const [researchContext, setResearchContext] = useState(null);
+  // Store the last generation's system + user prompts so the revision chat
+  // can send them as conversation context to Claude.
+  const [lastSystem, setLastSystem] = useState('');
+  const [lastUserPrompt, setLastUserPrompt] = useState('');
 
   const tab = sub || 'Auto Write';
   const scores = useMemo(() => (output ? extractJSON(output) : null), [output]);
@@ -238,13 +357,17 @@ export default function ContentEngine({ sub, setSub }) {
     setErr(''); setOutput(''); setRunning(true);
 
     const system = buildSystemPrompt(client, '', researchContext);
-    let userPrompt;
+    let userPromptText;
     switch (tab) {
-      case 'Rewrite & Expand':    userPrompt = TAB_PROMPTS['Rewrite & Expand'](existing, keyword, length); break;
-      case 'Metadata & Schema':   userPrompt = TAB_PROMPTS['Metadata & Schema'](url, topic, keyword); break;
-      case 'Editorial Feedback':  userPrompt = TAB_PROMPTS['Editorial Feedback'](existing); break;
-      default:                    userPrompt = TAB_PROMPTS['New Article'](topic, keyword, length);
+      case 'Rewrite & Expand':    userPromptText = TAB_PROMPTS['Rewrite & Expand'](existing, keyword, length); break;
+      case 'Metadata & Schema':   userPromptText = TAB_PROMPTS['Metadata & Schema'](url, topic, keyword); break;
+      case 'Editorial Feedback':  userPromptText = TAB_PROMPTS['Editorial Feedback'](existing); break;
+      default:                    userPromptText = TAB_PROMPTS['New Article'](topic, keyword, length);
     }
+    // Stash for the revision chat.
+    setLastSystem(system);
+    setLastUserPrompt(userPromptText);
+    const userPrompt = userPromptText;
 
     try {
       let buf = '';
@@ -428,6 +551,9 @@ export default function ContentEngine({ sub, setSub }) {
         pushItem={pushItem}
         exportTxt={exportTxt}
         exportDocx={exportDocx}
+        systemPrompt={lastSystem}
+        userPrompt={lastUserPrompt}
+        onOutputUpdate={setOutput}
       />}
 
       {scores && (

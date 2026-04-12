@@ -297,6 +297,25 @@ Return ONLY valid JSON: { "queries": ["...", "..."] }`;
           </div>
         </div>
 
+        {/* Content rules — always-enforced restrictions. Different from
+            Manual Direction (which is monthly topic steering). These are
+            hard constraints like gambling compliance, factual accuracy
+            requirements, or topics to never cover. */}
+        <div style={{ marginTop: 14 }}>
+          <label>
+            Content Rules & Restrictions{' '}
+            <span className="muted" style={{ textTransform: 'none', letterSpacing: 0, fontSize: 11 }}>
+              — always enforced on every article, never shown to client
+            </span>
+          </label>
+          <textarea
+            value={f.content_rules || ''}
+            onChange={e => update('content_rules', e.target.value)}
+            rows={3}
+            placeholder={`Hard rules Claude must NEVER violate for this client, e.g.\n  "Never use the word 'win' or similar — gambling compliance"\n  "The hotel is NOT a treetop venue — do not describe it as such"\n  "Do not recommend seasonal visits — position as year-round"\n  "Only cover topics related to casino, sports betting, horse racing"\n  "All content must be geographically accurate for Century City area"`}
+          />
+        </div>
+
         {/* Manual content direction — optional override for Auto Write.
             Claude uses this to steer topic selection AND the article itself.
             Blank = pure data-driven from GSC rankings. */}
@@ -304,14 +323,14 @@ Return ONLY valid JSON: { "queries": ["...", "..."] }`;
           <label>
             Manual Content Direction{' '}
             <span className="muted" style={{ textTransform: 'none', letterSpacing: 0, fontSize: 11 }}>
-              — optional, never shown to client
+              — optional monthly topic steering, never shown to client
             </span>
           </label>
           <textarea
             value={f.internal_notes || ''}
             onChange={e => update('internal_notes', e.target.value)}
             rows={3}
-            placeholder={`Leave blank to let Claude pick topics based on Search Console data alone.\n\nOr steer the direction, e.g.\n  "Focus on South African ecommerce case studies this month"\n  "Avoid mentioning specific competitor brand names"\n  "Lead every article with a real customer story"`}
+            placeholder={`Leave blank for pure data-driven topics from Search Console.\n\nOr steer this month's focus, e.g.\n  "Focus on South African ecommerce case studies this month"\n  "Lead every article with a real customer story"`}
           />
         </div>
 

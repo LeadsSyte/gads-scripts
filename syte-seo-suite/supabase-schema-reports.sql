@@ -44,3 +44,9 @@ create table if not exists syte_suite_report_log (
 
 alter table syte_suite_aeo_history disable row level security;
 alter table syte_suite_report_log  disable row level security;
+
+-- Content rules: always-enforced restrictions per client (e.g. gambling
+-- compliance for play.co.za, factual constraints for Kruger Gate).
+-- Separate from internal_notes (Manual Content Direction) which is monthly
+-- topic steering. This field is non-negotiable in every generation.
+alter table syte_suite_clients add column if not exists content_rules text;
