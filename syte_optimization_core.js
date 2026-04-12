@@ -1183,9 +1183,9 @@ function _backfillOutcomes() {
 
 /**
  * Reads the last 90 days of change log data for this account,
- * sends the full script code + change history + outcomes to Claude,
- * receives a critique of the code logic + a full rewritten script,
- * and emails it to the Syte team.
+ * sends the change history + outcomes to Claude for analysis,
+ * receives a structured JSON review with health score, recommendations,
+ * and threshold suggestions, and emails a clean summary.
  */
 function _weeklyClaudeReview() {
   var today = new Date();
@@ -1214,26 +1214,11 @@ function _weeklyClaudeReview() {
     return;
   }
 
-  // === 2. Load the current script from GitHub ===
-  var currentScript = '';
-  try {
-    var scriptUrl = CONFIG.CORE_SCRIPT_URL || 'https://raw.githubusercontent.com/LeadsSyte/gads-scripts/refs/heads/main/syte_optimization_core.js';
-    var response = UrlFetchApp.fetch(scriptUrl, { muteHttpExceptions: true });
-    if (response.getResponseCode() === 200) {
-      currentScript = response.getContentText();
-      _log('INFO', 'Loaded current script (' + currentScript.length + ' chars)');
-    } else {
-      _log('WARN', 'Could not fetch script from GitHub — using summary only');
-    }
-  } catch (e) {
-    _log('WARN', 'Script fetch error: ' + e.message);
-  }
-
-  // === 3. Build the prompt for Claude ===
+  // === 2. Build the prompt for Claude ===
   var accountName = AdsApp.currentAccount().getName();
-  var prompt = _buildClaudeReviewPrompt(accountName, changeLogSummary, currentScript);
+  var prompt = _buildClaudeReviewPrompt(accountName, changeLogSummary);
 
-  // === 4. Call Claude API ===
+  // === 3. Call Claude API ===
   _log('INFO', 'Calling Claude API for weekly review...');
   var claudeResponse = _callClaudeAPI(prompt);
 
@@ -1357,71 +1342,62 @@ function _buildChangeLogSummary() {
 
 /**
  * Builds the prompt sent to Claude for the weekly review.
+ * v4.5.0: Asks for structured JSON output — concise recommendations, not a full rewritten script.
  */
-function _buildClaudeReviewPrompt(accountName, changeLogSummary, currentScript) {
-  var prompt = 'You are a senior Google Ads engineer reviewing an automated optimization script. ';
-  prompt += 'Your job is to analyze the script\'s real-world decision history, identify flaws in its logic, ';
-  prompt += 'and produce an improved version of the full script.\n\n';
+function _buildClaudeReviewPrompt(accountName, changeLogSummary) {
+  var prompt = 'You are a senior Google Ads strategist reviewing an automated optimization script\'s recent decisions.\n';
+  prompt += 'Your job is to analyze the decision history and provide concise, actionable insights.\n\n';
 
   prompt += '=== CONTEXT ===\n';
   prompt += 'Account: ' + accountName + '\n';
-  prompt += 'Script: Syte Optimization Core — a Google Ads Script that runs every 3 days to pause waste, ';
-  prompt += 'negative bad search terms, adjust bids, promote winning search terms to exact match, and send email reports.\n\n';
+  prompt += 'Script: Syte Optimization Core — runs every 3 days to pause waste keywords, ';
+  prompt += 'negative bad search terms, adjust device/schedule/geo bids, and promote winners.\n\n';
 
   if (CLIENT_CONTEXT) {
-    prompt += '=== BUSINESS CONTEXT (from account manager) ===\n';
+    prompt += '=== BUSINESS CONTEXT ===\n';
     prompt += CLIENT_CONTEXT + '\n\n';
   }
 
   prompt += changeLogSummary + '\n\n';
 
   prompt += '=== YOUR TASK ===\n';
-  prompt += 'Do the following in your response:\n\n';
+  prompt += 'Return ONLY a JSON object (no markdown, no code fences) with this structure:\n\n';
+  prompt += '{\n';
+  prompt += '  "health_score": 1-10 (overall optimization health),\n';
+  prompt += '  "health_label": "Healthy" | "Needs Attention" | "At Risk",\n';
+  prompt += '  "one_liner": "One sentence summary of how the script is performing",\n';
+  prompt += '  "incorrect_decisions": [\n';
+  prompt += '    { "term": "the keyword or search term", "what_happened": "brief description", "fix": "what should change" }\n';
+  prompt += '  ],\n';
+  prompt += '  "recommendations": [\n';
+  prompt += '    { "priority": "high" | "medium" | "low", "title": "Short title", "detail": "1-2 sentence explanation" }\n';
+  prompt += '  ],\n';
+  prompt += '  "threshold_suggestions": [\n';
+  prompt += '    { "setting": "CONFIG.SETTING_NAME", "current": "current value or description", "suggested": "new value", "reason": "why" }\n';
+  prompt += '  ],\n';
+  prompt += '  "patterns_noticed": "2-3 sentences about patterns in the data (e.g. most negations are informational, geo bids heavily favour one region, etc.)"\n';
+  prompt += '}\n\n';
 
-  prompt += '1. DECISION AUDIT\n';
-  prompt += 'For each INCORRECT decision found in the change log, explain:\n';
-  prompt += '- What the script\'s logic was doing\n';
-  prompt += '- Why that logic produced a wrong decision\n';
-  prompt += '- What the code change should be to prevent it happening again\n\n';
-
-  prompt += '2. LOGIC CRITIQUE\n';
-  prompt += 'Review the overall script logic and identify:\n';
-  prompt += '- Any thresholds that appear too aggressive or too conservative based on outcomes\n';
-  prompt += '- Any functions with low accuracy that need redesigning\n';
-  prompt += '- Any edge cases not being handled\n';
-  prompt += '- Any new optimizations worth adding based on patterns in the data\n\n';
-
-  prompt += '3. FULL REWRITTEN SCRIPT\n';
-  prompt += 'Provide the complete updated syte_optimization_core.js with all your fixes applied.\n';
-  prompt += 'Update the version number to v' + _getNextVersion() + '.\n';
-  prompt += 'Add a CHANGELOG entry at the top listing every change you made and why.\n';
-  prompt += 'Do not remove existing functionality. Only improve it.\n\n';
-
-  if (currentScript) {
-    prompt += '=== CURRENT SCRIPT CODE ===\n';
-    prompt += currentScript;
-  }
+  prompt += 'RULES:\n';
+  prompt += '- Keep it concise — this goes into a summary email for an agency owner, not a developer.\n';
+  prompt += '- Maximum 5 recommendations, ranked by impact.\n';
+  prompt += '- Maximum 3 threshold suggestions.\n';
+  prompt += '- If all changes are PENDING (no outcomes yet), say so and focus recommendations on data collection.\n';
+  prompt += '- Do NOT include a rewritten script. Only actionable recommendations.\n';
+  prompt += '- Return ONLY valid JSON.\n';
 
   return prompt;
 }
 
-function _getNextVersion() {
-  // Extract current version number and increment patch
-  var match = '4.1'.match(/(\d+)\.(\d+)/);
-  if (match) {
-    return match[1] + '.' + (parseInt(match[2]) + 1);
-  }
-  return '4.2';
-}
-
 /**
  * Calls the Anthropic Claude API and returns the text response.
+ * v4.5.0: Uses Haiku for weekly review (structured JSON output, no script rewrite).
  */
 function _callClaudeAPI(prompt) {
   try {
     var payload = {
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 8000,
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 2000,
       messages: [{ role: 'user', content: prompt }]
     };
 
@@ -1459,68 +1435,149 @@ function _callClaudeAPI(prompt) {
 }
 
 /**
- * Sends the weekly self-improvement report to the Syte team.
- * Includes the full decision audit, logic critique, and rewritten script.
+ * Sends the weekly self-improvement report.
+ * v4.5.0: Clean, simple summary — no raw data dumps or rewritten scripts.
  */
 function _sendWeeklyReviewEmail(accountName, claudeResponse, changeLogSummary) {
   var today = Utilities.formatDate(new Date(), AdsApp.currentAccount().getTimeZone(), 'yyyy-MM-dd');
   var recipients = CONFIG.EMAIL_ADDRESSES || [CONFIG.EMAIL_RECIPIENT || 'michaelh@syte.co.za'];
   if (typeof recipients === 'string') recipients = [recipients];
 
-  // Try to extract the rewritten script from Claude's response
-  var scriptMatch = claudeResponse.match(/```javascript([\s\S]*?)```/);
-  var rewrittenScript = scriptMatch ? scriptMatch[1].trim() : null;
+  // Parse Claude's structured JSON response
+  var review = {};
+  try {
+    var cleaned = claudeResponse.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
+    review = JSON.parse(cleaned);
+  } catch (e) {
+    _log('WARN', 'Could not parse weekly review JSON — sending raw fallback');
+    review = {
+      health_score: 0,
+      health_label: 'Unknown',
+      one_liner: 'Could not parse AI response. Raw response included below.',
+      recommendations: [],
+      incorrect_decisions: [],
+      threshold_suggestions: [],
+      patterns_noticed: claudeResponse.substring(0, 500)
+    };
+  }
+
+  var score = review.health_score || 0;
+  var label = review.health_label || 'Unknown';
+  var oneLiner = review.one_liner || '';
+  var recommendations = review.recommendations || [];
+  var incorrects = review.incorrect_decisions || [];
+  var thresholds = review.threshold_suggestions || [];
+  var patterns = review.patterns_noticed || '';
+
+  // Score-based colours
+  var scoreColor = score >= 7 ? '#2e7d32' : (score >= 4 ? '#e65100' : '#c62828');
+  var scoreBg = score >= 7 ? '#e8f5e9' : (score >= 4 ? '#fff3e0' : '#ffebee');
+
+  // === Extract stats from changeLogSummary for the compact banner ===
+  var totalMatch = changeLogSummary.match(/Total changes:\s*(\d+)/);
+  var correctMatch = changeLogSummary.match(/Correct:\s*(\d+)/);
+  var incorrectMatch = changeLogSummary.match(/Incorrect:\s*(\d+)/);
+  var pendingMatch = changeLogSummary.match(/Pending:\s*(\d+)/);
+  var totalChanges = totalMatch ? totalMatch[1] : '0';
+  var correctCount = correctMatch ? correctMatch[1] : '0';
+  var incorrectCount = incorrectMatch ? incorrectMatch[1] : '0';
+  var pendingCount = pendingMatch ? pendingMatch[1] : '0';
 
   // Build HTML email
-  var email = '<html><body style="font-family:Arial,sans-serif;max-width:900px;margin:0 auto;color:#333;">';
+  var email = '<html><body style="font-family:Arial,sans-serif;max-width:700px;margin:0 auto;color:#333;">';
 
   // Header
-  email += '<div style="background:linear-gradient(135deg,#1a1a2e,#16213e);color:white;padding:24px;border-radius:8px 8px 0 0;">';
-  email += '<h1 style="margin:0;font-size:22px;">🤖 Syte Script — Weekly Self-Improvement Report</h1>';
-  email += '<p style="margin:6px 0 0;opacity:0.8;">' + accountName + ' | ' + today + ' | Core v4.5.0</p>';
+  email += '<div style="background:linear-gradient(135deg,#1a1a2e,#16213e);color:white;padding:20px 24px;border-radius:8px 8px 0 0;">';
+  email += '<h1 style="margin:0;font-size:20px;">Weekly Optimization Review</h1>';
+  email += '<p style="margin:4px 0 0;opacity:0.7;font-size:13px;">' + accountName + ' | ' + today + ' | Core v4.5.0</p>';
   email += '</div>';
 
-  // Change log stats banner
-  email += '<div style="background:#e8f5e9;padding:14px 20px;border-left:4px solid #2e7d32;">';
-  email += '<pre style="margin:0;font-size:12px;white-space:pre-wrap;">' + changeLogSummary + '</pre>';
+  // Health score card
+  email += '<div style="background:' + scoreBg + ';padding:16px 24px;border-left:4px solid ' + scoreColor + ';">';
+  email += '<div style="display:inline-block;width:60px;height:60px;border-radius:50%;background:' + scoreColor + ';color:white;text-align:center;line-height:60px;font-size:24px;font-weight:bold;vertical-align:middle;">' + score + '</div>';
+  email += '<div style="display:inline-block;vertical-align:middle;margin-left:16px;">';
+  email += '<div style="font-size:18px;font-weight:bold;color:' + scoreColor + ';">' + label + '</div>';
+  email += '<div style="font-size:13px;color:#555;margin-top:2px;">' + oneLiner + '</div>';
+  email += '</div></div>';
+
+  // Stats row
+  email += '<div style="display:flex;padding:12px 24px;background:#f5f5f5;font-size:13px;">';
+  email += '<div style="flex:1;text-align:center;"><strong>' + totalChanges + '</strong><br><span style="color:#999;">Changes (90d)</span></div>';
+  email += '<div style="flex:1;text-align:center;"><strong style="color:#2e7d32;">' + correctCount + '</strong><br><span style="color:#999;">Correct</span></div>';
+  email += '<div style="flex:1;text-align:center;"><strong style="color:#c62828;">' + incorrectCount + '</strong><br><span style="color:#999;">Incorrect</span></div>';
+  email += '<div style="flex:1;text-align:center;"><strong style="color:#e65100;">' + pendingCount + '</strong><br><span style="color:#999;">Pending</span></div>';
   email += '</div>';
 
-  // Claude's analysis
-  email += '<div style="padding:20px;">';
-  email += '<h2 style="color:#1a1a2e;border-bottom:2px solid #eee;padding-bottom:8px;">Claude\'s Analysis & Recommendations</h2>';
-
-  // If there's a rewritten script, separate the narrative from it
-  var narrative = rewrittenScript
-    ? claudeResponse.replace(/```javascript[\s\S]*?```/, '[Full rewritten script — see below]')
-    : claudeResponse;
-
-  email += '<div style="white-space:pre-wrap;font-size:13px;line-height:1.7;background:#f9f9f9;padding:16px;border-radius:6px;">' +
-    narrative.replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</div>';
-  email += '</div>';
-
-  // Rewritten script section
-  if (rewrittenScript) {
-    email += '<div style="padding:20px;background:#1a1a2e;color:#e0e0e0;">';
-    email += '<h2 style="color:#90caf9;margin-top:0;">📋 Rewritten Script — Ready to Paste into GitHub</h2>';
-    email += '<p style="color:#aaa;font-size:13px;margin:0 0 12px;">Copy everything below and replace the contents of <code>syte_optimization_core.js</code> in GitHub.</p>';
-    email += '<pre style="font-size:11px;line-height:1.5;white-space:pre-wrap;overflow-x:auto;">' +
-      rewrittenScript.replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</pre>';
-    email += '</div>';
-  } else {
-    email += '<div style="padding:16px;background:#fff3e0;border-left:4px solid #f57c00;">';
-    email += '<p style="margin:0;font-size:13px;">⚠️ Claude\'s response did not contain a parseable script block. ';
-    email += 'See the analysis above for manual recommendations.</p>';
+  // Incorrect decisions (if any)
+  if (incorrects.length > 0) {
+    email += '<div style="padding:16px 24px;">';
+    email += '<h2 style="font-size:16px;margin:0 0 10px;color:#c62828;">Mistakes Found</h2>';
+    for (var i = 0; i < incorrects.length; i++) {
+      var inc = incorrects[i];
+      email += '<div style="background:#ffebee;padding:10px 14px;border-radius:6px;margin:6px 0;font-size:13px;">';
+      email += '<strong>"' + (inc.term || '') + '"</strong> — ' + (inc.what_happened || '');
+      email += '<br><span style="color:#2e7d32;">Fix: ' + (inc.fix || '') + '</span>';
+      email += '</div>';
+    }
     email += '</div>';
   }
 
+  // Recommendations
+  if (recommendations.length > 0) {
+    email += '<div style="padding:16px 24px;">';
+    email += '<h2 style="font-size:16px;margin:0 0 10px;color:#1565c0;">Recommendations</h2>';
+    var priorityColors = { high: '#c62828', medium: '#e65100', low: '#1565c0' };
+    for (var r = 0; r < recommendations.length; r++) {
+      var rec = recommendations[r];
+      var pColor = priorityColors[rec.priority] || '#666';
+      email += '<div style="padding:10px 14px;border-left:3px solid ' + pColor + ';background:#f8f9fa;margin:6px 0;border-radius:0 6px 6px 0;font-size:13px;">';
+      email += '<span style="display:inline-block;padding:1px 8px;border-radius:10px;background:' + pColor + ';color:white;font-size:10px;font-weight:600;text-transform:uppercase;vertical-align:middle;">' + (rec.priority || 'info') + '</span> ';
+      email += '<strong>' + (rec.title || '') + '</strong>';
+      email += '<br><span style="color:#555;">' + (rec.detail || '') + '</span>';
+      email += '</div>';
+    }
+    email += '</div>';
+  }
+
+  // Threshold suggestions
+  if (thresholds.length > 0) {
+    email += '<div style="padding:16px 24px;">';
+    email += '<h2 style="font-size:16px;margin:0 0 10px;color:#6a1b9a;">Suggested Setting Changes</h2>';
+    email += '<table style="width:100%;border-collapse:collapse;font-size:13px;">';
+    email += '<tr style="background:#f3e5f5;"><th style="padding:6px 8px;text-align:left;">Setting</th><th style="padding:6px 8px;">Current</th><th style="padding:6px 8px;">Suggested</th><th style="padding:6px 8px;text-align:left;">Why</th></tr>';
+    for (var t = 0; t < thresholds.length; t++) {
+      var th = thresholds[t];
+      email += '<tr style="border-bottom:1px solid #eee;">';
+      email += '<td style="padding:6px 8px;font-family:monospace;font-size:11px;">' + (th.setting || '') + '</td>';
+      email += '<td style="padding:6px 8px;text-align:center;">' + (th.current || '') + '</td>';
+      email += '<td style="padding:6px 8px;text-align:center;font-weight:bold;">' + (th.suggested || '') + '</td>';
+      email += '<td style="padding:6px 8px;color:#555;">' + (th.reason || '') + '</td>';
+      email += '</tr>';
+    }
+    email += '</table></div>';
+  }
+
+  // Patterns noticed
+  if (patterns) {
+    email += '<div style="padding:16px 24px;">';
+    email += '<h2 style="font-size:16px;margin:0 0 10px;color:#333;">Patterns Noticed</h2>';
+    email += '<div style="background:#f5f5f5;padding:12px 14px;border-radius:6px;font-size:13px;color:#555;line-height:1.6;">' + patterns + '</div>';
+    email += '</div>';
+  }
+
+  // Informational note — nothing to approve
+  email += '<div style="padding:12px 24px;background:#f5f5f5;margin-top:8px;">';
+  email += '<p style="margin:0;font-size:12px;color:#999;text-align:center;">This is an informational report — no action required. Recommendations will be reviewed by the Syte team.</p>';
+  email += '</div>';
+
   email += '<div style="padding:14px;color:#999;font-size:11px;text-align:center;">';
-  email += 'Syte Digital Agency | Automated weekly review | syte.co.za';
+  email += 'Syte Digital Agency | Weekly Review | syte.co.za';
   email += '</div>';
   email += '</body></html>';
 
   MailApp.sendEmail({
     to: recipients.join(','),
-    subject: '🤖 Syte Script Self-Improvement | ' + accountName + ' | ' + today,
+    subject: 'Weekly Optimization Review | ' + accountName + ' | ' + label + ' (' + score + '/10)',
     htmlBody: email
   });
 }
