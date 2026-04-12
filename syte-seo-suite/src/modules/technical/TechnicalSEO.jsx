@@ -125,39 +125,44 @@ export default function TechnicalSEO({ sub }) {
     return clients.filter(c => !byClient[c.id] || new Date(byClient[c.id]).getTime() < cutoff);
   }, [tasks, clients]);
 
-  async function runScan() {
-    if (!client) { setErr('Select a client first.'); return; }
+  // Core scan logic — accepts a client explicitly so it can be called both
+  // from the "New Scan" tab (uses the zustand-selected client) and from
+  // the pipeline card's "Run Scan" button (passes the client directly).
+  async function runScanForClient(c) {
+    if (!c) { setErr('Select a client first.'); return; }
     setBusy(true); setErr(''); setMsg('');
     try {
       let auditData = null;
-      if (client.wceo_project_id) {
-        setMsg('Fetching WebCEO audit…');
-        auditData = await getAudit(client.wceo_project_id);
-      } else if (client.gsc_property) {
-        setMsg('Fetching GSC data…');
+      if (c.wceo_project_id) {
+        setMsg('Fetching WebCEO audit for ' + c.name + '…');
+        auditData = await getAudit(c.wceo_project_id);
+      } else if (c.gsc_property) {
+        setMsg('Fetching GSC data for ' + c.name + '…');
         await ensureToken([SCOPES.gsc]);
-        auditData = await querySearchAnalytics(client.gsc_property, { days: 28, dimensions: ['page'], rowLimit: 500 });
+        auditData = await querySearchAnalytics(c.gsc_property, { days: 28, dimensions: ['page'], rowLimit: 500 });
       } else {
-        throw new Error('Client needs either a WebCEO Project ID or a GSC Property.');
+        throw new Error(c.name + ' needs either a WebCEO Project ID or a GSC Property.');
       }
-      setMsg('Running Claude triage…');
-      const triaged = await triageAudit(auditData, client.url);
+      setMsg('Running Claude triage for ' + c.name + '…');
+      const triaged = await triageAudit(auditData, c.url);
 
       // Round-robin assign to team.
       const newTasks = triaged.map((t, i) => ({
         id: crypto.randomUUID(),
-        client_id: client.id,
-        client_name: client.name,
+        client_id: c.id,
+        client_name: c.name,
         assignee: team.length ? team[i % team.length] : '',
         status: 'open',
         created_at: new Date().toISOString(),
         ...t
       }));
       setTasks(prev => [...newTasks, ...prev]);
-      setMsg(`Added ${newTasks.length} tasks.`);
+      setMsg(`Added ${newTasks.length} tasks for ${c.name}.`);
     } catch (e) { setErr(e.message); }
     finally { setBusy(false); }
   }
+
+  async function runScan() { return runScanForClient(client); }
 
   function updateTask(id, patch) {
     setTasks(prev => prev.map(t => t.id === id ? { ...t, ...patch } : t));
@@ -221,14 +226,31 @@ export default function TechnicalSEO({ sub }) {
     };
     return (
       <div className="content-area">
+        {/* Status bar — shows progress when a scan is running from a pipeline card */}
+        {(busy || msg || err) && (
+          <div className="card" style={{ marginBottom: 12, padding: '10px 16px', borderColor: busy ? ACCENT : err ? 'var(--red)' : 'var(--green)' }}>
+            <div className="row" style={{ gap: 10 }}>
+              {busy && <span className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} />}
+              <span style={{ fontSize: 13, color: err ? 'var(--red)' : busy ? 'var(--text)' : 'var(--green)' }}>
+                {err || msg || 'Scanning…'}
+              </span>
+            </div>
+          </div>
+        )}
+
         {/* Pipeline view */}
         <PipelineView
           title={`Technical SEO — ${monthLabel}`}
           month={monthLabel}
           sections={techPipeline}
-          onAction={(client, action) => {
+          onAction={(c, action) => {
             if (action === 'scan') {
-              useClients.getState().select(client.id);
+              // Select the client and immediately trigger the scan.
+              useClients.getState().select(c.id);
+              // runScan reads `client` from zustand state, but the state
+              // update from select() hasn't re-rendered yet. So we call
+              // a version that takes the client explicitly.
+              runScanForClient(c);
             }
           }}
           actions={[

@@ -77,6 +77,55 @@ export default function AEOEngine({ sub }) {
     } catch (e) { setErr(e.message); }
   }
 
+  // Called from the pipeline card's "Run Optimizations" button.
+  // Selects the client, auto-pulls URLs from sitemap or client URL, then runs.
+  async function runForClient(c) {
+    if (!c) return;
+    setBusy(true); setErr(''); setProgress('');
+    try {
+      let pageList = [];
+      if (c.sitemap_url) {
+        setProgress('Fetching sitemap for ' + c.name + '…');
+        pageList = await fetchSitemapUrls(c.sitemap_url).catch(() => []);
+        pageList = pageList.slice(0, 30);
+      }
+      if (!pageList.length && c.url) {
+        pageList = [c.url.replace(/\/$/, '') + '/'];
+      }
+      if (!pageList.length) {
+        setErr(c.name + ' has no sitemap URL or website URL to scan.');
+        setBusy(false);
+        return;
+      }
+      setUrls(pageList.join('\n'));
+      setProgress('Generating AEO for ' + c.name + ' (' + pageList.length + ' pages)…');
+
+      const newResults = { ...results };
+      for (let i = 0; i < pageList.length; i += BATCH_SIZE) {
+        const batch = pageList.slice(i, i + BATCH_SIZE);
+        setProgress(`${c.name}: Batch ${Math.floor(i / BATCH_SIZE) + 1} / ${Math.ceil(pageList.length / BATCH_SIZE)}`);
+        const batchResults = await Promise.all(
+          batch.map(u => generateForPage(u, c).catch(e => ({ error: e.message })))
+        );
+        batch.forEach((u, j) => {
+          const key = c.id + '::' + u;
+          newResults[key] = {
+            url: u, client_id: c.id, generated_at: new Date().toISOString(),
+            optimizations: Array.isArray(batchResults[j]) ? batchResults[j] : [],
+            error: batchResults[j]?.error || null
+          };
+        });
+        setResults({ ...newResults });
+      }
+      setHistory(prev => [
+        { id: crypto.randomUUID(), client_id: c.id, client_name: c.name, count: pageList.length, created_at: new Date().toISOString() },
+        ...prev
+      ]);
+      setProgress(`Done. Generated for ${pageList.length} pages for ${c.name}.`);
+    } catch (e) { setErr(e.message); }
+    finally { setBusy(false); }
+  }
+
   async function pullFromSitemap() {
     if (!client?.sitemap_url) { setErr('Client has no sitemap URL.'); return; }
     setBusy(true); setErr(''); setProgress('Fetching sitemap…');
@@ -206,13 +255,28 @@ export default function AEOEngine({ sub }) {
   if (sub === 'Run Optimizations') {
     return (
       <div className="content-area">
+        {/* Status bar — shows progress when running from a pipeline card */}
+        {(busy || progress || err) && (
+          <div className="card" style={{ marginBottom: 12, padding: '10px 16px', borderColor: busy ? ACCENT : err ? 'var(--red)' : 'var(--green)' }}>
+            <div className="row" style={{ gap: 10 }}>
+              {busy && <span className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} />}
+              <span style={{ fontSize: 13, color: err ? 'var(--red)' : busy ? 'var(--text)' : 'var(--green)' }}>
+                {err || progress || 'Running…'}
+              </span>
+            </div>
+          </div>
+        )}
+
         {/* Pipeline overview */}
         <PipelineView
           title={`AEO Engine — ${monthLabel}`}
           month={monthLabel}
           sections={aeoPipeline}
           onAction={(c, action) => {
-            if (action === 'run') useClients.getState().select(c.id);
+            if (action === 'run') {
+              useClients.getState().select(c.id);
+              runForClient(c);
+            }
           }}
           actions={[
             { key: 'run', label: 'Run Optimizations', color: ACCENT,
