@@ -125,18 +125,6 @@ export async function pushContentToWordPress(client, item) {
   const metaDesc = parsed.metaDesc || p.meta_description || '';
   const keyword = p.primary_keyword || '';
 
-  // Include meta in the initial creation call (requires the PHP snippet
-  // on the WP side to register these keys for REST). Also try a follow-up
-  // update as belt-and-suspenders.
-  const metaFields = {
-    rank_math_focus_keyword:   keyword,
-    rank_math_title:           metaTitle,
-    rank_math_description:     metaDesc,
-    _yoast_wpseo_title:       metaTitle,
-    _yoast_wpseo_metadesc:    metaDesc,
-    _yoast_wpseo_focuskw:     keyword
-  };
-
   // Auto-generate and upload a featured image if an image API key is set.
   let featuredMediaId = null;
   const settings = loadSettings();
@@ -144,7 +132,6 @@ export async function pushContentToWordPress(client, item) {
   if (hasImageApi) {
     try {
       const img = await generateHeroImage(title, keyword, client);
-      // Strip the data URL prefix to get pure base64.
       const base64 = img.dataUrl.replace(/^data:image\/\w+;base64,/, '');
       const safeName = (title || 'hero').replace(/[^a-z0-9]+/gi, '-').slice(0, 50) + '.png';
       const attachment = await uploadMedia(client, base64, safeName);
@@ -154,19 +141,39 @@ export async function pushContentToWordPress(client, item) {
     }
   }
 
+  // Create the draft post with clean HTML content. Meta fields are set
+  // in a SEPARATE follow-up call because WordPress 403s if the meta keys
+  // aren't registered for REST yet (requires the PHP snippet on the WP side).
   const created = await createDraftPost(client, {
     title,
     content: cleanHtml,
     status: 'draft', // HARD CONSTRAINT — never publish
-    meta: metaFields,
     featured_media: featuredMediaId || undefined
   });
 
-  // Follow-up meta update as fallback in case the initial meta didn't stick.
+  // Follow-up: set Yoast + RankMath fields. If this fails (meta keys
+  // not registered), we log a warning but the draft is already created.
+  const metaFields = {
+    rank_math_focus_keyword:   keyword,
+    rank_math_title:           metaTitle,
+    rank_math_description:     metaDesc,
+    _yoast_wpseo_title:       metaTitle,
+    _yoast_wpseo_metadesc:    metaDesc,
+    _yoast_wpseo_focuskw:     keyword
+  };
+  let metaStatus = 'skipped';
   try {
-    await updatePostMeta(client, 'posts', created.id, metaFields);
+    await updatePostMeta(client, 'posts', created.id, { meta: metaFields });
+    metaStatus = 'set';
   } catch (e) {
-    console.warn('Follow-up meta update failed:', e.message);
+    // Try without the wrapper — some WP versions want flat meta, some want nested.
+    try {
+      await updatePostMeta(client, 'posts', created.id, metaFields);
+      metaStatus = 'set';
+    } catch (e2) {
+      console.warn('RankMath/Yoast meta update failed (post still created):', e2.message);
+      metaStatus = 'failed — add the PHP snippet to WordPress (see suite docs)';
+    }
   }
 
   const adminUrl = client.wp_url.replace(/\/+$/, '') + '/wp-admin/post.php?post=' + created.id + '&action=edit';
