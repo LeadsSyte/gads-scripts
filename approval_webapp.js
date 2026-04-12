@@ -198,9 +198,14 @@ function doPost(e) {
     return _handleFlaggedReviewSubmit(e);
   }
 
-  // v4.5.0: Handle AI instruction processing
+  // v4.5.0: Handle AI instruction processing (preview step)
   if (postAction === 'ai_instructions') {
     return _handleAIInstructions(e);
+  }
+
+  // v4.5.0: Handle confirmation of AI-proposed changes (saves to sheet)
+  if (postAction === 'confirm_ai') {
+    return _handleConfirmAI(e);
   }
 
   // Original notes handler
@@ -437,7 +442,8 @@ function _handleFlaggedReviewSubmit(e) {
 }
 
 /**
- * Handles natural language instructions — calls Claude to interpret and apply.
+ * Handles natural language instructions — calls Claude to interpret, then shows
+ * a preview page for user confirmation before saving.
  */
 function _handleAIInstructions(e) {
   var runId = (e.parameter.runId || '').trim();
@@ -464,6 +470,9 @@ function _handleAIInstructions(e) {
     // Also include N-gram negatives for context (so user can say "don't negative facebook")
     var ngramNegatives = (changesJson.search_term_negations || {}).ngramNegatives || [];
 
+    // Include smart negated terms for context too
+    var smartNegated = (changesJson.search_term_negations || {}).smartNegated || [];
+
     var apiKey = _getApiKey();
     if (!apiKey) {
       return _renderPage('Error', 'No ANTHROPIC_API_KEY found in Config tab. AI instructions require an API key.', false);
@@ -482,15 +491,25 @@ function _handleAIInstructions(e) {
       }).join('\n');
     }
 
+    var smartNegList = '';
+    if (smartNegated.length > 0) {
+      smartNegList = '\n\nAI auto-negated terms (already in a separate approval category):\n';
+      smartNegList += smartNegated.map(function(s) {
+        return '- "' + s.term + '" (cost: ' + (s.cost || 0).toFixed(0) + ', reason: ' + (s.reason || '') + ')';
+      }).join('\n');
+    }
+
     var prompt = 'You are a Google Ads optimization assistant. A user is reviewing search terms that were flagged as ambiguous by the AI system.\n\n';
-    prompt += 'Flagged search terms:\n' + termsList + '\n';
-    prompt += ngramList + '\n\n';
+    prompt += 'Flagged search terms (these are ambiguous — user decides negate or keep):\n' + termsList + '\n';
+    prompt += ngramList;
+    prompt += smartNegList + '\n\n';
     prompt += 'User instructions: "' + instructions + '"\n\n';
     prompt += 'Based on the user\'s instructions, return a JSON object with:\n';
-    prompt += '- "negate": array of search term strings to negate\n';
-    prompt += '- "keep": array of search term strings to keep\n';
+    prompt += '- "negate": array of search term strings to negate (from the flagged list)\n';
+    prompt += '- "keep": array of search term strings to keep (from the flagged list)\n';
     prompt += '- "remove_ngram": array of N-gram words the user wants to REMOVE from the negation list (i.e., they do NOT want these negated)\n';
-    prompt += '- "explanation": brief explanation of what you did\n\n';
+    prompt += '- "remove_smart_negated": array of auto-negated term strings the user wants to REMOVE from the negation list\n';
+    prompt += '- "explanation": brief explanation of what you did and why\n\n';
     prompt += 'Only include terms that were explicitly mentioned or clearly covered by the user\'s instructions. If the user\'s intent is unclear for a term, put it in "keep" (err on side of caution).\n';
     prompt += 'Return ONLY valid JSON, no markdown.';
 
@@ -520,7 +539,6 @@ function _handleAIInstructions(e) {
     // Parse AI response
     var aiResult;
     try {
-      // Strip markdown code fences if present
       var cleaned = aiText.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
       aiResult = JSON.parse(cleaned);
     } catch (ex) {
@@ -528,10 +546,155 @@ function _handleAIInstructions(e) {
     }
 
     var negateList = aiResult.negate || [];
+    var keepList = aiResult.keep || [];
     var removeNgram = aiResult.remove_ngram || [];
+    var removeSmartNegated = aiResult.remove_smart_negated || [];
     var explanation = aiResult.explanation || '';
 
-    // Build selectedForNegation from AI results
+    // === RENDER PREVIEW PAGE (no changes saved yet) ===
+    var webAppUrl = ScriptApp.getService().getUrl();
+
+    var html = '<!DOCTYPE html><html><head><meta charset="utf-8">';
+    html += '<meta name="viewport" content="width=device-width, initial-scale=1">';
+    html += '<title>Syte — Review AI Suggestions</title>';
+    html += '<style>';
+    html += 'body{font-family:Arial,sans-serif;max-width:800px;margin:20px auto;padding:0 20px;color:#333;}';
+    html += 'h1{font-size:22px;margin:0 0 4px;}h2{font-size:16px;margin:18px 0 8px;}';
+    html += '.btn{display:inline-block;padding:12px 24px;margin:6px 4px;border-radius:6px;color:white;border:none;font-weight:600;font-size:14px;cursor:pointer;text-decoration:none;}';
+    html += '.btn-confirm{background:#2e7d32;}.btn-cancel{background:#757575;}.btn-retry{background:#1565c0;}';
+    html += '.card{background:#f8f9fa;padding:14px;border-radius:6px;border-left:4px solid #1565c0;margin:12px 0;}';
+    html += '.explanation{background:#e3f2fd;padding:14px;border-radius:6px;margin:12px 0;font-size:14px;}';
+    html += '.negate-item{padding:6px 0;border-bottom:1px solid #ffcdd2;color:#c62828;}';
+    html += '.keep-item{padding:6px 0;border-bottom:1px solid #c8e6c9;color:#2e7d32;}';
+    html += '.remove-item{padding:6px 0;border-bottom:1px solid #bbdefb;color:#1565c0;}';
+    html += '.muted{color:#999;font-size:12px;}';
+    html += '.section{margin:12px 0;padding:12px;border-radius:6px;}';
+    html += '.section-negate{background:#ffebee;}.section-keep{background:#e8f5e9;}.section-remove{background:#e3f2fd;}';
+    html += '</style></head><body>';
+
+    html += '<h1>Review Proposed Changes</h1>';
+    html += '<p class="muted">These are the changes Claude suggests based on your instructions. Nothing is saved yet.</p>';
+
+    // Show user's original instructions
+    html += '<div class="card"><strong>Your instructions:</strong><br>"' + _escape(instructions) + '"</div>';
+
+    // AI explanation
+    html += '<div class="explanation"><strong>AI interpretation:</strong> ' + _escape(explanation) + '</div>';
+
+    // Terms to negate
+    if (negateList.length > 0) {
+      html += '<div class="section section-negate">';
+      html += '<h2 style="color:#c62828;margin-top:0;">Will Negate (' + negateList.length + ')</h2>';
+      for (var i = 0; i < negateList.length; i++) {
+        // Find cost info
+        var costInfo = '';
+        for (var j = 0; j < terms.length; j++) {
+          if (terms[j].term.toLowerCase().trim() === negateList[i].toLowerCase().trim()) {
+            costInfo = ' — cost: ' + (terms[j].cost || 0).toFixed(0) + ', clicks: ' + (terms[j].clicks || 0);
+            break;
+          }
+        }
+        html += '<div class="negate-item">"' + _escape(negateList[i]) + '"' + costInfo + '</div>';
+      }
+      html += '</div>';
+    }
+
+    // Terms to keep
+    if (keepList.length > 0) {
+      html += '<div class="section section-keep">';
+      html += '<h2 style="color:#2e7d32;margin-top:0;">Will Keep (' + keepList.length + ')</h2>';
+      for (var k = 0; k < keepList.length; k++) {
+        html += '<div class="keep-item">"' + _escape(keepList[k]) + '"</div>';
+      }
+      html += '</div>';
+    }
+
+    // N-grams to remove
+    if (removeNgram.length > 0) {
+      html += '<div class="section section-remove">';
+      html += '<h2 style="color:#1565c0;margin-top:0;">Remove from N-gram Negatives</h2>';
+      html += '<p style="font-size:12px;color:#666;">These words were proposed as N-gram negatives but will be removed per your instructions.</p>';
+      for (var rn = 0; rn < removeNgram.length; rn++) {
+        html += '<div class="remove-item">"' + _escape(removeNgram[rn]) + '" — will NOT be negated</div>';
+      }
+      html += '</div>';
+    }
+
+    // Smart negated to remove
+    if (removeSmartNegated.length > 0) {
+      html += '<div class="section section-remove">';
+      html += '<h2 style="color:#1565c0;margin-top:0;">Remove from AI Auto-Negated</h2>';
+      html += '<p style="font-size:12px;color:#666;">These terms were auto-negated by AI but will be removed per your instructions.</p>';
+      for (var rs = 0; rs < removeSmartNegated.length; rs++) {
+        html += '<div class="remove-item">"' + _escape(removeSmartNegated[rs]) + '" — will NOT be negated</div>';
+      }
+      html += '</div>';
+    }
+
+    // No changes
+    if (negateList.length === 0 && removeNgram.length === 0 && removeSmartNegated.length === 0) {
+      html += '<div class="card"><strong>No changes proposed.</strong> Claude kept all terms based on your instructions.</div>';
+    }
+
+    // Confirm / Go Back / Try Again buttons
+    html += '<div style="margin:24px 0;padding:16px 0;border-top:2px solid #e0e0e0;">';
+
+    // Confirm form — passes the AI result as hidden JSON for the confirm handler
+    html += '<form method="post" action="' + webAppUrl + '" style="display:inline;">';
+    html += '<input type="hidden" name="runId" value="' + _escape(runId) + '">';
+    html += '<input type="hidden" name="post_action" value="confirm_ai">';
+    html += '<input type="hidden" name="ai_result" value="' + _escape(JSON.stringify(aiResult)) + '">';
+    html += '<button type="submit" class="btn btn-confirm">Confirm & Apply</button>';
+    html += '</form>';
+
+    // Go back to review page
+    html += '<a href="' + webAppUrl + '?view=flagged_review&runId=' + encodeURIComponent(runId) + '" class="btn btn-cancel">Go Back</a>';
+
+    // Try again with new instructions
+    html += '<form method="post" action="' + webAppUrl + '" style="display:inline;margin-left:8px;">';
+    html += '<input type="hidden" name="runId" value="' + _escape(runId) + '">';
+    html += '<input type="hidden" name="post_action" value="ai_instructions">';
+    html += '<input type="hidden" name="instructions" value="' + _escape(instructions) + '">';
+    html += '<button type="submit" class="btn btn-retry" onclick="var i=prompt(\'Refine your instructions:\',\'' + _escape(instructions).replace(/'/g, "\\'") + '\');if(i){this.form.instructions.value=i;}else{return false;}">Refine Instructions</button>';
+    html += '</form>';
+
+    html += '</div>';
+
+    html += '<div style="margin-top:30px;color:#999;font-size:11px;text-align:center;">Syte Digital Agency | AI Review Preview | syte.co.za</div>';
+    html += '</body></html>';
+
+    return HtmlService.createHtmlOutput(html).setTitle('Syte — Review AI Suggestions');
+  } catch (ex) {
+    return _renderPage('Error', 'Could not process instructions: ' + ex.message, false);
+  }
+}
+
+/**
+ * Handles confirmation of AI-proposed changes — actually saves to PendingChanges sheet.
+ */
+function _handleConfirmAI(e) {
+  var runId = (e.parameter.runId || '').trim();
+  var aiResultJson = (e.parameter.ai_result || '').trim();
+
+  if (!runId || !aiResultJson) {
+    return _renderPage('Error', 'Missing data for confirmation.', false);
+  }
+
+  try {
+    var aiResult = JSON.parse(aiResultJson);
+    var result = _findPendingRow(runId);
+    if (!result) return _renderPage('Not Found', 'Run ID not found: ' + runId, false);
+
+    var changesJson = {};
+    try { changesJson = JSON.parse(result.row[result.colIdx['changes_json']]); } catch (ex) {}
+
+    var flagged = changesJson.flagged_review || { terms: [], selectedForNegation: [] };
+    var terms = flagged.terms || [];
+    var negateList = aiResult.negate || [];
+    var removeNgram = aiResult.remove_ngram || [];
+    var removeSmartNegated = aiResult.remove_smart_negated || [];
+
+    // Build selectedForNegation from confirmed AI results
     var selected = [];
     for (var i = 0; i < negateList.length; i++) {
       var neg = negateList[i].toLowerCase().trim();
@@ -546,67 +709,75 @@ function _handleAIInstructions(e) {
     flagged.selectedForNegation = selected;
     changesJson.flagged_review = flagged;
 
-    // Handle N-gram removals — remove from the negation list if user says to keep them
+    // Handle N-gram removals
+    var ngramNegatives = (changesJson.search_term_negations || {}).ngramNegatives || [];
     if (removeNgram.length > 0 && ngramNegatives.length > 0) {
-      var filtered = ngramNegatives.filter(function(n) {
+      changesJson.search_term_negations.ngramNegatives = ngramNegatives.filter(function(n) {
         var word = n.word.toLowerCase().trim();
         for (var k = 0; k < removeNgram.length; k++) {
           if (removeNgram[k].toLowerCase().trim() === word) return false;
         }
         return true;
       });
-      changesJson.search_term_negations.ngramNegatives = filtered;
     }
 
-    // Write back
+    // Handle smart-negated removals
+    var smartNegated = (changesJson.search_term_negations || {}).smartNegated || [];
+    if (removeSmartNegated.length > 0 && smartNegated.length > 0) {
+      changesJson.search_term_negations.smartNegated = smartNegated.filter(function(s) {
+        var term = s.term.toLowerCase().trim();
+        for (var k = 0; k < removeSmartNegated.length; k++) {
+          if (removeSmartNegated[k].toLowerCase().trim() === term) return false;
+        }
+        return true;
+      });
+    }
+
+    // Write back to sheet
     result.sheet.getRange(result.rowNum, result.colIdx['changes_json'] + 1).setValue(JSON.stringify(changesJson));
 
-    // Auto-approve flagged review category if there are selections
+    // Add flagged_review_negations to approved categories if there are selections
     if (selected.length > 0) {
       var existingApproved = String(result.row[result.colIdx['approved_categories']] || '').trim();
       if (existingApproved.indexOf('flagged_review_negations') === -1) {
         var newApproved = existingApproved ? existingApproved + ',flagged_review_negations' : 'flagged_review_negations';
         result.sheet.getRange(result.rowNum, result.colIdx['approved_categories'] + 1).setValue(newApproved);
-        result.sheet.getRange(result.rowNum, result.colIdx['approved_by'] + 1).setValue(Session.getActiveUser().getEmail() || 'Unknown');
-        result.sheet.getRange(result.rowNum, result.colIdx['approved_at'] + 1).setValue(new Date().toISOString());
       }
+      result.sheet.getRange(result.rowNum, result.colIdx['approved_by'] + 1).setValue(Session.getActiveUser().getEmail() || 'Unknown');
+      result.sheet.getRange(result.rowNum, result.colIdx['approved_at'] + 1).setValue(new Date().toISOString());
     }
 
-    // Build response page
-    var summary = '<div style="background:#e8f5e9;padding:12px;border-radius:6px;margin-bottom:12px;">';
-    summary += '<strong>AI Interpretation:</strong> ' + _escape(explanation) + '</div>';
-
+    // Build confirmation summary
+    var summary = '';
     if (selected.length > 0) {
-      summary += '<strong>Will negate (' + selected.length + '):</strong><ul>';
+      summary += '<strong>Negating (' + selected.length + '):</strong><ul>';
       for (var s = 0; s < selected.length; s++) {
         summary += '<li style="color:#c62828;">' + _escape(selected[s].term) + '</li>';
       }
       summary += '</ul>';
     }
-
-    var keepList = aiResult.keep || [];
-    if (keepList.length > 0) {
-      summary += '<strong>Keeping (' + keepList.length + '):</strong><ul>';
-      for (var k = 0; k < keepList.length; k++) {
-        summary += '<li style="color:#2e7d32;">' + _escape(keepList[k]) + '</li>';
-      }
-      summary += '</ul>';
-    }
-
     if (removeNgram.length > 0) {
       summary += '<strong>Removed from N-gram negations:</strong><ul>';
       for (var rn = 0; rn < removeNgram.length; rn++) {
-        summary += '<li style="color:#1565c0;">"' + _escape(removeNgram[rn]) + '" — will NOT be negated</li>';
+        summary += '<li style="color:#1565c0;">"' + _escape(removeNgram[rn]) + '"</li>';
+      }
+      summary += '</ul>';
+    }
+    if (removeSmartNegated.length > 0) {
+      summary += '<strong>Removed from AI auto-negated:</strong><ul>';
+      for (var rs = 0; rs < removeSmartNegated.length; rs++) {
+        summary += '<li style="color:#1565c0;">"' + _escape(removeSmartNegated[rs]) + '"</li>';
       }
       summary += '</ul>';
     }
 
+    var kept = terms.length - selected.length;
+    summary += '<p>' + kept + ' flagged term(s) kept.</p>';
     summary += '<p>Changes will be applied on the next scheduled script run.</p>';
-    summary += '<p><a href="' + ScriptApp.getService().getUrl() + '?view=flagged_review&runId=' + encodeURIComponent(runId) + '">Review selections again</a></p>';
 
-    return _renderPage('Instructions Processed', summary, true);
+    return _renderPage('Changes Confirmed', summary, true);
   } catch (ex) {
-    return _renderPage('Error', 'Could not process instructions: ' + ex.message, false);
+    return _renderPage('Error', 'Could not confirm changes: ' + ex.message, false);
   }
 }
 
