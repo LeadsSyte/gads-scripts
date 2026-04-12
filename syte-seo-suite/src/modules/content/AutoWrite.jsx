@@ -15,69 +15,89 @@ const HISTORY_CAP = 500;
 function loadHistory() {
   try { return JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]'); } catch { return []; }
 }
-function saveHistory(h) {
+function saveToHistory(article) {
+  const h = loadHistory();
+  h.unshift(article);
   localStorage.setItem(HISTORY_KEY, JSON.stringify(h.slice(0, HISTORY_CAP)));
 }
 
-// Per-client run state machine phases.
-const PHASES = {
-  idle:        { label: 'Ready',        color: 'var(--text-muted)' },
-  researching: { label: 'Researching',  color: 'var(--blue)' },
-  planning:    { label: 'Planning',     color: 'var(--purple)' },
-  writing:     { label: 'Writing',      color: ACCENT },
-  done:        { label: 'Complete',     color: 'var(--green)' },
-  error:       { label: 'Error',        color: 'var(--red)' }
-};
-
-// Render the manual direction preview with a length cap.
 function directionPreview(text) {
   if (!text) return null;
   const clean = text.trim();
-  if (clean.length <= 140) return clean;
-  return clean.slice(0, 140) + '…';
+  return clean.length <= 140 ? clean : clean.slice(0, 140) + '…';
 }
 
-// Run the full pipeline for ONE client. Returns the final run state so the
-// caller can save history. Progress updates flow via onProgress().
-async function runClient(client, { onProgress }) {
-  const manualDirection = (client.internal_notes || '').trim();
-  const targetCount = Math.max(1, Math.min(client.pages_per_month || 4, 20));
+const OPP_COLORS = {
+  'low-hanging-fruit': 'var(--green)',
+  'content-gap':       'var(--orange)',
+  'ranking-defend':    'var(--blue)',
+  'meta-rewrite':      'var(--purple)',
+  'long-tail':         'var(--text-muted)'
+};
 
-  // Phase 1: GSC + scoring
-  onProgress({ phase: 'researching', message: 'Pulling Search Console data…' });
-  const research = await collectResearchData(client, { days: 90 });
+export default function AutoWrite() {
+  const allClients = useClients(s => s.clients);
 
-  // Phase 2: Claude topic plan
-  onProgress({
-    phase: 'planning',
-    message: manualDirection
-      ? 'Planning topics with your manual direction + ranking data…'
-      : 'Planning topics from ranking data…'
-  });
-  const plan = await generateTopicRecommendations(client, research);
-  const opportunities = (plan.opportunities || [])
-    .slice()
-    .sort((a, b) => (a.priority || 99) - (b.priority || 99))
-    .slice(0, targetCount);
+  // Active client: the one we're currently working on.
+  const [activeId, setActiveId] = useState(null);
+  // Research state for the active client.
+  const [research, setResearch] = useState(null);
+  const [plan, setPlan] = useState(null);
+  const [researchBusy, setResearchBusy] = useState(false);
+  const [researchErr, setResearchErr] = useState('');
+  // Per-article state: Map<opportunityIndex, { status, output, error, words }>
+  const [articleStates, setArticleStates] = useState({});
+  // Currently writing index (only one at a time).
+  const [writingIdx, setWritingIdx] = useState(null);
+  // Batch mode — writing all remaining articles sequentially.
+  const [batchMode, setBatchMode] = useState(false);
 
-  if (opportunities.length === 0) {
-    throw new Error('Claude returned no opportunities — try re-running or set a Manual Content Direction.');
+  const contentClients = useMemo(
+    () => allClients.filter(c => c.does_content !== false),
+    [allClients]
+  );
+  const activeClient = useMemo(
+    () => contentClients.find(c => c.id === activeId) || null,
+    [contentClients, activeId]
+  );
+  const withGsc = contentClients.filter(c => c.gsc_property);
+  const withoutGsc = contentClients.filter(c => !c.gsc_property);
+
+  // ─── Phase 1: Research ───────────────────────────────
+  async function startResearch(client) {
+    setActiveId(client.id);
+    setResearch(null); setPlan(null); setArticleStates({}); setResearchErr('');
+    setResearchBusy(true); setBatchMode(false); setWritingIdx(null);
+    try {
+      const data = await collectResearchData(client, { days: 90 });
+      setResearch(data);
+      const result = await generateTopicRecommendations(client, data);
+      const sorted = (result.opportunities || [])
+        .slice()
+        .sort((a, b) => (a.priority || 99) - (b.priority || 99));
+      setPlan({ ...result, opportunities: sorted });
+    } catch (e) {
+      setResearchErr(e.message);
+    } finally {
+      setResearchBusy(false);
+    }
   }
 
-  // Phase 3: write each article
-  const articles = [];
-  for (let i = 0; i < opportunities.length; i++) {
-    const opp = opportunities[i];
-    onProgress({
-      phase: 'writing',
-      message: `Writing ${i + 1} / ${opportunities.length}: ${opp.topic_title}`,
-      current: i,
-      total: opportunities.length,
-      tokens: 0
-    });
+  // ─── Phase 2: Write ONE article ──────────────────────
+  function updateArticle(idx, patch) {
+    setArticleStates(prev => ({ ...prev, [idx]: { ...(prev[idx] || {}), ...patch } }));
+  }
+
+  async function writeOne(idx) {
+    if (!activeClient || !plan || !research) return;
+    const opp = plan.opportunities[idx];
+    if (!opp) return;
+
+    setWritingIdx(idx);
+    updateArticle(idx, { status: 'writing', output: '', error: null, words: 0 });
 
     const ctx = buildArticleResearchContext(opp, research);
-    const system = buildSystemPrompt(client, '', ctx);
+    const system = buildSystemPrompt(activeClient, '', ctx);
     const userPrompt = TAB_PROMPTS['New Article'](
       opp.topic_title,
       opp.primary_keyword,
@@ -85,7 +105,6 @@ async function runClient(client, { onProgress }) {
     );
 
     let buf = '';
-    let tokens = 0;
     try {
       await claudeStream({
         system,
@@ -94,217 +113,51 @@ async function runClient(client, { onProgress }) {
         temperature: 0.7,
         onDelta: (t) => {
           buf += t;
-          tokens += t.length;
-          if (tokens % 200 < 10) {
-            onProgress({
-              phase: 'writing',
-              message: `Writing ${i + 1} / ${opportunities.length}: ${opp.topic_title}`,
-              current: i,
-              total: opportunities.length,
-              tokens
-            });
-          }
+          const words = Math.round(buf.length / 5);
+          updateArticle(idx, { status: 'writing', output: buf, words });
         }
       });
-    } catch (e) {
-      articles.push({
+      updateArticle(idx, { status: 'done', output: buf, words: Math.round(buf.length / 5) });
+
+      // Persist to shared history.
+      saveToHistory({
         id: crypto.randomUUID(),
-        client_id: client.id,
-        client_name: client.name,
-        tab: 'New Article',
+        client_id: activeClient.id,
+        client_name: activeClient.name,
+        tab: 'Auto Write',
         topic: opp.topic_title,
         keyword: opp.primary_keyword,
-        output: '',
-        error: e.message,
-        opportunity: opp,
+        output: buf,
+        opportunity_type: opp.opportunity_type,
         created_at: new Date().toISOString()
       });
-      continue;
-    }
-
-    articles.push({
-      id: crypto.randomUUID(),
-      client_id: client.id,
-      client_name: client.name,
-      tab: 'New Article',
-      topic: opp.topic_title,
-      keyword: opp.primary_keyword,
-      output: buf,
-      opportunity: opp,
-      priority: opp.priority,
-      opportunity_type: opp.opportunity_type,
-      created_at: new Date().toISOString()
-    });
-  }
-
-  const ok = articles.filter(a => !a.error).length;
-  const fail = articles.filter(a => a.error).length;
-
-  return { articles, ok, fail, plan, research };
-}
-
-function ClientAutoCard({ client, state, onRun, onView }) {
-  const direction = directionPreview(client.internal_notes);
-  const phase = PHASES[state?.phase || 'idle'];
-  const isRunning = state?.phase && state.phase !== 'idle' && state.phase !== 'done' && state.phase !== 'error';
-
-  return (
-    <div className="card" style={{ padding: 16 }}>
-      <div className="row" style={{ justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
-        <div style={{ minWidth: 0, flex: 1 }}>
-          <strong style={{ fontSize: 15, display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {client.name}
-          </strong>
-          <div className="muted" style={{ fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {client.url?.replace(/^https?:\/\//, '') || '—'}
-          </div>
-        </div>
-        <span className="badge" style={{ color: phase.color, borderColor: phase.color, fontSize: 10 }}>
-          {phase.label}
-        </span>
-      </div>
-
-      <div className="row" style={{ fontSize: 11, gap: 14, marginBottom: 10, flexWrap: 'wrap' }}>
-        <span className="muted">
-          <strong style={{ color: 'var(--text)' }}>{client.pages_per_month || 4}</strong> pages/mo
-        </span>
-        <span className="muted">
-          GSC: {client.gsc_property
-            ? <span style={{ color: 'var(--green)' }}>✓</span>
-            : <span style={{ color: 'var(--red)' }}>missing</span>}
-        </span>
-      </div>
-
-      <div style={{
-        marginBottom: 10, padding: 8, borderRadius: 6,
-        background: direction ? 'color-mix(in srgb, ' + ACCENT + ' 8%, var(--surface-2))' : 'var(--surface-2)',
-        borderLeft: '2px solid ' + (direction ? ACCENT : 'var(--border)'),
-        fontSize: 11
-      }}>
-        <div className="muted" style={{ fontSize: 9, textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 3 }}>
-          {direction ? 'Manual direction set' : 'No manual direction — pure data-driven'}
-        </div>
-        <div style={{ color: direction ? 'var(--text)' : 'var(--text-muted)', fontStyle: direction ? 'normal' : 'italic' }}>
-          {direction || 'Claude will pick topics from Search Console rankings alone.'}
-        </div>
-      </div>
-
-      {/* Progress strip */}
-      {state?.phase && state.phase !== 'idle' && (
-        <div style={{ marginBottom: 10 }}>
-          <div style={{ fontSize: 11, marginBottom: 4, color: phase.color }}>
-            {state.message || phase.label}
-          </div>
-          {state.total ? (
-            <>
-              <div style={{ height: 4, background: 'var(--surface-2)', borderRadius: 2, overflow: 'hidden' }}>
-                <div style={{
-                  width: Math.round(((state.current + (state.tokens ? 0.5 : 0)) / state.total) * 100) + '%',
-                  height: '100%', background: phase.color, transition: 'width .3s'
-                }} />
-              </div>
-              <div className="muted" style={{ fontSize: 10, marginTop: 3 }}>
-                {state.current} / {state.total}{state.tokens ? ' · ' + Math.round(state.tokens / 4) + ' words' : ''}
-              </div>
-            </>
-          ) : (
-            <div style={{ height: 4, background: 'var(--surface-2)', borderRadius: 2, overflow: 'hidden' }}>
-              <div style={{
-                width: '30%', height: '100%', background: phase.color,
-                animation: 'pulse 1.5s ease-in-out infinite'
-              }} />
-            </div>
-          )}
-        </div>
-      )}
-
-      {state?.result && state.phase === 'done' && (
-        <div className="muted" style={{ fontSize: 11, marginBottom: 10 }}>
-          ✓ {state.result.ok} articles written
-          {state.result.fail > 0 && ` · ${state.result.fail} failed`}
-        </div>
-      )}
-
-      {state?.phase === 'error' && (
-        <div style={{ fontSize: 11, color: 'var(--red)', marginBottom: 10 }}>
-          {state.message}
-        </div>
-      )}
-
-      <div className="row" style={{ gap: 6 }}>
-        <button
-          onClick={() => onRun(client)}
-          disabled={isRunning || !client.gsc_property}
-          className="primary"
-          style={{
-            flex: 1,
-            background: isRunning ? 'var(--surface-3)' : ACCENT,
-            borderColor: ACCENT, color: '#0a0a0c',
-            fontWeight: 600, fontSize: 12
-          }}
-        >
-          {isRunning ? 'Running…' : state?.phase === 'done' ? 'Re-run' : 'Generate Articles'}
-        </button>
-        {state?.result?.articles?.length > 0 && (
-          <button onClick={() => onView(client, state.result)} style={{ fontSize: 11 }}>
-            View ({state.result.ok})
-          </button>
-        )}
-      </div>
-    </div>
-  );
-}
-
-export default function AutoWrite() {
-  const allClients = useClients(s => s.clients);
-  const [states, setStates] = useState({}); // clientId -> { phase, message, current, total, tokens, result }
-  const [err, setErr] = useState('');
-  const [runningAll, setRunningAll] = useState(false);
-  const [viewing, setViewing] = useState(null); // { client, result } when an expand panel is open
-
-  const contentClients = useMemo(
-    () => allClients.filter(c => c.does_content !== false),
-    [allClients]
-  );
-
-  const withGsc = contentClients.filter(c => c.gsc_property);
-  const withoutGsc = contentClients.filter(c => !c.gsc_property);
-
-  function updateState(clientId, patch) {
-    setStates(prev => ({
-      ...prev,
-      [clientId]: { ...(prev[clientId] || {}), ...patch }
-    }));
-  }
-
-  async function runOne(client) {
-    updateState(client.id, { phase: 'researching', message: 'Starting…', result: null });
-    setErr('');
-    try {
-      const result = await runClient(client, {
-        onProgress: (p) => updateState(client.id, p)
-      });
-      updateState(client.id, { phase: 'done', result });
-
-      // Persist every successful article to the shared content history.
-      const history = loadHistory();
-      saveHistory([...result.articles.filter(a => !a.error), ...history]);
     } catch (e) {
-      console.error('AutoWrite runClient error:', e);
-      updateState(client.id, { phase: 'error', message: e.message });
+      updateArticle(idx, { status: 'error', error: e.message });
+    } finally {
+      setWritingIdx(null);
     }
   }
 
-  async function runAll() {
-    setRunningAll(true); setErr('');
-    for (const c of withGsc) {
-      // Skip ones already completed this session unless the user
-      // explicitly re-runs them. runOne is sequential — we await each.
-      await runOne(c);
+  // ─── Phase 2b: Write ALL remaining ───────────────────
+  async function writeAllRemaining() {
+    if (!plan) return;
+    setBatchMode(true);
+    for (let i = 0; i < plan.opportunities.length; i++) {
+      const state = articleStates[i];
+      if (state?.status === 'done') continue; // skip already-written
+      await writeOne(i);
     }
-    setRunningAll(false);
+    setBatchMode(false);
   }
 
+  function stopBatch() { setBatchMode(false); }
+
+  // Derived counts.
+  const doneCount = Object.values(articleStates).filter(s => s?.status === 'done').length;
+  const errorCount = Object.values(articleStates).filter(s => s?.status === 'error').length;
+  const pendingCount = plan ? plan.opportunities.length - doneCount - errorCount : 0;
+
+  // ─── Render ──────────────────────────────────────────
   return (
     <div>
       <style>{`@keyframes pulse { 0%,100% { opacity:.5; } 50% { opacity:1; } }`}</style>
@@ -313,129 +166,208 @@ export default function AutoWrite() {
         <div>
           <h2 style={{ margin: 0 }}>Auto Write</h2>
           <div className="muted" style={{ fontSize: 12, marginTop: 4, maxWidth: 720 }}>
-            One click per client. Pulls live Search Console data, asks Claude to pick the top
-            opportunities (weighted by ranking gaps, impressions, and any Manual Direction you've
-            set in Edit Client), then writes every article in sequence with full ranking context.
-            Results save to the Content Engine history.
+            Pick a client → research topics from Search Console → write articles one by one
+            (or batch). Each article uses live ranking data and the client's Manual Content
+            Direction if set.
           </div>
         </div>
-        <button
-          onClick={runAll}
-          disabled={runningAll || withGsc.length === 0}
-          className="primary"
-          style={{ background: ACCENT, borderColor: ACCENT, color: '#0a0a0c', fontWeight: 600 }}
-        >
-          {runningAll ? 'Running all…' : `Run All (${withGsc.length})`}
-        </button>
       </div>
 
+      {/* Stats */}
       <div className="grid-3" style={{ marginBottom: 14 }}>
         <div className="card" style={{ padding: 14 }}>
           <div className="muted" style={{ fontSize: 10, textTransform: 'uppercase' }}>Content clients</div>
-          <div style={{ fontFamily: 'Instrument Serif, serif', fontSize: 32, lineHeight: 1 }}>
-            {contentClients.length}
-          </div>
+          <div style={{ fontFamily: 'Instrument Serif, serif', fontSize: 32, lineHeight: 1 }}>{contentClients.length}</div>
         </div>
         <div className="card" style={{ padding: 14, borderColor: 'var(--green)' }}>
-          <div className="muted" style={{ fontSize: 10, textTransform: 'uppercase' }}>Ready to auto-write</div>
-          <div style={{ fontFamily: 'Instrument Serif, serif', fontSize: 32, lineHeight: 1, color: 'var(--green)' }}>
-            {withGsc.length}
-          </div>
+          <div className="muted" style={{ fontSize: 10, textTransform: 'uppercase' }}>Ready (GSC set)</div>
+          <div style={{ fontFamily: 'Instrument Serif, serif', fontSize: 32, lineHeight: 1, color: 'var(--green)' }}>{withGsc.length}</div>
         </div>
         <div className="card" style={{ padding: 14, borderColor: withoutGsc.length ? 'var(--orange)' : 'var(--border)' }}>
-          <div className="muted" style={{ fontSize: 10, textTransform: 'uppercase' }}>Need GSC setup</div>
-          <div style={{
-            fontFamily: 'Instrument Serif, serif', fontSize: 32, lineHeight: 1,
-            color: withoutGsc.length ? 'var(--orange)' : 'var(--text-muted)'
-          }}>
-            {withoutGsc.length}
-          </div>
+          <div className="muted" style={{ fontSize: 10, textTransform: 'uppercase' }}>Need GSC</div>
+          <div style={{ fontFamily: 'Instrument Serif, serif', fontSize: 32, lineHeight: 1, color: withoutGsc.length ? 'var(--orange)' : 'var(--text-muted)' }}>{withoutGsc.length}</div>
         </div>
       </div>
 
-      {err && <div style={{ color: 'var(--red)', marginBottom: 10 }}>{err}</div>}
+      {/* Client picker grid */}
+      <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '.08em', color: 'var(--text-dim)', margin: '6px 0 8px' }}>
+        Pick a client to plan content for
+      </div>
+      <div style={{ display: 'grid', gap: 8, gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', marginBottom: 20 }}>
+        {withGsc.map(c => {
+          const isActive = c.id === activeId;
+          const direction = directionPreview(c.internal_notes);
+          return (
+            <button
+              key={c.id}
+              onClick={() => startResearch(c)}
+              disabled={researchBusy || writingIdx !== null}
+              style={{
+                textAlign: 'left', padding: 12, borderRadius: 'var(--radius)',
+                background: isActive ? 'var(--surface-2)' : 'var(--surface)',
+                border: '1px solid ' + (isActive ? ACCENT : 'var(--border)'),
+                color: 'var(--text)', cursor: researchBusy ? 'wait' : 'pointer'
+              }}
+            >
+              <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {c.name}
+              </div>
+              <div className="muted" style={{ fontSize: 10 }}>
+                {c.pages_per_month || 4} pages/mo
+                {direction && ' · direction set'}
+              </div>
+            </button>
+          );
+        })}
+      </div>
 
-      {contentClients.length === 0 && (
-        <div className="card" style={{ textAlign: 'center', padding: 32, color: 'var(--text-muted)' }}>
-          No clients have Content Engine enabled. Toggle it on in the master Clients tab.
+      {withoutGsc.length > 0 && (
+        <div className="card" style={{ padding: 10, marginBottom: 20 }}>
+          <div className="muted" style={{ fontSize: 11 }}>
+            <strong style={{ color: 'var(--orange)' }}>Missing Search Console ({withoutGsc.length}):</strong>{' '}
+            {withoutGsc.slice(0, 8).map(c => c.name).join(', ')}
+            {withoutGsc.length > 8 && ` +${withoutGsc.length - 8} more`}
+          </div>
         </div>
       )}
 
-      {/* Ready clients */}
-      {withGsc.length > 0 && (
-        <>
-          <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '.08em', color: 'var(--text-dim)', margin: '6px 0 8px' }}>
-            Ready — {withGsc.length} client{withGsc.length === 1 ? '' : 's'}
+      {/* Research phase */}
+      {researchBusy && (
+        <div className="card" style={{ borderLeft: '4px solid var(--blue)' }}>
+          <div className="row" style={{ gap: 10 }}>
+            <div className="spinner" />
+            <span style={{ fontSize: 13 }}>
+              Researching topics for <strong>{activeClient?.name}</strong>…
+            </span>
           </div>
-          <div style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))' }}>
-            {withGsc.map(c => (
-              <ClientAutoCard
-                key={c.id}
-                client={c}
-                state={states[c.id]}
-                onRun={runOne}
-                onView={(client, result) => setViewing({ client, result })}
-              />
-            ))}
-          </div>
-        </>
+        </div>
+      )}
+      {researchErr && (
+        <div className="card" style={{ borderLeft: '4px solid var(--red)' }}>
+          <strong style={{ color: 'var(--red)' }}>Research error</strong>
+          <div style={{ fontSize: 12, marginTop: 6 }}>{researchErr}</div>
+        </div>
       )}
 
-      {/* Not-ready clients */}
-      {withoutGsc.length > 0 && (
-        <>
-          <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '.08em', color: 'var(--orange)', margin: '20px 0 8px' }}>
-            Missing Search Console — {withoutGsc.length} client{withoutGsc.length === 1 ? '' : 's'}
-          </div>
-          <div className="card" style={{ padding: 12 }}>
-            <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>
-              These clients don't have a GSC property set. Open Edit Client → Google Connections to pick one.
-            </div>
-            <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
-              {withoutGsc.map(c => (
-                <span key={c.id} className="badge" style={{ borderColor: 'var(--orange)', color: 'var(--orange)' }}>
-                  {c.name}
+      {/* Plan + article-by-article writing */}
+      {plan && activeClient && (
+        <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+          <div style={{ padding: '14px 16px', borderBottom: '1px solid var(--border)', background: 'var(--surface-2)' }}>
+            <div className="row" style={{ justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
+              <div>
+                <strong>{activeClient.name}</strong>
+                <span className="muted" style={{ marginLeft: 10, fontSize: 12 }}>
+                  {plan.opportunities.length} topics planned
                 </span>
-              ))}
-            </div>
-          </div>
-        </>
-      )}
-
-      {/* Expanded-articles panel */}
-      {viewing && (
-        <div className="modal-backdrop" onClick={() => setViewing(null)}>
-          <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 900 }}>
-            <div className="row" style={{ justifyContent: 'space-between', marginBottom: 10 }}>
-              <h2 style={{ margin: 0 }}>{viewing.client.name} — {viewing.result.ok} articles</h2>
-              <button onClick={() => setViewing(null)} className="ghost">Close</button>
-            </div>
-            {viewing.result.plan?.summary && (
-              <div className="muted" style={{ fontSize: 12, marginBottom: 12 }}>
-                <strong>Plan summary:</strong> {viewing.result.plan.summary}
-              </div>
-            )}
-            {viewing.result.articles.map((a, i) => (
-              <details key={a.id} style={{ marginBottom: 12, padding: 10, background: 'var(--surface-2)', borderRadius: 8 }}>
-                <summary style={{ cursor: 'pointer', fontSize: 13 }}>
-                  <strong>#{i + 1}</strong> {a.topic}
-                  {a.opportunity_type && (
-                    <span className="badge" style={{ marginLeft: 8, fontSize: 9 }}>{a.opportunity_type}</span>
-                  )}
-                  {a.error && <span style={{ color: 'var(--red)', marginLeft: 8, fontSize: 11 }}>(failed)</span>}
-                </summary>
-                {a.error ? (
-                  <div style={{ color: 'var(--red)', fontSize: 12, marginTop: 8 }}>{a.error}</div>
-                ) : (
-                  <pre style={{
-                    marginTop: 8, padding: 12, background: 'var(--bg)',
-                    fontSize: 11, overflowX: 'auto', whiteSpace: 'pre-wrap',
-                    maxHeight: 400
-                  }}>{a.output}</pre>
+                {doneCount > 0 && (
+                  <span style={{ marginLeft: 10, color: 'var(--green)', fontSize: 12 }}>
+                    {doneCount} written
+                  </span>
                 )}
-              </details>
-            ))}
+              </div>
+              <div className="row" style={{ gap: 8 }}>
+                {pendingCount > 0 && (
+                  <button
+                    onClick={batchMode ? stopBatch : writeAllRemaining}
+                    disabled={writingIdx !== null && !batchMode}
+                    className="primary"
+                    style={{ background: batchMode ? 'var(--red)' : ACCENT, borderColor: batchMode ? 'var(--red)' : ACCENT, color: '#0a0a0c', fontSize: 12 }}
+                  >
+                    {batchMode ? 'Stop batch' : `Write all remaining (${pendingCount})`}
+                  </button>
+                )}
+              </div>
+            </div>
+            {plan.summary && (
+              <div className="muted" style={{ fontSize: 12, marginTop: 8 }}>{plan.summary}</div>
+            )}
           </div>
+
+          {plan.opportunities.map((opp, idx) => {
+            const state = articleStates[idx] || {};
+            const color = OPP_COLORS[opp.opportunity_type] || 'var(--text-muted)';
+            const isWriting = writingIdx === idx;
+            const isDone = state.status === 'done';
+            const isError = state.status === 'error';
+
+            return (
+              <div key={idx} style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)' }}>
+                <div className="row" style={{ justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div className="row" style={{ gap: 8, marginBottom: 4 }}>
+                      <span style={{ fontSize: 10, color, fontWeight: 700 }}>
+                        #{opp.priority ?? idx + 1} · {opp.opportunity_type}
+                      </span>
+                      <span className="mono muted" style={{ fontSize: 10 }}>
+                        pos {opp.current_position != null ? Number(opp.current_position).toFixed(1) : '—'}
+                        {' '}· {(opp.current_impressions || 0).toLocaleString()} imp
+                      </span>
+                    </div>
+                    <div style={{ fontWeight: 600, fontSize: 14, lineHeight: 1.3, marginBottom: 2 }}>
+                      {opp.topic_title}
+                    </div>
+                    <div className="mono muted" style={{ fontSize: 11 }}>→ {opp.primary_keyword}</div>
+                    {opp.suggested_angle && (
+                      <div className="muted" style={{ fontSize: 11, marginTop: 4, lineHeight: 1.3 }}>
+                        {opp.suggested_angle}
+                      </div>
+                    )}
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6, flexShrink: 0 }}>
+                    {isDone && <span className="badge green" style={{ fontSize: 10 }}>Done · {state.words} words</span>}
+                    {isError && <span className="badge red" style={{ fontSize: 10 }}>Error</span>}
+                    {isWriting && <span className="badge" style={{ color: ACCENT, borderColor: ACCENT, fontSize: 10 }}>Writing · {state.words || 0}w</span>}
+                    {!isDone && !isWriting && !isError && (
+                      <button
+                        onClick={() => writeOne(idx)}
+                        disabled={writingIdx !== null}
+                        style={{ padding: '5px 14px', fontSize: 11, borderColor: ACCENT, color: ACCENT }}
+                      >
+                        Write this
+                      </button>
+                    )}
+                    {isError && (
+                      <button
+                        onClick={() => writeOne(idx)}
+                        disabled={writingIdx !== null}
+                        style={{ padding: '4px 10px', fontSize: 10 }}
+                      >
+                        Retry
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {isWriting && (
+                  <div style={{ marginTop: 8 }}>
+                    <div style={{ height: 3, background: 'var(--surface-2)', borderRadius: 2, overflow: 'hidden' }}>
+                      <div style={{
+                        width: '60%', height: '100%', background: ACCENT,
+                        animation: 'pulse 1.5s ease-in-out infinite'
+                      }} />
+                    </div>
+                  </div>
+                )}
+
+                {isError && state.error && (
+                  <div style={{ marginTop: 6, fontSize: 11, color: 'var(--red)' }}>{state.error}</div>
+                )}
+
+                {isDone && state.output && (
+                  <details style={{ marginTop: 8 }}>
+                    <summary className="muted" style={{ fontSize: 11, cursor: 'pointer' }}>
+                      View generated article ({state.words} words)
+                    </summary>
+                    <pre style={{
+                      marginTop: 6, padding: 12, background: 'var(--bg)',
+                      fontSize: 11, overflowX: 'auto', whiteSpace: 'pre-wrap',
+                      maxHeight: 400, borderRadius: 6
+                    }}>{state.output}</pre>
+                  </details>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
