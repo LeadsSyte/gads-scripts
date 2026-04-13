@@ -147,6 +147,25 @@ function OptPageCard({ result: r, onDelete }) {
                 }}>{code}</pre>
               </div>
             )}
+            <div className="row" style={{ gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
+              <PushToCmsButton
+                item={{
+                  module: 'aeo',
+                  page_url: r.url,
+                  page_title: o.name || o.title || 'AEO Optimization',
+                  change_type: o.type || 'aeo_optimization',
+                  payload: { code: code, placement: o.where, reason: o.description }
+                }}
+                label="Push to CMS"
+              />
+              <MarkImplementedButton
+                module="aeo"
+                changeType={o.type || 'aeo_optimization'}
+                pageUrl={r.url}
+                title={o.name || o.title || 'AEO Optimization'}
+                description={code.slice(0, 500)}
+              />
+            </div>
           </div>
         );
       })}
