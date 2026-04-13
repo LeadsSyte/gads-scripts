@@ -315,3 +315,125 @@ export async function listImplementations(clientId) {
 export async function listAllImplementations() {
   return listImplementations(null);
 }
+
+// ---------------------------------------------------------------------------
+// Technical SEO tasks — persisted to Supabase so scans survive page reloads.
+// Falls back to localStorage if Supabase isn't configured.
+// ---------------------------------------------------------------------------
+
+const TSEO_KEY = LS_PREFIX + 'tseo_tasks';
+
+export async function saveTseoTasks(tasks) {
+  // Bulk upsert: clear old tasks for clients in this batch, insert new ones.
+  if (supabase && tasks.length > 0) {
+    // Get unique client IDs in this batch
+    const clientIds = [...new Set(tasks.map(t => t.client_id).filter(Boolean))];
+    for (const cid of clientIds) {
+      const clientTasks = tasks.filter(t => t.client_id === cid);
+      // Delete existing tasks for this client, then insert fresh
+      await supabase.from('syte_suite_tseo_tasks').delete().eq('client_id', cid);
+      const { error } = await supabase.from('syte_suite_tseo_tasks').insert(
+        clientTasks.map(t => ({
+          id: t.id,
+          client_id: t.client_id,
+          client_name: t.client_name,
+          title: t.title,
+          description: t.description,
+          priority: t.priority,
+          page_url: t.page_url,
+          fix_type: t.fix_type,
+          copy_paste_fix: t.copy_paste_fix,
+          impact: t.impact,
+          effort: t.effort,
+          status: t.status || 'open',
+          assignee: t.assignee,
+          data_source: t.data_source,
+          created_at: t.created_at || new Date().toISOString()
+        }))
+      );
+      if (error) console.error('saveTseoTasks error:', error);
+    }
+  }
+  // Always keep localStorage in sync as fallback
+  localStorage.setItem(TSEO_KEY, JSON.stringify(tasks));
+}
+
+export async function loadTseoTasks() {
+  if (supabase) {
+    const { data, error } = await supabase
+      .from('syte_suite_tseo_tasks')
+      .select('*')
+      .order('created_at', { ascending: false });
+    if (!error && data?.length > 0) {
+      // Sync to localStorage as cache
+      localStorage.setItem(TSEO_KEY, JSON.stringify(data));
+      return data;
+    }
+  }
+  // Fallback to localStorage (also handles the old key migration)
+  const legacy = localStorage.getItem('syte-suite-tseo-tasks');
+  if (legacy) {
+    try { return JSON.parse(legacy); } catch { return []; }
+  }
+  return [];
+}
+
+export async function updateTseoTask(id, patch) {
+  if (supabase) {
+    await supabase.from('syte_suite_tseo_tasks').update(patch).eq('id', id);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// AEO optimization results — persisted to Supabase.
+// ---------------------------------------------------------------------------
+
+const AEO_RESULTS_KEY = LS_PREFIX + 'aeo_results';
+
+export async function saveAeoResult(result) {
+  if (supabase) {
+    // Upsert by client_id + url
+    const row = {
+      client_id: result.client_id,
+      url: result.url,
+      path: result.path,
+      sessions: result.sessions || 0,
+      priority: result.priority,
+      optimizations: result.optimizations || [],
+      error: result.error,
+      generated_at: result.generated_at || new Date().toISOString()
+    };
+    // Try to find existing
+    const { data: existing } = await supabase
+      .from('syte_suite_aeo_results')
+      .select('id')
+      .eq('client_id', result.client_id)
+      .eq('url', result.url)
+      .limit(1);
+    if (existing?.length > 0) {
+      await supabase.from('syte_suite_aeo_results').update(row).eq('id', existing[0].id);
+    } else {
+      await supabase.from('syte_suite_aeo_results').insert(row);
+    }
+  }
+}
+
+export async function loadAeoResults() {
+  if (supabase) {
+    const { data, error } = await supabase
+      .from('syte_suite_aeo_results')
+      .select('*')
+      .order('generated_at', { ascending: false });
+    if (!error && data?.length > 0) {
+      // Convert to the keyed object format the UI expects
+      const obj = {};
+      for (const r of data) {
+        obj[r.client_id + '::' + r.url] = r;
+      }
+      localStorage.setItem(AEO_RESULTS_KEY, JSON.stringify(obj));
+      return obj;
+    }
+  }
+  try { return JSON.parse(localStorage.getItem(AEO_RESULTS_KEY) || '{}'); } catch { return {}; }
+}
+

@@ -30,7 +30,7 @@ const SERVICE_FILTER = {
   clients:   null,  // Master view — show everyone
   content:   'content',
   aeo:       'aeo',
-  reports:   'reporting',
+  reports:   null,  // Reports available for all clients — generate at any stage
   technical: null,  // Technical SEO is the source of truth — always all clients
   cms:       null
 };

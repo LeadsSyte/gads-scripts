@@ -7,7 +7,12 @@ import { buildMicrositeHtml, downloadMicrosite } from './microsite.js';
 
 const ACCENT = '#a78bfa';
 
-function thisMonth() { return new Date().toISOString().slice(0, 7); }
+// Reports always default to the PREVIOUS month (you're reporting on last month's work).
+function previousMonth() {
+  const d = new Date();
+  d.setMonth(d.getMonth() - 1);
+  return d.toISOString().slice(0, 7);
+}
 function monthLabel(m) {
   if (!m) return '';
   const [y, mo] = m.split('-');
@@ -31,7 +36,7 @@ function parseAliceOutput(text) {
 
 export default function MonthlyReport() {
   const client = useClients(s => s.current());
-  const [month, setMonth] = useState(thisMonth());
+  const [month, setMonth] = useState(previousMonth());
   const [form, setForm] = useState({});
   const [algContext, setAlgContext] = useState('');
   const [aeoSnap, setAeoSnap] = useState(null);

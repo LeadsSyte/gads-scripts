@@ -7,7 +7,7 @@ import MarkImplementedButton from '../../components/MarkImplementedButton.jsx';
 import PipelineView from '../../components/PipelineView.jsx';
 import { technicalPipelineStatus } from '../../lib/pipelineStatus.js';
 import { getAudit, syncWebceoClients } from './webceo.js';
-import { upsertClient, listAllImplementations } from '../../lib/supabase.js';
+import { upsertClient, listAllImplementations, saveTseoTasks, loadTseoTasks, updateTseoTask } from '../../lib/supabase.js';
 import { querySearchAnalytics } from './gsc.js';
 import { ensureToken, SCOPES, getToken, clearToken } from './googleAuth.js';
 
@@ -189,7 +189,7 @@ export default function TechnicalSEO({ sub }) {
   const clients = useClients(s => s.clients);
   const client = useClients(s => s.current());
   const reloadClients = useClients(s => s.load);
-  const [tasks, setTasks] = useState(loadTasks());
+  const [tasks, setTasks] = useState([]);
   const [team, setTeam] = useState(loadTeam());
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
@@ -197,7 +197,16 @@ export default function TechnicalSEO({ sub }) {
   const [syncResult, setSyncResult] = useState(null);
   const [customMethod, setCustomMethod] = useState('');
 
-  useEffect(() => { saveTasks(tasks); }, [tasks]);
+  // Load tasks from Supabase on mount (falls back to localStorage).
+  useEffect(() => {
+    loadTseoTasks().then(t => setTasks(t)).catch(() => setTasks(loadTasks()));
+  }, []);
+
+  // Persist tasks to both Supabase + localStorage on every change.
+  useEffect(() => {
+    saveTasks(tasks); // localStorage (immediate, always works)
+    if (tasks.length > 0) saveTseoTasks(tasks).catch(() => {}); // Supabase (async, best-effort)
+  }, [tasks]);
   useEffect(() => { saveTeam(team); }, [team]);
 
   const clientTasks = useMemo(
@@ -297,6 +306,7 @@ export default function TechnicalSEO({ sub }) {
 
   function updateTask(id, patch) {
     setTasks(prev => prev.map(t => t.id === id ? { ...t, ...patch } : t));
+    updateTseoTask(id, patch).catch(() => {}); // persist to Supabase
   }
 
   async function handleVerify(task) {

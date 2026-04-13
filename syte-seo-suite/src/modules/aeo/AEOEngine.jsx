@@ -8,7 +8,7 @@ import ClientCardsGrid from '../../components/ClientCardsGrid.jsx';
 import MarkImplementedButton from '../../components/MarkImplementedButton.jsx';
 import PipelineView from '../../components/PipelineView.jsx';
 import { aeoPipelineStatus } from '../../lib/pipelineStatus.js';
-import { listAllImplementations } from '../../lib/supabase.js';
+import { listAllImplementations, saveAeoResult, loadAeoResults as loadAeoResultsFromDb } from '../../lib/supabase.js';
 import { AEO_SYSTEM, AEO_TYPES } from './aeoTypes.js';
 import { fetchSitemapUrls } from './sitemap.js';
 import { listAccountSummaries, runReport } from './ga4.js';
@@ -138,6 +138,15 @@ export default function AEOEngine({ sub }) {
   const [progress, setProgress] = useState('');
   const [err, setErr] = useState('');
 
+  // Load from Supabase on mount (merges with localStorage).
+  useEffect(() => {
+    loadAeoResultsFromDb().then(dbResults => {
+      if (Object.keys(dbResults).length > 0) {
+        setResults(prev => ({ ...prev, ...dbResults }));
+      }
+    }).catch(() => {});
+  }, []);
+
   useEffect(() => { saveResults(results); }, [results]);
   useEffect(() => { saveHistory(history); }, [history]);
 
@@ -255,13 +264,16 @@ export default function AEOEngine({ sub }) {
         );
         batch.forEach((t, j) => {
           const key = c.id + '::' + t.url;
-          newResults[key] = {
+          const row = {
             url: t.url, path: t.path, client_id: c.id,
             sessions: t.sessions, priority: t.priority,
             generated_at: new Date().toISOString(),
             optimizations: Array.isArray(batchResults[j]) ? batchResults[j] : [],
             error: batchResults[j]?.error || null
           };
+          newResults[key] = row;
+          // Persist each result to Supabase immediately
+          saveAeoResult(row).catch(() => {});
         });
         setResults({ ...newResults });
       }
@@ -328,13 +340,15 @@ export default function AEOEngine({ sub }) {
         );
         batch.forEach((u, j) => {
           const key = client.id + '::' + u;
-          newResults[key] = {
+          const row = {
             url: u,
             client_id: client.id,
             generated_at: new Date().toISOString(),
             optimizations: Array.isArray(batchResults[j]) ? batchResults[j] : [],
             error: batchResults[j]?.error || null
           };
+          newResults[key] = row;
+          saveAeoResult(row).catch(() => {});
         });
         setResults({ ...newResults });
       }
