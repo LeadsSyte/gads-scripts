@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Syte Campaign Creator</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect rx='20' width='100' height='100' fill='%23e67e22'/><text x='50' y='72' font-size='60' text-anchor='middle' fill='white' font-weight='bold'>S</text></svg>"/>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Playfair+Display:wght@700&display=swap" rel="stylesheet"/>
+  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+  <style>
+    *{margin:0;padding:0;box-sizing:border-box}
+    body{font-family:'DM Sans',sans-serif;background:#f7f8fb;min-height:100vh;display:flex;flex-direction:column}
+    #root{flex:1}
+    @keyframes spin{to{transform:rotate(360deg)}}
+    input,textarea,select,button{font-family:'DM Sans',sans-serif}
+    ::selection{background:#e67e22;color:white}
+    .svc-chip{display:flex;align-items:center;gap:8px;padding:10px 14px;border-radius:8px;border:2px solid #e0e5ec;background:#fff;cursor:pointer;transition:all 0.15s;font-size:13px;font-weight:500;color:#3a4a5a;user-select:none}
+    .svc-chip:hover{border-color:#e67e22;background:#fff8f3}
+    .svc-chip.selected{border-color:#e67e22;background:#fff3e8;color:#b45309;font-weight:600}
+    .svc-chip .check{width:18px;height:18px;border-radius:4px;border:2px solid #d0d5dd;background:#fff;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:all 0.15s}
+    .svc-chip.selected .check{background:#e67e22;border-color:#e67e22;color:#fff;font-size:11px;font-weight:700}
+    .ctype-card{border:2px solid #e0e5ec;border-radius:12px;padding:16px;cursor:pointer;transition:all 0.15s;background:#fff;user-select:none}
+    .ctype-card:hover{border-color:#e67e22;background:#fff8f3}
+    .ctype-card.selected{border-color:#e67e22;background:#fff3e8}
+    .ctype-card.always-on{opacity:1;cursor:default}
+    .budget-tag{display:inline-block;font-size:10px;font-weight:700;padding:2px 8px;border-radius:10px}
+    .budget-core{background:#dbeafe;color:#1e40af}
+    .budget-recommended{background:#dcfce7;color:#166534}
+    .budget-optional{background:#f3e8ff;color:#6b21a8}
+    .camp-section{border-radius:12px;overflow:hidden;border:1px solid #e5e8ee;margin-bottom:24px}
+    .camp-section-hdr{padding:14px 20px;display:flex;align-items:center;justify-content:space-between;cursor:pointer;user-select:none}
+    .camp-section-body{padding:20px;border-top:1px solid #f0f2f5}
+    .match-exact{background:#edf4ff;color:#1a4b8c;border:1px solid #b8d4fe}
+    .match-phrase{background:#f0fdf4;color:#166534;border:1px solid #bbf7d0}
+  </style>
+</head>
+<body>
+<div id="root">
+  <div style="display:flex;align-items:center;justify-content:center;min-height:100vh;flex-direction:column;gap:16px">
+    <div style="width:48px;height:48px;border:4px solid #e5e8ee;border-top-color:#e67e22;border-radius:50%;animation:spin 0.8s linear infinite"></div>
+    <div style="font-size:15px;font-weight:600;color:#3a4a5a">Loading Syte Campaign Creator...</div>
+    <div style="font-size:12px;color:#9aa5b0">Compiling JSX — this takes a few seconds on first load</div>
+  </div>
+</div>
+<script type="text/babel" data-type="module">
+// ═══════════════════════════════════════════════════════════════════
+// Syte Campaign Creator v6.1
+// Full source: place the complete app.jsx content between these tags
+// The app source is loaded via the external app.jsx file below
+// ═══════════════════════════════════════════════════════════════════
+</script>
+<script>
+// Load the app source dynamically to keep index.html manageable
+fetch('app.jsx')
+  .then(r => r.text())
+  .then(code => {
+    const script = document.createElement('script');
+    script.type = 'text/babel';
+    script.textContent = code;
+    document.body.appendChild(script);
+    // Trigger Babel to process the new script
+    if (window.Babel) {
+      const scripts = document.querySelectorAll('script[type="text/babel"]:not([data-processed])');
+      scripts.forEach(s => {
+        if (s.textContent.trim().length > 100) {
+          try {
+            const transformed = Babel.transform(s.textContent, { presets: ['react'] }).code;
+            const exec = document.createElement('script');
+            exec.textContent = transformed;
+            document.body.appendChild(exec);
+            s.setAttribute('data-processed', 'true');
+          } catch(e) { console.error('Babel transform failed:', e); }
+        }
+      });
+    }
+  })
+  .catch(e => {
+    document.getElementById('root').innerHTML = '<div style="padding:40px;text-align:center;color:#991b1b"><h2>Failed to load app</h2><p>' + e.message + '</p><p>Make sure app.jsx exists in the same directory.</p></div>';
+  });
+</script>
+<footer style="text-align:center;padding:14px;font-size:12px;color:#8a95a5;border-top:1px solid #e5e8ee;background:#fff;margin-top:auto">
+  &copy; <span id="copy-year"></span> <a href="https://syte.co.za" target="_blank" rel="noopener noreferrer" style="color:#e67e22;text-decoration:none;font-weight:600">Syte.co.za</a>. All rights reserved.
+</footer>
+<script>document.getElementById('copy-year').textContent=new Date().getFullYear();</script>
+</body>
+</html>

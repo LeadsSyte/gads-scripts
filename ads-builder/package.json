@@ -1,0 +1,13 @@
+{
+  "name": "syte-campaign-creator",
+  "version": "6.1.0",
+  "private": true,
+  "description": "Syte Campaign Creator — Google Ads campaign builder with AI-powered copy generation and keyword volume validation",
+  "scripts": {
+    "dev": "npx netlify dev",
+    "build": "echo 'Static site — no build step required'"
+  },
+  "dependencies": {
+    "cheerio": "^1.0.0"
+  }
+}
