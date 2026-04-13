@@ -4,6 +4,9 @@ import { claudeComplete, extractJSON } from '../../lib/anthropic.js';
 import { listAeoSnapshots, logReportSent } from '../../lib/supabase.js';
 import { ALICE_SYSTEM, MICROSITE_SYSTEM, QA_SYSTEM, buildAlicePayload, getWorkSummary } from './reportPrompts.js';
 import { buildMicrositeHtml, downloadMicrosite } from './microsite.js';
+import { runReport } from '../aeo/ga4.js';
+import { querySearchAnalytics } from '../technical/gsc.js';
+import { ensureToken, SCOPES, getToken } from '../technical/googleAuth.js';
 
 const ACCENT = '#a78bfa';
 
@@ -41,27 +44,27 @@ export default function MonthlyReport() {
   const [algContext, setAlgContext] = useState('');
   const [aeoSnap, setAeoSnap] = useState(null);
   const [workSummary, setWorkSummary] = useState(null);
-  const [phase, setPhase] = useState('idle'); // idle | alice | micro | qa | review
+  const [phase, setPhase] = useState('idle'); // idle | fetching | alice | micro | qa | review
   const [err, setErr] = useState('');
+  const [fetchStatus, setFetchStatus] = useState('');
   const [email, setEmail] = useState({ subject: '', body: '' });
   const [microJson, setMicroJson] = useState(null);
   const [qa, setQa] = useState(null);
   const [sent, setSent] = useState(false);
   const [showMicroFull, setShowMicroFull] = useState(false);
 
+  // Auto-fetch GA4 + GSC data when client or month changes.
   useEffect(() => {
     setEmail({ subject: '', body: '' });
-    setMicroJson(null);
-    setQa(null);
-    setSent(false);
-    setPhase('idle');
-    setForm({
-      hasSeo: client?.does_content !== false || client?.does_technical !== false,
-      hasAeo: client?.does_aeo !== false,
-      industry: client?.industry || ''
-    });
-    if (client?.id) setWorkSummary(getWorkSummary(client.id, month));
-  }, [client?.id]);
+    setMicroJson(null); setQa(null); setSent(false); setPhase('idle'); setErr('');
+    const hasSeo = client?.does_content !== false || client?.does_technical !== false;
+    const hasAeo = client?.does_aeo !== false;
+    setForm({ hasSeo, hasAeo, industry: client?.industry || '' });
+    if (client?.id) {
+      setWorkSummary(getWorkSummary(client.id, month));
+      autoFetchMetrics(client, month);
+    }
+  }, [client?.id, month]);
 
   useEffect(() => {
     if (!client) { setAeoSnap(null); setWorkSummary(null); return; }
@@ -69,8 +72,181 @@ export default function MonthlyReport() {
       const match = rows.find(r => r.month === month) || null;
       setAeoSnap(match);
     }).catch(() => {});
-    setWorkSummary(getWorkSummary(client.id, month));
   }, [client?.id, month]);
+
+  // Pull GA4 traffic + GSC search data automatically.
+  async function autoFetchMetrics(c, m) {
+    if (!c) return;
+    setFetchStatus('Checking Google connection…');
+
+    // Calculate date ranges for the report month.
+    const [year, mo] = m.split('-').map(Number);
+    const thisStart = new Date(year, mo - 1, 1);
+    const thisEnd = new Date(year, mo, 0); // last day of month
+    const lastStart = new Date(year, mo - 2, 1);
+    const lastEnd = new Date(year, mo - 1, 0);
+    // Same month last year
+    const yoyStart = new Date(year - 1, mo - 1, 1);
+    const yoyEnd = new Date(year - 1, mo, 0);
+
+    const token = getToken();
+    if (!token?.access_token) {
+      setFetchStatus('Google not connected — enter metrics manually or connect in Settings');
+      return;
+    }
+
+    // GA4 traffic data
+    if (c.ga4_property_id) {
+      setFetchStatus('Pulling GA4 traffic data…');
+      try {
+        // This month
+        const thisMonth = await fetchGA4Month(c.ga4_property_id, thisStart, thisEnd);
+        // Last month
+        const lastMonth = await fetchGA4Month(c.ga4_property_id, lastStart, lastEnd);
+        // Same month last year
+        let yoyMonth = null;
+        try { yoyMonth = await fetchGA4Month(c.ga4_property_id, yoyStart, yoyEnd); } catch {}
+
+        setForm(prev => ({
+          ...prev,
+          seoUsersThis: thisMonth.totalUsers,
+          seoUsersLast: lastMonth.totalUsers,
+          seoUsersYoy: yoyMonth?.totalUsers || '',
+          seoOrganicThis: thisMonth.organicUsers,
+          seoOrganicLast: lastMonth.organicUsers,
+          seoConvThis: thisMonth.conversions,
+          seoConvLast: lastMonth.conversions,
+          seoSessThis: thisMonth.sessions,
+          seoSessLast: lastMonth.sessions
+        }));
+        setFetchStatus('GA4 ✓');
+      } catch (e) {
+        setFetchStatus('GA4 failed: ' + e.message.slice(0, 60));
+      }
+    }
+
+    // GSC search data
+    if (c.gsc_property) {
+      setFetchStatus(prev => (prev.includes('✓') ? prev + ' · ' : '') + 'Pulling GSC data…');
+      try {
+        const daysDiff = Math.round((thisEnd - thisStart) / 86400000) + 1;
+        const thisDaysAgo = Math.round((Date.now() - thisStart) / 86400000);
+
+        // This month's GSC data
+        const gscThis = await querySearchAnalytics(c.gsc_property, {
+          days: daysDiff,
+          dimensions: ['page'],
+          rowLimit: 50
+        });
+
+        const totalClicks = (gscThis.rows || []).reduce((s, r) => s + (r.clicks || 0), 0);
+        const totalImpressions = (gscThis.rows || []).reduce((s, r) => s + (r.impressions || 0), 0);
+        const avgCtr = totalImpressions > 0 ? ((totalClicks / totalImpressions) * 100).toFixed(1) + '%' : '—';
+        const avgPos = (gscThis.rows || []).length > 0
+          ? ((gscThis.rows || []).reduce((s, r) => s + (r.position || 0), 0) / gscThis.rows.length).toFixed(1)
+          : '—';
+
+        // Top pages
+        const topPages = (gscThis.rows || [])
+          .sort((a, b) => (b.clicks || 0) - (a.clicks || 0))
+          .slice(0, 10)
+          .map(r => {
+            const path = r.keys?.[0] || '';
+            try { return new URL(path).pathname + ' — ' + (r.clicks || 0) + ' clicks'; } catch { return path + ' — ' + (r.clicks || 0) + ' clicks'; }
+          })
+          .join('\n');
+
+        // Top queries
+        const gscQueries = await querySearchAnalytics(c.gsc_property, {
+          days: daysDiff,
+          dimensions: ['query'],
+          rowLimit: 20
+        });
+        const topQueries = (gscQueries.rows || [])
+          .sort((a, b) => (b.impressions || 0) - (a.impressions || 0))
+          .slice(0, 10)
+          .map(r => r.keys?.[0] + ' — ' + (r.clicks || 0) + ' clicks, pos ' + (r.position || 0).toFixed(1))
+          .join('\n');
+
+        setForm(prev => ({
+          ...prev,
+          gscClicksThis: String(totalClicks),
+          gscImpressionsThis: String(totalImpressions),
+          gscCtrThis: avgCtr,
+          gscPosThis: avgPos,
+          topPages,
+          topQueries
+        }));
+        setFetchStatus(prev => prev.replace('Pulling GSC data…', 'GSC ✓'));
+      } catch (e) {
+        setFetchStatus(prev => prev.replace('Pulling GSC data…', 'GSC failed: ' + e.message.slice(0, 40)));
+      }
+    }
+
+    if (!c.ga4_property_id && !c.gsc_property) {
+      setFetchStatus('No GA4 or GSC configured — enter metrics manually or set up in client settings');
+    }
+  }
+
+  // Helper to fetch GA4 metrics for a specific date range.
+  async function fetchGA4Month(propertyId, start, end) {
+    const res = await fetch(
+      'https://analyticsdata.googleapis.com/v1beta/properties/' + propertyId + ':runReport',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer ' + getToken().access_token,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          dateRanges: [{
+            startDate: start.toISOString().slice(0, 10),
+            endDate: end.toISOString().slice(0, 10)
+          }],
+          metrics: [
+            { name: 'totalUsers' },
+            { name: 'sessions' },
+            { name: 'conversions' }
+          ],
+          dimensionFilter: {
+            filter: {
+              fieldName: 'sessionDefaultChannelGroup',
+              stringFilter: { matchType: 'EXACT', value: 'Organic Search' }
+            }
+          }
+        })
+      }
+    );
+    if (!res.ok) throw new Error('GA4 ' + res.status);
+    const data = await res.json();
+    const row = data.rows?.[0];
+    // Also get total (all channels) users
+    const totalRes = await fetch(
+      'https://analyticsdata.googleapis.com/v1beta/properties/' + propertyId + ':runReport',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer ' + getToken().access_token,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          dateRanges: [{
+            startDate: start.toISOString().slice(0, 10),
+            endDate: end.toISOString().slice(0, 10)
+          }],
+          metrics: [{ name: 'totalUsers' }]
+        })
+      }
+    );
+    const totalData = totalRes.ok ? await totalRes.json() : null;
+
+    return {
+      totalUsers: totalData?.rows?.[0]?.metricValues?.[0]?.value || '—',
+      organicUsers: row?.metricValues?.[0]?.value || '0',
+      sessions: row?.metricValues?.[1]?.value || '0',
+      conversions: row?.metricValues?.[2]?.value || '0'
+    };
+  }
 
   const update = (k, v) => setForm(prev => ({ ...prev, [k]: v }));
 
@@ -208,10 +384,27 @@ export default function MonthlyReport() {
         </div>
       </div>
 
-      {/* Step 2: SEO data */}
+      {/* Data fetch status */}
+      {fetchStatus && (
+        <div className="card" style={{ marginBottom: 14, padding: '10px 16px', borderColor: fetchStatus.includes('✓') ? 'rgba(52,211,153,.3)' : 'var(--border)' }}>
+          <div className="row" style={{ gap: 8, fontSize: 12 }}>
+            {fetchStatus.includes('Pulling') && <span className="spinner" style={{ width: 12, height: 12, borderWidth: 2 }} />}
+            <span style={{ color: fetchStatus.includes('✓') ? 'var(--green)' : fetchStatus.includes('failed') ? 'var(--orange)' : 'var(--text-muted)' }}>
+              {fetchStatus}
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* Step 2: SEO data (auto-fetched, editable) */}
       {form.hasSeo && (
         <div className="card" style={{ marginBottom: 14 }}>
-          <strong>SEO Data</strong>
+          <div className="row" style={{ justifyContent: 'space-between' }}>
+            <strong>SEO Data</strong>
+            {(form.seoUsersThis || form.gscClicksThis) && (
+              <span className="badge green" style={{ fontSize: 9 }}>Auto-populated from GA4 + GSC</span>
+            )}
+          </div>
           <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--text-dim)', margin: '12px 0 6px' }}>Traffic</div>
           <div className="grid-3">
             <div><label>Total users (this)</label><input value={form.seoUsersThis || ''} onChange={e => update('seoUsersThis', e.target.value)} /></div>
