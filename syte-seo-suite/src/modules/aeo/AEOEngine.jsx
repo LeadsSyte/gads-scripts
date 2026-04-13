@@ -25,22 +25,39 @@ function loadHistory() { try { return JSON.parse(localStorage.getItem(HISTORY_KE
 function saveHistory(h) { localStorage.setItem(HISTORY_KEY, JSON.stringify(h.slice(0, 100))); }
 
 async function generateForPage(pageUrl, client) {
+  // Try to fetch the actual page HTML for analysis.
   let pageHtml = '';
-  try { pageHtml = (await corsFetchText(pageUrl)).slice(0, 30000); } catch {}
+  let pageTitle = '';
+  try {
+    pageHtml = (await corsFetchText(pageUrl)).slice(0, 30000);
+    // Extract the <title> tag for context.
+    const titleMatch = pageHtml.match(/<title[^>]*>([^<]+)<\/title>/i);
+    if (titleMatch) pageTitle = titleMatch[1].trim();
+  } catch {
+    // CORS blocked — that's fine, Claude will work from the URL alone.
+  }
+
+  // Extract the page slug for topic inference when HTML isn't available.
+  let slug = '';
+  try { slug = new URL(pageUrl).pathname.split('/').filter(Boolean).pop() || ''; } catch {}
+  const inferredTopic = pageTitle || slug.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 
   const text = await claudeComplete({
     system: AEO_SYSTEM,
     messages: [{
       role: 'user',
-      content: `Page URL: ${pageUrl}
+      content: `Generate AEO optimizations for this page. Focus on CONTENT optimizations first (answer blocks, FAQs, key takeaways, snippet paragraphs), then schema.
+
+Page URL: ${pageUrl}
+Page topic: ${inferredTopic}
 Client: ${client?.name || ''}
 Industry: ${client?.industry || ''}
 Location: ${client?.location || ''}
-Organization: ${client?.org_name || ''}
+Organization: ${client?.org_name || client?.name || ''}
 Author: ${client?.author || ''} ${client?.author_creds ? '(' + client.author_creds + ')' : ''}
+${client?.context ? 'Business context: ' + client.context : ''}
 
-Page HTML (truncated):
-${pageHtml}`
+${pageHtml ? 'Page HTML (truncated — analyze what content optimizations are MISSING):\n' + pageHtml : 'Page HTML not available (CORS blocked) — generate optimizations based on the URL, topic, and client context. Focus on content that would make this page citable by AI engines.'}`
     }],
     max_tokens: 6000,
     temperature: 0.4
@@ -193,13 +210,28 @@ export default function AEOEngine({ sub }) {
 
       // STEP 1: Fetch sitemap (with pasted XML fallback)
       setProgress('Step 1/4 — Fetching sitemap for ' + c.name + '…');
-      let sitemapUrls = await fetchSitemapUrls(c.sitemap_url, c.sitemap_raw).catch(() => []);
-      if (!sitemapUrls.length && c.url) {
-        // Last resort: use the homepage
-        sitemapUrls = [c.url.replace(/\/$/, '') + '/'];
-        setProgress('No sitemap found — using homepage URL only');
+      let sitemapUrls = [];
+      try {
+        sitemapUrls = await fetchSitemapUrls(c.sitemap_url, c.sitemap_raw);
+      } catch (e) {
+        console.warn('[AEO] Sitemap fetch error:', e.message);
       }
-      if (!sitemapUrls.length) {
+
+      if (sitemapUrls.length > 0) {
+        setProgress(`Step 1/4 — ${sitemapUrls.length} pages from sitemap ✓`);
+      } else if (c.url) {
+        // Sitemap failed — generate a list from the client URL + common page patterns.
+        // This ensures we optimize more than just the homepage.
+        const base = c.url.replace(/\/$/, '');
+        sitemapUrls = [
+          base + '/',
+          base + '/about/',
+          base + '/services/',
+          base + '/contact/',
+          base + '/blog/'
+        ];
+        setProgress('Step 1/4 — Sitemap unavailable, using ' + sitemapUrls.length + ' inferred pages');
+      } else {
         setErr(c.name + ' has no sitemap URL, pasted XML, or website URL.');
         setBusy(false);
         return;
