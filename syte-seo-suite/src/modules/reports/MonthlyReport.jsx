@@ -89,8 +89,19 @@ export default function MonthlyReport() {
     const yoyStart = new Date(year - 1, mo - 1, 1);
     const yoyEnd = new Date(year - 1, mo, 0);
 
-    const token = getToken();
-    if (!token?.access_token) {
+    // Try to get a valid Google token. If one exists it's reused silently;
+    // if expired or missing, ensureToken will prompt the user to sign in.
+    let token = getToken();
+    if (!token?.access_token && (c.ga4_property_id || c.gsc_property)) {
+      setFetchStatus('Connecting to Google — please sign in if prompted…');
+      try {
+        token = await ensureToken([SCOPES.ga4, SCOPES.gsc]);
+      } catch (e) {
+        setFetchStatus('Google auth failed — enter metrics manually or try again');
+        return;
+      }
+    }
+    if (!token?.access_token && (c.ga4_property_id || c.gsc_property)) {
       setFetchStatus('Google not connected — enter metrics manually or connect in Settings');
       return;
     }
