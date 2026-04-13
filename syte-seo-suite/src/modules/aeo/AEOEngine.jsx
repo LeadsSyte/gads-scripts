@@ -8,7 +8,7 @@ import ClientCardsGrid from '../../components/ClientCardsGrid.jsx';
 import MarkImplementedButton from '../../components/MarkImplementedButton.jsx';
 import PipelineView from '../../components/PipelineView.jsx';
 import { aeoPipelineStatus } from '../../lib/pipelineStatus.js';
-import { listAllImplementations, saveAeoResult, loadAeoResults as loadAeoResultsFromDb } from '../../lib/supabase.js';
+import { listAllImplementations, saveAeoResult, loadAeoResults as loadAeoResultsFromDb, deleteAeoResult } from '../../lib/supabase.js';
 import { AEO_SYSTEM, AEO_TYPES } from './aeoTypes.js';
 import { fetchSitemapUrls } from './sitemap.js';
 import { listAccountSummaries, runReport } from './ga4.js';
@@ -75,7 +75,7 @@ const OPT_TYPE_COLORS = {
   structure: { bg: 'rgba(255,159,67,.12)', color: 'var(--orange)', border: 'rgba(255,159,67,.2)' }
 };
 
-function OptPageCard({ result: r }) {
+function OptPageCard({ result: r, onDelete }) {
   const [open, setOpen] = React.useState(false);
   const opts = Array.isArray(r.optimizations) ? r.optimizations : [];
   const copyAll = () => {
@@ -85,22 +85,32 @@ function OptPageCard({ result: r }) {
     navigator.clipboard.writeText(text).catch(() => {});
   };
 
+  // Show a readable page path: /about-us/ instead of full URL
+  const displayUrl = r.url || 'Page';
+  let pagePath = '';
+  try { pagePath = new URL(displayUrl).pathname; } catch { pagePath = displayUrl; }
+  const domain = r.url ? r.url.replace(/^https?:\/\//, '').split('/')[0] : '';
+
   return (
     <div style={{ borderBottom: '1px solid var(--border)' }}>
       <div
-        style={{ padding: '10px 14px', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
+        style={{ padding: '10px 14px', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}
         onClick={() => setOpen(v => !v)}
       >
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontWeight: 600, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {r.url?.replace(/^https?:\/\//, '').replace(/\/$/, '') || 'Page'}
+          <div style={{ fontWeight: 600, fontSize: 13 }}>
+            {pagePath === '/' ? domain + ' (homepage)' : pagePath}
           </div>
+          <div className="muted" style={{ fontSize: 10, marginTop: 1 }}>{displayUrl}</div>
         </div>
-        <div className="row" style={{ gap: 8, flexShrink: 0 }}>
+        <div className="row" style={{ gap: 6, flexShrink: 0 }}>
           <span style={{ fontSize: 11, color: 'var(--teal)', background: 'rgba(0,212,170,.08)', padding: '2px 8px', borderRadius: 12 }}>
-            {opts.length} optimizations
+            {opts.length} opts
           </span>
           <button onClick={(e) => { e.stopPropagation(); copyAll(); }} style={{ fontSize: 10, padding: '2px 8px' }}>Copy All</button>
+          {onDelete && (
+            <button onClick={(e) => { e.stopPropagation(); onDelete(); }} style={{ fontSize: 10, padding: '2px 8px', color: 'var(--red)', borderColor: 'rgba(255,77,77,.3)' }}>Delete</button>
+          )}
           <span className="muted" style={{ fontSize: 9 }}>{open ? '▼' : '▶'}</span>
         </div>
       </div>
@@ -476,6 +486,17 @@ export default function AEOEngine({ sub }) {
       .sort((a, b) => (b.optimizations?.length || 0) - (a.optimizations?.length || 0));
   }
 
+  function deleteResult(url, clientId) {
+    const cid = clientId || client?.id;
+    const key = cid + '::' + url;
+    setResults(prev => {
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+    deleteAeoResult(cid, url).catch(() => {});
+  }
+
   // -------- Subviews --------
   if (sub === 'Run Optimizations') {
     return (
@@ -523,7 +544,7 @@ export default function AEOEngine({ sub }) {
                   {totalOpts} optimizations across {cResults.length} page{cResults.length > 1 ? 's' : ''}
                 </div>
                 {cResults.slice(0, 5).map(r => (
-                  <OptPageCard key={r.url} result={r} client={c} />
+                  <OptPageCard key={r.url} result={r} onDelete={() => deleteResult(r.url, c.id)} />
                 ))}
                 {cResults.length > 5 && (
                   <div className="muted" style={{ padding: '8px 14px', fontSize: 11 }}>
@@ -577,7 +598,7 @@ export default function AEOEngine({ sub }) {
         )}
         {mine.map(r => (
           <div className="card" key={r.url} style={{ marginBottom: 10, padding: 0, overflow: 'hidden' }}>
-            <OptPageCard result={r} />
+            <OptPageCard result={r} onDelete={() => deleteResult(r.url, r.client_id)} />
           </div>
         ))}
       </div>

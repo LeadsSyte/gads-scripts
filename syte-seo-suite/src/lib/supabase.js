@@ -437,3 +437,17 @@ export async function loadAeoResults() {
   try { return JSON.parse(localStorage.getItem(AEO_RESULTS_KEY) || '{}'); } catch { return {}; }
 }
 
+export async function deleteAeoResult(clientId, url) {
+  if (supabase) {
+    await supabase.from('syte_suite_aeo_results')
+      .delete().eq('client_id', clientId).eq('url', url);
+  }
+  // Also clean localStorage
+  try {
+    const obj = JSON.parse(localStorage.getItem(AEO_RESULTS_KEY) || '{}');
+    const key = clientId + '::' + url;
+    delete obj[key];
+    localStorage.setItem(AEO_RESULTS_KEY, JSON.stringify(obj));
+  } catch {}
+}
+
