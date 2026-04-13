@@ -165,11 +165,32 @@ export default function AEOEngine({ sub }) {
   }
 
   // Full AEO pipeline — ported from old Syte AEO Engine v2.
-  // Steps: 1) Fetch sitemap  2) Pull GA4 page data  3) Prioritize  4) Batch optimize
+  // Steps: 0) Pre-check auth  1) Fetch sitemap  2) Pull GA4 data  3) Prioritize  4) Batch optimize
   async function runForClient(c) {
     if (!c) return;
     setBusy(true); setErr(''); setProgress('');
     try {
+      // STEP 0: Pre-check Google credentials if client has GA4.
+      // Do this BEFORE the pipeline so the OAuth popup appears up-front,
+      // not mid-flow where it can hang or confuse the user.
+      let ga4Ready = false;
+      if (c.ga4_property_id) {
+        const existingToken = getToken();
+        if (!existingToken || !existingToken.access_token) {
+          setProgress('Connecting to Google Analytics — please sign in…');
+          try {
+            await ensureToken([SCOPES.ga4]);
+            ga4Ready = true;
+            setProgress('Google connected ✓');
+          } catch (e) {
+            setProgress('GA4 auth skipped — will use sitemap order instead');
+            ga4Ready = false;
+          }
+        } else {
+          ga4Ready = true;
+        }
+      }
+
       // STEP 1: Fetch sitemap (with pasted XML fallback)
       setProgress('Step 1/4 — Fetching sitemap for ' + c.name + '…');
       let sitemapUrls = await fetchSitemapUrls(c.sitemap_url, c.sitemap_raw).catch(() => []);
@@ -185,20 +206,16 @@ export default function AEOEngine({ sub }) {
       }
       setProgress(`Step 1/4 — ${sitemapUrls.length} pages from sitemap ✓`);
 
-      // STEP 2: Pull GA4 page data for prioritization (if available)
+      // STEP 2: Pull GA4 page data for prioritization (only if auth passed in Step 0)
       let ga4Rows = [];
-      if (c.ga4_property_id) {
+      if (c.ga4_property_id && ga4Ready) {
         setProgress('Step 2/4 — Pulling GA4 data for ' + c.name + '…');
         try {
-          // Timeout the entire GA4 flow at 15 seconds — if the OAuth popup
-          // opens and the user doesn't interact, or the API hangs, we skip
-          // gracefully rather than blocking the whole pipeline.
-          const ga4Promise = (async () => {
-            await ensureToken([SCOPES.ga4]);
-            return runReport(c.ga4_property_id, 30);
-          })();
+          // Token is already valid from Step 0, so this won't trigger a popup.
+          // Still add a timeout in case the API itself is slow.
+          const ga4Promise = runReport(c.ga4_property_id, 30);
           const timeout = new Promise((_, reject) =>
-            setTimeout(() => reject(new Error('GA4 timed out after 15s')), 15000)
+            setTimeout(() => reject(new Error('GA4 API timed out after 20s')), 20000)
           );
           const report = await Promise.race([ga4Promise, timeout]);
           ga4Rows = (report.rows || [])
@@ -211,11 +228,10 @@ export default function AEOEngine({ sub }) {
             .sort((a, b) => b.sessions - a.sessions);
           setProgress(`Step 2/4 — ${ga4Rows.length} pages from GA4 ✓`);
         } catch (e) {
-          // GA4 is optional — skip gracefully and continue with sitemap order
           setProgress('Step 2/4 — GA4 skipped (' + e.message.slice(0, 60) + '), using sitemap order');
         }
       } else {
-        setProgress('Step 2/4 — No GA4 property, using sitemap order');
+        setProgress('Step 2/4 — ' + (c.ga4_property_id ? 'GA4 auth not available' : 'No GA4 property') + ', using sitemap order');
       }
 
       // STEP 3: Prioritize — merge sitemap with GA4, rank by traffic
