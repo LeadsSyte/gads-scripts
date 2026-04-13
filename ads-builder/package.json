@@ -8,6 +8,7 @@
     "build": "echo 'Static site — no build step required'"
   },
   "dependencies": {
-    "cheerio": "^1.0.0"
+    "cheerio": "^1.0.0",
+    "google-ads-api": "^16.0.0"
   }
 }
