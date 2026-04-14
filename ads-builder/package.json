@@ -1,6 +1,6 @@
 {
   "name": "syte-campaign-creator",
-  "version": "6.3.0",
+  "version": "6.4.0",
   "private": true,
   "description": "Syte Campaign Creator — Google Ads campaign builder with AI-powered copy generation and keyword volume validation",
   "scripts": {
