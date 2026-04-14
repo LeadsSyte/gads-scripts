@@ -140,15 +140,16 @@ export async function handler(event) {
 
         if (response && response.results) {
           for (const result of response.results) {
-            const metrics = result.keyword_metrics || {};
-            const vol = Number(metrics.avg_monthly_searches) || 0;
-            const compIdx = Number(metrics.competition_index) || null;
-            // CPC: Google returns in micros (1/1,000,000 of currency unit)
-            const cpcMicros = Number(metrics.average_cpc_micros) || 0;
+            // google-ads-api library returns camelCase; raw API returns snake_case — handle both
+            const metrics = result.keyword_metrics || result.keywordMetrics || {};
+            const vol = Number(metrics.avg_monthly_searches ?? metrics.avgMonthlySearches) || 0;
+            const compIdx = Number(metrics.competition_index ?? metrics.competitionIndex) || null;
+            const cpcMicros = Number(metrics.average_cpc_micros ?? metrics.averageCpcMicros) || 0;
             const cpc = cpcMicros > 0 ? Math.round(cpcMicros / 1000000 * 100) / 100 : null;
+            const keywordText = (result.text || result.keyword || batch[0] || '').toLowerCase();
 
             allResults.push({
-              keyword: (result.text || batch[0] || '').toLowerCase(),
+              keyword: keywordText,
               avgMonthlySearches: vol,
               competition: mapCompetition(metrics.competition),
               competitionIndex: compIdx,
@@ -176,17 +177,17 @@ export async function handler(event) {
           const ideasMap = {};
           if (fallback && fallback.results) {
             for (const idea of fallback.results) {
-              const kw = (idea.text || '').toLowerCase();
-              ideasMap[kw] = idea.keyword_idea_metrics || {};
+              const kw = (idea.text || idea.keyword || '').toLowerCase();
+              ideasMap[kw] = idea.keyword_idea_metrics || idea.keywordIdeaMetrics || {};
             }
           }
 
           for (const kw of batch) {
             const kwLower = kw.toLowerCase();
             const metrics = ideasMap[kwLower] || {};
-            const vol = Number(metrics.avg_monthly_searches) || 0;
-            const compIdx = Number(metrics.competition_index) || null;
-            const cpcMicros = Number(metrics.average_cpc_micros) || 0;
+            const vol = Number(metrics.avg_monthly_searches ?? metrics.avgMonthlySearches) || 0;
+            const compIdx = Number(metrics.competition_index ?? metrics.competitionIndex) || null;
+            const cpcMicros = Number(metrics.average_cpc_micros ?? metrics.averageCpcMicros) || 0;
             const cpc = cpcMicros > 0 ? Math.round(cpcMicros / 1000000 * 100) / 100 : null;
 
             allResults.push({
