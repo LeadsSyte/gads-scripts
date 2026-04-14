@@ -65,6 +65,7 @@ function getClient() {
   const clientSecret = process.env.GOOGLE_ADS_CLIENT_SECRET;
   const refreshToken = process.env.GOOGLE_ADS_REFRESH_TOKEN;
   const customerId = process.env.GOOGLE_ADS_CUSTOMER_ID;
+  const loginCustomerId = process.env.GOOGLE_ADS_LOGIN_CUSTOMER_ID; // optional — required when customer_id is under a manager (MCC)
 
   if (!developerToken || !clientId || !clientSecret || !refreshToken || !customerId) {
     return null;
@@ -76,10 +77,13 @@ function getClient() {
     developer_token: developerToken,
   });
 
-  return client.Customer({
+  const customerOpts = {
     customer_id: customerId.replace(/-/g, ''),
     refresh_token: refreshToken,
-  });
+  };
+  if (loginCustomerId) customerOpts.login_customer_id = loginCustomerId.replace(/-/g, '');
+
+  return client.Customer(customerOpts);
 }
 
 export async function handler(event) {

@@ -1764,6 +1764,12 @@ ${sections}
                       <div style={{height:6,background:'#f0f2f5',borderRadius:3,overflow:'hidden'}}>
                         <div style={{height:'100%',width:healthPct+'%',background:healthPct>=HEALTH_GOOD?'#059669':healthPct>=HEALTH_OK?'#f59e0b':'#dc2626',borderRadius:3}}/>
                       </div>
+                      {checked.length>0&&withVol.length===0&&(
+                        <div style={{marginTop:12,padding:'12px 14px',borderRadius:8,background:'#fef2f2',border:'1px solid #fca5a5',color:'#991b1b',fontSize:12,lineHeight:1.6}}>
+                          <div style={{fontWeight:700,marginBottom:4}}>⚠️ All keywords returned zero volume — likely a developer token issue</div>
+                          <div>Your Google Ads developer token is probably on <b>Test Access</b>. Test tokens always return 0 for every keyword, regardless of real search volume. <b>Fix:</b> go to Google Ads → Tools → API Centre and apply for <b>Basic Access</b> (free, approved in 1–2 business days). Other possible causes: wrong GOOGLE_ADS_CUSTOMER_ID, missing login_customer_id for manager accounts, or an expired refresh token.</div>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
@@ -2183,7 +2189,7 @@ function Hdr({step}){
       <div style={{width:34,height:34,borderRadius:8,background:'linear-gradient(135deg, #e67e22, #f1c40f)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:17,fontWeight:700}}>S</div>
       <div>
         <div style={{fontWeight:700,fontSize:15}}>Syte Campaign Creator</div>
-        <div style={{fontSize:11,opacity:0.5}}>Multi-Campaign · Google Ads API Volume · v6.4</div>
+        <div style={{fontSize:11,opacity:0.5}}>Multi-Campaign · Google Ads API Volume · v6.5</div>
       </div>
       {step!==undefined&&(
         <div style={{marginLeft:'auto',display:'flex',gap:6,alignItems:'center'}}>
@@ -2195,7 +2201,7 @@ function Hdr({step}){
           ))}
         </div>
       )}
-      <div style={{fontSize:11,background:'linear-gradient(135deg, #7c3aed, #a78bfa)',padding:'4px 10px',borderRadius:10,fontWeight:700,marginLeft:8}}>v6.4 ✨</div>
+      <div style={{fontSize:11,background:'linear-gradient(135deg, #7c3aed, #a78bfa)',padding:'4px 10px',borderRadius:10,fontWeight:700,marginLeft:8}}>v6.5 ✨</div>
     </div>
   );
 }

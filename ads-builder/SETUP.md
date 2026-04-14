@@ -28,6 +28,9 @@ ads-builder/
 - `GOOGLE_ADS_CLIENT_SECRET` — OAuth2 client secret from Google Cloud Console
 - `GOOGLE_ADS_REFRESH_TOKEN` — OAuth2 refresh token (generated once via consent flow)
 - `GOOGLE_ADS_CUSTOMER_ID` — Google Ads account ID (e.g. 123-456-7890)
+- `GOOGLE_ADS_LOGIN_CUSTOMER_ID` — (optional) Manager account ID. Required ONLY when `GOOGLE_ADS_CUSTOMER_ID` is a child account under an MCC.
+
+> ⚠️ **All keywords returning 0 volume?** Your developer token is likely on **Test Access**. Test tokens return 0 for every keyword regardless of real search volume. Fix: Google Ads → Tools → API Centre → apply for **Basic Access** (free, 1–2 business days).
 
 ### Google Ads API Setup Guide
 
