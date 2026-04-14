@@ -652,7 +652,7 @@ Return ONLY valid JSON:
   async function enrichAdGroupsWithVolume(adGroups,setMsg,locationCode){
     const allKws=[...new Set(adGroups.flatMap(ag=>(ag.keywords||[]).map(k=>k.text)))];
     if(!allKws.length) return adGroups;
-    setMsg(`Checking search volumes for ${allKws.length} keywords via Google Ads API...`);
+    setMsg(`Checking search volumes for ${allKws.length} keywords via DataForSEO...`);
     const batchSize=100;
     const batches=[];
     for(let i=0;i<allKws.length;i+=batchSize) batches.push(allKws.slice(i,i+batchSize));
@@ -1624,7 +1624,7 @@ ${sections}
         <div style={{textAlign:'center',padding:'8px 0 32px'}}>
           <div style={{fontSize:13,color:'#7a8a9a',marginBottom:12}}>
             <b style={{color:selectedSvcCount>0?'#059669':'#dc2626'}}>{selectedSvcCount} service{selectedSvcCount!==1?'s':''}</b> · <b style={{color:'#6d28d9'}}>{selectedCampaignTypes.length} campaigns</b>
-            {selectedCampaignTypes.includes('targetedSearch')&&<span style={{color:'#b45309'}}> · volume data via Google Ads API</span>}
+            {selectedCampaignTypes.includes('targetedSearch')&&<span style={{color:'#b45309'}}> · volume data via DataForSEO</span>}
           </div>
           <button onClick={generate} disabled={selectedSvcCount===0||!brief.businessName}
             style={{padding:'14px 44px',borderRadius:10,border:'none',background:(selectedSvcCount===0||!brief.businessName)?'#e0e5ec':'linear-gradient(135deg, #e67e22, #f39c12)',color:(selectedSvcCount===0||!brief.businessName)?'#9aa5b0':'white',fontSize:16,fontWeight:700,cursor:(selectedSvcCount===0||!brief.businessName)?'not-allowed':'pointer',boxShadow:(selectedSvcCount===0||!brief.businessName)?'none':'0 4px 16px rgba(230,126,34,0.35)'}}>
@@ -1766,8 +1766,8 @@ ${sections}
                       </div>
                       {checked.length>0&&withVol.length===0&&(
                         <div style={{marginTop:12,padding:'12px 14px',borderRadius:8,background:'#fef2f2',border:'1px solid #fca5a5',color:'#991b1b',fontSize:12,lineHeight:1.6}}>
-                          <div style={{fontWeight:700,marginBottom:4}}>⚠️ All keywords returned zero volume — likely a developer token issue</div>
-                          <div>Your Google Ads developer token is probably on <b>Test Access</b>. Test tokens always return 0 for every keyword, regardless of real search volume. <b>Fix:</b> go to Google Ads → Tools → API Centre and apply for <b>Basic Access</b> (free, approved in 1–2 business days). Other possible causes: wrong GOOGLE_ADS_CUSTOMER_ID, missing login_customer_id for manager accounts, or an expired refresh token.</div>
+                          <div style={{fontWeight:700,marginBottom:4}}>⚠️ All keywords returned zero volume</div>
+                          <div>Check that <b>DATAFORSEO_LOGIN</b> and <b>DATAFORSEO_PASSWORD</b> are set correctly in Netlify, and that your DataForSEO account has credit. Otherwise these keywords genuinely have no measurable monthly search volume in this market — try broader root terms.</div>
                         </div>
                       )}
                     </div>
@@ -1900,7 +1900,7 @@ ${sections}
       </div>
       <div style={{background:'#fff',border:'1px solid #e5e8ee',borderRadius:12,padding:28,marginBottom:20}}>
         <div style={{fontFamily:"'Playfair Display',serif",fontSize:22,fontWeight:700,marginBottom:4}}>🌐 Website & Business</div>
-        <IB type="ai">✨ Enter the URL and scan — AI detects services. Keywords validated against real Google Ads API search volume.</IB>
+        <IB type="ai">✨ Enter the URL and scan — AI detects services. Keywords validated against real DataForSEO search volume.</IB>
         <Fld label="Website URL *" value={brief.website} onChange={v=>up('website',v)} ph="https://www.example.co.za"/>
         <div style={{marginBottom:20}}>
           <button onClick={scanWebsite} disabled={!brief.website} style={{padding:'11px 28px',borderRadius:9,border:'none',background:!brief.website?'#e0e5ec':'linear-gradient(135deg, #e67e22, #f39c12)',color:!brief.website?'#9aa5b0':'white',fontSize:14,fontWeight:700,cursor:!brief.website?'not-allowed':'pointer'}}>🔍 Scan Website</button>
@@ -2189,7 +2189,7 @@ function Hdr({step}){
       <div style={{width:34,height:34,borderRadius:8,background:'linear-gradient(135deg, #e67e22, #f1c40f)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:17,fontWeight:700}}>S</div>
       <div>
         <div style={{fontWeight:700,fontSize:15}}>Syte Campaign Creator</div>
-        <div style={{fontSize:11,opacity:0.5}}>Multi-Campaign · Google Ads API Volume · v6.5</div>
+        <div style={{fontSize:11,opacity:0.5}}>Multi-Campaign · DataForSEO Volume · v6.6</div>
       </div>
       {step!==undefined&&(
         <div style={{marginLeft:'auto',display:'flex',gap:6,alignItems:'center'}}>
@@ -2201,7 +2201,7 @@ function Hdr({step}){
           ))}
         </div>
       )}
-      <div style={{fontSize:11,background:'linear-gradient(135deg, #7c3aed, #a78bfa)',padding:'4px 10px',borderRadius:10,fontWeight:700,marginLeft:8}}>v6.5 ✨</div>
+      <div style={{fontSize:11,background:'linear-gradient(135deg, #7c3aed, #a78bfa)',padding:'4px 10px',borderRadius:10,fontWeight:700,marginLeft:8}}>v6.6 ✨</div>
     </div>
   );
 }

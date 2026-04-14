@@ -6,14 +6,14 @@
 ads-builder/
 ├── public/
 │   ├── index.html              ← App shell (loads app.jsx dynamically)
-│   └── app.jsx                 ← Full React app source (replace placeholder with your code)
+│   └── app.jsx                 ← Full React app source
 ├── netlify/
 │   └── functions/
 │       ├── claude-proxy.mjs    ← Anthropic API proxy
 │       ├── scan-website.mjs    ← Website scanner + AI analysis
-│       └── keyword-planner.mjs ← Google Ads API keyword volumes
+│       └── keyword-planner.mjs ← DataForSEO keyword volume lookup
 ├── netlify.toml                ← Netlify build configuration
-├── package.json                ← Dependencies (cheerio, google-ads-api)
+├── package.json                ← Dependencies (cheerio)
 └── SETUP.md                    ← This file
 ```
 
@@ -22,29 +22,13 @@ ads-builder/
 ### Claude API (required)
 - `ANTHROPIC_API_KEY` — Your Anthropic API key for Claude
 
-### Google Ads API — Keyword Volume (required for keyword validation)
-- `GOOGLE_ADS_DEVELOPER_TOKEN` — Developer token from Google Ads API Centre
-- `GOOGLE_ADS_CLIENT_ID` — OAuth2 client ID from Google Cloud Console
-- `GOOGLE_ADS_CLIENT_SECRET` — OAuth2 client secret from Google Cloud Console
-- `GOOGLE_ADS_REFRESH_TOKEN` — OAuth2 refresh token (generated once via consent flow)
-- `GOOGLE_ADS_CUSTOMER_ID` — Google Ads account ID (e.g. 123-456-7890)
-- `GOOGLE_ADS_LOGIN_CUSTOMER_ID` — (optional) Manager account ID. Required ONLY when `GOOGLE_ADS_CUSTOMER_ID` is a child account under an MCC.
+### DataForSEO — Keyword Volume (required for keyword validation)
+- `DATAFORSEO_LOGIN` — Account email (e.g. you@example.com)
+- `DATAFORSEO_PASSWORD` — API password (found in DataForSEO dashboard → API Access)
 
-> ⚠️ **All keywords returning 0 volume?** Your developer token is likely on **Test Access**. Test tokens return 0 for every keyword regardless of real search volume. Fix: Google Ads → Tools → API Centre → apply for **Basic Access** (free, 1–2 business days).
+> The API password is **not** your login password — generate/copy it from the DataForSEO dashboard.
 
-### Google Ads API Setup Guide
-
-1. **Google Cloud Project**: Create a project at https://console.cloud.google.com
-2. **Enable API**: Enable "Google Ads API" in APIs & Services
-3. **OAuth2 Credentials**: Create OAuth2 credentials (Web Application type)
-4. **Developer Token**: Apply at Google Ads → Tools → API Centre
-5. **Refresh Token**: Generate using the OAuth2 playground or a one-time script:
-   ```
-   https://developers.google.com/oauthplayground/
-   → Scope: https://www.googleapis.com/auth/adwords
-   → Exchange code for refresh token
-   ```
-6. **Customer ID**: Your Google Ads account number (visible top-right in Google Ads UI)
+Cost: roughly $0.01–$0.05 per full campaign scan (200 keywords). Pay-as-you-go, no subscription required.
 
 ## Deployment
 
