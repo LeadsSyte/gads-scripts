@@ -994,8 +994,23 @@ Return ONLY valid JSON:
   function buildAllCSVs(){
     const g=gen;if(!g) return[];
     const csvs=[];
-    const normalizeUrl=u=>{const t=String(u||'').trim();if(!t)return'';return/^https?:\/\//i.test(t)?t:'https://'+t.replace(/^\/+/,'');};
-    const fu=normalizeUrl(brief.landingPage||brief.website||'https://example.com');
+    const normalizeUrl=(u,base)=>{
+      const t=String(u||'').trim();
+      if(!t) return '';
+      if(/^https?:\/\//i.test(t)) return t;
+      const b=String(base||'').trim();
+      if(b){
+        try{
+          const baseAbs=/^https?:\/\//i.test(b)?b:'https://'+b.replace(/^\/+/,'');
+          return new URL(t,baseAbs).href;
+        }catch{}
+      }
+      const first=t.replace(/^\/+/,'').split('/')[0];
+      if(/\./.test(first)) return 'https://'+t.replace(/^\/+/,'');
+      return '';
+    };
+    const websiteBase=normalizeUrl(brief.website)||'https://example.com';
+    const fu=brief.landingPage?normalizeUrl(brief.landingPage,websiteBase):websiteBase;
     const allLocations=(brief.locations&&brief.locations.length)?brief.locations:[{id:'fb',type:'named',name:'South Africa',mode:'include'}];
     const SCOLS=['Campaign','Campaign type','Campaign status','Campaign daily budget','Bid strategy type','Target Imp. Share','Target Imp. Share location','Max CPC limit','Networks','Languages','EU political ads','Ad group','Ad group status','Default max. CPC','Keyword','Match type','Keyword status','Max CPC','Headline 1','Headline 2','Headline 3','Headline 4','Headline 5','Headline 6','Headline 7','Headline 8','Headline 9','Headline 10','Headline 11','Headline 12','Headline 13','Headline 14','Headline 15','Description 1','Description 2','Description 3','Description 4','Final URL','Path 1','Path 2','Ad status','Location','Reach','Excluded target','Proximity target latitude','Proximity target longitude','Proximity target radius','Proximity target unit','Audience','Bid adjustment'];
     const er=()=>Object.fromEntries(SCOLS.map(c=>[c,'']));
@@ -1019,8 +1034,23 @@ Return ONLY valid JSON:
   function buildAllSitelinks(){
     const g=gen;if(!g) return[];
     const out=[];
-    const normalizeUrl=u=>{const t=String(u||'').trim();if(!t)return'';return/^https?:\/\//i.test(t)?t:'https://'+t.replace(/^\/+/,'');};
-    const fu=normalizeUrl(brief.landingPage||brief.website||'https://example.com');
+    const normalizeUrl=(u,base)=>{
+      const t=String(u||'').trim();
+      if(!t) return '';
+      if(/^https?:\/\//i.test(t)) return t;
+      const b=String(base||'').trim();
+      if(b){
+        try{
+          const baseAbs=/^https?:\/\//i.test(b)?b:'https://'+b.replace(/^\/+/,'');
+          return new URL(t,baseAbs).href;
+        }catch{}
+      }
+      const first=t.replace(/^\/+/,'').split('/')[0];
+      if(/\./.test(first)) return 'https://'+t.replace(/^\/+/,'');
+      return '';
+    };
+    const websiteBase=normalizeUrl(brief.website)||'https://example.com';
+    const fu=brief.landingPage?normalizeUrl(brief.landingPage,websiteBase):websiteBase;
     const SLCOLS=['Link Text','Description Line 1','Description Line 2','Start Date','End Date','Ad Schedule','Upgraded extension','Source','Final URL','Final mobile URL','Tracking template','Final URL suffix','Custom parameters','Status','Approval Status','Comment'];
     function build(campaignName,sitelinks){
       if(!sitelinks||!sitelinks.length) return null;
@@ -1032,7 +1062,7 @@ Return ONLY valid JSON:
           (sl.description2||'').substring(0,35),
           '[]','[]','[]','[]',
           'Advertiser',
-          normalizeUrl(sl.finalUrl||fu),
+          normalizeUrl(sl.finalUrl||fu,websiteBase),
           '','','','',
           'Enabled',
           '','',
@@ -1539,6 +1569,46 @@ ${sections}
         </div>
 
         <BrandSignalsPanel brief={brief} up={up} upTs={upTs} expandedSections={expandedSections} toggleSection={toggleSection}/>
+
+        <div style={{background:'#fff',border:`1px solid ${transcript.trim()?'#bbf7d0':'#e5e8ee'}`,borderRadius:12,marginBottom:20,overflow:'hidden'}}>
+          <div onClick={()=>toggleSection('transcriptSteer')} style={{padding:'14px 20px',display:'flex',alignItems:'center',justifyContent:'space-between',cursor:'pointer',background:transcript.trim()?'#f0fdf4':'#f8f9fc'}}>
+            <div>
+              <div style={{display:'flex',alignItems:'center',gap:8}}>
+                <span style={{fontWeight:700,fontSize:14,color:'#1a2a3a'}}>🎙️ Meeting Transcript</span>
+                {transcript.trim()?<span style={{fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:10,background:'#dcfce7',color:'#166534'}}>✓ {transcript.length.toLocaleString()} chars loaded</span>:<span style={{fontSize:11,color:'#9aa5b0'}}>Upload or paste to enrich services + fields</span>}
+              </div>
+              <div style={{fontSize:12,color:'#7a8a9a',marginTop:2}}>Auto-selects relevant services and fills USPs, trust signals, pain points, angle</div>
+            </div>
+            <span style={{color:'#9aa5b0',fontSize:13,fontWeight:700}}>{expandedSections.transcriptSteer?'▲':'▼'}</span>
+          </div>
+          {expandedSections.transcriptSteer&&(
+            <div style={{padding:20,borderTop:'1px solid #f0f2f5'}}>
+              <div style={{marginBottom:10}}>
+                <label style={{display:'block',fontWeight:600,fontSize:12,color:'#3a4a5a',marginBottom:6}}>Upload transcript file (.txt, .md, .srt, .vtt)</label>
+                <input type="file" accept=".txt,.md,.srt,.vtt,text/plain" onChange={e=>{
+                  const file=e.target.files&&e.target.files[0];
+                  if(!file) return;
+                  const reader=new FileReader();
+                  reader.onload=ev=>{
+                    const txt=String(ev.target.result||'');
+                    setTranscript(prev=>prev.trim()?prev+'\n\n'+txt:txt);
+                  };
+                  reader.onerror=()=>setError('Failed to read file.');
+                  reader.readAsText(file);
+                  e.target.value='';
+                }} style={{display:'block',width:'100%',padding:'8px 10px',border:'1px dashed #d0d5dd',borderRadius:8,fontSize:12,background:'#f8f9fc',cursor:'pointer'}}/>
+              </div>
+              <textarea value={transcript} onChange={e=>setTranscript(e.target.value)} placeholder="Or paste transcript text here..." style={{width:'100%',padding:'10px 14px',border:'2px solid #e0e5ec',borderRadius:8,fontSize:13,outline:'none',minHeight:100,resize:'vertical',background:'#fff',color:'#1a2a3a',lineHeight:1.6}}/>
+              {transcript.trim()&&(
+                <div style={{display:'flex',gap:10,alignItems:'center',marginTop:10,flexWrap:'wrap'}}>
+                  <button onClick={parseTranscript} style={{padding:'9px 20px',borderRadius:8,border:'none',background:'linear-gradient(135deg,#7c3aed,#a78bfa)',color:'white',fontSize:13,fontWeight:700,cursor:'pointer'}}>✨ Re-extract &amp; auto-fill services</button>
+                  <span style={{fontSize:11,color:'#7a8a9a'}}>Rebuilds service list + fields from the combined context. Campaign angle and exclusions update too.</span>
+                  <span style={{fontSize:11,color:'#dc2626',cursor:'pointer',fontWeight:600,marginLeft:'auto'}} onClick={()=>setTranscript('')}>✕ Clear</span>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
 
         <div style={{background:'#fff',border:'1px solid #e5e8ee',borderRadius:12,padding:24,marginBottom:20}}>
           <div style={{fontFamily:"'Playfair Display',serif",fontSize:20,fontWeight:700,marginBottom:4}}>🏷️ Business Type</div>
@@ -2277,7 +2347,7 @@ function Hdr({step}){
       <div style={{width:34,height:34,borderRadius:8,background:'linear-gradient(135deg, #e67e22, #f1c40f)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:17,fontWeight:700}}>S</div>
       <div>
         <div style={{fontWeight:700,fontSize:15}}>Syte Campaign Creator</div>
-        <div style={{fontSize:11,opacity:0.5}}>Multi-Campaign · DataForSEO Volume · v6.7</div>
+        <div style={{fontSize:11,opacity:0.5}}>Multi-Campaign · DataForSEO Volume · v6.8</div>
       </div>
       {step!==undefined&&(
         <div style={{marginLeft:'auto',display:'flex',gap:6,alignItems:'center'}}>
@@ -2289,7 +2359,7 @@ function Hdr({step}){
           ))}
         </div>
       )}
-      <div style={{fontSize:11,background:'linear-gradient(135deg, #7c3aed, #a78bfa)',padding:'4px 10px',borderRadius:10,fontWeight:700,marginLeft:8}}>v6.7 ✨</div>
+      <div style={{fontSize:11,background:'linear-gradient(135deg, #7c3aed, #a78bfa)',padding:'4px 10px',borderRadius:10,fontWeight:700,marginLeft:8}}>v6.8 ✨</div>
     </div>
   );
 }
