@@ -420,6 +420,26 @@ function App(){
   function kwHealthPct(kws){const c=(kws||[]).filter(k=>k.volumeChecked);return c.length>0?Math.round(c.filter(k=>k.hasVolume).length/c.length*100):null;}
   function toggleSvc(i){setSelectedSvcs(prev=>prev.includes(i)?prev.filter(x=>x!==i):[...prev,i]);}
 
+  // Build 12 deterministic keywords per service (no AI, no location suffixes, guaranteed mix)
+  function buildKeywordsForService(svc){
+    const s=svc.toLowerCase().trim();
+    return[
+      {text:s,matchType:'Exact'},
+      {text:`${s} services`,matchType:'Exact'},
+      {text:`professional ${s}`,matchType:'Exact'},
+      {text:`${s} company`,matchType:'Exact'},
+      {text:`${s} quote`,matchType:'Phrase'},
+      {text:`${s} price`,matchType:'Phrase'},
+      {text:`${s} cost`,matchType:'Phrase'},
+      {text:`best ${s}`,matchType:'Phrase'},
+      {text:`${s} near me`,matchType:'Phrase'},
+      {text:`commercial ${s}`,matchType:'Exact'},
+      {text:`corporate ${s}`,matchType:'Exact'},
+      {text:`custom ${s}`,matchType:'Exact'},
+    ];
+  }
+
+
   async function scanWebsite(){
     if(!brief.website){setError('Enter a website URL first.');return;}
     if(isScanningRef.current) return;
@@ -560,7 +580,7 @@ function App(){
           if(r.adGroups&&r.adGroups.length>0){
             normaliseAdGroups(r,minCpc);
             const negSet=new Set(STD_NEGS.map(n=>n.toLowerCase()));
-            r.adGroups.forEach(ag=>{ag.keywords=(ag.keywords||[]).filter(k=>k.text&&!negSet.has(k.text));});
+            r.adGroups.forEach(ag=>{ag.keywords=buildKeywordsForService(svc);});
             allAdGroups.push(...r.adGroups);
           }
           if(isFirst&&r.sitelinks) sharedExtensions=r;
@@ -652,8 +672,8 @@ function App(){
     const er=()=>Object.fromEntries(SCOLS.map(c=>[c,'']));
     function addLocRows(rows,cname,emptyFn){allLocations.forEach(loc=>{const lr=emptyFn();lr['Campaign']=cname;if(loc.type==='radius'){lr['Proximity target latitude']=String(loc.lat);lr['Proximity target longitude']=String(loc.lng);lr['Proximity target radius']=String(loc.radius);lr['Proximity target unit']=loc.unit;if(loc.mode!=='exclude')lr['Reach']='People in or regularly in targeted locations';}else{lr['Location']=loc.name;if(loc.mode==='exclude'){lr['Excluded target']='true';}else{lr['Reach']='People in or regularly in targeted locations';}}rows.push(lr);});}
     function addCamp(rows,cname,budget,bidStrat){const r=er();r['Campaign']=cname;r['Campaign type']='Search';r['Campaign status']='Paused';r['Campaign daily budget']=String(budget);r['Bid strategy type']=bidStrat||'Maximize conversions';r['Networks']='Google Search';r['Languages']=brief.language||'en';r['EU political ads']='No';rows.push(r);addLocRows(rows,cname,er);}
-    function addAG(rows,cname,ag,defMatch){const cpc=Number(ag.defaultCpc||10).toFixed(2);const a=er();a['Campaign']=cname;a['Ad group']=ag.name;a['Ad group status']='Enabled';a['Default max. CPC']=cpc;if(ag.audienceList){a['Audience']=ag.audienceList;a['Bid adjustment']=ag.bidAdjustment||'+0%';}rows.push(a);(ag.keywords||[]).forEach(kw=>{const mt=kw.matchType||defMatch||'Exact';const r=er();r['Campaign']=cname;r['Ad group']=ag.name;r['Keyword']=kw.text;r['Match type']=mt==='Exact'?'Exact match':mt==='Phrase'?'Phrase match':'Broad match';r['Keyword status']='Enabled';r['Max CPC']=cpc;rows.push(r);});(ag.ads||[]).forEach(ad=>{const r=er();r['Campaign']=cname;r['Ad group']=ag.name;r['Ad status']='Enabled';r['Final URL']=fu;r['Path 1']=ad.path1||'';r['Path 2']=ad.path2||'';const hl=[...(ad.headlines||[])];while(hl.length<15)hl.push('');const ds=[...(ad.descriptions||[])];while(ds.length<4)ds.push('');for(let i=0;i<15;i++)r[`Headline ${i+1}`]=hl[i]||'';for(let i=0;i<4;i++)r[`Description ${i+1}`]=ds[i]||'';rows.push(r);});}
-    function addNegs(rows,cname,negs){(negs||[]).forEach(neg=>{const r=er();r['Campaign']=cname;r['Keyword']=neg;r['Match type']='Phrase match negative';rows.push(r);});}
+    function addAG(rows,cname,ag,defMatch){const cpc=Number(ag.defaultCpc||10).toFixed(2);const a=er();a['Campaign']=cname;a['Ad group']=ag.name;a['Ad group status']='Enabled';a['Default max. CPC']=cpc;if(ag.audienceList){a['Audience']=ag.audienceList;a['Bid adjustment']=ag.bidAdjustment||'+0%';}rows.push(a);(ag.keywords||[]).forEach(kw=>{const mt=kw.matchType||defMatch||'Exact';const r=er();r['Campaign']=cname;r['Ad group']=ag.name;r['Keyword']=kw.text;r['Match type']=mt==='Phrase'?'Phrase':mt==='Broad'?'Broad':'Exact';r['Keyword status']='Enabled';r['Max CPC']=cpc;rows.push(r);});(ag.ads||[]).forEach(ad=>{const r=er();r['Campaign']=cname;r['Ad group']=ag.name;r['Ad status']='Enabled';r['Final URL']=fu;r['Path 1']=ad.path1||'';r['Path 2']=ad.path2||'';const hl=[...(ad.headlines||[])];while(hl.length<15)hl.push('');const ds=[...(ad.descriptions||[])];while(ds.length<4)ds.push('');for(let i=0;i<15;i++)r[`Headline ${i+1}`]=hl[i]||'';for(let i=0;i<4;i++)r[`Description ${i+1}`]=ds[i]||'';rows.push(r);});}
+    function addNegs(rows,cname,negs){(negs||[]).forEach(neg=>{const r=er();r['Campaign']=cname;r['Keyword']=neg;r['Match type']='Negative phrase';rows.push(r);});}
     if(g.branded){const rows=[];const cn=campName('branded');addCamp(rows,cn,getEffectiveBudget('branded'),'Target Impression Share');(g.branded.adGroups||[]).forEach(ag=>addAG(rows,cn,ag,'Exact'));addNegs(rows,cn,g.branded.negatives);(g.branded.sitelinks||[]).forEach(sl=>{const r=er();r['Campaign']=cn;r['Sitelink text']=sl.text;r['Description line 1']=sl.description1;r['Description line 2']=sl.description2;r['Sitelink final URL']=sl.finalUrl||fu;rows.push(r);});(g.branded.callouts||[]).forEach(c=>{const r=er();r['Campaign']=cn;r['Callout text']=String(c);rows.push(r);});csvs.push({name:'01_Branded_Search',cols:SCOLS,rows});}
     if(g.targetedSearch){const rows=[];const cn=campName('targetedSearch');addCamp(rows,cn,getEffectiveBudget('targetedSearch'),brief.bidStrategy||'Maximize conversions');(g.targetedSearch.adGroups||[]).forEach(ag=>addAG(rows,cn,ag,'Exact'));addNegs(rows,cn,g.targetedSearch.negatives);const ts=g.targetedSearch;(ts.sitelinks||[]).forEach(sl=>{const r=er();r['Campaign']=cn;r['Sitelink text']=sl.text;r['Description line 1']=sl.description1;r['Description line 2']=sl.description2;r['Sitelink final URL']=sl.finalUrl||fu;rows.push(r);});(ts.callouts||[]).forEach(c=>{const r=er();r['Campaign']=cn;r['Callout text']=String(c);rows.push(r);});if(ts.structuredSnippet?.values?.length){const r=er();r['Campaign']=cn;r['Structured snippet header']=ts.structuredSnippet.header;r['Structured snippet values']=ts.structuredSnippet.values.join('; ');rows.push(r);}csvs.push({name:'02_Targeted_Search',cols:SCOLS,rows});}
     if(g.pmax){const PCOLS=['Campaign','Campaign type','Campaign status','Campaign daily budget','Bid strategy type','Asset group','Asset group status','Final URL','Headline 1','Headline 2','Headline 3','Headline 4','Headline 5','Headline 6','Headline 7','Headline 8','Headline 9','Headline 10','Headline 11','Headline 12','Headline 13','Headline 14','Headline 15','Long headline 1','Long headline 2','Long headline 3','Long headline 4','Long headline 5','Description 1','Description 2','Description 3','Description 4','Description 5','Call to action 1','Call to action 2','Audience signal 1','Audience signal 2','Audience signal 3','Location','Reach','Excluded target','Proximity target latitude','Proximity target longitude','Proximity target radius','Proximity target unit'];const rows=[];const cn=campName('pmax');const cr=Object.fromEntries(PCOLS.map(k=>[k,'']));cr['Campaign']=cn;cr['Campaign type']='Performance max';cr['Campaign status']='Paused';cr['Campaign daily budget']=String(getEffectiveBudget('pmax'));cr['Bid strategy type']='Maximize conversions';rows.push(cr);addLocRows(rows,cn,()=>Object.fromEntries(PCOLS.map(k=>[k,''])));(g.pmax.assetGroups||[]).forEach(ag=>{const r=Object.fromEntries(PCOLS.map(k=>[k,'']));r['Campaign']=cn;r['Asset group']=ag.name;r['Asset group status']='Enabled';r['Final URL']=fu;const hl=[...(ag.headlines||[])];while(hl.length<15)hl.push('');const lh=[...(ag.longHeadlines||[])];while(lh.length<5)lh.push('');const ds=[...(ag.descriptions||[])];while(ds.length<5)ds.push('');for(let i=0;i<15;i++)r[`Headline ${i+1}`]=hl[i]||'';for(let i=0;i<5;i++)r[`Long headline ${i+1}`]=lh[i]||'';for(let i=0;i<5;i++)r[`Description ${i+1}`]=ds[i]||'';if(ag.callToActions?.[0])r['Call to action 1']=ag.callToActions[0];if(ag.callToActions?.[1])r['Call to action 2']=ag.callToActions[1];(ag.audienceSignals||[]).forEach((s,i)=>{if(i<3)r[`Audience signal ${i+1}`]=s;});rows.push(r);});csvs.push({name:'03_Performance_Max',cols:PCOLS,rows});}
@@ -945,9 +965,9 @@ function Hdr({step}){
   const steps=['Brief','Steer','Generate','Results'];
   return(<div style={{background:'#0f1a2a',color:'white',padding:'14px 28px',display:'flex',alignItems:'center',gap:14,position:'sticky',top:0,zIndex:50,boxShadow:'0 2px 12px rgba(0,0,0,0.3)'}}>
     <div style={{width:34,height:34,borderRadius:8,background:'linear-gradient(135deg, #e67e22, #f1c40f)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:17,fontWeight:700}}>S</div>
-    <div><div style={{fontWeight:700,fontSize:15}}>Syte Campaign Creator</div><div style={{fontSize:11,opacity:0.5}}>Multi-Campaign · Google Ads API · v6.2 · Build 2026-04-14 07:28 UTC</div></div>
+    <div><div style={{fontWeight:700,fontSize:15}}>Syte Campaign Creator</div><div style={{fontSize:11,opacity:0.5}}>Multi-Campaign · Google Ads API · v6.3 · Build 2026-04-14 CSV match-type fix</div></div>
     {step!==undefined&&(<div style={{marginLeft:'auto',display:'flex',gap:6,alignItems:'center'}}>{steps.map((s,i)=>(<div key={i} style={{display:'flex',alignItems:'center',gap:4}}><div style={{width:24,height:24,borderRadius:'50%',background:i<step?'#059669':i===step?'#e67e22':'rgba(255,255,255,0.15)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:10,fontWeight:700,color:'white'}}>{i<step?'✓':i+1}</div>{i<3&&<div style={{width:16,height:2,background:i<step?'#059669':'rgba(255,255,255,0.15)',borderRadius:1}}/>}</div>))}</div>)}
-    <div style={{fontSize:11,background:'linear-gradient(135deg, #7c3aed, #a78bfa)',padding:'4px 10px',borderRadius:10,fontWeight:700,marginLeft:8}}>v6.2 ✨</div>
+    <div style={{fontSize:11,background:'linear-gradient(135deg, #7c3aed, #a78bfa)',padding:'4px 10px',borderRadius:10,fontWeight:700,marginLeft:8}}>v6.3 ✨</div>
   </div>);
 }
 
