@@ -997,14 +997,15 @@ Return ONLY valid JSON:
     const normalizeUrl=u=>{const t=String(u||'').trim();if(!t)return'';return/^https?:\/\//i.test(t)?t:'https://'+t.replace(/^\/+/,'');};
     const fu=normalizeUrl(brief.landingPage||brief.website||'https://example.com');
     const allLocations=(brief.locations&&brief.locations.length)?brief.locations:[{id:'fb',type:'named',name:'South Africa',mode:'include'}];
-    const SCOLS=['Campaign','Campaign type','Campaign status','Campaign daily budget','Bid strategy type','Networks','Languages','EU political ads','Ad group','Ad group status','Default max. CPC','Keyword','Match type','Keyword status','Max CPC','Headline 1','Headline 2','Headline 3','Headline 4','Headline 5','Headline 6','Headline 7','Headline 8','Headline 9','Headline 10','Headline 11','Headline 12','Headline 13','Headline 14','Headline 15','Description 1','Description 2','Description 3','Description 4','Final URL','Path 1','Path 2','Ad status','Location','Reach','Excluded target','Proximity target latitude','Proximity target longitude','Proximity target radius','Proximity target unit','Sitelink text','Description line 1','Description line 2','Sitelink final URL','Callout text','Structured snippet header','Structured snippet values','Audience','Bid adjustment'];
+    const SCOLS=['Campaign','Campaign type','Campaign status','Campaign daily budget','Bid strategy type','Target Imp. Share','Target Imp. Share location','Max CPC limit','Networks','Languages','EU political ads','Ad group','Ad group status','Default max. CPC','Keyword','Match type','Keyword status','Max CPC','Headline 1','Headline 2','Headline 3','Headline 4','Headline 5','Headline 6','Headline 7','Headline 8','Headline 9','Headline 10','Headline 11','Headline 12','Headline 13','Headline 14','Headline 15','Description 1','Description 2','Description 3','Description 4','Final URL','Path 1','Path 2','Ad status','Location','Reach','Excluded target','Proximity target latitude','Proximity target longitude','Proximity target radius','Proximity target unit','Audience','Bid adjustment'];
     const er=()=>Object.fromEntries(SCOLS.map(c=>[c,'']));
     function addLocRows(rows,cname,emptyFn){allLocations.forEach(loc=>{const lr=emptyFn();lr['Campaign']=cname;if(loc.type==='radius'){lr['Proximity target latitude']=String(loc.lat);lr['Proximity target longitude']=String(loc.lng);lr['Proximity target radius']=String(loc.radius);lr['Proximity target unit']=loc.unit;if(loc.mode!=='exclude')lr['Reach']='People in or regularly in your targeted location';}else{lr['Location']=loc.name;if(loc.mode==='exclude'){lr['Excluded target']='true';}else{lr['Reach']='People in or regularly in your targeted location';}}rows.push(lr);});}
-    function addCamp(rows,cname,budget,bidStrat){const r=er();r['Campaign']=cname;r['Campaign type']='Search';r['Campaign status']='Paused';r['Campaign daily budget']=String(budget);r['Bid strategy type']=bidStrat||'Maximize conversions';r['Networks']='Google Search';r['Languages']=brief.language||'en';r['EU political ads']='No';rows.push(r);addLocRows(rows,cname,er);}
+    function addCamp(rows,cname,budget,bidStrat,tis){const r=er();r['Campaign']=cname;r['Campaign type']='Search';r['Campaign status']='Paused';r['Campaign daily budget']=String(budget);r['Bid strategy type']=bidStrat||'Maximize conversions';if(bidStrat==='Target Impression Share'){r['Target Imp. Share']=String((tis&&tis.share)||'0.9');r['Target Imp. Share location']=(tis&&tis.location)||'Anywhere on results page';r['Max CPC limit']=String((tis&&tis.maxCpc)||'10.00');}r['Networks']='Google Search';r['Languages']=brief.language||'en';r['EU political ads']='No';rows.push(r);addLocRows(rows,cname,er);}
+    function filterConflictNegs(negs,adGroups){const hasNearMe=(adGroups||[]).some(ag=>(ag.keywords||[]).some(k=>/near me/i.test(k.text||'')));const hasFree=(adGroups||[]).some(ag=>(ag.ads||[]).some(ad=>[...(ad.headlines||[]),...(ad.descriptions||[])].some(t=>/\bfree\b/i.test(t||''))));return(negs||[]).filter(n=>{const l=String(n).toLowerCase();if(hasNearMe&&/near me/.test(l))return false;if(hasFree&&/\bfree\b/.test(l))return false;return true;});}
     function addAG(rows,cname,ag,defMatch){const cpc=Number(ag.defaultCpc||10).toFixed(2);const a=er();a['Campaign']=cname;a['Ad group']=ag.name;a['Ad group status']='Enabled';a['Default max. CPC']=cpc;if(ag.audienceList){a['Audience']=ag.audienceList;a['Bid adjustment']=ag.bidAdjustment||'+0%';}rows.push(a);(ag.keywords||[]).forEach(kw=>{const mt=kw.matchType||defMatch||'Exact';const r=er();r['Campaign']=cname;r['Ad group']=ag.name;r['Keyword']=kw.text;r['Match type']=mt==='Exact'?'Exact':mt==='Phrase'?'Phrase':'Broad';r['Keyword status']='Enabled';r['Max CPC']=cpc;rows.push(r);});(ag.ads||[]).forEach(ad=>{const r=er();r['Campaign']=cname;r['Ad group']=ag.name;r['Ad status']='Enabled';r['Final URL']=fu;r['Path 1']=ad.path1||'';r['Path 2']=ad.path2||'';const hl=[...(ad.headlines||[])];while(hl.length<15)hl.push('');const ds=[...(ad.descriptions||[])];while(ds.length<4)ds.push('');for(let i=0;i<15;i++)r[`Headline ${i+1}`]=hl[i]||'';for(let i=0;i<4;i++)r[`Description ${i+1}`]=ds[i]||'';rows.push(r);});}
     function addNegs(rows,cname,negs){(negs||[]).forEach(neg=>{const r=er();r['Campaign']=cname;r['Keyword']=neg;r['Match type']='Negative Phrase';rows.push(r);});}
-    if(g.branded){const rows=[];const cn=campName('branded');addCamp(rows,cn,getEffectiveBudget('branded'),'Target Impression Share');(g.branded.adGroups||[]).forEach(ag=>addAG(rows,cn,ag,'Exact'));addNegs(rows,cn,g.branded.negatives);(g.branded.sitelinks||[]).forEach(sl=>{const r=er();r['Campaign']=cn;r['Sitelink text']=sl.text;r['Description line 1']=sl.description1;r['Description line 2']=sl.description2;r['Sitelink final URL']=normalizeUrl(sl.finalUrl||fu);rows.push(r);});(g.branded.callouts||[]).forEach(c=>{const r=er();r['Campaign']=cn;r['Callout text']=String(c);rows.push(r);});csvs.push({name:'01_Branded_Search',cols:SCOLS,rows});}
-    if(g.targetedSearch){const rows=[];const cn=campName('targetedSearch');addCamp(rows,cn,getEffectiveBudget('targetedSearch'),brief.bidStrategy||'Maximize conversions');(g.targetedSearch.adGroups||[]).forEach(ag=>addAG(rows,cn,ag,'Exact'));addNegs(rows,cn,g.targetedSearch.negatives);const ts=g.targetedSearch;(ts.sitelinks||[]).forEach(sl=>{const r=er();r['Campaign']=cn;r['Sitelink text']=sl.text;r['Description line 1']=sl.description1;r['Description line 2']=sl.description2;r['Sitelink final URL']=normalizeUrl(sl.finalUrl||fu);rows.push(r);});(ts.callouts||[]).forEach(c=>{const r=er();r['Campaign']=cn;r['Callout text']=String(c);rows.push(r);});if(ts.structuredSnippet?.values?.length){const r=er();r['Campaign']=cn;r['Structured snippet header']=ts.structuredSnippet.header;r['Structured snippet values']=ts.structuredSnippet.values.join('; ');rows.push(r);}csvs.push({name:'02_Targeted_Search',cols:SCOLS,rows});}
+    if(g.branded){const rows=[];const cn=campName('branded');addCamp(rows,cn,getEffectiveBudget('branded'),'Target Impression Share',{share:'0.9',location:'Anywhere on results page',maxCpc:'10.00'});(g.branded.adGroups||[]).forEach(ag=>addAG(rows,cn,ag,'Exact'));addNegs(rows,cn,filterConflictNegs(g.branded.negatives,g.branded.adGroups));csvs.push({name:'01_Branded_Search',cols:SCOLS,rows});}
+    if(g.targetedSearch){const rows=[];const cn=campName('targetedSearch');addCamp(rows,cn,getEffectiveBudget('targetedSearch'),brief.bidStrategy||'Maximize conversions');(g.targetedSearch.adGroups||[]).forEach(ag=>addAG(rows,cn,ag,'Exact'));addNegs(rows,cn,filterConflictNegs(g.targetedSearch.negatives,g.targetedSearch.adGroups));csvs.push({name:'02_Targeted_Search',cols:SCOLS,rows});}
     if(g.pmax){const PCOLS=['Campaign','Campaign type','Campaign status','Campaign daily budget','Bid strategy type','Asset group','Asset group status','Final URL','Headline 1','Headline 2','Headline 3','Headline 4','Headline 5','Headline 6','Headline 7','Headline 8','Headline 9','Headline 10','Headline 11','Headline 12','Headline 13','Headline 14','Headline 15','Long headline 1','Long headline 2','Long headline 3','Long headline 4','Long headline 5','Description 1','Description 2','Description 3','Description 4','Description 5','Call to action 1','Call to action 2','Audience signal 1','Audience signal 2','Audience signal 3','Location','Reach','Excluded target','Proximity target latitude','Proximity target longitude','Proximity target radius','Proximity target unit'];const rows=[];const cn=campName('pmax');const cr=Object.fromEntries(PCOLS.map(k=>[k,'']));cr['Campaign']=cn;cr['Campaign type']='Performance max';cr['Campaign status']='Paused';cr['Campaign daily budget']=String(getEffectiveBudget('pmax'));cr['Bid strategy type']='Maximize conversions';rows.push(cr);addLocRows(rows,cn,()=>Object.fromEntries(PCOLS.map(k=>[k,''])));(g.pmax.assetGroups||[]).forEach(ag=>{const r=Object.fromEntries(PCOLS.map(k=>[k,'']));r['Campaign']=cn;r['Asset group']=ag.name;r['Asset group status']='Enabled';r['Final URL']=fu;const hl=[...(ag.headlines||[])];while(hl.length<15)hl.push('');const lh=[...(ag.longHeadlines||[])];while(lh.length<5)lh.push('');const ds=[...(ag.descriptions||[])];while(ds.length<5)ds.push('');for(let i=0;i<15;i++)r[`Headline ${i+1}`]=hl[i]||'';for(let i=0;i<5;i++)r[`Long headline ${i+1}`]=lh[i]||'';for(let i=0;i<5;i++)r[`Description ${i+1}`]=ds[i]||'';if(ag.callToActions?.[0])r['Call to action 1']=ag.callToActions[0];if(ag.callToActions?.[1])r['Call to action 2']=ag.callToActions[1];(ag.audienceSignals||[]).forEach((s,i)=>{if(i<3)r[`Audience signal ${i+1}`]=s;});rows.push(r);});csvs.push({name:'03_Performance_Max',cols:PCOLS,rows});}
     if(g.searchRemarketing){const rows=[];const cn=campName('searchRemarketing');addCamp(rows,cn,getEffectiveBudget('searchRemarketing'),'Maximize conversions');(g.searchRemarketing.adGroups||[]).forEach(ag=>addAG(rows,cn,ag,'Broad'));csvs.push({name:'05_Search_Remarketing_RLSA',cols:SCOLS,rows});}
     if(g.demandGen){const DGCOLS=['Campaign','Campaign type','Campaign status','Campaign daily budget','Bid strategy type','Ad group','Ad group status','Audience targeting 1','Audience targeting 2','Audience targeting 3','Headline 1','Headline 2','Headline 3','Description 1','Description 2','Video concept brief','Gmail subject line 1','Gmail subject line 2','Final URL','Location','Reach','Excluded target','Proximity target latitude','Proximity target longitude','Proximity target radius','Proximity target unit'];const rows=[];const cn=campName('demandGen');const cr=Object.fromEntries(DGCOLS.map(k=>[k,'']));cr['Campaign']=cn;cr['Campaign type']='Demand gen';cr['Campaign status']='Paused';cr['Campaign daily budget']=String(getEffectiveBudget('demandGen'));cr['Bid strategy type']='Maximize conversions';rows.push(cr);addLocRows(rows,cn,()=>Object.fromEntries(DGCOLS.map(k=>[k,''])));(g.demandGen.adGroups||[]).forEach(ag=>{const r=Object.fromEntries(DGCOLS.map(k=>[k,'']));r['Campaign']=cn;r['Ad group']=ag.audienceTheme||'';r['Ad group status']='Enabled';r['Final URL']=fu;(ag.audienceTargeting||[]).forEach((a,i)=>{if(i<3)r[`Audience targeting ${i+1}`]=a;});(ag.headlines||[]).forEach((h,i)=>{if(i<3)r[`Headline ${i+1}`]=h;});(ag.descriptions||[]).forEach((d,i)=>{if(i<2)r[`Description ${i+1}`]=d;});r['Video concept brief']=ag.videoConceptBrief||'';if(ag.gmailSubjectLines?.[0])r['Gmail subject line 1']=ag.gmailSubjectLines[0];if(ag.gmailSubjectLines?.[1])r['Gmail subject line 2']=ag.gmailSubjectLines[1];rows.push(r);});csvs.push({name:'04_Demand_Gen',cols:DGCOLS,rows});}
@@ -1013,6 +1014,46 @@ Return ONLY valid JSON:
   }
 
   function toCSV(cols,rows){const esc=v=>{const s=String(v==null?'':v);return(s.includes(',')||s.includes('"')||s.includes('\n'))?'"'+s.replace(/"/g,'""')+'"':s;};return cols.map(esc).join(',')+'\n'+rows.map(r=>cols.map(c=>esc(r[c]||'')).join(',')).join('\n');}
+
+  // Sitelinks export — UTF-16 tab-separated, matches Google Ads Editor native format exactly
+  function buildAllSitelinks(){
+    const g=gen;if(!g) return[];
+    const out=[];
+    const normalizeUrl=u=>{const t=String(u||'').trim();if(!t)return'';return/^https?:\/\//i.test(t)?t:'https://'+t.replace(/^\/+/,'');};
+    const fu=normalizeUrl(brief.landingPage||brief.website||'https://example.com');
+    const SLCOLS=['Link Text','Description Line 1','Description Line 2','Start Date','End Date','Ad Schedule','Upgraded extension','Source','Final URL','Final mobile URL','Tracking template','Final URL suffix','Custom parameters','Status','Approval Status','Comment'];
+    function build(campaignName,sitelinks){
+      if(!sitelinks||!sitelinks.length) return null;
+      const rows=[SLCOLS.join('\t')];
+      sitelinks.forEach(sl=>{
+        const row=[
+          (sl.text||'').substring(0,25),
+          (sl.description1||'').substring(0,35),
+          (sl.description2||'').substring(0,35),
+          '[]','[]','[]','[]',
+          'Advertiser',
+          normalizeUrl(sl.finalUrl||fu),
+          '','','','',
+          'Enabled',
+          '','',
+        ];
+        rows.push(row.join('\t'));
+      });
+      return{name:campaignName,content:rows.join('\n')+'\n'};
+    }
+    if(g.branded?.sitelinks?.length){const f=build('01_Branded_Search_Sitelinks',g.branded.sitelinks);if(f)out.push(f);}
+    if(g.targetedSearch?.sitelinks?.length){const f=build('02_Targeted_Search_Sitelinks',g.targetedSearch.sitelinks);if(f)out.push(f);}
+    return out;
+  }
+
+  // Encode string as UTF-16 LE with BOM for Google Ads Editor sitelinks import
+  function toUTF16Blob(str){
+    const buf=new ArrayBuffer(str.length*2+2);
+    const view=new DataView(buf);
+    view.setUint16(0,0xFEFF,true);
+    for(let i=0;i<str.length;i++) view.setUint16(2+i*2,str.charCodeAt(i),true);
+    return new Blob([buf],{type:'text/tab-separated-values;charset=utf-16'});
+  }
 
   function exportStrategyDoc(){
     const g=gen;
@@ -1423,11 +1464,26 @@ ${sections}
     setTimeout(()=>URL.revokeObjectURL(url),1000);
   }
 
+  function downloadSitelinksFile(name,content){
+    const slug=(brief.businessName||'campaign').replace(/\s+/g,'_').toLowerCase();
+    const blob=toUTF16Blob(content);
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');a.href=url;a.download=`${slug}_${name}.csv`;
+    document.body.appendChild(a);a.click();document.body.removeChild(a);
+    setTimeout(()=>URL.revokeObjectURL(url),1000);
+  }
+
   async function downloadAllCSVs(){
     const csvs=buildAllCSVs();
+    const sitelinks=buildAllSitelinks();
     for(let i=0;i<csvs.length;i++){
       const {name,cols,rows}=csvs[i];
       downloadSingleCSV(name,cols,rows);
+      await new Promise(res=>setTimeout(res,1200));
+    }
+    for(let i=0;i<sitelinks.length;i++){
+      const {name,content}=sitelinks[i];
+      downloadSitelinksFile(name,content);
       await new Promise(res=>setTimeout(res,1200));
     }
   }
@@ -1660,6 +1716,8 @@ ${sections}
   if(state==='results'&&gen){
     const g=gen;
     const allCsvs=buildAllCSVs();
+    const allSitelinks=buildAllSitelinks();
+    const totalFiles=allCsvs.length+allSitelinks.length;
     const totalKw=Object.values(g).reduce((s,v)=>v&&v.adGroups?s+kwStats(v.adGroups).total:s,0);
 
     return(
@@ -1680,7 +1738,7 @@ ${sections}
           </div>
           <div style={{display:'flex',gap:10}}>
             <button onClick={exportStrategyDoc} style={{padding:'12px 22px',borderRadius:10,border:'none',background:'linear-gradient(135deg, #1a4b8c, #2563eb)',color:'white',fontSize:14,fontWeight:700,cursor:'pointer',boxShadow:'0 4px 14px rgba(26,75,140,0.3)',display:'flex',alignItems:'center',gap:7}}>📄 Export Strategy Doc</button>
-            <button onClick={downloadAllCSVs} style={{padding:'12px 22px',borderRadius:10,border:'none',background:'linear-gradient(135deg, #059669, #10b981)',color:'white',fontSize:14,fontWeight:700,cursor:'pointer',boxShadow:'0 4px 14px rgba(5,150,105,0.35)'}}>⬇️ Download {allCsvs.length} CSV{allCsvs.length!==1?'s':''}</button>
+            <button onClick={downloadAllCSVs} style={{padding:'12px 22px',borderRadius:10,border:'none',background:'linear-gradient(135deg, #059669, #10b981)',color:'white',fontSize:14,fontWeight:700,cursor:'pointer',boxShadow:'0 4px 14px rgba(5,150,105,0.35)'}}>⬇️ Download {totalFiles} File{totalFiles!==1?'s':''}</button>
           </div>
         </div>
 
@@ -1694,20 +1752,32 @@ ${sections}
         </div>
 
         <div style={{background:'#fff',border:'1px solid #e5e8ee',borderRadius:12,padding:20,marginBottom:24}}>
-          <div style={{fontFamily:"'Playfair Display',serif",fontSize:18,fontWeight:700,marginBottom:12}}>📋 Files to Download ({allCsvs.length})</div>
+          <div style={{fontFamily:"'Playfair Display',serif",fontSize:18,fontWeight:700,marginBottom:12}}>📋 Files to Download ({totalFiles})</div>
           <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(260px,1fr))',gap:8}}>
             {allCsvs.map(({name,cols,rows},i)=>{
               const ct=CAMPAIGN_TYPES.find(c=>name.toLowerCase().includes(c.key.toLowerCase()));
               return(
-                <div key={i} style={{padding:'10px 14px',borderRadius:8,background:'#f8f9fc',border:'1px solid #e5e8ee',fontSize:12,display:'flex',alignItems:'center',justifyContent:'space-between',gap:10}}>
+                <div key={`csv_${i}`} style={{padding:'10px 14px',borderRadius:8,background:'#f8f9fc',border:'1px solid #e5e8ee',fontSize:12,display:'flex',alignItems:'center',justifyContent:'space-between',gap:10}}>
                   <div>
                     <div style={{fontWeight:700,color:'#1a2a3a'}}>{ct?.icon||'📄'} {name}.csv</div>
-                    <div style={{color:'#6b7280',fontSize:11,marginTop:2}}>{rows.length} rows</div>
+                    <div style={{color:'#6b7280',fontSize:11,marginTop:2}}>Main campaign · {rows.length} rows · UTF-8</div>
                   </div>
                   <button onClick={()=>downloadSingleCSV(name,cols,rows)} style={{padding:'6px 12px',borderRadius:6,border:'1px solid #059669',background:'#fff',color:'#059669',fontSize:11,fontWeight:700,cursor:'pointer',whiteSpace:'nowrap',flexShrink:0}}>⬇️ Download</button>
                 </div>
               );
             })}
+            {allSitelinks.map(({name,content},i)=>(
+              <div key={`sl_${i}`} style={{padding:'10px 14px',borderRadius:8,background:'#fef9c3',border:'1px solid #fde68a',fontSize:12,display:'flex',alignItems:'center',justifyContent:'space-between',gap:10}}>
+                <div>
+                  <div style={{fontWeight:700,color:'#1a2a3a'}}>📌 {name}.csv</div>
+                  <div style={{color:'#6b7280',fontSize:11,marginTop:2}}>Sitelinks · UTF-16 TSV</div>
+                </div>
+                <button onClick={()=>downloadSitelinksFile(name,content)} style={{padding:'6px 12px',borderRadius:6,border:'1px solid #854d0e',background:'#fff',color:'#854d0e',fontSize:11,fontWeight:700,cursor:'pointer',whiteSpace:'nowrap',flexShrink:0}}>⬇️ Download</button>
+              </div>
+            ))}
+          </div>
+          <div style={{marginTop:12,fontSize:11,color:'#6b7280',background:'#f8f9fc',padding:'8px 12px',borderRadius:6,lineHeight:1.6}}>
+            <b>Import order in Google Ads Editor:</b> open each main campaign CSV first (File → Import → From file), then import the matching sitelinks CSV separately (Extensions → Sitelinks → Import). Sitelinks are UTF-16 tab-separated to match Editor's native format.
           </div>
         </div>
 
@@ -1917,15 +1987,33 @@ ${sections}
       </div>
       <div style={{background:'#fff',border:'1px solid #e5e8ee',borderRadius:12,padding:28,marginBottom:20}}>
         <div style={{fontFamily:"'Playfair Display',serif",fontSize:22,fontWeight:700,marginBottom:4}}>🎙️ Meeting Transcript</div>
-        <IB type="ai">✨ Paste a client meeting transcript to auto-extract services, USPs and campaign angles.</IB>
+        <IB type="ai">✨ Paste text or upload a transcript file — AI auto-selects relevant services, USPs, trust signals and campaign angle. Combine with a website scan for the richest context.</IB>
+        <div style={{marginBottom:10}}>
+          <label style={{display:'block',fontWeight:600,fontSize:13,color:'#3a4a5a',marginBottom:6}}>Upload transcript file (.txt, .md, .srt, .vtt)</label>
+          <input type="file" accept=".txt,.md,.srt,.vtt,text/plain" onChange={e=>{
+            const file=e.target.files&&e.target.files[0];
+            if(!file) return;
+            const reader=new FileReader();
+            reader.onload=ev=>{
+              const txt=String(ev.target.result||'');
+              setTranscript(prev=>prev.trim()?prev+'\n\n'+txt:txt);
+            };
+            reader.onerror=()=>setError('Failed to read file.');
+            reader.readAsText(file);
+            e.target.value='';
+          }} style={{display:'block',width:'100%',padding:'8px 10px',border:'1px dashed #d0d5dd',borderRadius:8,fontSize:12,background:'#f8f9fc',cursor:'pointer'}}/>
+          <div style={{fontSize:11,color:'#9aa5b0',marginTop:4}}>Supports plain-text transcripts. For .docx or .pdf, export to .txt from Word/Docs first.</div>
+        </div>
         <div style={{marginBottom:14}}>
-          <label style={{display:'block',fontWeight:600,fontSize:13,color:'#3a4a5a',marginBottom:5}}>Transcript (optional)</label>
+          <label style={{display:'block',fontWeight:600,fontSize:13,color:'#3a4a5a',marginBottom:5}}>Or paste transcript text</label>
           <textarea value={transcript} onChange={e=>setTranscript(e.target.value)} placeholder="Paste transcript here..." style={{width:'100%',padding:'10px 14px',border:'2px solid #e0e5ec',borderRadius:8,fontSize:13,outline:'none',minHeight:120,resize:'vertical',background:'#fff',color:'#1a2a3a',lineHeight:1.6}}/>
+          {transcript&&<div style={{fontSize:11,color:'#9aa5b0',marginTop:4,display:'flex',justifyContent:'space-between'}}><span>{transcript.length.toLocaleString()} characters loaded</span><span style={{cursor:'pointer',color:'#dc2626',fontWeight:600}} onClick={()=>setTranscript('')}>✕ Clear</span></div>}
         </div>
         <div style={{display:'flex',gap:10,alignItems:'center',flexWrap:'wrap'}}>
           {transcript.trim()&&(
             <button onClick={parseTranscript} style={{padding:'11px 28px',borderRadius:9,border:'none',background:'linear-gradient(135deg,#7c3aed,#a78bfa)',color:'white',fontSize:14,fontWeight:700,cursor:'pointer'}}>🎙️ Extract from Transcript</button>
           )}
+          {transcript.trim()&&brief.website&&<span style={{fontSize:12,color:'#5a6a7a'}}>or use <b>Scan Website</b> above — transcript will enrich the scan automatically.</span>}
         </div>
       </div>
       <div style={{background:'#fff',border:'1px solid #e5e8ee',borderRadius:12,padding:28,marginBottom:20}}>
@@ -2189,7 +2277,7 @@ function Hdr({step}){
       <div style={{width:34,height:34,borderRadius:8,background:'linear-gradient(135deg, #e67e22, #f1c40f)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:17,fontWeight:700}}>S</div>
       <div>
         <div style={{fontWeight:700,fontSize:15}}>Syte Campaign Creator</div>
-        <div style={{fontSize:11,opacity:0.5}}>Multi-Campaign · DataForSEO Volume · v6.6</div>
+        <div style={{fontSize:11,opacity:0.5}}>Multi-Campaign · DataForSEO Volume · v6.7</div>
       </div>
       {step!==undefined&&(
         <div style={{marginLeft:'auto',display:'flex',gap:6,alignItems:'center'}}>
@@ -2201,7 +2289,7 @@ function Hdr({step}){
           ))}
         </div>
       )}
-      <div style={{fontSize:11,background:'linear-gradient(135deg, #7c3aed, #a78bfa)',padding:'4px 10px',borderRadius:10,fontWeight:700,marginLeft:8}}>v6.6 ✨</div>
+      <div style={{fontSize:11,background:'linear-gradient(135deg, #7c3aed, #a78bfa)',padding:'4px 10px',borderRadius:10,fontWeight:700,marginLeft:8}}>v6.7 ✨</div>
     </div>
   );
 }
