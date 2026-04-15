@@ -410,12 +410,34 @@ export default function MonthlyReport() {
       {/* Step 2: SEO data (auto-fetched, editable) */}
       {form.hasSeo && (
         <div className="card" style={{ marginBottom: 14 }}>
-          <div className="row" style={{ justifyContent: 'space-between' }}>
+          <div className="row" style={{ justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
             <strong>SEO Data</strong>
-            {(form.seoUsersThis || form.gscClicksThis) && (
-              <span className="badge green" style={{ fontSize: 9 }}>Auto-populated from GA4 + GSC</span>
-            )}
+            <div className="row" style={{ gap: 8 }}>
+              {(form.seoUsersThis || form.gscClicksThis) && (
+                <span className="badge green" style={{ fontSize: 9 }}>Auto-populated from GA4 + GSC</span>
+              )}
+              {client.looker_url && (
+                <a
+                  href={client.looker_url}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{
+                    display: 'inline-flex', alignItems: 'center', gap: 6,
+                    padding: '6px 14px', borderRadius: 'var(--radius)',
+                    background: 'rgba(167,139,250,.1)', border: '1px solid rgba(167,139,250,.3)',
+                    color: ACCENT, fontSize: 12, fontWeight: 600, textDecoration: 'none'
+                  }}
+                >
+                  📊 Open Looker Report →
+                </a>
+              )}
+            </div>
           </div>
+          {!client.looker_url && (
+            <div className="muted" style={{ fontSize: 11, marginTop: 6, padding: '6px 10px', background: 'var(--surface-2)', borderRadius: 6 }}>
+              Tip: Add this client's Looker Studio URL in <strong>Edit Client → Reporting & AEO → Looker Dashboard URL</strong> for quick access to their full SEO dashboard.
+            </div>
+          )}
           <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--text-dim)', margin: '12px 0 6px' }}>Traffic</div>
           <div className="grid-3">
             <div><label>Total users (this)</label><input value={form.seoUsersThis || ''} onChange={e => update('seoUsersThis', e.target.value)} /></div>
