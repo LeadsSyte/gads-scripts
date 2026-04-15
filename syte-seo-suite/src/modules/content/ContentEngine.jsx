@@ -8,6 +8,7 @@ import TopicResearch from './TopicResearch.jsx';
 import AutoWrite from './AutoWrite.jsx';
 import GenerateImageButton from '../../components/GenerateImageButton.jsx';
 import MarkImplementedButton from '../../components/MarkImplementedButton.jsx';
+import { saveBlogResult, listBlogResults, deleteBlogResult } from '../../lib/supabase.js';
 
 const ACCENT = '#c8ff00';
 const HISTORY_KEY = 'syte-suite-content-history';
@@ -346,6 +347,129 @@ export default function ContentEngine({ sub, setSub }) {
   const [lastUserPrompt, setLastUserPrompt] = useState('');
   const [expandedClient, setExpandedClient] = useState(null);
 
+  // ───── Quick Blog Generator (topic → blog, mirrors AEO Deep Opt UX) ─────
+  const [quickClientId, setQuickClientId] = useState('');
+  const [quickTopic, setQuickTopic] = useState('');
+  const [quickKeyword, setQuickKeyword] = useState('');
+  const [quickLength, setQuickLength] = useState(1500);
+  const [quickOutput, setQuickOutput] = useState('');
+  const [quickBusy, setQuickBusy] = useState(false);
+  const [quickProgress, setQuickProgress] = useState(0);
+  const [quickPhase, setQuickPhase] = useState('');
+  const [quickErr, setQuickErr] = useState('');
+  const [quickHistory, setQuickHistory] = useState([]);
+  const [quickSystem, setQuickSystem] = useState('');
+  const [quickUserPrompt, setQuickUserPrompt] = useState('');
+  const [quickBlogId, setQuickBlogId] = useState(null);
+
+  // Default the quick-blog client to the top-bar client and load history.
+  useEffect(() => {
+    if (!quickClientId && client?.id) setQuickClientId(client.id);
+  }, [client?.id]);
+
+  useEffect(() => {
+    listBlogResults().then(setQuickHistory).catch(() => {});
+  }, []);
+
+  async function runQuickBlog() {
+    const qc = allClients.find(c => c.id === quickClientId) || client;
+    if (!qc) { setQuickErr('Select a client to link this blog to.'); return; }
+    const topicText = quickTopic.trim();
+    if (!topicText) { setQuickErr('Enter a topic.'); return; }
+
+    setQuickBusy(true); setQuickErr(''); setQuickOutput('');
+    setQuickPhase('Preparing prompt…'); setQuickProgress(2);
+    setQuickBlogId(null);
+
+    const system = buildSystemPrompt(qc, '', null);
+    const userPrompt = TAB_PROMPTS['New Article'](topicText, quickKeyword, quickLength);
+    setQuickSystem(system);
+    setQuickUserPrompt(userPrompt);
+
+    // Expected output is roughly 6 chars/word for HTML + metas + QA block.
+    const expectedChars = Math.max(3000, quickLength * 6 + 1500);
+    setQuickPhase('Generating article…'); setQuickProgress(8);
+
+    try {
+      let buf = '';
+      await claudeStream({
+        system,
+        messages: [{ role: 'user', content: userPrompt }],
+        max_tokens: 8000,
+        temperature: 0.7,
+        onDelta: (t) => {
+          buf += t;
+          setQuickOutput(buf);
+          // Real progress: how much of the expected output we've received.
+          // Cap at 95% so the last 5% is reserved for parsing + save.
+          const pct = Math.min(95, 8 + (buf.length / expectedChars) * 87);
+          setQuickProgress(pct);
+        }
+      });
+      setQuickPhase('Saving…'); setQuickProgress(97);
+      const saved = await saveBlogResult({
+        client_id: qc.id,
+        client_name: qc.name,
+        topic: topicText,
+        keyword: quickKeyword,
+        length: quickLength,
+        output: buf,
+        generated_at: new Date().toISOString()
+      });
+      setQuickBlogId(saved?.id || null);
+      const fresh = await listBlogResults();
+      setQuickHistory(fresh);
+      setQuickPhase('Done ✓'); setQuickProgress(100);
+    } catch (e) {
+      setQuickErr(e.message);
+      setQuickPhase('Failed');
+    } finally {
+      setQuickBusy(false);
+    }
+  }
+
+  async function removeQuickBlog(id) {
+    try {
+      await deleteBlogResult(id);
+      setQuickHistory(prev => prev.filter(r => r.id !== id));
+      if (quickBlogId === id) { setQuickBlogId(null); setQuickOutput(''); }
+    } catch (e) { console.warn('[Blog] delete failed:', e.message); }
+  }
+
+  function loadQuickBlog(row) {
+    setQuickBlogId(row.id);
+    setQuickOutput(row.output || '');
+    setQuickTopic(row.topic || '');
+    setQuickKeyword(row.keyword || '');
+    setQuickLength(row.length || 1500);
+    setQuickClientId(row.client_id || '');
+    setQuickErr('');
+  }
+
+  // Push item for the quick-blog output (reuses the same shape as the main form).
+  const quickPushItem = useMemo(() => {
+    if (!quickOutput) return null;
+    const titleMatch = quickOutput.match(/Meta Title[:\s]*(.+)/i);
+    const descMatch = quickOutput.match(/Meta Description[:\s]*(.+)/i);
+    const schemaMatch = quickOutput.match(/```json([\s\S]*?)```/);
+    const faqMatch = quickOutput.match(/(?:FAQ|Frequently Asked)[\s\S]*/i);
+    const qc = allClients.find(c => c.id === quickClientId);
+    return {
+      module: 'content',
+      page_url: qc?.url || '',
+      page_title: quickTopic || quickKeyword || 'Generated Article',
+      change_type: 'article',
+      payload: {
+        meta_title: titleMatch ? titleMatch[1].trim() : '',
+        meta_description: descMatch ? descMatch[1].trim() : '',
+        primary_keyword: quickKeyword,
+        schema: schemaMatch ? schemaMatch[1].trim() : '',
+        faq: faqMatch ? faqMatch[0] : '',
+        html: quickOutput
+      }
+    };
+  }, [quickOutput, quickTopic, quickKeyword, quickClientId, allClients]);
+
   const tab = sub || 'Auto Write';
   const scores = useMemo(() => (output ? extractJSON(output) : null), [output]);
 
@@ -568,6 +692,188 @@ export default function ContentEngine({ sub, setSub }) {
         <h2 style={{ margin: 0 }}>{tab}</h2>
         <span className="badge" style={{ borderColor: ACCENT, color: ACCENT }}>SEO Content Engine</span>
       </div>
+
+      {/* ───────── Quick Blog Generator (topic-only, persisted) ───────── */}
+      {tab === 'New Article' && (
+        <>
+          <div style={{ marginBottom: 4 }}>
+            <h3 style={{ margin: '0 0 4px' }}>Quick Blog Generator</h3>
+            <div className="muted" style={{ fontSize: 12, marginBottom: 12 }}>
+              Enter a topic and pick a client — Syte will generate a full blog article (body + meta + FAQ schema + QA score) and save it to the client's history. Use this for one-off requests outside the Topic Research flow.
+            </div>
+          </div>
+          <div className="card" style={{ marginBottom: 16 }}>
+            <div className="row" style={{ gap: 8, alignItems: 'flex-end', marginBottom: 10, flexWrap: 'wrap' }}>
+              <div style={{ minWidth: 200 }}>
+                <label>Link to client</label>
+                <select
+                  value={quickClientId}
+                  onChange={e => setQuickClientId(e.target.value)}
+                  disabled={quickBusy}
+                  style={{ width: '100%' }}
+                >
+                  <option value="">— Select client —</option>
+                  {allClients.map(c => (
+                    <option key={c.id} value={c.id}>{c.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div style={{ flex: 2, minWidth: 240 }}>
+                <label>Topic / Angle</label>
+                <input
+                  type="text"
+                  placeholder='e.g. "Why LASIK recovery is faster than most people expect"'
+                  value={quickTopic}
+                  onChange={e => setQuickTopic(e.target.value)}
+                  disabled={quickBusy}
+                  style={{ width: '100%' }}
+                />
+              </div>
+              <div style={{ flex: 1, minWidth: 160 }}>
+                <label>Primary Keyword (optional)</label>
+                <input
+                  type="text"
+                  placeholder="e.g. lasik recovery time"
+                  value={quickKeyword}
+                  onChange={e => setQuickKeyword(e.target.value)}
+                  disabled={quickBusy}
+                  style={{ width: '100%' }}
+                />
+              </div>
+              <div style={{ width: 110 }}>
+                <label>Length (words)</label>
+                <input
+                  type="number"
+                  min={400}
+                  max={4000}
+                  step={100}
+                  value={quickLength}
+                  onChange={e => setQuickLength(parseInt(e.target.value) || 1500)}
+                  disabled={quickBusy}
+                  style={{ width: '100%' }}
+                />
+              </div>
+              <button
+                className="primary"
+                style={{ background: ACCENT, borderColor: ACCENT, color: '#0a0a0c' }}
+                onClick={runQuickBlog}
+                disabled={quickBusy || !quickClientId || !quickTopic.trim()}
+              >
+                {quickBusy ? 'Generating…' : 'Generate Blog'}
+              </button>
+            </div>
+            {!quickClientId && <div className="muted" style={{ fontSize: 11 }}>Pick a client to attribute this blog to.</div>}
+            {quickErr && <div style={{ color: 'var(--red)', fontSize: 12, marginTop: 8 }}>{quickErr}</div>}
+
+            {/* Progress bar */}
+            {(quickBusy || (quickProgress > 0 && quickProgress < 100)) && (
+              <div style={{ marginTop: 12, padding: 12, background: 'var(--surface-2)', borderRadius: 8, border: '1px solid var(--border)' }}>
+                <div className="row" style={{ justifyContent: 'space-between', marginBottom: 6 }}>
+                  <div className="row" style={{ gap: 8 }}>
+                    {quickBusy && <span className="spinner" style={{ width: 12, height: 12, borderWidth: 2 }} />}
+                    <span style={{ fontSize: 12, fontWeight: 600 }}>{quickPhase || 'Working…'}</span>
+                  </div>
+                  <span className="muted" style={{ fontSize: 11, fontVariantNumeric: 'tabular-nums' }}>{Math.round(quickProgress)}%</span>
+                </div>
+                <div style={{ height: 6, background: 'var(--surface-3, #1a1c20)', borderRadius: 999, overflow: 'hidden' }}>
+                  <div style={{
+                    width: quickProgress + '%',
+                    height: '100%',
+                    background: 'linear-gradient(90deg, ' + ACCENT + ', #4dabff)',
+                    transition: 'width 200ms ease-out',
+                    borderRadius: 999
+                  }} />
+                </div>
+                <div className="muted" style={{ fontSize: 10, marginTop: 6 }}>
+                  Streaming article from Claude — full ~{quickLength}-word blog usually takes 20–45 seconds.
+                </div>
+              </div>
+            )}
+
+            {quickOutput && !quickBusy && (
+              <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid var(--border)' }}>
+                {(() => {
+                  const qc = allClients.find(c => c.id === quickClientId);
+                  return qc && (
+                    <div className="muted" style={{ fontSize: 11, marginBottom: 8 }}>
+                      Linked to <strong style={{ color: ACCENT }}>{qc.name}</strong>
+                      {quickBlogId && ' · saved to history'}
+                    </div>
+                  );
+                })()}
+                <ParsedOutput
+                  output={quickOutput}
+                  topic={quickTopic}
+                  pushItem={quickPushItem}
+                  exportTxt={exportTxt}
+                  exportDocx={exportDocx}
+                  systemPrompt={quickSystem}
+                  userPrompt={quickUserPrompt}
+                  onOutputUpdate={setQuickOutput}
+                />
+              </div>
+            )}
+          </div>
+
+          {/* Quick Blog History — persisted to Supabase */}
+          {quickHistory.length > 0 && (
+            <div className="card" style={{ marginBottom: 16 }}>
+              <div className="row" style={{ justifyContent: 'space-between', marginBottom: 10 }}>
+                <strong style={{ fontSize: 13 }}>Quick Blog History</strong>
+                <span className="muted" style={{ fontSize: 11 }}>{quickHistory.length} saved</span>
+              </div>
+              <div style={{ border: '1px solid var(--border)', borderRadius: 6 }}>
+                {quickHistory.slice(0, 20).map(r => {
+                  const isOpen = quickBlogId === r.id;
+                  return (
+                    <div key={r.id} style={{ borderBottom: '1px solid var(--border)' }}>
+                      <div className="row" style={{
+                        padding: '10px 12px', justifyContent: 'space-between', gap: 8,
+                        background: isOpen ? 'var(--surface-2)' : 'transparent', cursor: 'pointer'
+                      }} onClick={() => isOpen ? (setQuickBlogId(null), setQuickOutput('')) : loadQuickBlog(r)}>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: 12, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {r.topic}
+                          </div>
+                          <div className="muted" style={{ fontSize: 10, marginTop: 2 }}>
+                            {r.client_name || '—'}
+                            {r.keyword ? ' · kw: ' + r.keyword : ''}
+                            {' · '}{r.length || 1500}w
+                            {' · '}{new Date(r.generated_at).toLocaleDateString()} {new Date(r.generated_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                          </div>
+                        </div>
+                        <div className="row" style={{ gap: 6, flexShrink: 0 }}>
+                          <button style={{ fontSize: 10, padding: '3px 8px' }} onClick={(e) => { e.stopPropagation(); isOpen ? (setQuickBlogId(null), setQuickOutput('')) : loadQuickBlog(r); }}>
+                            {isOpen ? 'Hide' : 'View'}
+                          </button>
+                          <button
+                            style={{ fontSize: 10, padding: '3px 8px', color: 'var(--red)', borderColor: 'rgba(255,77,77,.3)' }}
+                            onClick={(e) => { e.stopPropagation(); if (confirm('Delete this blog from history?')) removeQuickBlog(r.id); }}
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              {quickHistory.length > 20 && (
+                <div className="muted" style={{ fontSize: 10, padding: '8px 12px 0' }}>
+                  Showing most recent 20 of {quickHistory.length}.
+                </div>
+              )}
+            </div>
+          )}
+
+          <div style={{ borderTop: '1px solid var(--border)', marginTop: 24, paddingTop: 20 }}>
+            <h3 style={{ margin: '0 0 4px' }}>Advanced: New Article (with research context)</h3>
+            <div className="muted" style={{ fontSize: 12, marginBottom: 12 }}>
+              Uses the top-bar selected client and any ranking context from Topic Research.
+            </div>
+          </div>
+        </>
+      )}
 
       <div className="card" style={{ marginBottom: 16 }}>
         <div className="grid-2">

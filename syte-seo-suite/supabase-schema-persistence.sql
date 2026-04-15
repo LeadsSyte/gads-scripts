@@ -70,3 +70,24 @@ create index if not exists syte_suite_aeo_deep_client_idx
   on syte_suite_aeo_deep(client_id, generated_at desc);
 
 alter table syte_suite_aeo_deep disable row level security;
+
+-- 5. Content Engine — Quick Blog generations (topic-driven, persisted).
+-- Separate from syte_suite_cms_queue (pre-push) and content history in
+-- localStorage. This table is the single source of truth for blogs
+-- generated via the Quick Blog Generator.
+create table if not exists syte_suite_content_blogs (
+  id uuid primary key default gen_random_uuid(),
+  client_id uuid references syte_suite_clients(id) on delete cascade,
+  client_name text,
+  topic text not null,
+  keyword text,
+  length int default 1500,
+  output text,                         -- full raw model output (body + metas + schemas + QA)
+  generated_at timestamptz default now(),
+  created_at timestamptz default now()
+);
+
+create index if not exists syte_suite_content_blogs_client_idx
+  on syte_suite_content_blogs(client_id, generated_at desc);
+
+alter table syte_suite_content_blogs disable row level security;

@@ -551,3 +551,57 @@ export async function deleteDeepResult(id) {
   } catch {}
 }
 
+// ---------------------------------------------------------------------------
+// Content Engine — Quick Blog generations (topic-driven, persisted).
+// ---------------------------------------------------------------------------
+
+const BLOGS_KEY = LS_PREFIX + 'content_blogs';
+
+export async function saveBlogResult(blog) {
+  const row = {
+    client_id: blog.client_id,
+    client_name: blog.client_name,
+    topic: blog.topic,
+    keyword: blog.keyword || '',
+    length: blog.length || 1500,
+    output: blog.output || '',
+    generated_at: blog.generated_at || new Date().toISOString()
+  };
+  if (supabase) {
+    const { data, error } = await supabase
+      .from('syte_suite_content_blogs').insert(row).select().single();
+    if (error) throw error;
+    return data;
+  }
+  const list = JSON.parse(localStorage.getItem(BLOGS_KEY) || '[]');
+  const saved = { id: crypto.randomUUID(), ...row, created_at: new Date().toISOString() };
+  list.unshift(saved);
+  localStorage.setItem(BLOGS_KEY, JSON.stringify(list));
+  return saved;
+}
+
+export async function listBlogResults(clientId) {
+  if (supabase) {
+    let q = supabase
+      .from('syte_suite_content_blogs').select('*')
+      .order('generated_at', { ascending: false });
+    if (clientId) q = q.eq('client_id', clientId);
+    const { data, error } = await q;
+    if (error) throw error;
+    localStorage.setItem(BLOGS_KEY, JSON.stringify(data || []));
+    return data || [];
+  }
+  const list = JSON.parse(localStorage.getItem(BLOGS_KEY) || '[]');
+  return clientId ? list.filter(r => r.client_id === clientId) : list;
+}
+
+export async function deleteBlogResult(id) {
+  if (supabase) {
+    await supabase.from('syte_suite_content_blogs').delete().eq('id', id);
+  }
+  try {
+    const list = JSON.parse(localStorage.getItem(BLOGS_KEY) || '[]');
+    localStorage.setItem(BLOGS_KEY, JSON.stringify(list.filter(r => r.id !== id)));
+  } catch {}
+}
+
