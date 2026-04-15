@@ -9,7 +9,7 @@ import MarkImplementedButton from '../../components/MarkImplementedButton.jsx';
 import PipelineView from '../../components/PipelineView.jsx';
 import { aeoPipelineStatus } from '../../lib/pipelineStatus.js';
 import { listAllImplementations, saveAeoResult, loadAeoResults as loadAeoResultsFromDb, deleteAeoResult } from '../../lib/supabase.js';
-import { AEO_SYSTEM, AEO_TYPES } from './aeoTypes.js';
+import { AEO_SYSTEM, AEO_TYPES, AEO_DEEP_SYSTEM } from './aeoTypes.js';
 import { fetchSitemapUrls } from './sitemap.js';
 import { listAccountSummaries, runReport } from './ga4.js';
 import { ensureToken, SCOPES, getToken, clearToken } from '../technical/googleAuth.js';
@@ -23,6 +23,45 @@ function loadResults() { try { return JSON.parse(localStorage.getItem(RESULTS_KE
 function saveResults(r) { localStorage.setItem(RESULTS_KEY, JSON.stringify(r)); }
 function loadHistory() { try { return JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]'); } catch { return []; } }
 function saveHistory(h) { localStorage.setItem(HISTORY_KEY, JSON.stringify(h.slice(0, 100))); }
+
+// Deep optimization — full page rewrite with FAQ + changes log.
+// Returns { description, faq, changesDescription, changesFaq, productSchema, faqSchema }.
+async function generateDeepForPage(pageUrl, client) {
+  let pageHtml = '';
+  let pageTitle = '';
+  try {
+    pageHtml = (await corsFetchText(pageUrl)).slice(0, 50000);
+    const titleMatch = pageHtml.match(/<title[^>]*>([^<]+)<\/title>/i);
+    if (titleMatch) pageTitle = titleMatch[1].trim();
+  } catch {}
+
+  let slug = '';
+  try { slug = new URL(pageUrl).pathname.split('/').filter(Boolean).pop() || ''; } catch {}
+  const inferredTopic = pageTitle || slug.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+
+  const text = await claudeComplete({
+    system: AEO_DEEP_SYSTEM,
+    messages: [{
+      role: 'user',
+      content: `Deep-optimize this page for AI engine citability. Produce a full rewrite + FAQ + changes explanation.
+
+Page URL: ${pageUrl}
+Page topic: ${inferredTopic}
+Client: ${client?.name || ''}
+Industry: ${client?.industry || ''}
+Location: ${client?.location || ''}
+${client?.context ? 'Business context: ' + client.context : ''}
+
+${pageHtml ? 'Current page HTML (source material — reorganize and clarify, do not invent new facts):\n' + pageHtml : 'Page HTML not accessible (CORS). Infer conservatively from URL, topic, and client context.'}
+
+Return the JSON object as specified in the system prompt.`
+    }],
+    model: 'claude-sonnet-4-20250514',
+    max_tokens: 16000,
+    temperature: 0.4
+  });
+  return extractJSON(text);
+}
 
 async function generateForPage(pageUrl, client) {
   // Try to fetch the actual page HTML for analysis.
@@ -173,6 +212,162 @@ function OptPageCard({ result: r, onDelete }) {
   );
 }
 
+// Copy-to-clipboard button for deep optimization sections.
+function CopyBtn({ text, label = 'Copy' }) {
+  const [copied, setCopied] = React.useState(false);
+  return (
+    <button
+      onClick={() => {
+        navigator.clipboard.writeText(text || '').catch(() => {});
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
+      }}
+      style={{ fontSize: 10, padding: '3px 10px' }}
+    >
+      {copied ? 'Copied ✓' : label}
+    </button>
+  );
+}
+
+// Displays the full deep optimization result — description, FAQ, changes logs, schemas.
+function DeepResultDisplay({ result }) {
+  if (!result) return null;
+  const {
+    pageUrl, pageTitle, description = '', faq = '',
+    changesDescription = [], changesFaq = [],
+    productSchema = '', faqSchema = ''
+  } = result;
+
+  const sectionStyle = { marginBottom: 18, border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' };
+  const headerStyle = { padding: '10px 14px', background: 'var(--surface-2)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 };
+  const bodyStyle = { padding: 14, maxHeight: 500, overflowY: 'auto' };
+  const htmlStyle = { fontSize: 13, lineHeight: 1.6, color: 'var(--text)' };
+
+  return (
+    <div>
+      <div className="row" style={{ justifyContent: 'space-between', marginBottom: 12 }}>
+        <div>
+          <div style={{ fontSize: 13, fontWeight: 600 }}>{pageTitle || pageUrl}</div>
+          <div className="muted" style={{ fontSize: 11 }}>{pageUrl}</div>
+        </div>
+        <span className="badge" style={{ fontSize: 10, borderColor: ACCENT, color: ACCENT }}>Deep Optimization</span>
+      </div>
+
+      {/* Section 1: Optimized Page Description */}
+      <div style={sectionStyle}>
+        <div style={headerStyle}>
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em', color: ACCENT }}>1. Optimized Product/Page Description</div>
+            <div className="muted" style={{ fontSize: 11 }}>Full rewrite — paste into your product description field</div>
+          </div>
+          <CopyBtn text={description} label="Copy HTML" />
+        </div>
+        <div style={bodyStyle}>
+          <div style={htmlStyle} dangerouslySetInnerHTML={{ __html: description || '<em class="muted">(empty)</em>' }} />
+        </div>
+      </div>
+
+      {/* Section 2: Optimized FAQ */}
+      <div style={sectionStyle}>
+        <div style={headerStyle}>
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em', color: ACCENT }}>2. FAQ Section (AEO-Optimized)</div>
+            <div className="muted" style={{ fontSize: 11 }}>10–15 conversational questions with direct answers</div>
+          </div>
+          <CopyBtn text={faq} label="Copy HTML" />
+        </div>
+        <div style={bodyStyle}>
+          <div style={htmlStyle} dangerouslySetInnerHTML={{ __html: faq || '<em class="muted">(empty)</em>' }} />
+        </div>
+      </div>
+
+      {/* Section 3: Changes Description */}
+      <div style={sectionStyle}>
+        <div style={headerStyle}>
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em', color: ACCENT }}>3. Changes Made — Product Description</div>
+            <div className="muted" style={{ fontSize: 11 }}>Explains each change so the AM can review + justify to the client</div>
+          </div>
+          <CopyBtn
+            text={changesDescription.map((c, i) => `${i + 1}. ${c.title}\n   ${c.detail}`).join('\n\n')}
+            label="Copy List"
+          />
+        </div>
+        <div style={bodyStyle}>
+          {changesDescription.length === 0 ? <div className="muted" style={{ fontSize: 12 }}>(none)</div> : (
+            <ol style={{ margin: 0, paddingLeft: 20 }}>
+              {changesDescription.map((c, i) => (
+                <li key={i} style={{ marginBottom: 10 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600 }}>{c.title}</div>
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>{c.detail}</div>
+                </li>
+              ))}
+            </ol>
+          )}
+        </div>
+      </div>
+
+      {/* Section 4: Changes FAQ */}
+      <div style={sectionStyle}>
+        <div style={headerStyle}>
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em', color: ACCENT }}>4. Changes Made — FAQ</div>
+            <div className="muted" style={{ fontSize: 11 }}>Rationale for each FAQ addition, edit, or disclaimer</div>
+          </div>
+          <CopyBtn
+            text={changesFaq.map((c, i) => `${i + 1}. ${c.title}\n   ${c.detail}`).join('\n\n')}
+            label="Copy List"
+          />
+        </div>
+        <div style={bodyStyle}>
+          {changesFaq.length === 0 ? <div className="muted" style={{ fontSize: 12 }}>(none)</div> : (
+            <ol style={{ margin: 0, paddingLeft: 20 }}>
+              {changesFaq.map((c, i) => (
+                <li key={i} style={{ marginBottom: 10 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600 }}>{c.title}</div>
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>{c.detail}</div>
+                </li>
+              ))}
+            </ol>
+          )}
+        </div>
+      </div>
+
+      {/* Section 5: Schemas (optional) */}
+      {(productSchema || faqSchema) && (
+        <div style={sectionStyle}>
+          <div style={headerStyle}>
+            <div>
+              <div style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em', color: ACCENT }}>5. Structured Data (JSON-LD)</div>
+              <div className="muted" style={{ fontSize: 11 }}>Paste into &lt;head&gt; or the page's schema field</div>
+            </div>
+          </div>
+          <div style={bodyStyle}>
+            {productSchema && (
+              <div style={{ marginBottom: 12 }}>
+                <div className="row" style={{ justifyContent: 'space-between', marginBottom: 4 }}>
+                  <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-dim)' }}>Product Schema</span>
+                  <CopyBtn text={productSchema} />
+                </div>
+                <pre style={{ background: '#0d0e11', border: '1px solid var(--border)', borderRadius: 6, padding: 10, fontSize: 10, lineHeight: 1.5, color: '#c8d0d8', overflowX: 'auto', maxHeight: 200, whiteSpace: 'pre-wrap' }}>{productSchema}</pre>
+              </div>
+            )}
+            {faqSchema && (
+              <div>
+                <div className="row" style={{ justifyContent: 'space-between', marginBottom: 4 }}>
+                  <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-dim)' }}>FAQPage Schema</span>
+                  <CopyBtn text={faqSchema} />
+                </div>
+                <pre style={{ background: '#0d0e11', border: '1px solid var(--border)', borderRadius: 6, padding: 10, fontSize: 10, lineHeight: 1.5, color: '#c8d0d8', overflowX: 'auto', maxHeight: 200, whiteSpace: 'pre-wrap' }}>{faqSchema}</pre>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function AEOEngine({ sub }) {
   const clients = useClients(s => s.clients);
   const client = useClients(s => s.current());
@@ -183,6 +378,28 @@ export default function AEOEngine({ sub }) {
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState('');
   const [err, setErr] = useState('');
+
+  // Deep optimization state — single page, full rewrite + FAQ + changes log.
+  const [deepUrl, setDeepUrl] = useState('');
+  const [deepResult, setDeepResult] = useState(null);
+  const [deepBusy, setDeepBusy] = useState(false);
+  const [deepErr, setDeepErr] = useState('');
+
+  async function runDeepOptimization() {
+    if (!client) { setDeepErr('Select a client first.'); return; }
+    const url = deepUrl.trim();
+    if (!url) { setDeepErr('Enter a page URL.'); return; }
+    try { new URL(url); } catch { setDeepErr('Enter a valid URL (e.g. https://example.com/page/)'); return; }
+    setDeepBusy(true); setDeepErr(''); setDeepResult(null);
+    try {
+      const result = await generateDeepForPage(url, client);
+      setDeepResult({ ...result, pageUrl: result?.pageUrl || url, generated_at: new Date().toISOString() });
+    } catch (e) {
+      setDeepErr(e.message);
+    } finally {
+      setDeepBusy(false);
+    }
+  }
 
   // Load from Supabase on mount (merges with localStorage).
   useEffect(() => {
@@ -574,6 +791,50 @@ export default function AEOEngine({ sub }) {
             );
           }}
         />
+
+        {/* ───────── Single Page Deep Optimization ───────── */}
+        <div style={{ borderTop: '1px solid var(--border)', marginTop: 20, paddingTop: 16 }}>
+          <h3 style={{ margin: '0 0 4px' }}>Single Page Deep Optimization</h3>
+          <div className="muted" style={{ fontSize: 12, marginBottom: 12 }}>
+            Enter one page URL for a full rewrite — product description, 10–15 FAQ questions, and a changes log explaining every edit. Use this when a page needs a comprehensive overhaul, not just quick-win snippets.
+          </div>
+        </div>
+        <div className="card">
+          <div className="row" style={{ gap: 8, alignItems: 'flex-end', marginBottom: 10 }}>
+            <div style={{ flex: 1 }}>
+              <label>Page URL to deep-optimize</label>
+              <input
+                type="url"
+                placeholder="https://example.com/product-or-service-page/"
+                value={deepUrl}
+                onChange={e => setDeepUrl(e.target.value)}
+                disabled={deepBusy}
+                style={{ width: '100%' }}
+              />
+            </div>
+            <button
+              className="primary"
+              style={{ background: ACCENT, borderColor: ACCENT, color: '#000' }}
+              onClick={runDeepOptimization}
+              disabled={deepBusy || !client || !deepUrl.trim()}
+            >
+              {deepBusy ? 'Deep-optimizing…' : 'Deep Optimize This Page'}
+            </button>
+          </div>
+          {!client && <div className="muted" style={{ fontSize: 11 }}>Select a client first (top bar).</div>}
+          {deepErr && <div style={{ color: 'var(--red)', fontSize: 12, marginTop: 8 }}>{deepErr}</div>}
+          {deepBusy && (
+            <div className="row" style={{ gap: 10, marginTop: 10, padding: 10, background: 'var(--surface-2)', borderRadius: 6 }}>
+              <span className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} />
+              <span style={{ fontSize: 12 }}>Fetching page, analyzing content, and generating full rewrite — this may take 30–60 seconds.</span>
+            </div>
+          )}
+          {deepResult && !deepBusy && (
+            <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid var(--border)' }}>
+              <DeepResultDisplay result={deepResult} />
+            </div>
+          )}
+        </div>
 
         <div style={{ borderTop: '1px solid var(--border)', marginTop: 20, paddingTop: 16 }}>
           <h3 style={{ margin: '0 0 12px' }}>Run for Selected Client</h3>
