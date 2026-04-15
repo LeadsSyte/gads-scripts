@@ -241,7 +241,8 @@ function DeepResultDisplay({ result }) {
   const {
     pageUrl, pageTitle, description = '', faq = '',
     changesDescription = [], changesFaq = [],
-    productSchema = '', faqSchema = ''
+    productSchema = '', faqSchema = '',
+    internalLinks = []
   } = result;
 
   const sectionStyle = { marginBottom: 18, border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' };
@@ -287,11 +288,44 @@ function DeepResultDisplay({ result }) {
         </div>
       </div>
 
-      {/* Section 3: Changes Description */}
+      {/* Section 3: Internal Linking Suggestions */}
       <div style={sectionStyle}>
         <div style={headerStyle}>
           <div>
-            <div style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em', color: ACCENT }}>3. Changes Made — Product Description</div>
+            <div style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em', color: ACCENT }}>3. Internal Linking Opportunities</div>
+            <div className="muted" style={{ fontSize: 11 }}>Concrete links to add — comparisons, variants, related content, buying guides</div>
+          </div>
+          <CopyBtn
+            text={internalLinks.map((l, i) => `${i + 1}. ${l.anchor}\n   Target: ${l.targetHint}\n   Why: ${l.reason}`).join('\n\n')}
+            label="Copy List"
+          />
+        </div>
+        <div style={bodyStyle}>
+          {internalLinks.length === 0 ? <div className="muted" style={{ fontSize: 12 }}>(none suggested)</div> : (
+            <ol style={{ margin: 0, paddingLeft: 20 }}>
+              {internalLinks.map((l, i) => (
+                <li key={i} style={{ marginBottom: 10 }}>
+                  <div style={{ fontSize: 13 }}>
+                    <strong>{l.anchor}</strong>
+                    {l.targetHint && (
+                      <span style={{ fontSize: 11, color: 'var(--teal)', marginLeft: 8, fontFamily: 'JetBrains Mono, monospace' }}>
+                        → {l.targetHint}
+                      </span>
+                    )}
+                  </div>
+                  {l.reason && <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>{l.reason}</div>}
+                </li>
+              ))}
+            </ol>
+          )}
+        </div>
+      </div>
+
+      {/* Section 4: Changes Description */}
+      <div style={sectionStyle}>
+        <div style={headerStyle}>
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em', color: ACCENT }}>4. Changes Made — Product Description</div>
             <div className="muted" style={{ fontSize: 11 }}>Explains each change so the AM can review + justify to the client</div>
           </div>
           <CopyBtn
@@ -317,7 +351,7 @@ function DeepResultDisplay({ result }) {
       <div style={sectionStyle}>
         <div style={headerStyle}>
           <div>
-            <div style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em', color: ACCENT }}>4. Changes Made — FAQ</div>
+            <div style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em', color: ACCENT }}>5. Changes Made — FAQ</div>
             <div className="muted" style={{ fontSize: 11 }}>Rationale for each FAQ addition, edit, or disclaimer</div>
           </div>
           <CopyBtn
@@ -344,7 +378,7 @@ function DeepResultDisplay({ result }) {
         <div style={sectionStyle}>
           <div style={headerStyle}>
             <div>
-              <div style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em', color: ACCENT }}>5. Structured Data (JSON-LD)</div>
+              <div style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em', color: ACCENT }}>6. Structured Data (JSON-LD)</div>
               <div className="muted" style={{ fontSize: 11 }}>Paste into &lt;head&gt; or the page's schema field</div>
             </div>
           </div>

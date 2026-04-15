@@ -62,9 +62,13 @@ create table if not exists syte_suite_aeo_deep (
   changes_faq jsonb,                   -- [{title, detail}, ...]
   product_schema text,                 -- JSON-LD <script>
   faq_schema text,                     -- JSON-LD <script>
+  internal_links jsonb,                -- [{anchor, targetHint, reason}, ...]
   generated_at timestamptz default now(),
   created_at timestamptz default now()
 );
+
+-- Re-run safe: add internal_links column if missing on existing installs.
+alter table syte_suite_aeo_deep add column if not exists internal_links jsonb;
 
 create index if not exists syte_suite_aeo_deep_client_idx
   on syte_suite_aeo_deep(client_id, generated_at desc);

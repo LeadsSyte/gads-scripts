@@ -471,6 +471,7 @@ function deepToRow(r) {
     changes_faq: r.changesFaq || r.changes_faq || [],
     product_schema: r.productSchema || r.product_schema || '',
     faq_schema: r.faqSchema || r.faq_schema || '',
+    internal_links: r.internalLinks || r.internal_links || [],
     generated_at: r.generated_at || new Date().toISOString()
   };
 }
@@ -488,6 +489,7 @@ function rowToDeep(row) {
     changesFaq: row.changes_faq || [],
     productSchema: row.product_schema || '',
     faqSchema: row.faq_schema || '',
+    internalLinks: row.internal_links || [],
     generated_at: row.generated_at
   };
 }
