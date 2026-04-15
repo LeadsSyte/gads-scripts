@@ -26,19 +26,24 @@ function saveHistory(h) { localStorage.setItem(HISTORY_KEY, JSON.stringify(h.sli
 
 // Deep optimization — full page rewrite with FAQ + changes log.
 // Returns { description, faq, changesDescription, changesFaq, productSchema, faqSchema }.
-async function generateDeepForPage(pageUrl, client) {
+async function generateDeepForPage(pageUrl, client, onPhase) {
+  onPhase?.('fetch', 'Fetching page content…');
   let pageHtml = '';
   let pageTitle = '';
   try {
     pageHtml = (await corsFetchText(pageUrl)).slice(0, 50000);
     const titleMatch = pageHtml.match(/<title[^>]*>([^<]+)<\/title>/i);
     if (titleMatch) pageTitle = titleMatch[1].trim();
-  } catch {}
+    onPhase?.('fetched', `Fetched ${Math.round(pageHtml.length / 1000)}k chars${pageTitle ? ' · "' + pageTitle.slice(0, 50) + '"' : ''}`);
+  } catch {
+    onPhase?.('fetched', 'Page HTML not accessible — inferring from URL');
+  }
 
   let slug = '';
   try { slug = new URL(pageUrl).pathname.split('/').filter(Boolean).pop() || ''; } catch {}
   const inferredTopic = pageTitle || slug.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 
+  onPhase?.('generating', 'Generating full rewrite with Claude…');
   const text = await claudeComplete({
     system: AEO_DEEP_SYSTEM,
     messages: [{
@@ -60,6 +65,7 @@ Return the JSON object as specified in the system prompt.`
     max_tokens: 16000,
     temperature: 0.4
   });
+  onPhase?.('parsing', 'Parsing JSON response…');
   return extractJSON(text);
 }
 
@@ -381,22 +387,66 @@ export default function AEOEngine({ sub }) {
 
   // Deep optimization state — single page, full rewrite + FAQ + changes log.
   const [deepUrl, setDeepUrl] = useState('');
+  const [deepClientId, setDeepClientId] = useState('');
   const [deepResult, setDeepResult] = useState(null);
   const [deepBusy, setDeepBusy] = useState(false);
   const [deepErr, setDeepErr] = useState('');
+  const [deepPhase, setDeepPhase] = useState('');     // human-readable status line
+  const [deepProgress, setDeepProgress] = useState(0); // 0–100 for the bar
+
+  // Default the deep-opt client to the top-bar selected client when one is set.
+  useEffect(() => {
+    if (!deepClientId && client?.id) setDeepClientId(client.id);
+  }, [client?.id]);
 
   async function runDeepOptimization() {
-    if (!client) { setDeepErr('Select a client first.'); return; }
+    const dc = clients.find(c => c.id === deepClientId) || client;
+    if (!dc) { setDeepErr('Select a client to link this optimization to.'); return; }
     const url = deepUrl.trim();
     if (!url) { setDeepErr('Enter a page URL.'); return; }
     try { new URL(url); } catch { setDeepErr('Enter a valid URL (e.g. https://example.com/page/)'); return; }
+
     setDeepBusy(true); setDeepErr(''); setDeepResult(null);
+    setDeepPhase('Starting…'); setDeepProgress(2);
+
+    // Smooth progress simulation while we wait on the long Claude call.
+    // Phases set hard checkpoints; the timer fills the gaps so the bar
+    // never looks frozen during the 30–60s generate step.
+    let phaseTarget = 5;
+    const phaseFloor = { fetch: 5, fetched: 15, generating: 20, parsing: 92, done: 100 };
+    const phaseCeil  = { fetch: 12, fetched: 18, generating: 90, parsing: 96, done: 100 };
+    const setPhase = (key, label) => {
+      setDeepPhase(label);
+      if (phaseFloor[key] !== undefined) {
+        setDeepProgress(p => Math.max(p, phaseFloor[key]));
+        phaseTarget = phaseCeil[key];
+      }
+    };
+
+    const ticker = setInterval(() => {
+      setDeepProgress(p => {
+        if (p >= phaseTarget) return p;
+        // Slow asymptotic approach to the current phase ceiling.
+        return Math.min(phaseTarget, p + Math.max(0.3, (phaseTarget - p) * 0.04));
+      });
+    }, 400);
+
     try {
-      const result = await generateDeepForPage(url, client);
-      setDeepResult({ ...result, pageUrl: result?.pageUrl || url, generated_at: new Date().toISOString() });
+      const result = await generateDeepForPage(url, dc, setPhase);
+      setPhase('done', 'Done ✓');
+      setDeepProgress(100);
+      setDeepResult({
+        ...result,
+        pageUrl: result?.pageUrl || url,
+        client_id: dc.id,
+        client_name: dc.name,
+        generated_at: new Date().toISOString()
+      });
     } catch (e) {
       setDeepErr(e.message);
+      setDeepPhase('Failed');
     } finally {
+      clearInterval(ticker);
       setDeepBusy(false);
     }
   }
@@ -800,8 +850,22 @@ export default function AEOEngine({ sub }) {
           </div>
         </div>
         <div className="card">
-          <div className="row" style={{ gap: 8, alignItems: 'flex-end', marginBottom: 10 }}>
-            <div style={{ flex: 1 }}>
+          <div className="row" style={{ gap: 8, alignItems: 'flex-end', marginBottom: 10, flexWrap: 'wrap' }}>
+            <div style={{ minWidth: 200 }}>
+              <label>Link to client</label>
+              <select
+                value={deepClientId}
+                onChange={e => setDeepClientId(e.target.value)}
+                disabled={deepBusy}
+                style={{ width: '100%' }}
+              >
+                <option value="">— Select client —</option>
+                {clients.map(c => (
+                  <option key={c.id} value={c.id}>{c.name}</option>
+                ))}
+              </select>
+            </div>
+            <div style={{ flex: 1, minWidth: 260 }}>
               <label>Page URL to deep-optimize</label>
               <input
                 type="url"
@@ -816,21 +880,46 @@ export default function AEOEngine({ sub }) {
               className="primary"
               style={{ background: ACCENT, borderColor: ACCENT, color: '#000' }}
               onClick={runDeepOptimization}
-              disabled={deepBusy || !client || !deepUrl.trim()}
+              disabled={deepBusy || !deepClientId || !deepUrl.trim()}
             >
               {deepBusy ? 'Deep-optimizing…' : 'Deep Optimize This Page'}
             </button>
           </div>
-          {!client && <div className="muted" style={{ fontSize: 11 }}>Select a client first (top bar).</div>}
+          {!deepClientId && <div className="muted" style={{ fontSize: 11 }}>Pick a client to attribute this optimization to.</div>}
           {deepErr && <div style={{ color: 'var(--red)', fontSize: 12, marginTop: 8 }}>{deepErr}</div>}
-          {deepBusy && (
-            <div className="row" style={{ gap: 10, marginTop: 10, padding: 10, background: 'var(--surface-2)', borderRadius: 6 }}>
-              <span className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} />
-              <span style={{ fontSize: 12 }}>Fetching page, analyzing content, and generating full rewrite — this may take 30–60 seconds.</span>
+
+          {/* Progress bar — visible during run and briefly after completion */}
+          {(deepBusy || (deepProgress > 0 && deepProgress < 100)) && (
+            <div style={{ marginTop: 12, padding: 12, background: 'var(--surface-2)', borderRadius: 8, border: '1px solid var(--border)' }}>
+              <div className="row" style={{ justifyContent: 'space-between', marginBottom: 6 }}>
+                <div className="row" style={{ gap: 8 }}>
+                  {deepBusy && <span className="spinner" style={{ width: 12, height: 12, borderWidth: 2 }} />}
+                  <span style={{ fontSize: 12, fontWeight: 600 }}>{deepPhase || 'Working…'}</span>
+                </div>
+                <span className="muted" style={{ fontSize: 11, fontVariantNumeric: 'tabular-nums' }}>{Math.round(deepProgress)}%</span>
+              </div>
+              <div style={{ height: 6, background: 'var(--surface-3, #1a1c20)', borderRadius: 999, overflow: 'hidden' }}>
+                <div style={{
+                  width: deepProgress + '%',
+                  height: '100%',
+                  background: 'linear-gradient(90deg, ' + ACCENT + ', #4dabff)',
+                  transition: 'width 400ms ease-out',
+                  borderRadius: 999
+                }} />
+              </div>
+              <div className="muted" style={{ fontSize: 10, marginTop: 6 }}>
+                Full rewrite typically takes 30–60 seconds. Don't navigate away — output streams in below when complete.
+              </div>
             </div>
           )}
+
           {deepResult && !deepBusy && (
             <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid var(--border)' }}>
+              {deepResult.client_name && (
+                <div className="muted" style={{ fontSize: 11, marginBottom: 8 }}>
+                  Linked to <strong style={{ color: ACCENT }}>{deepResult.client_name}</strong> · generated {new Date(deepResult.generated_at).toLocaleString()}
+                </div>
+              )}
               <DeepResultDisplay result={deepResult} />
             </div>
           )}
