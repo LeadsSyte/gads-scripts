@@ -451,3 +451,103 @@ export async function deleteAeoResult(clientId, url) {
   } catch {}
 }
 
+// ---------------------------------------------------------------------------
+// AEO Deep Optimizations — full-page rewrites with FAQ + changes log.
+// Stored per (client, url). Upsert on save so re-running overwrites.
+// ---------------------------------------------------------------------------
+
+const AEO_DEEP_KEY = LS_PREFIX + 'aeo_deep';
+
+// Convert UI-shape (camelCase) to db-shape (snake_case) and back.
+function deepToRow(r) {
+  return {
+    client_id: r.client_id,
+    client_name: r.client_name,
+    page_url: r.pageUrl || r.page_url,
+    page_title: r.pageTitle || r.page_title,
+    description: r.description || '',
+    faq: r.faq || '',
+    changes_description: r.changesDescription || r.changes_description || [],
+    changes_faq: r.changesFaq || r.changes_faq || [],
+    product_schema: r.productSchema || r.product_schema || '',
+    faq_schema: r.faqSchema || r.faq_schema || '',
+    generated_at: r.generated_at || new Date().toISOString()
+  };
+}
+
+function rowToDeep(row) {
+  return {
+    id: row.id,
+    client_id: row.client_id,
+    client_name: row.client_name,
+    pageUrl: row.page_url,
+    pageTitle: row.page_title,
+    description: row.description || '',
+    faq: row.faq || '',
+    changesDescription: row.changes_description || [],
+    changesFaq: row.changes_faq || [],
+    productSchema: row.product_schema || '',
+    faqSchema: row.faq_schema || '',
+    generated_at: row.generated_at
+  };
+}
+
+export async function saveDeepResult(result) {
+  const row = deepToRow(result);
+  if (supabase) {
+    const { data: existing } = await supabase
+      .from('syte_suite_aeo_deep')
+      .select('id')
+      .eq('client_id', row.client_id)
+      .eq('page_url', row.page_url)
+      .limit(1);
+    if (existing?.length > 0) {
+      const { data, error } = await supabase
+        .from('syte_suite_aeo_deep')
+        .update(row).eq('id', existing[0].id).select().single();
+      if (error) throw error;
+      return rowToDeep(data);
+    }
+    const { data, error } = await supabase
+      .from('syte_suite_aeo_deep').insert(row).select().single();
+    if (error) throw error;
+    return rowToDeep(data);
+  }
+  // localStorage fallback
+  const list = JSON.parse(localStorage.getItem(AEO_DEEP_KEY) || '[]');
+  const idx = list.findIndex(x => x.client_id === row.client_id && x.page_url === row.page_url);
+  const saved = { id: crypto.randomUUID(), ...row, created_at: new Date().toISOString() };
+  if (idx >= 0) list[idx] = { ...list[idx], ...row };
+  else list.unshift(saved);
+  localStorage.setItem(AEO_DEEP_KEY, JSON.stringify(list));
+  return rowToDeep(idx >= 0 ? list[idx] : saved);
+}
+
+export async function listDeepResults(clientId) {
+  if (supabase) {
+    let q = supabase
+      .from('syte_suite_aeo_deep')
+      .select('*')
+      .order('generated_at', { ascending: false });
+    if (clientId) q = q.eq('client_id', clientId);
+    const { data, error } = await q;
+    if (error) throw error;
+    const mapped = (data || []).map(rowToDeep);
+    localStorage.setItem(AEO_DEEP_KEY, JSON.stringify(data || []));
+    return mapped;
+  }
+  const list = JSON.parse(localStorage.getItem(AEO_DEEP_KEY) || '[]');
+  const filtered = clientId ? list.filter(r => r.client_id === clientId) : list;
+  return filtered.map(rowToDeep);
+}
+
+export async function deleteDeepResult(id) {
+  if (supabase) {
+    await supabase.from('syte_suite_aeo_deep').delete().eq('id', id);
+  }
+  try {
+    const list = JSON.parse(localStorage.getItem(AEO_DEEP_KEY) || '[]');
+    localStorage.setItem(AEO_DEEP_KEY, JSON.stringify(list.filter(r => r.id !== id)));
+  } catch {}
+}
+

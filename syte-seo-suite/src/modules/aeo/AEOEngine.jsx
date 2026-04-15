@@ -8,7 +8,7 @@ import ClientCardsGrid from '../../components/ClientCardsGrid.jsx';
 import MarkImplementedButton from '../../components/MarkImplementedButton.jsx';
 import PipelineView from '../../components/PipelineView.jsx';
 import { aeoPipelineStatus } from '../../lib/pipelineStatus.js';
-import { listAllImplementations, saveAeoResult, loadAeoResults as loadAeoResultsFromDb, deleteAeoResult } from '../../lib/supabase.js';
+import { listAllImplementations, saveAeoResult, loadAeoResults as loadAeoResultsFromDb, deleteAeoResult, saveDeepResult, listDeepResults, deleteDeepResult } from '../../lib/supabase.js';
 import { AEO_SYSTEM, AEO_TYPES, AEO_DEEP_SYSTEM } from './aeoTypes.js';
 import { fetchSitemapUrls } from './sitemap.js';
 import { listAccountSummaries, runReport } from './ga4.js';
@@ -393,11 +393,17 @@ export default function AEOEngine({ sub }) {
   const [deepErr, setDeepErr] = useState('');
   const [deepPhase, setDeepPhase] = useState('');     // human-readable status line
   const [deepProgress, setDeepProgress] = useState(0); // 0–100 for the bar
+  const [deepHistory, setDeepHistory] = useState([]);  // persisted list of past runs
 
   // Default the deep-opt client to the top-bar selected client when one is set.
   useEffect(() => {
     if (!deepClientId && client?.id) setDeepClientId(client.id);
   }, [client?.id]);
+
+  // Load deep optimization history from Supabase on mount.
+  useEffect(() => {
+    listDeepResults().then(setDeepHistory).catch(() => {});
+  }, []);
 
   async function runDeepOptimization() {
     const dc = clients.find(c => c.id === deepClientId) || client;
@@ -435,19 +441,39 @@ export default function AEOEngine({ sub }) {
       const result = await generateDeepForPage(url, dc, setPhase);
       setPhase('done', 'Done ✓');
       setDeepProgress(100);
-      setDeepResult({
+      const enriched = {
         ...result,
         pageUrl: result?.pageUrl || url,
         client_id: dc.id,
         client_name: dc.name,
         generated_at: new Date().toISOString()
-      });
+      };
+      setDeepResult(enriched);
+      // Persist to Supabase and refresh history.
+      try {
+        const saved = await saveDeepResult(enriched);
+        setDeepResult(saved);
+        const fresh = await listDeepResults();
+        setDeepHistory(fresh);
+      } catch (saveErr) {
+        console.warn('[AEO Deep] save failed:', saveErr.message);
+      }
     } catch (e) {
       setDeepErr(e.message);
       setDeepPhase('Failed');
     } finally {
       clearInterval(ticker);
       setDeepBusy(false);
+    }
+  }
+
+  async function removeDeepResult(id) {
+    try {
+      await deleteDeepResult(id);
+      setDeepHistory(prev => prev.filter(r => r.id !== id));
+      if (deepResult?.id === id) setDeepResult(null);
+    } catch (e) {
+      console.warn('[AEO Deep] delete failed:', e.message);
     }
   }
 
@@ -924,6 +950,51 @@ export default function AEOEngine({ sub }) {
             </div>
           )}
         </div>
+
+        {/* Deep Optimization History — persisted to Supabase. */}
+        {deepHistory.length > 0 && (
+          <div className="card" style={{ marginTop: 14 }}>
+            <div className="row" style={{ justifyContent: 'space-between', marginBottom: 10 }}>
+              <strong style={{ fontSize: 13 }}>Deep Optimization History</strong>
+              <span className="muted" style={{ fontSize: 11 }}>{deepHistory.length} saved</span>
+            </div>
+            <div style={{ border: '1px solid var(--border)', borderRadius: 6 }}>
+              {deepHistory.map(r => {
+                const isOpen = deepResult?.id === r.id;
+                let path = r.pageUrl;
+                try { path = new URL(r.pageUrl).pathname; } catch {}
+                return (
+                  <div key={r.id} style={{ borderBottom: '1px solid var(--border)' }}>
+                    <div className="row" style={{
+                      padding: '10px 12px', justifyContent: 'space-between', gap: 8,
+                      background: isOpen ? 'var(--surface-2)' : 'transparent', cursor: 'pointer'
+                    }} onClick={() => setDeepResult(isOpen ? null : r)}>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 12, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {r.pageTitle || path}
+                        </div>
+                        <div className="muted" style={{ fontSize: 10, marginTop: 2 }}>
+                          {r.client_name || '—'} · {path} · {new Date(r.generated_at).toLocaleDateString()} {new Date(r.generated_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        </div>
+                      </div>
+                      <div className="row" style={{ gap: 6, flexShrink: 0 }}>
+                        <button style={{ fontSize: 10, padding: '3px 8px' }} onClick={(e) => { e.stopPropagation(); setDeepResult(isOpen ? null : r); }}>
+                          {isOpen ? 'Hide' : 'View'}
+                        </button>
+                        <button
+                          style={{ fontSize: 10, padding: '3px 8px', color: 'var(--red)', borderColor: 'rgba(255,77,77,.3)' }}
+                          onClick={(e) => { e.stopPropagation(); if (confirm('Delete this deep optimization?')) removeDeepResult(r.id); }}
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
 
         <div style={{ borderTop: '1px solid var(--border)', marginTop: 20, paddingTop: 16 }}>
           <h3 style={{ margin: '0 0 12px' }}>Run for Selected Client</h3>

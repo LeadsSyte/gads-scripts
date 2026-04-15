@@ -47,3 +47,26 @@ alter table syte_suite_aeo_results disable row level security;
 
 -- 3. Add looker_url to clients (may already exist from earlier patches).
 alter table syte_suite_clients add column if not exists looker_url text;
+
+-- 4. AEO Deep Optimizations — full-page rewrites with FAQ + changes log.
+-- Distinct from syte_suite_aeo_results (which holds the 5-snippet quick-wins).
+create table if not exists syte_suite_aeo_deep (
+  id uuid primary key default gen_random_uuid(),
+  client_id uuid references syte_suite_clients(id) on delete cascade,
+  client_name text,
+  page_url text not null,
+  page_title text,
+  description text,                    -- HTML
+  faq text,                            -- HTML
+  changes_description jsonb,           -- [{title, detail}, ...]
+  changes_faq jsonb,                   -- [{title, detail}, ...]
+  product_schema text,                 -- JSON-LD <script>
+  faq_schema text,                     -- JSON-LD <script>
+  generated_at timestamptz default now(),
+  created_at timestamptz default now()
+);
+
+create index if not exists syte_suite_aeo_deep_client_idx
+  on syte_suite_aeo_deep(client_id, generated_at desc);
+
+alter table syte_suite_aeo_deep disable row level security;
