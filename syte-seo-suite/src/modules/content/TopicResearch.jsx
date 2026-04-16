@@ -146,7 +146,21 @@ export default function TopicResearch({ onWriteArticle }) {
           </div>
         </div>
 
-        {err && <div style={{ color: 'var(--red)', marginTop: 10, fontSize: 13 }}>{err}</div>}
+        {err && (
+          <div style={{ marginTop: 10, padding: 12, background: 'rgba(255,77,77,.06)', border: '1px solid rgba(255,77,77,.2)', borderRadius: 6 }}>
+            <div style={{ color: 'var(--red)', fontSize: 13, fontWeight: 600, marginBottom: 4 }}>
+              {/No GSC access/i.test(err) ? 'GSC Permission Issue' : 'Research Error'}
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--text)', lineHeight: 1.5 }}>{err}</div>
+            {/No GSC access/i.test(err) && (
+              <div className="muted" style={{ fontSize: 11, marginTop: 8, lineHeight: 1.5 }}>
+                <strong>How to fix:</strong> Ask the site owner to open{' '}
+                <em>Google Search Console → Settings → Users and permissions</em> and add your Google account
+                as a Full or Restricted user. This is separate from being signed in — it's a per-property permission.
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {research && plan && (

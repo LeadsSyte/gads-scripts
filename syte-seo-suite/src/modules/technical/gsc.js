@@ -18,6 +18,14 @@ async function gscFetch(path, init = {}) {
       err.apiDisabled = true;
       throw err;
     }
+    // Per-property permission error — Google account not added as user/owner.
+    if (res.status === 403 && /does not have sufficient permission/i.test(txt)) {
+      const siteMatch = txt.match(/site '([^']+)'/);
+      const site = siteMatch ? siteMatch[1] : 'this property';
+      const err = new Error(`No GSC access to ${site}. Your Google account needs to be added as a user or owner in Search Console for this specific property. This is NOT a login issue — your token is valid, but GSC requires per-property permissions.`);
+      err.permissionDenied = true;
+      throw err;
+    }
     throw new Error('GSC ' + res.status + ' ' + txt.slice(0, 300));
   }
   return res.json();

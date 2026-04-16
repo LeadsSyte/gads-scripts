@@ -11,7 +11,8 @@ import {
   fetchGa4Properties,
   fetchGscSites,
   normalizeGa4Id,
-  normalizeGscProperty
+  normalizeGscProperty,
+  clearPropertyCache
 } from '../lib/googleProperties.js';
 
 // Combined GA4 + GSC picker for the client edit modal.
@@ -43,18 +44,18 @@ export default function GoogleConnectionsPicker({ ga4Value, onChangeGa4, gscValu
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [signedIn]);
 
-  async function loadProperties() {
+  async function loadProperties({ bypassCache = false } = {}) {
     setLoading(true); setErr(''); setApiErrors([]);
     const errors = [];
     let genericErr = '';
 
-    const ga = await fetchGa4Properties().catch(e => {
+    const ga = await fetchGa4Properties({ bypassCache }).catch(e => {
       console.error('GA4 fetch failed', e);
       if (e.apiDisabled) errors.push({ service: 'GA4 Admin', message: e.message, enableUrl: e.enableUrl });
       else genericErr += (genericErr ? ' · ' : '') + 'GA4: ' + e.message;
       return [];
     });
-    const sites = await fetchGscSites().catch(e => {
+    const sites = await fetchGscSites({ bypassCache }).catch(e => {
       console.error('GSC fetch failed', e);
       if (e.apiDisabled) errors.push({ service: 'Search Console', message: e.message, enableUrl: e.enableUrl });
       else genericErr += (genericErr ? ' · ' : '') + 'GSC: ' + e.message;
@@ -80,6 +81,7 @@ export default function GoogleConnectionsPicker({ ga4Value, onChangeGa4, gscValu
 
   async function doSwitch() {
     setErr('');
+    clearPropertyCache();
     try {
       await switchAccount(ALL_READ_SCOPES);
       setSignedIn(true);
@@ -87,6 +89,7 @@ export default function GoogleConnectionsPicker({ ga4Value, onChangeGa4, gscValu
   }
 
   async function doSignOut() {
+    clearPropertyCache();
     await signOut();
     setSignedIn(false);
     setEmail(null);
@@ -147,7 +150,7 @@ export default function GoogleConnectionsPicker({ ga4Value, onChangeGa4, gscValu
                 <span className="dot" style={{ background: 'var(--green)', marginRight: 6 }} />
                 {email || '(fetching…)'}
               </span>
-              <button onClick={loadProperties} disabled={loading} style={{ fontSize: 11, padding: '4px 10px' }}>
+              <button onClick={() => loadProperties({ bypassCache: true })} disabled={loading} style={{ fontSize: 11, padding: '4px 10px' }}>
                 {loading ? 'Loading…' : 'Refresh'}
               </button>
               <button onClick={doSwitch} style={{ fontSize: 11, padding: '4px 10px' }}>Switch account</button>
@@ -197,7 +200,7 @@ export default function GoogleConnectionsPicker({ ga4Value, onChangeGa4, gscValu
               Enable {ae.service} API →
             </a>
             <button
-              onClick={loadProperties}
+              onClick={() => loadProperties({ bypassCache: true })}
               disabled={loading}
               style={{ fontSize: 11, padding: '5px 10px' }}
             >

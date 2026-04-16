@@ -174,7 +174,7 @@ function SectionCard({ title, content, accent, mono }) {
   );
 }
 
-function ParsedOutput({ output, topic, pushItem, exportTxt, exportDocx, systemPrompt, userPrompt, onOutputUpdate }) {
+function ParsedOutput({ output, topic, pushItem, exportTxt, exportDocx, systemPrompt, userPrompt, onOutputUpdate, pageUrl: pageUrlProp }) {
   const sections = React.useMemo(() => parseOutputSections(output), [output]);
   const [showRaw, setShowRaw] = React.useState(false);
   const [revision, setRevision] = React.useState('');
@@ -272,7 +272,7 @@ function ParsedOutput({ output, topic, pushItem, exportTxt, exportDocx, systemPr
                 <MarkImplementedButton
                   module="content"
                   changeType="article"
-                  pageUrl={pushedLiveUrl || url || undefined}
+                  pageUrl={pushedLiveUrl || pageUrlProp || undefined}
                   title={sections.metaTitle || topic || 'Article'}
                   description={`Meta: ${sections.metaTitle || ''} | ${sections.metaDesc || ''}`}
                 />
@@ -810,6 +810,7 @@ export default function ContentEngine({ sub, setSub }) {
                   systemPrompt={quickSystem}
                   userPrompt={quickUserPrompt}
                   onOutputUpdate={setQuickOutput}
+                  pageUrl={(() => { const qc = allClients.find(c => c.id === quickClientId); return qc?.url || ''; })()}
                 />
               </div>
             )}
@@ -956,6 +957,7 @@ export default function ContentEngine({ sub, setSub }) {
         systemPrompt={lastSystem}
         userPrompt={lastUserPrompt}
         onOutputUpdate={setOutput}
+        pageUrl={url || client?.url || ''}
       />}
 
       {scores && (

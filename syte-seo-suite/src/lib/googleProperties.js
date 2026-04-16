@@ -35,13 +35,44 @@ async function handleApiError(res, service, apiLibraryPath) {
 }
 
 // ---------------------------------------------------------------------------
+// Session-level cache for property lists so they aren't re-fetched every
+// time a client modal opens. Survives tab navigation but clears on refresh.
+// Cache TTL = 30 minutes. Hit Refresh or Switch Account to force re-fetch.
+// ---------------------------------------------------------------------------
+
+const GA4_CACHE_KEY = 'syte-suite-ga4-props-cache';
+const GSC_CACHE_KEY = 'syte-suite-gsc-sites-cache';
+const CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes
+
+function getCached(key) {
+  try {
+    const raw = sessionStorage.getItem(key);
+    if (!raw) return null;
+    const { data, ts } = JSON.parse(raw);
+    if (Date.now() - ts > CACHE_TTL_MS) { sessionStorage.removeItem(key); return null; }
+    return data;
+  } catch { return null; }
+}
+function setCache(key, data) {
+  try { sessionStorage.setItem(key, JSON.stringify({ data, ts: Date.now() })); } catch {}
+}
+export function clearPropertyCache() {
+  sessionStorage.removeItem(GA4_CACHE_KEY);
+  sessionStorage.removeItem(GSC_CACHE_KEY);
+}
+
+// ---------------------------------------------------------------------------
 // GA4 — flatten account summaries into a single property list, with full
 // pagination. The endpoint returns up to 200 per page; some agency-style
 // accounts have dozens of GA4 accounts + hundreds of properties total, so
 // we loop on nextPageToken until Google stops sending one.
 // ---------------------------------------------------------------------------
 
-export async function fetchGa4Properties() {
+export async function fetchGa4Properties({ bypassCache = false } = {}) {
+  if (!bypassCache) {
+    const cached = getCached(GA4_CACHE_KEY);
+    if (cached) { console.log('[GA4] returning', cached.length, 'cached properties'); return cached; }
+  }
   const token = await ensureToken([SCOPES.ga4]);
 
   const all = [];
@@ -90,6 +121,7 @@ export async function fetchGa4Properties() {
     if (a1 !== b1) return a1.localeCompare(b1);
     return (a.name || '').toLowerCase().localeCompare((b.name || '').toLowerCase());
   });
+  setCache(GA4_CACHE_KEY, all);
   return all;
 }
 
@@ -99,7 +131,11 @@ export async function fetchGa4Properties() {
 // property — the operator can judge for themselves whether to use it.
 // ---------------------------------------------------------------------------
 
-export async function fetchGscSites() {
+export async function fetchGscSites({ bypassCache = false } = {}) {
+  if (!bypassCache) {
+    const cached = getCached(GSC_CACHE_KEY);
+    if (cached) { console.log('[GSC] returning', cached.length, 'cached sites'); return cached; }
+  }
   const token = await ensureToken([SCOPES.gsc]);
   const res = await fetch(
     'https://searchconsole.googleapis.com/webmasters/v3/sites',
@@ -114,6 +150,7 @@ export async function fetchGscSites() {
   // eslint-disable-next-line no-console
   console.log('[GSC] fetched', out.length, 'sites');
   out.sort((a, b) => a.siteUrl.localeCompare(b.siteUrl));
+  setCache(GSC_CACHE_KEY, out);
   return out;
 }
 
