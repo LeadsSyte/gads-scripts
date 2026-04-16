@@ -87,9 +87,15 @@ create table if not exists syte_suite_content_blogs (
   keyword text,
   length int default 1500,
   output text,                         -- full raw model output (body + metas + schemas + QA)
+  tab text default 'New Article',      -- 'Auto Write' | 'New Article' | 'Quick Blog' | etc.
+  opportunity_type text,               -- from Topic Research (low-hanging-fruit, content-gap, etc.)
   generated_at timestamptz default now(),
   created_at timestamptz default now()
 );
+
+-- Safe to re-run: add columns if missing on existing installs.
+alter table syte_suite_content_blogs add column if not exists tab text default 'New Article';
+alter table syte_suite_content_blogs add column if not exists opportunity_type text;
 
 create index if not exists syte_suite_content_blogs_client_idx
   on syte_suite_content_blogs(client_id, generated_at desc);

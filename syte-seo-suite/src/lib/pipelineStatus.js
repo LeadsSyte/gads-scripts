@@ -4,17 +4,22 @@
 
 import { readinessFor } from './clientReadiness.js';
 
-const HISTORY_KEY = 'syte-suite-content-history';
+const BLOGS_KEY = 'syte-suite-content_blogs';
 
 function thisMonth() { return new Date().toISOString().slice(0, 7); }
 
-function loadContentHistory() {
-  try { return JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]'); } catch { return []; }
+// Fallback: read cached content history from localStorage (written by
+// loadContentHistory in supabase.js). The caller is expected to pass
+// the Supabase-loaded list via the `contentHistory` param when available.
+function loadContentHistoryLocal() {
+  try { return JSON.parse(localStorage.getItem(BLOGS_KEY) || '[]'); } catch { return []; }
 }
 
 // ─── Content Engine ───────────────────────────────────────────────
 // Sections: verified-on-site | articles-written | no-articles | credentials-missing
-export function contentPipelineStatus(client, implementations, month) {
+// `contentHistory` is the shared Supabase-backed article list (optional;
+// falls back to localStorage cache when undefined).
+export function contentPipelineStatus(client, implementations, month, contentHistory) {
   const m = month || thisMonth();
 
   // Credentials check: needs GSC + basic readiness.
@@ -30,9 +35,9 @@ export function contentPipelineStatus(client, implementations, month) {
   );
   const verified = monthImpls.filter(i => i.verification_status === 'verified');
 
-  const history = loadContentHistory();
+  const history = contentHistory || loadContentHistoryLocal();
   const monthArticles = history.filter(
-    h => h.client_id === client.id && (h.created_at || '').slice(0, 7) === m
+    h => h.client_id === client.id && ((h.generated_at || h.created_at || '').slice(0, 7) === m)
   );
 
   const required = client.pages_per_month || 4;
@@ -188,10 +193,10 @@ export function aeoPipelineStatus(client, implementations, aeoResults, month) {
 
 // ─── Approvals matrix ────────────────────────────────────────────
 // For each client, return the status of each module this month.
-export function approvalsStatus(client, implementations, tasks, aeoResults, month) {
+export function approvalsStatus(client, implementations, tasks, aeoResults, month, contentHistory) {
   const m = month || thisMonth();
   return {
-    content: contentPipelineStatus(client, implementations, m),
+    content: contentPipelineStatus(client, implementations, m, contentHistory),
     technical: technicalPipelineStatus(client, implementations, tasks, m),
     aeo: aeoPipelineStatus(client, implementations, aeoResults, m)
   };

@@ -8,7 +8,7 @@ import TopicResearch from './TopicResearch.jsx';
 import AutoWrite from './AutoWrite.jsx';
 import GenerateImageButton from '../../components/GenerateImageButton.jsx';
 import MarkImplementedButton from '../../components/MarkImplementedButton.jsx';
-import { saveBlogResult, listBlogResults, deleteBlogResult } from '../../lib/supabase.js';
+import { saveBlogResult, listBlogResults, deleteBlogResult, loadContentHistory } from '../../lib/supabase.js';
 
 const ACCENT = '#c8ff00';
 const HISTORY_KEY = 'syte-suite-content-history';
@@ -414,6 +414,7 @@ export default function ContentEngine({ sub, setSub }) {
         keyword: quickKeyword,
         length: quickLength,
         output: buf,
+        tab: 'Quick Blog',
         generated_at: new Date().toISOString()
       });
       setQuickBlogId(saved?.id || null);
@@ -533,6 +534,16 @@ export default function ContentEngine({ sub, setSub }) {
       };
       const next = [entry, ...history];
       setHistory(next); saveHistory(next);
+      // Also persist to Supabase so it's shared across browsers/users.
+      saveBlogResult({
+        client_id: client.id,
+        client_name: client.name,
+        tab,
+        topic, keyword,
+        length,
+        output: buf,
+        generated_at: new Date().toISOString()
+      }).catch(e => console.warn('[Content] Supabase save failed:', e.message));
     } catch (e) {
       setErr(e.message);
     } finally {

@@ -567,6 +567,8 @@ export async function saveBlogResult(blog) {
     keyword: blog.keyword || '',
     length: blog.length || 1500,
     output: blog.output || '',
+    tab: blog.tab || 'New Article',
+    opportunity_type: blog.opportunity_type || null,
     generated_at: blog.generated_at || new Date().toISOString()
   };
   if (supabase) {
@@ -595,6 +597,24 @@ export async function listBlogResults(clientId) {
   }
   const list = JSON.parse(localStorage.getItem(BLOGS_KEY) || '[]');
   return clientId ? list.filter(r => r.client_id === clientId) : list;
+}
+
+// Shared content history — used by the pipeline status to count articles
+// written per client per month. Returns ALL content entries (Auto Write +
+// Quick Blog + New Article + Rewrite etc.). Cached in localStorage for
+// offline fallback.
+export async function loadContentHistory() {
+  if (supabase) {
+    const { data, error } = await supabase
+      .from('syte_suite_content_blogs').select('id,client_id,client_name,topic,keyword,tab,opportunity_type,generated_at,created_at')
+      .order('generated_at', { ascending: false })
+      .limit(500);
+    if (!error && data) {
+      localStorage.setItem(BLOGS_KEY, JSON.stringify(data));
+      return data;
+    }
+  }
+  return JSON.parse(localStorage.getItem(BLOGS_KEY) || '[]');
 }
 
 export async function deleteBlogResult(id) {

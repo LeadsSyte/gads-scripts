@@ -12,20 +12,9 @@ import PushToCmsButton from '../../components/PushToCmsButton.jsx';
 import MarkImplementedButton from '../../components/MarkImplementedButton.jsx';
 import PipelineView from '../../components/PipelineView.jsx';
 import { contentPipelineStatus } from '../../lib/pipelineStatus.js';
-import { listAllImplementations } from '../../lib/supabase.js';
+import { listAllImplementations, saveBlogResult, loadContentHistory } from '../../lib/supabase.js';
 
 const ACCENT = '#c8ff00';
-const HISTORY_KEY = 'syte-suite-content-history';
-const HISTORY_CAP = 500;
-
-function loadHistory() {
-  try { return JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]'); } catch { return []; }
-}
-function saveToHistory(article) {
-  const h = loadHistory();
-  h.unshift(article);
-  localStorage.setItem(HISTORY_KEY, JSON.stringify(h.slice(0, HISTORY_CAP)));
-}
 
 function directionPreview(text) {
   if (!text) return null;
@@ -60,6 +49,7 @@ export default function AutoWrite() {
 
   const [implementations, setImplementations] = useState([]);
   const [showPipeline, setShowPipeline] = useState(true);
+  const [sharedHistory, setSharedHistory] = useState([]);
 
   const contentClients = useMemo(
     () => allClients.filter(c => c.does_content !== false),
@@ -75,9 +65,10 @@ export default function AutoWrite() {
   const currentMonth = new Date().toISOString().slice(0, 7);
   const monthLabel = new Date().toLocaleString('en-US', { month: 'long', year: 'numeric' });
 
-  // Load implementations for pipeline view.
+  // Load implementations + content history for pipeline view.
   useEffect(() => {
     listAllImplementations().then(setImplementations).catch(() => {});
+    loadContentHistory().then(setSharedHistory).catch(() => {});
   }, []);
 
   // Warn before navigating away during active writing.
@@ -100,7 +91,7 @@ export default function AutoWrite() {
       'credentials-missing': []
     };
     for (const c of contentClients) {
-      const status = contentPipelineStatus(c, implementations, currentMonth);
+      const status = contentPipelineStatus(c, implementations, currentMonth, sharedHistory);
       buckets[status.section]?.push({ client: c, summary: status.summary, detail: status.detail });
     }
     return [
@@ -109,7 +100,7 @@ export default function AutoWrite() {
       { key: 'no-articles', label: 'No Articles Yet', color: 'var(--text-muted)', borderColor: 'var(--border)', clients: buckets['no-articles'], collapsed: true },
       { key: 'credentials-missing', label: 'Credentials Missing', color: 'var(--red)', borderColor: 'var(--red)', clients: buckets['credentials-missing'], collapsed: true }
     ];
-  }, [contentClients, implementations, currentMonth]);
+  }, [contentClients, implementations, currentMonth, sharedHistory]);
 
   // Expanded client in the pipeline (for viewing articles in "Articles Written").
   const [expandedPipelineClient, setExpandedPipelineClient] = useState(null);
@@ -117,10 +108,9 @@ export default function AutoWrite() {
   // verifies the correct URL instead of re-deriving a mismatched slug.
   const [pushedUrls, setPushedUrls] = useState({});
 
-  // Get articles for a specific client from content history.
+  // Get articles for a specific client from shared content history.
   function getClientArticles(clientId) {
-    const history = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]');
-    return history.filter(h => h.client_id === clientId && (h.created_at || '').slice(0, 7) === currentMonth);
+    return sharedHistory.filter(h => h.client_id === clientId && ((h.generated_at || h.created_at || '').slice(0, 7) === currentMonth));
   }
 
   // ─── Phase 1: Research ───────────────────────────────
@@ -180,18 +170,24 @@ export default function AutoWrite() {
       });
       updateArticle(idx, { status: 'done', output: buf, words: Math.round(buf.length / 5) });
 
-      // Persist to shared history.
-      saveToHistory({
-        id: crypto.randomUUID(),
-        client_id: activeClient.id,
-        client_name: activeClient.name,
-        tab: 'Auto Write',
-        topic: opp.topic_title,
-        keyword: opp.primary_keyword,
-        output: buf,
-        opportunity_type: opp.opportunity_type,
-        created_at: new Date().toISOString()
-      });
+      // Persist to Supabase (shared across all browsers/users).
+      try {
+        await saveBlogResult({
+          client_id: activeClient.id,
+          client_name: activeClient.name,
+          tab: 'Auto Write',
+          topic: opp.topic_title,
+          keyword: opp.primary_keyword,
+          length: opp.recommended_length || 1500,
+          output: buf,
+          opportunity_type: opp.opportunity_type,
+          generated_at: new Date().toISOString()
+        });
+        // Refresh shared history so pipeline updates immediately.
+        loadContentHistory().then(setSharedHistory).catch(() => {});
+      } catch (saveErr) {
+        console.warn('[AutoWrite] save to Supabase failed:', saveErr.message);
+      }
     } catch (e) {
       updateArticle(idx, { status: 'error', error: e.message });
     } finally {
