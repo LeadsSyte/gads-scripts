@@ -119,7 +119,20 @@ export default function AutoWrite() {
     setResearch(null); setPlan(null); setArticleStates({}); setResearchErr('');
     setResearchBusy(true); setBatchMode(false); setWritingIdx(null);
     try {
-      const data = await collectResearchData(client, { days: 90 });
+      let data;
+      let gscFailed = false;
+      try {
+        data = await collectResearchData(client, { days: 90 });
+      } catch (gscErr) {
+        // GSC unavailable (permission, not connected, etc.) — fall back to
+        // generating topics from client context alone. Don't block the flow.
+        gscFailed = true;
+        data = {
+          days: 90, totalImpressions: 0, totalClicks: 0, siteAvgCtr: 0,
+          queries: [], topOpportunities: [], pageByQuery: {}, allQueryCount: 0
+        };
+        setResearchErr('GSC unavailable — ' + (gscErr.message || '').slice(0, 120) + '. Generating topics from client context instead.');
+      }
       setResearch(data);
       const targetArticles = Math.max(1, Math.min(client.pages_per_month || 4, 50));
       const result = await generateTopicRecommendations(client, data, { targetArticles });
@@ -127,6 +140,9 @@ export default function AutoWrite() {
         .slice()
         .sort((a, b) => (a.priority || 99) - (b.priority || 99));
       setPlan({ ...result, opportunities: sorted });
+      if (gscFailed) {
+        setResearchErr(prev => prev + ' Topics generated from industry context — no ranking data available.');
+      }
     } catch (e) {
       setResearchErr(e.message);
     } finally {
