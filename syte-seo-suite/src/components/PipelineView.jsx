@@ -70,21 +70,19 @@ function PipelineSection({ section, onAction, actions, onExpandClient, expandedI
                   }}
                   onClick={() => onExpandClient?.(client)}
                 >
-                  <div className="row" style={{ justifyContent: 'space-between', marginBottom: 4 }}>
-                    <strong style={{ fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '65%' }}>
+                  <div className="row" style={{ justifyContent: 'space-between', marginBottom: 2 }}>
+                    <strong style={{ fontSize: 13 }}>
                       {client.name}
                     </strong>
-                    <div className="row" style={{ gap: 6, flexShrink: 0 }}>
-                      {summary && (
-                        <span style={{ fontSize: 11, color: section.color, fontWeight: 600 }}>
-                          {summary}
-                        </span>
-                      )}
-                      {onExpandClient && (
-                        <span className="muted" style={{ fontSize: 9 }}>{isExpanded ? '▼' : '▶'}</span>
-                      )}
-                    </div>
+                    {onExpandClient && (
+                      <span className="muted" style={{ fontSize: 9, flexShrink: 0 }}>{isExpanded ? '▼' : '▶'}</span>
+                    )}
                   </div>
+                  {summary && (
+                    <div style={{ fontSize: 11, color: section.color, fontWeight: 600, marginBottom: 2, lineHeight: 1.3 }}>
+                      {summary}
+                    </div>
+                  )}
                   {detail && (
                     <div className="muted" style={{ fontSize: 11, lineHeight: 1.3 }}>{detail}</div>
                   )}
