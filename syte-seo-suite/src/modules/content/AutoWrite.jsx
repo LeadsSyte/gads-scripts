@@ -11,6 +11,7 @@ import GenerateImageButton from '../../components/GenerateImageButton.jsx';
 import PushToCmsButton from '../../components/PushToCmsButton.jsx';
 import MarkImplementedButton from '../../components/MarkImplementedButton.jsx';
 import PipelineView from '../../components/PipelineView.jsx';
+import LogExternalWork from '../../components/LogExternalWork.jsx';
 import { contentPipelineStatus } from '../../lib/pipelineStatus.js';
 import { listAllImplementations, saveBlogResult, loadContentHistory } from '../../lib/supabase.js';
 
@@ -315,6 +316,26 @@ export default function AutoWrite() {
               ))}
             </div>
           );
+        }}
+      />
+
+      {/* Log External Work — for manually-done articles outside the tool */}
+      <LogExternalWork
+        module="content"
+        accent={ACCENT}
+        onLog={async (entry) => {
+          await saveBlogResult({
+            client_id: entry.clientId,
+            client_name: entry.clientName,
+            topic: entry.title,
+            keyword: '',
+            length: 0,
+            output: '',
+            tab: 'Manual',
+            generated_at: entry.verifiedAt
+          });
+          const fresh = await loadContentHistory();
+          setSharedHistory(fresh);
         }}
       />
 

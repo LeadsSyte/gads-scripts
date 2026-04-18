@@ -7,6 +7,7 @@ import { pushItemInline } from '../cms/pushAction.js';
 import ClientCardsGrid from '../../components/ClientCardsGrid.jsx';
 import MarkImplementedButton from '../../components/MarkImplementedButton.jsx';
 import PipelineView from '../../components/PipelineView.jsx';
+import LogExternalWork from '../../components/LogExternalWork.jsx';
 import { aeoPipelineStatus } from '../../lib/pipelineStatus.js';
 import { listAllImplementations, saveAeoResult, loadAeoResults as loadAeoResultsFromDb, deleteAeoResult, saveDeepResult, listDeepResults, deleteDeepResult } from '../../lib/supabase.js';
 import { AEO_SYSTEM, AEO_TYPES, AEO_DEEP_SYSTEM } from './aeoTypes.js';
@@ -899,6 +900,24 @@ export default function AEOEngine({ sub }) {
                 )}
               </div>
             );
+          }}
+        />
+
+        {/* Log External Work — for manually-done AEO optimizations */}
+        <LogExternalWork
+          module="aeo"
+          accent={ACCENT}
+          onLog={async (entry) => {
+            const key = entry.clientId + '::' + entry.url;
+            const row = {
+              url: entry.url,
+              client_id: entry.clientId,
+              generated_at: entry.verifiedAt,
+              optimizations: [{ type: 'content', name: entry.title, description: 'Manually logged — done outside the tool', implementation: '', where: entry.url }],
+              error: null
+            };
+            setResults(prev => ({ ...prev, [key]: row }));
+            saveAeoResult(row).catch(() => {});
           }}
         />
 
