@@ -704,19 +704,31 @@ export default function ContentEngine({ sub, setSub }) {
         <span className="badge" style={{ borderColor: ACCENT, color: ACCENT }}>SEO Content Engine</span>
       </div>
 
-      {/* ───────── Quick Blog Generator (topic-only, persisted) ───────── */}
+      {/* ───────── Quick Blog Generator (title-first, persisted) ───────── */}
       {tab === 'New Article' && (
         <>
           <div style={{ marginBottom: 4 }}>
-            <h3 style={{ margin: '0 0 4px' }}>Quick Blog Generator</h3>
+            <h3 style={{ margin: '0 0 4px' }}>Write a Specific Article</h3>
             <div className="muted" style={{ fontSize: 12, marginBottom: 12 }}>
-              Enter a topic and pick a client — Syte will generate a full blog article (body + meta + FAQ schema + QA score) and save it to the client's history. Use this for one-off requests outside the Topic Research flow.
+              Know the article you want? Just type the title, pick a client, and hit Generate. Syte builds the full blog (body + meta + FAQ schema + QA score) and saves it to the client's history.
             </div>
           </div>
           <div className="card" style={{ marginBottom: 16 }}>
             <div className="row" style={{ gap: 8, alignItems: 'flex-end', marginBottom: 10, flexWrap: 'wrap' }}>
-              <div style={{ minWidth: 200 }}>
-                <label>Link to client</label>
+              <div style={{ flex: 2, minWidth: 260 }}>
+                <label>Article Title</label>
+                <input
+                  type="text"
+                  placeholder='e.g. "Best Retirement Villages in Cape Town 2026"'
+                  value={quickTopic}
+                  onChange={e => setQuickTopic(e.target.value)}
+                  disabled={quickBusy}
+                  onKeyDown={e => { if (e.key === 'Enter' && quickClientId && quickTopic.trim()) runQuickBlog(); }}
+                  style={{ width: '100%', fontSize: 14 }}
+                />
+              </div>
+              <div style={{ minWidth: 180 }}>
+                <label>Client</label>
                 <select
                   value={quickClientId}
                   onChange={e => setQuickClientId(e.target.value)}
@@ -729,50 +741,44 @@ export default function ContentEngine({ sub, setSub }) {
                   ))}
                 </select>
               </div>
-              <div style={{ flex: 2, minWidth: 240 }}>
-                <label>Topic / Angle</label>
-                <input
-                  type="text"
-                  placeholder='e.g. "Why LASIK recovery is faster than most people expect"'
-                  value={quickTopic}
-                  onChange={e => setQuickTopic(e.target.value)}
-                  disabled={quickBusy}
-                  style={{ width: '100%' }}
-                />
-              </div>
-              <div style={{ flex: 1, minWidth: 160 }}>
-                <label>Primary Keyword (optional)</label>
-                <input
-                  type="text"
-                  placeholder="e.g. lasik recovery time"
-                  value={quickKeyword}
-                  onChange={e => setQuickKeyword(e.target.value)}
-                  disabled={quickBusy}
-                  style={{ width: '100%' }}
-                />
-              </div>
-              <div style={{ width: 110 }}>
-                <label>Length (words)</label>
-                <input
-                  type="number"
-                  min={400}
-                  max={4000}
-                  step={100}
-                  value={quickLength}
-                  onChange={e => setQuickLength(parseInt(e.target.value) || 1500)}
-                  disabled={quickBusy}
-                  style={{ width: '100%' }}
-                />
-              </div>
               <button
                 className="primary"
                 style={{ background: ACCENT, borderColor: ACCENT, color: '#0a0a0c' }}
                 onClick={runQuickBlog}
                 disabled={quickBusy || !quickClientId || !quickTopic.trim()}
               >
-                {quickBusy ? 'Generating…' : 'Generate Blog'}
+                {quickBusy ? 'Generating…' : 'Generate Article'}
               </button>
             </div>
+            <details style={{ marginTop: 6 }}>
+              <summary className="muted" style={{ fontSize: 11, cursor: 'pointer' }}>Advanced options (keyword, length)</summary>
+              <div className="row" style={{ gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+                <div style={{ flex: 1, minWidth: 200 }}>
+                  <label>Primary Keyword (optional)</label>
+                  <input
+                    type="text"
+                    placeholder="auto-derived from title if blank"
+                    value={quickKeyword}
+                    onChange={e => setQuickKeyword(e.target.value)}
+                    disabled={quickBusy}
+                    style={{ width: '100%' }}
+                  />
+                </div>
+                <div style={{ width: 140 }}>
+                  <label>Length (words)</label>
+                  <input
+                    type="number"
+                    min={400}
+                    max={4000}
+                    step={100}
+                    value={quickLength}
+                    onChange={e => setQuickLength(parseInt(e.target.value) || 1500)}
+                    disabled={quickBusy}
+                    style={{ width: '100%' }}
+                  />
+                </div>
+              </div>
+            </details>
             {!quickClientId && <div className="muted" style={{ fontSize: 11 }}>Pick a client to attribute this blog to.</div>}
             {quickErr && <div style={{ color: 'var(--red)', fontSize: 12, marginTop: 8 }}>{quickErr}</div>}
 

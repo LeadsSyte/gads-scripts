@@ -813,7 +813,7 @@ export default function AEOEngine({ sub }) {
       'credentials-missing': []
     };
     for (const c of aeoClients) {
-      const status = aeoPipelineStatus(c, aeoImpls, results, currentMonth);
+      const status = aeoPipelineStatus(c, aeoImpls, results, currentMonth, deepHistory);
       buckets[status.section]?.push({ client: c, summary: status.summary, detail: status.detail });
     }
     return [
@@ -822,7 +822,7 @@ export default function AEOEngine({ sub }) {
       { key: 'not-run',                 label: 'Not Run Yet',             color: 'var(--text-muted)', borderColor: 'var(--border)',      clients: buckets['not-run'] },
       { key: 'credentials-missing',     label: 'Credentials Missing',     color: 'var(--red)',        borderColor: 'var(--red)',        clients: buckets['credentials-missing'] }
     ];
-  }, [aeoClients, aeoImpls, results, currentMonth]);
+  }, [aeoClients, aeoImpls, results, currentMonth, deepHistory]);
 
   const [expandedClient, setExpandedClient] = useState(null);
 
@@ -881,22 +881,64 @@ export default function AEOEngine({ sub }) {
           expandedId={expandedClient}
           renderExpanded={(c) => {
             const cResults = getClientResults(c.id);
-            if (cResults.length === 0) {
+            const cDeep = deepHistory.filter(d => d.client_id === c.id);
+            if (cResults.length === 0 && cDeep.length === 0) {
               return <div className="muted" style={{ padding: 12, fontSize: 12 }}>No optimizations yet. Click Run Optimizations to generate.</div>;
             }
             const totalOpts = cResults.reduce((a, r) => a + (r.optimizations?.length || 0), 0);
             return (
               <div>
-                <div className="muted" style={{ padding: '8px 14px 4px', fontSize: 11 }}>
-                  {totalOpts} optimizations across {cResults.length} page{cResults.length > 1 ? 's' : ''}
-                </div>
-                {cResults.slice(0, 5).map(r => (
-                  <OptPageCard key={r.url} result={r} onDelete={() => deleteResult(r.url, c.id)} />
-                ))}
-                {cResults.length > 5 && (
-                  <div className="muted" style={{ padding: '8px 14px', fontSize: 11 }}>
-                    …and {cResults.length - 5} more pages. View all in Latest Results.
-                  </div>
+                {cResults.length > 0 && (
+                  <>
+                    <div className="muted" style={{ padding: '8px 14px 4px', fontSize: 11, textTransform: 'uppercase', letterSpacing: '.05em' }}>
+                      Quick-Win Optimizations · {totalOpts} across {cResults.length} page{cResults.length > 1 ? 's' : ''}
+                    </div>
+                    {cResults.slice(0, 5).map(r => (
+                      <OptPageCard key={r.url} result={r} onDelete={() => deleteResult(r.url, c.id)} />
+                    ))}
+                    {cResults.length > 5 && (
+                      <div className="muted" style={{ padding: '8px 14px', fontSize: 11 }}>
+                        …and {cResults.length - 5} more pages. View all in Latest Results.
+                      </div>
+                    )}
+                  </>
+                )}
+                {cDeep.length > 0 && (
+                  <>
+                    <div className="muted" style={{ padding: '10px 14px 4px', fontSize: 11, textTransform: 'uppercase', letterSpacing: '.05em', borderTop: cResults.length > 0 ? '1px solid var(--border)' : 'none', marginTop: cResults.length > 0 ? 6 : 0 }}>
+                      Deep Optimizations · {cDeep.length}
+                    </div>
+                    {cDeep.map(d => {
+                      let path = d.pageUrl;
+                      try { path = new URL(d.pageUrl).pathname; } catch {}
+                      const isOpen = deepResult?.id === d.id;
+                      return (
+                        <div key={d.id} style={{ borderBottom: '1px solid var(--border)' }}>
+                          <div className="row" style={{ padding: '10px 14px', gap: 8, justifyContent: 'space-between', alignItems: 'center', background: isOpen ? 'var(--surface-2)' : 'transparent', cursor: 'pointer' }} onClick={() => setDeepResult(isOpen ? null : d)}>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ fontSize: 12, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                {d.pageTitle || path}
+                              </div>
+                              <div className="muted" style={{ fontSize: 10, marginTop: 2 }}>
+                                {path} · {new Date(d.generated_at).toLocaleDateString()} {new Date(d.generated_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                              </div>
+                            </div>
+                            <div className="row" style={{ gap: 6, flexShrink: 0 }}>
+                              <button style={{ fontSize: 10, padding: '3px 8px' }} onClick={(e) => { e.stopPropagation(); setDeepResult(isOpen ? null : d); }}>
+                                {isOpen ? 'Hide' : 'View'}
+                              </button>
+                              <button
+                                style={{ fontSize: 10, padding: '3px 8px', color: 'var(--red)', borderColor: 'rgba(255,77,77,.3)' }}
+                                onClick={(e) => { e.stopPropagation(); if (confirm('Delete this deep optimization?')) removeDeepResult(d.id); }}
+                              >
+                                Delete
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </>
                 )}
               </div>
             );
@@ -1004,50 +1046,8 @@ export default function AEOEngine({ sub }) {
           )}
         </div>
 
-        {/* Deep Optimization History — persisted to Supabase. */}
-        {deepHistory.length > 0 && (
-          <div className="card" style={{ marginTop: 14 }}>
-            <div className="row" style={{ justifyContent: 'space-between', marginBottom: 10 }}>
-              <strong style={{ fontSize: 13 }}>Deep Optimization History</strong>
-              <span className="muted" style={{ fontSize: 11 }}>{deepHistory.length} saved</span>
-            </div>
-            <div style={{ border: '1px solid var(--border)', borderRadius: 6 }}>
-              {deepHistory.map(r => {
-                const isOpen = deepResult?.id === r.id;
-                let path = r.pageUrl;
-                try { path = new URL(r.pageUrl).pathname; } catch {}
-                return (
-                  <div key={r.id} style={{ borderBottom: '1px solid var(--border)' }}>
-                    <div className="row" style={{
-                      padding: '10px 12px', justifyContent: 'space-between', gap: 8,
-                      background: isOpen ? 'var(--surface-2)' : 'transparent', cursor: 'pointer'
-                    }} onClick={() => setDeepResult(isOpen ? null : r)}>
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: 12, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                          {r.pageTitle || path}
-                        </div>
-                        <div className="muted" style={{ fontSize: 10, marginTop: 2 }}>
-                          {r.client_name || '—'} · {path} · {new Date(r.generated_at).toLocaleDateString()} {new Date(r.generated_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                        </div>
-                      </div>
-                      <div className="row" style={{ gap: 6, flexShrink: 0 }}>
-                        <button style={{ fontSize: 10, padding: '3px 8px' }} onClick={(e) => { e.stopPropagation(); setDeepResult(isOpen ? null : r); }}>
-                          {isOpen ? 'Hide' : 'View'}
-                        </button>
-                        <button
-                          style={{ fontSize: 10, padding: '3px 8px', color: 'var(--red)', borderColor: 'rgba(255,77,77,.3)' }}
-                          onClick={(e) => { e.stopPropagation(); if (confirm('Delete this deep optimization?')) removeDeepResult(r.id); }}
-                        >
-                          Delete
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
+        {/* Deep Optimization History now lives inline under each client's
+            expanded pipeline card above. Removed standalone flat list. */}
 
         <div style={{ borderTop: '1px solid var(--border)', marginTop: 20, paddingTop: 16 }}>
           <h3 style={{ margin: '0 0 12px' }}>Run for Selected Client</h3>

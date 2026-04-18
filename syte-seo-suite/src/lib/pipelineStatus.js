@@ -137,7 +137,7 @@ export function technicalPipelineStatus(client, implementations, tasks, month) {
 
 // ─── AEO Engine ──────────────────────────────────────────────────
 // Sections: verified-on-site | optimizations-generated | not-run | credentials-missing
-export function aeoPipelineStatus(client, implementations, aeoResults, month) {
+export function aeoPipelineStatus(client, implementations, aeoResults, month, deepResults) {
   const m = month || thisMonth();
 
   // AEO optimizations need a page source — either sitemap URL or GA4 property.
@@ -162,7 +162,15 @@ export function aeoPipelineStatus(client, implementations, aeoResults, month) {
     r => r.client_id === client.id && (r.generated_at || '').slice(0, 7) === m
   );
   const totalOpts = monthResults.reduce((a, r) => a + (r.optimizations?.length || 0), 0);
-  const allImplemented = totalOpts > 0 && verified.length >= totalOpts;
+
+  // Deep optimizations count as real work too. Each deep opt is a full-page
+  // rewrite so we count it as 1 "optimization" toward the month's work.
+  const monthDeep = (deepResults || []).filter(
+    d => d.client_id === client.id && (d.generated_at || '').slice(0, 7) === m
+  );
+  const deepCount = monthDeep.length;
+  const totalWork = totalOpts + deepCount;
+  const allImplemented = totalWork > 0 && verified.length >= totalWork;
 
   // Only "verified-on-site" when all optimizations are implemented + verified.
   if (allImplemented && verified.length > 0) {
@@ -173,17 +181,18 @@ export function aeoPipelineStatus(client, implementations, aeoResults, month) {
     };
   }
 
-  if (monthResults.length > 0) {
-    const parts = [totalOpts + ' optimizations'];
+  if (monthResults.length > 0 || deepCount > 0) {
+    const parts = [];
+    if (totalOpts > 0) parts.push(totalOpts + ' quick-win optimizations');
+    if (deepCount > 0) parts.push(deepCount + ' deep rewrite' + (deepCount > 1 ? 's' : ''));
     if (verified.length > 0) parts.push(verified.length + ' verified');
-    const remaining = totalOpts - verified.length;
+    const remaining = totalWork - verified.length;
     if (remaining > 0) parts.push(remaining + ' awaiting implementation');
     return {
-      // Only promote when all are verified; otherwise stay in working section.
-      section: allImplemented ? 'optimizations-generated' : 'not-run',
+      section: allImplemented ? 'optimizations-generated' : (verified.length > 0 ? 'optimizations-generated' : 'optimizations-generated'),
       summary: parts.join(' · '),
       detail: verified.length > 0
-        ? verified.length + ' of ' + totalOpts + ' optimizations verified'
+        ? verified.length + ' of ' + totalWork + ' items verified'
         : 'Generated, awaiting implementation'
     };
   }
