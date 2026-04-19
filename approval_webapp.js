@@ -1,5 +1,5 @@
 /**
- * SYTE APPROVAL WEB APP v4.4.0
+ * SYTE APPROVAL WEB APP v4.5.0
  * =============================
  * Standalone Google Apps Script Web App for approving proposed Google Ads changes.
  *
@@ -57,14 +57,14 @@ function doGet(e) {
     }
   }
 
-  // v4.5.0: Per-term review page for AI-flagged search terms
-  if (view === 'review_flagged') {
+  // v4.5.0: Interactive flagged review page — negate/keep individual terms + natural language instructions
+  if (view === 'flagged_review') {
     if (!runId) return _renderPage('Error', 'Missing runId parameter.', false);
     try {
       var ss = SpreadsheetApp.openById(MASTER_SHEET_ID);
-      return _renderReviewFlagged(ss, runId);
-    } catch (e3) {
-      return _renderPage('Error', 'Could not load review page: ' + e3.message, false);
+      return _renderFlaggedReviewPage(ss, runId);
+    } catch (e2) {
+      return _renderPage('Error', 'Could not load flagged review: ' + e2.message, false);
     }
   }
 
@@ -78,7 +78,7 @@ function doGet(e) {
     return _renderPage('Error', 'Missing runId or category parameter.', false);
   }
 
-  var validCategories = ['keyword_pauses', 'search_term_negations', 'winner_promotions', 'auto_optimizations', 'shopping_pmax', 'all'];
+  var validCategories = ['keyword_pauses', 'search_term_negations', 'winner_promotions', 'auto_optimizations', 'shopping_pmax', 'flagged_review_negations', 'all'];
   if (validCategories.indexOf(category) === -1) {
     return _renderPage('Error', 'Invalid category: ' + category, false);
   }
@@ -156,6 +156,7 @@ function doGet(e) {
       winner_promotions: 'Winner Promotions',
       auto_optimizations: 'Auto-Optimizations',
       shopping_pmax: 'Shopping/PMax',
+      flagged_review_negations: 'Flagged Review Negations',
       all: 'All Changes'
     };
 
@@ -182,21 +183,33 @@ function doGet(e) {
 }
 
 /**
- * Handles POST requests for saving notes and processing flagged term reviews.
+ * Handles POST requests for saving notes and flagged review submissions.
  */
 function doPost(e) {
   var runId = (e.parameter.runId || '').trim();
-  var postAction = (e.parameter.postAction || '').trim();
-  var notes = (e.parameter.notes || '').trim();
+  var postAction = (e.parameter.post_action || '').trim();
 
   if (!runId) {
     return _renderPage('Error', 'Missing run ID.', false);
   }
 
-  // v4.5.0: Handle flagged term review submissions
-  if (postAction === 'review_flagged') {
-    return _processReviewFlagged(e);
+  // v4.5.0: Handle flagged review submission (checkboxes + optional AI instructions)
+  if (postAction === 'flagged_review') {
+    return _handleFlaggedReviewSubmit(e);
   }
+
+  // v4.5.0: Handle AI instruction processing (preview step)
+  if (postAction === 'ai_instructions') {
+    return _handleAIInstructions(e);
+  }
+
+  // v4.5.0: Handle confirmation of AI-proposed changes (saves to sheet)
+  if (postAction === 'confirm_ai') {
+    return _handleConfirmAI(e);
+  }
+
+  // Original notes handler
+  var notes = (e.parameter.notes || '').trim();
 
   try {
     var ss = SpreadsheetApp.openById(MASTER_SHEET_ID);
@@ -216,6 +229,555 @@ function doPost(e) {
     return _renderPage('Not Found', 'Run ID not found: ' + runId, false);
   } catch (e) {
     return _renderPage('Error', 'Could not save note: ' + e.message, false);
+  }
+}
+
+
+// ============================================
+// v4.5.0: FLAGGED REVIEW — INTERACTIVE PAGE
+// ============================================
+
+/**
+ * Reads the ANTHROPIC_API_KEY from the master sheet Config tab.
+ */
+function _getApiKey() {
+  try {
+    var ss = SpreadsheetApp.openById(MASTER_SHEET_ID);
+    var configSheet = ss.getSheetByName('Config');
+    if (!configSheet) return null;
+    var data = configSheet.getDataRange().getValues();
+    for (var i = 0; i < data.length; i++) {
+      if (String(data[i][0]).trim() === 'ANTHROPIC_API_KEY') {
+        return String(data[i][1]).trim();
+      }
+    }
+  } catch (e) {}
+  return null;
+}
+
+/**
+ * Finds a PendingChanges row by runId. Returns { row, rowNum, colIdx, sheet } or null.
+ */
+function _findPendingRow(runId) {
+  var ss = SpreadsheetApp.openById(MASTER_SHEET_ID);
+  var sheet = ss.getSheetByName('PendingChanges');
+  if (!sheet) return null;
+  var data = sheet.getDataRange().getValues();
+  var headers = data[0];
+  var colIdx = {};
+  headers.forEach(function(h, i) { colIdx[h] = i; });
+  for (var r = 1; r < data.length; r++) {
+    if (String(data[r][colIdx['run_id']]).trim() === runId) {
+      return { row: data[r], rowNum: r + 1, colIdx: colIdx, sheet: sheet, data: data };
+    }
+  }
+  return null;
+}
+
+/**
+ * Renders the interactive flagged review page with checkboxes and AI instruction box.
+ */
+function _renderFlaggedReviewPage(ss, runId) {
+  var result = _findPendingRow(runId);
+  if (!result) return _renderPage('Not Found', 'No pending changes found for run ID: ' + runId, false);
+
+  var status = String(result.row[result.colIdx['status']]).trim();
+  if (status === 'APPLIED') return _renderPage('Already Applied', 'These changes have already been applied.', false);
+  if (status === 'EXPIRED') return _renderPage('Expired', 'These pending changes have expired.', false);
+  if (status === 'REJECTED') return _renderPage('Rejected', 'These changes were previously rejected.', false);
+
+  var changesJson = {};
+  try { changesJson = JSON.parse(result.row[result.colIdx['changes_json']]); } catch (e) {}
+
+  var flagged = changesJson.flagged_review || {};
+  var terms = flagged.terms || [];
+  var alreadySelected = flagged.selectedForNegation || [];
+  var accountName = result.row[result.colIdx['account_name']] || '';
+
+  if (terms.length === 0) {
+    return _renderPage('No Flagged Terms', 'There are no flagged review terms for this run.', false);
+  }
+
+  var webAppUrl = ScriptApp.getService().getUrl();
+
+  var html = '<!DOCTYPE html><html><head><meta charset="utf-8">';
+  html += '<meta name="viewport" content="width=device-width, initial-scale=1">';
+  html += '<title>Syte — Flagged Review</title>';
+  html += '<style>';
+  html += 'body{font-family:Arial,sans-serif;max-width:800px;margin:20px auto;padding:0 20px;color:#333;}';
+  html += 'h1{font-size:22px;margin:0 0 4px;}h2{font-size:16px;margin:20px 0 8px;}';
+  html += 'table{width:100%;border-collapse:collapse;font-size:13px;margin:8px 0;}';
+  html += 'th{background:#e3f2fd;padding:8px;text-align:left;}';
+  html += 'td{padding:6px 8px;border-bottom:1px solid #eee;}';
+  html += '.btn{display:inline-block;padding:10px 18px;margin:6px 4px;border-radius:6px;color:white;border:none;font-weight:600;font-size:13px;cursor:pointer;text-decoration:none;}';
+  html += '.btn-negate{background:#c62828;}.btn-keep{background:#2e7d32;}.btn-ai{background:#1565c0;}';
+  html += '.muted{color:#999;font-size:12px;}';
+  html += '.card{background:#f8f9fa;padding:14px;border-radius:6px;border-left:4px solid #1565c0;margin:12px 0;}';
+  html += '.ai-box{background:#e3f2fd;padding:16px;border-radius:6px;border:2px solid #1565c0;margin:16px 0;}';
+  html += 'textarea{width:100%;padding:10px;border:1px solid #ccc;border-radius:4px;font-size:14px;font-family:Arial,sans-serif;box-sizing:border-box;}';
+  html += 'label{cursor:pointer;}';
+  html += 'tr.selected{background:#ffebee;}';
+  html += '.status-badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600;}';
+  html += '.badge-pending{background:#fff3e0;color:#e65100;}.badge-negated{background:#ffebee;color:#c62828;}';
+  html += '</style></head><body>';
+
+  html += '<h1>Flagged Review — ' + _escape(String(accountName)) + '</h1>';
+  html += '<p class="muted">Run: ' + _escape(runId) + ' | ' + terms.length + ' terms flagged for review</p>';
+
+  if (alreadySelected.length > 0) {
+    html += '<div class="card"><strong>Previously selected for negation:</strong> ' + alreadySelected.map(function(t) { return _escape(t.term); }).join(', ') + '</div>';
+  }
+
+  // === AI Instructions Box ===
+  html += '<div class="ai-box">';
+  html += '<h2 style="margin:0 0 8px;color:#1565c0;">Talk to the Optimization</h2>';
+  html += '<p style="font-size:13px;margin:0 0 10px;color:#555;">Tell us what to do in plain English. Examples:</p>';
+  html += '<ul style="font-size:12px;color:#666;margin:0 0 10px;padding-left:20px;">';
+  html += '<li>"Negate all competitor names but keep facebook-related terms"</li>';
+  html += '<li>"Keep cold calling agency — we offer that service"</li>';
+  html += '<li>"Negate everything except digital marketing website and companies that advertise"</li>';
+  html += '</ul>';
+  html += '<form method="post" action="' + webAppUrl + '">';
+  html += '<input type="hidden" name="runId" value="' + _escape(runId) + '">';
+  html += '<input type="hidden" name="post_action" value="ai_instructions">';
+  html += '<textarea name="instructions" rows="3" placeholder="Type your instructions here..."></textarea>';
+  html += '<br><button type="submit" class="btn btn-ai" style="margin-top:8px;">Process Instructions</button>';
+  html += '</form></div>';
+
+  // === Manual Checkbox Selection ===
+  html += '<h2>Or Select Manually</h2>';
+  html += '<form method="post" action="' + webAppUrl + '">';
+  html += '<input type="hidden" name="runId" value="' + _escape(runId) + '">';
+  html += '<input type="hidden" name="post_action" value="flagged_review">';
+
+  html += '<table><tr><th style="width:30px;">Neg?</th><th>Search Term</th><th style="text-align:right;">Cost</th><th style="text-align:right;">Clicks</th><th>Reason</th></tr>';
+  for (var i = 0; i < terms.length; i++) {
+    var t = terms[i];
+    var alreadyNeg = false;
+    for (var j = 0; j < alreadySelected.length; j++) {
+      if (alreadySelected[j].term === t.term) { alreadyNeg = true; break; }
+    }
+    html += '<tr' + (alreadyNeg ? ' class="selected"' : '') + '>';
+    html += '<td style="text-align:center;"><input type="checkbox" name="negate_term" value="' + _escape(t.term) + '"' + (alreadyNeg ? ' checked' : '') + '></td>';
+    html += '<td><label for="negate_term">' + _escape(t.term) + '</label>';
+    if (alreadyNeg) html += ' <span class="status-badge badge-negated">queued</span>';
+    html += '</td>';
+    html += '<td style="text-align:right;">' + (t.cost ? t.cost.toFixed(0) : '0') + '</td>';
+    html += '<td style="text-align:right;">' + (t.clicks || 0) + '</td>';
+    html += '<td style="color:#666;font-size:12px;">' + _escape(t.reason || '') + '</td>';
+    html += '</tr>';
+  }
+  html += '</table>';
+
+  html += '<div style="margin:12px 0;">';
+  html += '<button type="submit" class="btn btn-negate">Negate Selected Terms</button>';
+  html += '<a href="' + webAppUrl + '?runId=' + encodeURIComponent(runId) + '&category=flagged_review_negations" class="btn btn-keep" style="text-decoration:none;">Approve All Queued Negations</a>';
+  html += '</div></form>';
+
+  html += '<div style="margin-top:30px;color:#999;font-size:11px;text-align:center;">Syte Digital Agency | Flagged Review | syte.co.za</div>';
+  html += '</body></html>';
+
+  return HtmlService.createHtmlOutput(html).setTitle('Syte — Flagged Review');
+}
+
+/**
+ * Handles manual checkbox submission — saves selected terms for negation.
+ */
+function _handleFlaggedReviewSubmit(e) {
+  var runId = (e.parameter.runId || '').trim();
+  // Google Apps Script: single value = string, multiple = array
+  var negateTerms = e.parameter.negate_term || [];
+  if (typeof negateTerms === 'string') negateTerms = [negateTerms];
+
+  try {
+    var result = _findPendingRow(runId);
+    if (!result) return _renderPage('Not Found', 'Run ID not found: ' + runId, false);
+
+    var changesJson = {};
+    try { changesJson = JSON.parse(result.row[result.colIdx['changes_json']]); } catch (ex) {}
+
+    var flagged = changesJson.flagged_review || { terms: [], selectedForNegation: [] };
+    var terms = flagged.terms || [];
+
+    // Build selected list from checked terms
+    var selected = [];
+    for (var i = 0; i < negateTerms.length; i++) {
+      var termName = negateTerms[i].trim();
+      for (var j = 0; j < terms.length; j++) {
+        if (terms[j].term === termName) {
+          selected.push(terms[j]);
+          break;
+        }
+      }
+    }
+
+    flagged.selectedForNegation = selected;
+    changesJson.flagged_review = flagged;
+
+    // Write back to sheet
+    result.sheet.getRange(result.rowNum, result.colIdx['changes_json'] + 1).setValue(JSON.stringify(changesJson));
+
+    // Auto-add flagged_review_negations to approved categories
+    var existingApproved = String(result.row[result.colIdx['approved_categories']] || '').trim();
+    if (selected.length > 0 && existingApproved.indexOf('flagged_review_negations') === -1) {
+      var newApproved = existingApproved ? existingApproved + ',flagged_review_negations' : 'flagged_review_negations';
+      result.sheet.getRange(result.rowNum, result.colIdx['approved_categories'] + 1).setValue(newApproved);
+      result.sheet.getRange(result.rowNum, result.colIdx['approved_by'] + 1).setValue(Session.getActiveUser().getEmail() || 'Unknown');
+      result.sheet.getRange(result.rowNum, result.colIdx['approved_at'] + 1).setValue(new Date().toISOString());
+    }
+
+    var summary = '<strong>' + selected.length + ' term(s) queued for negation:</strong><ul>';
+    for (var s = 0; s < selected.length; s++) {
+      summary += '<li>' + _escape(selected[s].term) + ' (cost: ' + (selected[s].cost || 0).toFixed(0) + ')</li>';
+    }
+    summary += '</ul>';
+    var kept = terms.length - selected.length;
+    summary += '<p>' + kept + ' term(s) kept.</p>';
+    summary += '<p>Negations will be applied on the next scheduled script run.</p>';
+
+    return _renderPage('Flagged Review Saved', summary, true);
+  } catch (ex) {
+    return _renderPage('Error', 'Could not save flagged review: ' + ex.message, false);
+  }
+}
+
+/**
+ * Handles natural language instructions — calls Claude to interpret, then shows
+ * a preview page for user confirmation before saving.
+ */
+function _handleAIInstructions(e) {
+  var runId = (e.parameter.runId || '').trim();
+  var instructions = (e.parameter.instructions || '').trim();
+
+  if (!instructions) {
+    return _renderPage('Error', 'Please provide instructions.', false);
+  }
+
+  try {
+    var result = _findPendingRow(runId);
+    if (!result) return _renderPage('Not Found', 'Run ID not found: ' + runId, false);
+
+    var changesJson = {};
+    try { changesJson = JSON.parse(result.row[result.colIdx['changes_json']]); } catch (ex) {}
+
+    var flagged = changesJson.flagged_review || { terms: [], selectedForNegation: [] };
+    var terms = flagged.terms || [];
+
+    if (terms.length === 0) {
+      return _renderPage('No Terms', 'No flagged terms to process.', false);
+    }
+
+    // Also include N-gram negatives for context (so user can say "don't negative facebook")
+    var ngramNegatives = (changesJson.search_term_negations || {}).ngramNegatives || [];
+
+    // Include smart negated terms for context too
+    var smartNegated = (changesJson.search_term_negations || {}).smartNegated || [];
+
+    var apiKey = _getApiKey();
+    if (!apiKey) {
+      return _renderPage('Error', 'No ANTHROPIC_API_KEY found in Config tab. AI instructions require an API key.', false);
+    }
+
+    // Build prompt for Claude
+    var termsList = terms.map(function(t) {
+      return '- "' + t.term + '" (cost: ' + (t.cost || 0).toFixed(0) + ', clicks: ' + (t.clicks || 0) + ', reason: ' + (t.reason || '') + ')';
+    }).join('\n');
+
+    var ngramList = '';
+    if (ngramNegatives.length > 0) {
+      ngramList = '\n\nN-gram negatives also proposed (already in a separate approval category):\n';
+      ngramList += ngramNegatives.map(function(n) {
+        return '- "' + n.word + '" (total cost: ' + (n.totalCost || 0).toFixed(0) + ', terms: ' + (n.termCount || 0) + ')';
+      }).join('\n');
+    }
+
+    var smartNegList = '';
+    if (smartNegated.length > 0) {
+      smartNegList = '\n\nAI auto-negated terms (already in a separate approval category):\n';
+      smartNegList += smartNegated.map(function(s) {
+        return '- "' + s.term + '" (cost: ' + (s.cost || 0).toFixed(0) + ', reason: ' + (s.reason || '') + ')';
+      }).join('\n');
+    }
+
+    var prompt = 'You are a Google Ads optimization assistant. A user is reviewing search terms that were flagged as ambiguous by the AI system.\n\n';
+    prompt += 'Flagged search terms (these are ambiguous — user decides negate or keep):\n' + termsList + '\n';
+    prompt += ngramList;
+    prompt += smartNegList + '\n\n';
+    prompt += 'User instructions: "' + instructions + '"\n\n';
+    prompt += 'Based on the user\'s instructions, return a JSON object with:\n';
+    prompt += '- "negate": array of search term strings to negate (from the flagged list)\n';
+    prompt += '- "keep": array of search term strings to keep (from the flagged list)\n';
+    prompt += '- "remove_ngram": array of N-gram words the user wants to REMOVE from the negation list (i.e., they do NOT want these negated)\n';
+    prompt += '- "remove_smart_negated": array of auto-negated term strings the user wants to REMOVE from the negation list\n';
+    prompt += '- "explanation": brief explanation of what you did and why\n\n';
+    prompt += 'Only include terms that were explicitly mentioned or clearly covered by the user\'s instructions. If the user\'s intent is unclear for a term, put it in "keep" (err on side of caution).\n';
+    prompt += 'Return ONLY valid JSON, no markdown.';
+
+    var response = UrlFetchApp.fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01'
+      },
+      payload: JSON.stringify({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 2000,
+        messages: [{ role: 'user', content: prompt }]
+      }),
+      muteHttpExceptions: true
+    });
+
+    var code = response.getResponseCode();
+    if (code !== 200) {
+      return _renderPage('AI Error', 'Claude API returned error ' + code + ': ' + response.getContentText().substring(0, 300), false);
+    }
+
+    var aiJson = JSON.parse(response.getContentText());
+    var aiText = aiJson.content[0].text;
+
+    // Parse AI response
+    var aiResult;
+    try {
+      var cleaned = aiText.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
+      aiResult = JSON.parse(cleaned);
+    } catch (ex) {
+      return _renderPage('AI Parse Error', 'Could not parse AI response:<br><pre>' + _escape(aiText) + '</pre>', false);
+    }
+
+    var negateList = aiResult.negate || [];
+    var keepList = aiResult.keep || [];
+    var removeNgram = aiResult.remove_ngram || [];
+    var removeSmartNegated = aiResult.remove_smart_negated || [];
+    var explanation = aiResult.explanation || '';
+
+    // === RENDER PREVIEW PAGE (no changes saved yet) ===
+    var webAppUrl = ScriptApp.getService().getUrl();
+
+    var html = '<!DOCTYPE html><html><head><meta charset="utf-8">';
+    html += '<meta name="viewport" content="width=device-width, initial-scale=1">';
+    html += '<title>Syte — Review AI Suggestions</title>';
+    html += '<style>';
+    html += 'body{font-family:Arial,sans-serif;max-width:800px;margin:20px auto;padding:0 20px;color:#333;}';
+    html += 'h1{font-size:22px;margin:0 0 4px;}h2{font-size:16px;margin:18px 0 8px;}';
+    html += '.btn{display:inline-block;padding:12px 24px;margin:6px 4px;border-radius:6px;color:white;border:none;font-weight:600;font-size:14px;cursor:pointer;text-decoration:none;}';
+    html += '.btn-confirm{background:#2e7d32;}.btn-cancel{background:#757575;}.btn-retry{background:#1565c0;}';
+    html += '.card{background:#f8f9fa;padding:14px;border-radius:6px;border-left:4px solid #1565c0;margin:12px 0;}';
+    html += '.explanation{background:#e3f2fd;padding:14px;border-radius:6px;margin:12px 0;font-size:14px;}';
+    html += '.negate-item{padding:6px 0;border-bottom:1px solid #ffcdd2;color:#c62828;}';
+    html += '.keep-item{padding:6px 0;border-bottom:1px solid #c8e6c9;color:#2e7d32;}';
+    html += '.remove-item{padding:6px 0;border-bottom:1px solid #bbdefb;color:#1565c0;}';
+    html += '.muted{color:#999;font-size:12px;}';
+    html += '.section{margin:12px 0;padding:12px;border-radius:6px;}';
+    html += '.section-negate{background:#ffebee;}.section-keep{background:#e8f5e9;}.section-remove{background:#e3f2fd;}';
+    html += '</style></head><body>';
+
+    html += '<h1>Review Proposed Changes</h1>';
+    html += '<p class="muted">These are the changes Claude suggests based on your instructions. Nothing is saved yet.</p>';
+
+    // Show user's original instructions
+    html += '<div class="card"><strong>Your instructions:</strong><br>"' + _escape(instructions) + '"</div>';
+
+    // AI explanation
+    html += '<div class="explanation"><strong>AI interpretation:</strong> ' + _escape(explanation) + '</div>';
+
+    // Terms to negate
+    if (negateList.length > 0) {
+      html += '<div class="section section-negate">';
+      html += '<h2 style="color:#c62828;margin-top:0;">Will Negate (' + negateList.length + ')</h2>';
+      for (var i = 0; i < negateList.length; i++) {
+        // Find cost info
+        var costInfo = '';
+        for (var j = 0; j < terms.length; j++) {
+          if (terms[j].term.toLowerCase().trim() === negateList[i].toLowerCase().trim()) {
+            costInfo = ' — cost: ' + (terms[j].cost || 0).toFixed(0) + ', clicks: ' + (terms[j].clicks || 0);
+            break;
+          }
+        }
+        html += '<div class="negate-item">"' + _escape(negateList[i]) + '"' + costInfo + '</div>';
+      }
+      html += '</div>';
+    }
+
+    // Terms to keep
+    if (keepList.length > 0) {
+      html += '<div class="section section-keep">';
+      html += '<h2 style="color:#2e7d32;margin-top:0;">Will Keep (' + keepList.length + ')</h2>';
+      for (var k = 0; k < keepList.length; k++) {
+        html += '<div class="keep-item">"' + _escape(keepList[k]) + '"</div>';
+      }
+      html += '</div>';
+    }
+
+    // N-grams to remove
+    if (removeNgram.length > 0) {
+      html += '<div class="section section-remove">';
+      html += '<h2 style="color:#1565c0;margin-top:0;">Remove from N-gram Negatives</h2>';
+      html += '<p style="font-size:12px;color:#666;">These words were proposed as N-gram negatives but will be removed per your instructions.</p>';
+      for (var rn = 0; rn < removeNgram.length; rn++) {
+        html += '<div class="remove-item">"' + _escape(removeNgram[rn]) + '" — will NOT be negated</div>';
+      }
+      html += '</div>';
+    }
+
+    // Smart negated to remove
+    if (removeSmartNegated.length > 0) {
+      html += '<div class="section section-remove">';
+      html += '<h2 style="color:#1565c0;margin-top:0;">Remove from AI Auto-Negated</h2>';
+      html += '<p style="font-size:12px;color:#666;">These terms were auto-negated by AI but will be removed per your instructions.</p>';
+      for (var rs = 0; rs < removeSmartNegated.length; rs++) {
+        html += '<div class="remove-item">"' + _escape(removeSmartNegated[rs]) + '" — will NOT be negated</div>';
+      }
+      html += '</div>';
+    }
+
+    // No changes
+    if (negateList.length === 0 && removeNgram.length === 0 && removeSmartNegated.length === 0) {
+      html += '<div class="card"><strong>No changes proposed.</strong> Claude kept all terms based on your instructions.</div>';
+    }
+
+    // Confirm / Go Back / Try Again buttons
+    html += '<div style="margin:24px 0;padding:16px 0;border-top:2px solid #e0e0e0;">';
+
+    // Confirm form — passes the AI result as hidden JSON for the confirm handler
+    html += '<form method="post" action="' + webAppUrl + '" style="display:inline;">';
+    html += '<input type="hidden" name="runId" value="' + _escape(runId) + '">';
+    html += '<input type="hidden" name="post_action" value="confirm_ai">';
+    html += '<input type="hidden" name="ai_result" value="' + _escape(JSON.stringify(aiResult)) + '">';
+    html += '<button type="submit" class="btn btn-confirm">Confirm & Apply</button>';
+    html += '</form>';
+
+    // Go back to review page
+    html += '<a href="' + webAppUrl + '?view=flagged_review&runId=' + encodeURIComponent(runId) + '" class="btn btn-cancel">Go Back</a>';
+
+    // Try again with new instructions
+    html += '<form method="post" action="' + webAppUrl + '" style="display:inline;margin-left:8px;">';
+    html += '<input type="hidden" name="runId" value="' + _escape(runId) + '">';
+    html += '<input type="hidden" name="post_action" value="ai_instructions">';
+    html += '<input type="hidden" name="instructions" value="' + _escape(instructions) + '">';
+    html += '<button type="submit" class="btn btn-retry" onclick="var i=prompt(\'Refine your instructions:\',\'' + _escape(instructions).replace(/'/g, "\\'") + '\');if(i){this.form.instructions.value=i;}else{return false;}">Refine Instructions</button>';
+    html += '</form>';
+
+    html += '</div>';
+
+    html += '<div style="margin-top:30px;color:#999;font-size:11px;text-align:center;">Syte Digital Agency | AI Review Preview | syte.co.za</div>';
+    html += '</body></html>';
+
+    return HtmlService.createHtmlOutput(html).setTitle('Syte — Review AI Suggestions');
+  } catch (ex) {
+    return _renderPage('Error', 'Could not process instructions: ' + ex.message, false);
+  }
+}
+
+/**
+ * Handles confirmation of AI-proposed changes — actually saves to PendingChanges sheet.
+ */
+function _handleConfirmAI(e) {
+  var runId = (e.parameter.runId || '').trim();
+  var aiResultJson = (e.parameter.ai_result || '').trim();
+
+  if (!runId || !aiResultJson) {
+    return _renderPage('Error', 'Missing data for confirmation.', false);
+  }
+
+  try {
+    var aiResult = JSON.parse(aiResultJson);
+    var result = _findPendingRow(runId);
+    if (!result) return _renderPage('Not Found', 'Run ID not found: ' + runId, false);
+
+    var changesJson = {};
+    try { changesJson = JSON.parse(result.row[result.colIdx['changes_json']]); } catch (ex) {}
+
+    var flagged = changesJson.flagged_review || { terms: [], selectedForNegation: [] };
+    var terms = flagged.terms || [];
+    var negateList = aiResult.negate || [];
+    var removeNgram = aiResult.remove_ngram || [];
+    var removeSmartNegated = aiResult.remove_smart_negated || [];
+
+    // Build selectedForNegation from confirmed AI results
+    var selected = [];
+    for (var i = 0; i < negateList.length; i++) {
+      var neg = negateList[i].toLowerCase().trim();
+      for (var j = 0; j < terms.length; j++) {
+        if (terms[j].term.toLowerCase().trim() === neg) {
+          selected.push(terms[j]);
+          break;
+        }
+      }
+    }
+
+    flagged.selectedForNegation = selected;
+    changesJson.flagged_review = flagged;
+
+    // Handle N-gram removals
+    var ngramNegatives = (changesJson.search_term_negations || {}).ngramNegatives || [];
+    if (removeNgram.length > 0 && ngramNegatives.length > 0) {
+      changesJson.search_term_negations.ngramNegatives = ngramNegatives.filter(function(n) {
+        var word = n.word.toLowerCase().trim();
+        for (var k = 0; k < removeNgram.length; k++) {
+          if (removeNgram[k].toLowerCase().trim() === word) return false;
+        }
+        return true;
+      });
+    }
+
+    // Handle smart-negated removals
+    var smartNegated = (changesJson.search_term_negations || {}).smartNegated || [];
+    if (removeSmartNegated.length > 0 && smartNegated.length > 0) {
+      changesJson.search_term_negations.smartNegated = smartNegated.filter(function(s) {
+        var term = s.term.toLowerCase().trim();
+        for (var k = 0; k < removeSmartNegated.length; k++) {
+          if (removeSmartNegated[k].toLowerCase().trim() === term) return false;
+        }
+        return true;
+      });
+    }
+
+    // Write back to sheet
+    result.sheet.getRange(result.rowNum, result.colIdx['changes_json'] + 1).setValue(JSON.stringify(changesJson));
+
+    // Add flagged_review_negations to approved categories if there are selections
+    if (selected.length > 0) {
+      var existingApproved = String(result.row[result.colIdx['approved_categories']] || '').trim();
+      if (existingApproved.indexOf('flagged_review_negations') === -1) {
+        var newApproved = existingApproved ? existingApproved + ',flagged_review_negations' : 'flagged_review_negations';
+        result.sheet.getRange(result.rowNum, result.colIdx['approved_categories'] + 1).setValue(newApproved);
+      }
+      result.sheet.getRange(result.rowNum, result.colIdx['approved_by'] + 1).setValue(Session.getActiveUser().getEmail() || 'Unknown');
+      result.sheet.getRange(result.rowNum, result.colIdx['approved_at'] + 1).setValue(new Date().toISOString());
+    }
+
+    // Build confirmation summary
+    var summary = '';
+    if (selected.length > 0) {
+      summary += '<strong>Negating (' + selected.length + '):</strong><ul>';
+      for (var s = 0; s < selected.length; s++) {
+        summary += '<li style="color:#c62828;">' + _escape(selected[s].term) + '</li>';
+      }
+      summary += '</ul>';
+    }
+    if (removeNgram.length > 0) {
+      summary += '<strong>Removed from N-gram negations:</strong><ul>';
+      for (var rn = 0; rn < removeNgram.length; rn++) {
+        summary += '<li style="color:#1565c0;">"' + _escape(removeNgram[rn]) + '"</li>';
+      }
+      summary += '</ul>';
+    }
+    if (removeSmartNegated.length > 0) {
+      summary += '<strong>Removed from AI auto-negated:</strong><ul>';
+      for (var rs = 0; rs < removeSmartNegated.length; rs++) {
+        summary += '<li style="color:#1565c0;">"' + _escape(removeSmartNegated[rs]) + '"</li>';
+      }
+      summary += '</ul>';
+    }
+
+    var kept = terms.length - selected.length;
+    summary += '<p>' + kept + ' flagged term(s) kept.</p>';
+    summary += '<p>Changes will be applied on the next scheduled script run.</p>';
+
+    return _renderPage('Changes Confirmed', summary, true);
+  } catch (ex) {
+    return _renderPage('Error', 'Could not confirm changes: ' + ex.message, false);
   }
 }
 
@@ -492,206 +1054,6 @@ function _summarizeChangesDashboard(changes) {
   return parts.length > 0 ? parts.join(', ') : 'No changes';
 }
 
-
-/**
- * v4.5.0: Renders a per-term review page for AI-flagged search terms.
- * Shows checkboxes for each term so the user can pick which ones to negate.
- */
-function _renderReviewFlagged(ss, runId) {
-  var sheet = ss.getSheetByName('PendingChanges');
-  if (!sheet) return _renderPage('Error', 'PendingChanges sheet not found.', false);
-
-  var data = sheet.getDataRange().getValues();
-  var headers = data[0];
-  var colIdx = {};
-  headers.forEach(function(h, i) { colIdx[h] = i; });
-
-  var targetRow = -1;
-  for (var r = 1; r < data.length; r++) {
-    if (String(data[r][colIdx['run_id']]).trim() === runId) { targetRow = r; break; }
-  }
-  if (targetRow === -1) return _renderPage('Not Found', 'No pending changes found for run ID: ' + runId, false);
-
-  var row = data[targetRow];
-  var status = String(row[colIdx['status']]).trim();
-  if (status === 'APPLIED') return _renderPage('Already Applied', 'These changes have already been applied.', false);
-  if (status === 'EXPIRED') return _renderPage('Expired', 'These changes have expired.', false);
-
-  var changesJson = {};
-  try { changesJson = JSON.parse(row[colIdx['changes_json']]); } catch (e) {}
-
-  var flagged = (changesJson.review_flagged && changesJson.review_flagged.smartReviewTerms) || [];
-  if (flagged.length === 0) return _renderPage('No Flagged Terms', 'No AI-flagged terms found for this run.', false);
-
-  var accountName = row[colIdx['account_name']];
-  var timestamp = row[colIdx['timestamp']];
-  var webAppUrl = ScriptApp.getService().getUrl();
-
-  var html = '<!DOCTYPE html><html><head><meta charset="utf-8">';
-  html += '<meta name="viewport" content="width=device-width, initial-scale=1">';
-  html += '<title>Review Flagged Terms</title>';
-  html += '<style>';
-  html += 'body{font-family:Arial,sans-serif;max-width:700px;margin:20px auto;padding:0 16px;color:#333;}';
-  html += 'h1{font-size:20px;margin:0 0 4px;}';
-  html += '.muted{color:#999;font-size:12px;}';
-  html += 'table{width:100%;border-collapse:collapse;font-size:13px;margin:12px 0;}';
-  html += 'th{background:#e3f2fd;padding:8px 6px;text-align:left;font-size:12px;}';
-  html += 'td{padding:6px;border-bottom:1px solid #eee;vertical-align:top;}';
-  html += 'tr:hover{background:#f5f5f5;}';
-  html += '.cb{width:18px;height:18px;cursor:pointer;}';
-  html += '.reason{color:#666;font-size:11px;max-width:200px;}';
-  html += '.cost{text-align:right;white-space:nowrap;}';
-  html += '.actions{margin:16px 0;padding:16px;background:#f8f9fa;border-radius:6px;}';
-  html += '.btn{display:inline-block;padding:10px 20px;margin:4px;border:none;border-radius:6px;color:white;font-weight:bold;font-size:14px;cursor:pointer;}';
-  html += '.btn-negate{background:#c62828;}';
-  html += '.btn-keep{background:#2e7d32;}';
-  html += '.btn-select{background:#1565c0;font-size:12px;padding:6px 12px;}';
-  html += 'textarea{width:100%;max-width:100%;padding:8px;border:1px solid #ccc;border-radius:4px;margin:8px 0;box-sizing:border-box;}';
-  html += '</style></head><body>';
-
-  html += '<h1>Review Flagged Terms</h1>';
-  html += '<p class="muted">' + _escape(String(accountName)) + ' | ' + String(timestamp).substring(0, 16) + ' | ' + flagged.length + ' terms</p>';
-
-  html += '<div class="actions">';
-  html += '<button class="btn btn-select" onclick="toggleAll(true)">Select All</button> ';
-  html += '<button class="btn btn-select" onclick="toggleAll(false)">Deselect All</button>';
-  html += '</div>';
-
-  html += '<form action="' + webAppUrl + '" method="post">';
-  html += '<input type="hidden" name="runId" value="' + _escape(runId) + '">';
-  html += '<input type="hidden" name="postAction" value="review_flagged">';
-
-  html += '<table>';
-  html += '<tr><th style="width:30px;"></th><th>Search Term</th><th class="cost">Cost</th><th class="cost">Clicks</th><th>Reason</th></tr>';
-  for (var i = 0; i < flagged.length; i++) {
-    var f = flagged[i];
-    html += '<tr>';
-    html += '<td><input type="checkbox" class="cb" name="negate_' + i + '" value="1"></td>';
-    html += '<td><strong>' + _escape(f.term) + '</strong></td>';
-    html += '<td class="cost">' + (f.cost !== undefined ? f.cost.toFixed(0) : '0') + '</td>';
-    html += '<td class="cost">' + (f.clicks || 0) + '</td>';
-    html += '<td class="reason">' + _escape(f.reason || '') + '</td>';
-    html += '</tr>';
-  }
-  html += '</table>';
-
-  html += '<div class="actions">';
-  html += '<label style="font-weight:bold;font-size:13px;">Notes (optional):</label>';
-  html += '<textarea name="notes" rows="3" placeholder="e.g. negate all job-related terms, keep &#39;clipping agency&#39;"></textarea>';
-  html += '<button type="submit" class="btn btn-negate">Negate Selected Terms</button> ';
-  html += '<button type="button" class="btn btn-keep" onclick="window.close();">Done — Keep All</button>';
-  html += '</div>';
-
-  html += '</form>';
-
-  html += '<script>';
-  html += 'function toggleAll(checked) {';
-  html += '  var cbs = document.querySelectorAll("input.cb");';
-  html += '  for (var i = 0; i < cbs.length; i++) cbs[i].checked = checked;';
-  html += '}';
-  html += '</script>';
-
-  html += '<div style="margin-top:30px;color:#999;font-size:11px;text-align:center;">Syte Digital Agency | Optimization Approval System | syte.co.za</div>';
-  html += '</body></html>';
-
-  return HtmlService.createHtmlOutput(html).setTitle('Review Flagged Terms');
-}
-
-/**
- * v4.5.0: Processes flagged term review submissions.
- * Moves selected terms from review_flagged into search_term_negations.smartNegated
- * and marks the review_flagged category as approved.
- */
-function _processReviewFlagged(e) {
-  var runId = (e.parameter.runId || '').trim();
-  var notes = (e.parameter.notes || '').trim();
-
-  try {
-    var ss = SpreadsheetApp.openById(MASTER_SHEET_ID);
-    var sheet = ss.getSheetByName('PendingChanges');
-    var data = sheet.getDataRange().getValues();
-    var headers = data[0];
-    var colIdx = {};
-    headers.forEach(function(h, i) { colIdx[h] = i; });
-
-    var targetRow = -1;
-    for (var r = 1; r < data.length; r++) {
-      if (String(data[r][colIdx['run_id']]).trim() === runId) { targetRow = r; break; }
-    }
-    if (targetRow === -1) return _renderPage('Not Found', 'Run ID not found: ' + runId, false);
-
-    var row = data[targetRow];
-    var changesJson = {};
-    try { changesJson = JSON.parse(row[colIdx['changes_json']]); } catch (pe) {}
-
-    var flagged = (changesJson.review_flagged && changesJson.review_flagged.smartReviewTerms) || [];
-
-    // Collect which terms were checked for negation
-    var toNegate = [];
-    var toKeep = [];
-    for (var i = 0; i < flagged.length; i++) {
-      if (e.parameter['negate_' + i] === '1') {
-        toNegate.push(flagged[i]);
-      } else {
-        toKeep.push(flagged[i]);
-      }
-    }
-
-    // Move selected terms into search_term_negations.smartNegated for the apply step
-    if (!changesJson.search_term_negations) {
-      changesJson.search_term_negations = { smartNegated: [], ngramNegatives: [] };
-    }
-    for (var n = 0; n < toNegate.length; n++) {
-      changesJson.search_term_negations.smartNegated.push({
-        term: toNegate[n].term,
-        cost: toNegate[n].cost || 0,
-        clicks: toNegate[n].clicks || 0,
-        reason: 'Manual review: ' + (toNegate[n].reason || 'flagged term'),
-        source: 'review_flagged'
-      });
-    }
-
-    // Update the review_flagged list to only keep un-negated terms
-    changesJson.review_flagged = { smartReviewTerms: toKeep };
-
-    // Write updated JSON back
-    var rowNum = targetRow + 1;
-    sheet.getRange(rowNum, colIdx['changes_json'] + 1).setValue(JSON.stringify(changesJson));
-
-    // Update approved categories to include review_flagged
-    var existingApproved = String(row[colIdx['approved_categories']] || '').trim();
-    var approvedList = existingApproved ? existingApproved.split(',') : [];
-    if (approvedList.indexOf('review_flagged') === -1) approvedList.push('review_flagged');
-    if (toNegate.length > 0 && approvedList.indexOf('search_term_negations') === -1) {
-      approvedList.push('search_term_negations');
-    }
-    sheet.getRange(rowNum, colIdx['approved_categories'] + 1).setValue(approvedList.join(','));
-    sheet.getRange(rowNum, colIdx['approved_by'] + 1).setValue(Session.getActiveUser().getEmail() || 'Unknown');
-    sheet.getRange(rowNum, colIdx['approved_at'] + 1).setValue(new Date().toISOString());
-
-    if (notes) {
-      var existingNotes = String(row[colIdx['notes']] || '').trim();
-      var combined = existingNotes ? existingNotes + '\n' + notes : notes;
-      sheet.getRange(rowNum, colIdx['notes'] + 1).setValue(combined);
-    }
-
-    var summary = '<strong>Negated:</strong> ' + toNegate.length + ' terms<br>';
-    summary += '<strong>Kept:</strong> ' + toKeep.length + ' terms<br><br>';
-    if (toNegate.length > 0) {
-      summary += '<strong>Terms marked for negation:</strong><ul style="margin:4px 0;font-size:13px;">';
-      for (var tn = 0; tn < toNegate.length; tn++) {
-        summary += '<li>' + _escape(toNegate[tn].term) + '</li>';
-      }
-      summary += '</ul>';
-    }
-    summary += '<br>Selected terms will be negated on the next scheduled script run.';
-    if (notes) summary += '<br><br><em>Note: "' + _escape(notes) + '"</em>';
-
-    return _renderPage('Review Complete', summary, true);
-  } catch (err) {
-    return _renderPage('Error', 'Could not process review: ' + err.message, false);
-  }
-}
 
 function _renderPage(title, body, success) {
   var bgColor = success ? '#e8f5e9' : '#ffebee';
