@@ -814,13 +814,13 @@ function _smartSearchTermReview(results) {
 
       // If spend is above max threshold, flag for manual review
       if (data.cost > maxSpendForAuto) {
-        results.smartReviewTerms.push({ term: termKey, cost: data.cost, clicks: data.clicks, reason: v.reason + ' (high spend — needs manual review)', verdict: 'review' });
+        results.smartReviewTerms.push({ term: termKey, cost: data.cost, clicks: data.clicks, reason: v.reason + ' (high spend — needs manual review)', verdict: 'review', channelType: data.channelType || 'SEARCH', campaign: data.campaign });
         continue;
       }
 
       // Cap auto-negations per run
       if (negateCount >= smartNegationCap || negateCount >= CONFIG.MAX_CHANGES_PER_RUN) {
-        results.smartReviewTerms.push({ term: termKey, cost: data.cost, clicks: data.clicks, reason: v.reason + ' (cap reached)', verdict: 'review' });
+        results.smartReviewTerms.push({ term: termKey, cost: data.cost, clicks: data.clicks, reason: v.reason + ' (cap reached)', verdict: 'review', channelType: data.channelType || 'SEARCH', campaign: data.campaign });
         continue;
       }
 
@@ -882,7 +882,7 @@ function _smartSearchTermReview(results) {
 
       negateCount++;
     } else if (v.verdict === 'review') {
-      results.smartReviewTerms.push({ term: termKey, cost: data.cost, clicks: data.clicks, reason: v.reason, verdict: 'review' });
+      results.smartReviewTerms.push({ term: termKey, cost: data.cost, clicks: data.clicks, reason: v.reason, verdict: 'review', channelType: data.channelType || 'SEARCH', campaign: data.campaign });
     }
     // 'keep' verdicts are simply ignored — term stays active
   }
@@ -2666,6 +2666,7 @@ function _sendReport(results, duration, evalResult, pendingRunId) {
   email += '<p style="margin:5px 0 0;opacity:0.8;">' + accountName + ' | ' + today + ' | ' + mode + ' | ' + CONFIG.ACCOUNT_MODE + '</p></div>';
 
   // v4.4.0: Approval buttons bar
+  // v4.5.0: Fixed — encode & as &amp; in HTML href attributes so Gmail doesn't strip query params.
   if (pendingRunId && CONFIG.APPROVAL_WEBAPP_URL) {
     var webAppUrl = CONFIG.APPROVAL_WEBAPP_URL;
     var btnStyle = 'display:inline-block;padding:10px 18px;margin:4px;border-radius:6px;color:white;text-decoration:none;font-weight:bold;font-size:13px;';
@@ -2680,25 +2681,29 @@ function _sendReport(results, duration, evalResult, pendingRunId) {
     var hasWinners = (results.winnersPromoted.length + results.ecomWinnersPromoted.length) > 0;
     var hasAutoOpt = (results.deviceAdjustments.length + results.scheduleAdjustments.length + results.geoAdjustments.length) > 0;
     var hasShoppingPmax = (results.shoppingProductsPaused.length + results.pmaxSearchTermsNegated.length) > 0;
+    var hasFlagged = results.smartReviewTerms.length > 0;
 
     if (hasKwPauses) {
-      email += '<a href="' + webAppUrl + '?runId=' + pendingRunId + '&category=keyword_pauses" target="_blank" style="' + btnStyle + 'background:#1565c0;">Approve Keyword Pauses (' + (results.keywordsPaused.length + results.ecomKeywordsPaused.length + results.lowQsPaused.length) + ')</a> ';
+      email += '<a href="' + webAppUrl + '?runId=' + pendingRunId + '&amp;category=keyword_pauses" target="_blank" style="' + btnStyle + 'background:#1565c0;">Approve Keyword Pauses (' + (results.keywordsPaused.length + results.ecomKeywordsPaused.length + results.lowQsPaused.length) + ')</a> ';
     }
     if (hasNegations) {
-      email += '<a href="' + webAppUrl + '?runId=' + pendingRunId + '&category=search_term_negations" target="_blank" style="' + btnStyle + 'background:#6a1b9a;">Approve Negations (' + (results.smartNegated.length + results.ngramNegatives.length) + ')</a> ';
+      email += '<a href="' + webAppUrl + '?runId=' + pendingRunId + '&amp;category=search_term_negations" target="_blank" style="' + btnStyle + 'background:#6a1b9a;">Approve Negations (' + (results.smartNegated.length + results.ngramNegatives.length) + ')</a> ';
     }
     if (hasWinners) {
-      email += '<a href="' + webAppUrl + '?runId=' + pendingRunId + '&category=winner_promotions" target="_blank" style="' + btnStyle + 'background:#00695c;">Approve Winners (' + (results.winnersPromoted.length + results.ecomWinnersPromoted.length) + ')</a> ';
+      email += '<a href="' + webAppUrl + '?runId=' + pendingRunId + '&amp;category=winner_promotions" target="_blank" style="' + btnStyle + 'background:#00695c;">Approve Winners (' + (results.winnersPromoted.length + results.ecomWinnersPromoted.length) + ')</a> ';
     }
     if (hasAutoOpt) {
-      email += '<a href="' + webAppUrl + '?runId=' + pendingRunId + '&category=auto_optimizations" target="_blank" style="' + btnStyle + 'background:#e65100;">Approve Auto-Opt (' + (results.deviceAdjustments.length + results.scheduleAdjustments.length + results.geoAdjustments.length) + ')</a> ';
+      email += '<a href="' + webAppUrl + '?runId=' + pendingRunId + '&amp;category=auto_optimizations" target="_blank" style="' + btnStyle + 'background:#e65100;">Approve Auto-Opt (' + (results.deviceAdjustments.length + results.scheduleAdjustments.length + results.geoAdjustments.length) + ')</a> ';
     }
     if (hasShoppingPmax) {
-      email += '<a href="' + webAppUrl + '?runId=' + pendingRunId + '&category=shopping_pmax" target="_blank" style="' + btnStyle + 'background:#4527a0;">Approve Shopping/PMax (' + (results.shoppingProductsPaused.length + results.pmaxSearchTermsNegated.length) + ')</a> ';
+      email += '<a href="' + webAppUrl + '?runId=' + pendingRunId + '&amp;category=shopping_pmax" target="_blank" style="' + btnStyle + 'background:#4527a0;">Approve Shopping/PMax (' + (results.shoppingProductsPaused.length + results.pmaxSearchTermsNegated.length) + ')</a> ';
+    }
+    if (hasFlagged) {
+      email += '<a href="' + webAppUrl + '?view=review_flagged&amp;runId=' + pendingRunId + '" target="_blank" style="' + btnStyle + 'background:#c62828;">Review &amp; Negate Flagged Terms (' + results.smartReviewTerms.length + ')</a> ';
     }
 
     // Approve All button
-    email += '<br><a href="' + webAppUrl + '?runId=' + pendingRunId + '&category=all" target="_blank" style="' + btnStyle + 'background:#2e7d32;font-size:15px;padding:12px 28px;margin-top:8px;">Approve All Changes</a>';
+    email += '<br><a href="' + webAppUrl + '?runId=' + pendingRunId + '&amp;category=all" target="_blank" style="' + btnStyle + 'background:#2e7d32;font-size:15px;padding:12px 28px;margin-top:8px;">Approve All Changes</a>';
     email += '</div>';
   } else if (pendingRunId && !CONFIG.APPROVAL_WEBAPP_URL) {
     email += '<div style="background:#fff3e0;padding:14px 16px;border-left:4px solid #f57c00;">';
@@ -2901,6 +2906,10 @@ function _sendReport(results, duration, evalResult, pendingRunId) {
   if (results.smartReviewTerms.length > 0) {
     email += '<div style="padding:15px;background:#e3f2fd;"><h3 style="color:#1565c0;">AI Flagged for Review</h3>';
     email += '<p style="font-size:12px;color:#666;">These terms were flagged as ambiguous by the AI. Please review and manually negate or keep.</p>';
+    if (pendingRunId && CONFIG.APPROVAL_WEBAPP_URL) {
+      email += '<a href="' + CONFIG.APPROVAL_WEBAPP_URL + '?view=review_flagged&amp;runId=' + pendingRunId + '" target="_blank" style="display:inline-block;padding:10px 18px;margin:8px 0;border-radius:6px;color:white;text-decoration:none;font-weight:bold;font-size:13px;background:#c62828;">Review &amp; Negate Flagged Terms (' + results.smartReviewTerms.length + ')</a>';
+      email += '<p style="font-size:11px;color:#999;margin:4px 0 12px;">Click above to select which terms to negate, or type natural language instructions (e.g. "negate all competitor names but keep facebook").</p>';
+    }
     email += '<table style="width:100%;border-collapse:collapse;font-size:13px;">';
     email += '<tr style="background:#bbdefb;"><th style="padding:6px;text-align:left;">Search Term</th><th style="padding:6px;text-align:right;">Cost</th><th style="padding:6px;text-align:right;">Clicks</th><th style="padding:6px;text-align:left;">Reason</th></tr>';
     for (var sr = 0; sr < results.smartReviewTerms.length; sr++) {
@@ -3252,6 +3261,9 @@ function _writePendingChanges(results, evalResult) {
     shopping_pmax: {
       shoppingProductsPaused: results.shoppingProductsPaused || [],
       pmaxSearchTermsNegated: results.pmaxSearchTermsNegated || []
+    },
+    review_flagged: {
+      smartReviewTerms: results.smartReviewTerms || []
     }
   };
 
@@ -3335,7 +3347,7 @@ function _checkAndApplyPendingChanges(results) {
  */
 function _applyApprovedChanges(changesObj, approvedCategories, results) {
   var categories = approvedCategories === 'all'
-    ? ['keyword_pauses', 'search_term_negations', 'winner_promotions', 'auto_optimizations', 'shopping_pmax']
+    ? ['keyword_pauses', 'search_term_negations', 'winner_promotions', 'auto_optimizations', 'shopping_pmax', 'review_flagged']
     : approvedCategories.split(',').map(function(c) { return c.trim(); });
 
   var appliedCount = 0;
@@ -3368,18 +3380,30 @@ function _applyApprovedChanges(changesObj, approvedCategories, results) {
 
     (stData.smartNegated || []).forEach(function(s) {
       try {
-        var reason = (s.reason || '').toLowerCase();
-        var targetList = negativeListSpend;
-        if (reason.indexOf('wrong industry') !== -1 || reason.indexOf('irrelevant') !== -1) {
-          targetList = negativeListIrr;
-        } else if (reason.indexOf('job') !== -1 || reason.indexOf('career') !== -1 ||
-                   reason.indexOf('academic') !== -1 || reason.indexOf('educational') !== -1 ||
-                   reason.indexOf('informational') !== -1 || reason.indexOf('diy') !== -1 ||
-                   reason.indexOf('tutorial') !== -1 || reason.indexOf('how to') !== -1) {
-          targetList = negativeListInfo;
+        // v4.5.0: Route PMax negatives to campaign-level, others to shared lists
+        if (s.channelType === 'PERFORMANCE_MAX' && s.campaign) {
+          var pmaxIter = AdsApp.performanceMaxCampaigns()
+            .withCondition('campaign.name = "' + s.campaign.replace(/"/g, '\\"') + '"').get();
+          if (pmaxIter.hasNext()) {
+            pmaxIter.next().createNegativeKeyword('[' + s.term + ']');
+          } else if (negativeListSpend) {
+            negativeListSpend.addNegativeKeyword('[' + s.term + ']');
+          }
+        } else {
+          var reason = (s.reason || '').toLowerCase();
+          var targetList = negativeListSpend;
+          if (reason.indexOf('wrong industry') !== -1 || reason.indexOf('irrelevant') !== -1) {
+            targetList = negativeListIrr;
+          } else if (reason.indexOf('job') !== -1 || reason.indexOf('career') !== -1 ||
+                     reason.indexOf('academic') !== -1 || reason.indexOf('educational') !== -1 ||
+                     reason.indexOf('informational') !== -1 || reason.indexOf('diy') !== -1 ||
+                     reason.indexOf('tutorial') !== -1 || reason.indexOf('how to') !== -1) {
+            targetList = negativeListInfo;
+          }
+          if (targetList) targetList.addNegativeKeyword('[' + s.term + ']');
         }
-        if (targetList) { targetList.addNegativeKeyword('[' + s.term + ']'); appliedCount++; }
-        _logChange({ functionName: 'approval_apply', entity: s.term, entityType: 'SEARCH_TERM_NEGATIVE', reason: 'Approved AI negate: ' + s.reason, spend: s.cost || 0, conversions: 0 });
+        appliedCount++;
+        _logChange({ functionName: 'approval_apply', entity: s.term, entityType: 'SEARCH_TERM_NEGATIVE', campaign: s.campaign || '', reason: 'Approved AI negate: ' + s.reason, spend: s.cost || 0, conversions: 0 });
       } catch (e) { _log('WARN', 'Apply negation failed: ' + s.term + ' — ' + e.message); }
     });
 
