@@ -15,7 +15,20 @@
  * Author: Syte Digital Agency (syte.co.za)
  * Version: 4.5.0
  *
- * CHANGELOG v4.5.0 — INTERACTIVE FLAGGED REVIEW + CONVERSATIONAL INSTRUCTIONS:
+ * CHANGELOG v4.5.0 — SHOPPING/PMAX IN AI SMART REVIEW + INTERACTIVE FLAGGED REVIEW:
+ * - _smartSearchTermReview() candidate collection expanded to SEARCH, SHOPPING, and PERFORMANCE_MAX.
+ *   Previously the unified AI review only saw Search campaigns; Shopping/PMax relied on blunt
+ *   spend+ROAS thresholds and a small regex list. Now borderline terms (clicks but no conversions
+ *   in the last 7 days) and low-ROAS terms on every channel get routed through Claude Haiku with
+ *   full client context, active-keyword safety, and the same "when in doubt, review" rules.
+ * - Candidates now track channelType. At apply time, PMax negations are written as campaign-level
+ *   negative keywords on the specific PMax campaign (shared neg lists are not supported on PMax);
+ *   Search and Shopping negations continue to use the routed shared negative lists.
+ * - PMax results still flow into results.pmaxSearchTermsNegated so the email report, approvals,
+ *   and digest rollups keep working with no format change.
+ * - _analyzeShoppingSearchTerms() and _analyzePMaxSearchTerms() now early-return when
+ *   SMART_NEGATION is on and an ANTHROPIC_API_KEY is present, avoiding double negation. They
+ *   remain as fallbacks for accounts running without the AI path.
  * - NEW: Flagged review terms are now stored in PendingChanges JSON (flagged_review category)
  * - NEW: "Review & Negate Flagged Terms" button in approval email links to interactive webapp page
  * - NEW: Interactive flagged review page with per-term checkboxes for negate/keep selection
@@ -565,7 +578,7 @@ function _smartSearchTermReview(results) {
       while (s1.hasNext()) {
         var r1 = s1.next();
         var st1 = r1.searchTermView.searchTerm.toLowerCase().trim();
-        if (!candidates[st1]) candidates[st1] = { term: st1, cost: 0, clicks: 0, campaign: r1.campaign.name, sources: [] };
+        if (!candidates[st1]) candidates[st1] = { term: st1, cost: 0, clicks: 0, campaign: r1.campaign.name, channelType: 'SEARCH', sources: [] };
         candidates[st1].cost += Number(r1.metrics.costMicros) / 1000000;
         candidates[st1].clicks += Number(r1.metrics.clicks) || 0;
         if (candidates[st1].sources.indexOf('HIGH_SPEND_LEAD_GEN') === -1) candidates[st1].sources.push('HIGH_SPEND_LEAD_GEN');
@@ -574,12 +587,13 @@ function _smartSearchTermReview(results) {
   }
 
   // SOURCE 2: High spend, low ROAS (last 30 days) — ecommerce
+  // v4.5.0: expanded to cover SEARCH, SHOPPING, and PERFORMANCE_MAX campaigns
   if (_isEcommerceMode()) {
     var ecomThreshold = CONFIG.ECOM_SEARCH_TERM_SPEND_THRESHOLD || 800;
     try {
       var q2 = 'SELECT search_term_view.search_term, campaign.name, metrics.cost_micros, metrics.conversions_value, metrics.clicks, campaign.status, campaign.advertising_channel_type ' +
         'FROM search_term_view WHERE metrics.cost_micros > ' + (ecomThreshold * 1000000) +
-        ' AND campaign.status = "ENABLED" AND campaign.advertising_channel_type = "SEARCH" ' +
+        ' AND campaign.status = "ENABLED" AND campaign.advertising_channel_type IN ("SEARCH", "SHOPPING", "PERFORMANCE_MAX") ' +
         'AND segments.date DURING LAST_30_DAYS';
       var s2 = AdsApp.search(q2);
       while (s2.hasNext()) {
@@ -589,7 +603,8 @@ function _smartSearchTermReview(results) {
         var revenue2 = Number(r2.metrics.conversionsValue) || 0;
         var roas2 = cost2 > 0 ? revenue2 / cost2 : 0;
         if (roas2 >= (CONFIG.MIN_ROAS_TO_KEEP || 1.5)) continue;
-        if (!candidates[st2]) candidates[st2] = { term: st2, cost: 0, clicks: 0, campaign: r2.campaign.name, sources: [], revenue: 0 };
+        var ch2 = r2.campaign.advertisingChannelType || 'SEARCH';
+        if (!candidates[st2]) candidates[st2] = { term: st2, cost: 0, clicks: 0, campaign: r2.campaign.name, channelType: ch2, sources: [], revenue: 0 };
         candidates[st2].cost += cost2;
         candidates[st2].clicks += Number(r2.metrics.clicks) || 0;
         candidates[st2].revenue = (candidates[st2].revenue || 0) + revenue2;
@@ -599,18 +614,21 @@ function _smartSearchTermReview(results) {
   }
 
   // SOURCE 3: Early detection — clicks but no conversions, last 7 days
+  // v4.5.0: expanded to cover SEARCH, SHOPPING, and PERFORMANCE_MAX (borderline borderline terms on every channel)
   var minClicks = CONFIG.SMART_NEGATION_MIN_CLICKS || 1;
   try {
     var q3 = 'SELECT search_term_view.search_term, search_term_view.status, campaign.name, ' +
-      'metrics.cost_micros, metrics.clicks, metrics.conversions, campaign.status ' +
+      'metrics.cost_micros, metrics.clicks, metrics.conversions, campaign.status, campaign.advertising_channel_type ' +
       'FROM search_term_view WHERE campaign.status = "ENABLED" ' +
       'AND metrics.clicks >= ' + minClicks + ' AND metrics.conversions = 0 ' +
+      'AND campaign.advertising_channel_type IN ("SEARCH", "SHOPPING", "PERFORMANCE_MAX") ' +
       'AND search_term_view.status = "NONE" AND segments.date DURING LAST_7_DAYS';
     var s3 = AdsApp.search(q3);
     while (s3.hasNext()) {
       var r3 = s3.next();
       var st3 = r3.searchTermView.searchTerm.toLowerCase().trim();
-      if (!candidates[st3]) candidates[st3] = { term: st3, cost: 0, clicks: 0, campaign: r3.campaign.name, sources: [] };
+      var ch3 = r3.campaign.advertisingChannelType || 'SEARCH';
+      if (!candidates[st3]) candidates[st3] = { term: st3, cost: 0, clicks: 0, campaign: r3.campaign.name, channelType: ch3, sources: [] };
       candidates[st3].cost += Number(r3.metrics.costMicros) / 1000000;
       candidates[st3].clicks += Number(r3.metrics.clicks) || 0;
       if (candidates[st3].sources.indexOf('EARLY_DETECTION') === -1) candidates[st3].sources.push('EARLY_DETECTION');
@@ -807,50 +825,75 @@ function _smartSearchTermReview(results) {
 
       // If spend is above max threshold, flag for manual review
       if (data.cost > maxSpendForAuto) {
-        results.smartReviewTerms.push({ term: termKey, cost: data.cost, clicks: data.clicks, reason: v.reason + ' (high spend — needs manual review)', verdict: 'review' });
+        results.smartReviewTerms.push({ term: termKey, cost: data.cost, clicks: data.clicks, reason: v.reason + ' (high spend — needs manual review)', verdict: 'review', channelType: data.channelType || 'SEARCH', campaign: data.campaign });
         continue;
       }
 
       // Cap auto-negations per run
       if (negateCount >= smartNegationCap || negateCount >= CONFIG.MAX_CHANGES_PER_RUN) {
-        results.smartReviewTerms.push({ term: termKey, cost: data.cost, clicks: data.clicks, reason: v.reason + ' (cap reached)', verdict: 'review' });
+        results.smartReviewTerms.push({ term: termKey, cost: data.cost, clicks: data.clicks, reason: v.reason + ' (cap reached)', verdict: 'review', channelType: data.channelType || 'SEARCH', campaign: data.campaign });
         continue;
       }
 
-      _log('INFO', 'AI NEGATE: "' + termKey + '" | ' + (CONFIG.CURRENCY_SYMBOL || 'R') + data.cost.toFixed(0) + ' | Reason: ' + v.reason);
-      results.smartNegated.push({ term: termKey, cost: data.cost, clicks: data.clicks, reason: v.reason });
+      var channelType = data.channelType || 'SEARCH';
+      _log('INFO', 'AI NEGATE [' + channelType + ']: "' + termKey + '" | ' + (CONFIG.CURRENCY_SYMBOL || 'R') + data.cost.toFixed(0) + ' | Reason: ' + v.reason);
+      results.smartNegated.push({ term: termKey, cost: data.cost, clicks: data.clicks, reason: v.reason, channelType: channelType, campaign: data.campaign });
 
-      // Also populate searchTermsNegated for backwards compat
-      results.searchTermsNegated.push({ searchTerm: termKey, campaign: data.campaign, spend: data.cost });
+      // Also populate backwards-compat buckets so the email report still surfaces Shopping/PMax
+      if (channelType === 'PERFORMANCE_MAX') {
+        results.pmaxSearchTermsNegated.push({ searchTerm: termKey, campaign: data.campaign, spend: data.cost });
+      } else {
+        results.searchTermsNegated.push({ searchTerm: termKey, campaign: data.campaign, spend: data.cost });
+      }
 
       _logChange({
         functionName: '_smartSearchTermReview',
         entity: termKey,
         entityType: 'SEARCH_TERM_NEGATIVE',
-        campaign: data.campaign,
+        campaign: data.campaign + ' [' + channelType + ']',
         reason: 'AI Negate: ' + v.reason,
         spend: data.cost,
         conversions: 0
       });
 
-      // Route to appropriate negative list based on AI reasoning
+      // Route negation to the correct place for this channel type.
+      //   SEARCH: shared negative keyword list (applied account-wide).
+      //   SHOPPING: shared negative keyword list still works for Shopping campaigns.
+      //   PERFORMANCE_MAX: PMax cannot use shared neg lists — add as campaign-level negative.
       if (!CONFIG.PREVIEW_MODE) {
-        var reason = (v.reason || '').toLowerCase();
-        var targetList = negativeListSpend;  // default
-        if (reason.indexOf('wrong industry') !== -1 || reason.indexOf('irrelevant') !== -1) {
-          targetList = negativeListIrr;
-        } else if (reason.indexOf('job') !== -1 || reason.indexOf('career') !== -1 ||
-                   reason.indexOf('academic') !== -1 || reason.indexOf('educational') !== -1 ||
-                   reason.indexOf('informational') !== -1 || reason.indexOf('diy') !== -1 ||
-                   reason.indexOf('tutorial') !== -1 || reason.indexOf('how to') !== -1) {
-          targetList = negativeListInfo;
+        try {
+          if (channelType === 'PERFORMANCE_MAX') {
+            // Campaign-level negative keyword on the specific PMax campaign
+            var pmaxIter = AdsApp.performanceMaxCampaigns()
+              .withCondition('campaign.name = "' + data.campaign.replace(/"/g, '\\"') + '"').get();
+            if (pmaxIter.hasNext()) {
+              pmaxIter.next().createNegativeKeyword('[' + termKey + ']');
+            } else {
+              _log('WARN', 'AI negate: PMax campaign "' + data.campaign + '" not found — falling back to shared list');
+              if (negativeListSpend) negativeListSpend.addNegativeKeyword('[' + termKey + ']');
+            }
+          } else {
+            // SEARCH + SHOPPING: route to appropriate shared negative list by AI reason
+            var reason = (v.reason || '').toLowerCase();
+            var targetList = negativeListSpend;  // default
+            if (reason.indexOf('wrong industry') !== -1 || reason.indexOf('irrelevant') !== -1) {
+              targetList = negativeListIrr;
+            } else if (reason.indexOf('job') !== -1 || reason.indexOf('career') !== -1 ||
+                       reason.indexOf('academic') !== -1 || reason.indexOf('educational') !== -1 ||
+                       reason.indexOf('informational') !== -1 || reason.indexOf('diy') !== -1 ||
+                       reason.indexOf('tutorial') !== -1 || reason.indexOf('how to') !== -1) {
+              targetList = negativeListInfo;
+            }
+            if (targetList) targetList.addNegativeKeyword('[' + termKey + ']');
+          }
+        } catch (negErr) {
+          _log('WARN', 'AI negate: failed to add "' + termKey + '" for ' + channelType + ' — ' + negErr.message);
         }
-        if (targetList) targetList.addNegativeKeyword('[' + termKey + ']');
       }
 
       negateCount++;
     } else if (v.verdict === 'review') {
-      results.smartReviewTerms.push({ term: termKey, cost: data.cost, clicks: data.clicks, reason: v.reason, verdict: 'review' });
+      results.smartReviewTerms.push({ term: termKey, cost: data.cost, clicks: data.clicks, reason: v.reason, verdict: 'review', channelType: data.channelType || 'SEARCH', campaign: data.campaign });
     }
     // 'keep' verdicts are simply ignored — term stays active
   }
@@ -1004,7 +1047,7 @@ function _logChange(change) {
       CONFIG.PREVIEW_MODE ? 'PREVIEW' : 'PENDING',  // outcome — PREVIEW tagged, LIVE backfilled in 14 days
       '',                  // outcome_checked_date
       '',                  // outcome_notes
-      'v4.4.0'            // script_version
+      'v4.5.0'            // script_version
     ]);
   } catch (e) {
     var writeErr = 'Change log write failed: ' + e.message;
@@ -1859,6 +1902,13 @@ function _analyzeShoppingProducts(results) {
 }
 
 function _analyzeShoppingSearchTerms(results) {
+  // v4.5.0: When the AI-powered smart review is active and has an API key,
+  // it already covers Shopping search terms (irrelevant + borderline, last 7/30 days).
+  // Skip this legacy threshold-only fallback to avoid duplicate negation.
+  if (CONFIG.SMART_NEGATION !== false && CONFIG.ANTHROPIC_API_KEY) {
+    _log('INFO', 'Shopping search terms handled by AI smart review — skipping legacy analyzer');
+    return;
+  }
   var changeCount = 0;
   var existing = _getExistingNegatives(_getOrCreateNegativeList(CONFIG.NEGATIVE_LIST_NAME_SPEND));
   var query = 'SELECT search_term_view.search_term, campaign.name, metrics.cost_micros, metrics.conversions_value, campaign.status, campaign.advertising_channel_type FROM search_term_view WHERE campaign.status = "ENABLED" AND campaign.advertising_channel_type = "SHOPPING" AND metrics.cost_micros > ' + (CONFIG.ECOM_SEARCH_TERM_SPEND_THRESHOLD * 1000000) + ' AND segments.date DURING LAST_30_DAYS';
@@ -1910,6 +1960,13 @@ function _monitorPMaxCampaigns(results) {
 }
 
 function _analyzePMaxSearchTerms(results) {
+  // v4.5.0: When the AI-powered smart review is active and has an API key,
+  // it already covers PMax search terms (irrelevant + borderline, last 7/30 days)
+  // and routes negations as campaign-level PMax negatives. Skip the legacy fallback.
+  if (CONFIG.SMART_NEGATION !== false && CONFIG.ANTHROPIC_API_KEY) {
+    _log('INFO', 'PMax search terms handled by AI smart review — skipping legacy analyzer');
+    return;
+  }
   var changeCount = 0;
   var query = 'SELECT search_term_view.search_term, campaign.name, metrics.cost_micros, metrics.conversions_value, campaign.status, campaign.advertising_channel_type FROM search_term_view WHERE campaign.status = "ENABLED" AND campaign.advertising_channel_type = "PERFORMANCE_MAX" AND segments.date DURING LAST_30_DAYS';
   try {
@@ -2677,6 +2734,7 @@ function _sendReport(results, duration, evalResult, pendingRunId) {
   email += '<p style="margin:5px 0 0;opacity:0.8;">' + accountName + ' | ' + today + ' | ' + mode + ' | ' + CONFIG.ACCOUNT_MODE + '</p></div>';
 
   // v4.4.0: Approval buttons bar
+  // v4.5.0: Fixed — encode & as &amp; in HTML href attributes so Gmail doesn't strip query params.
   if (pendingRunId && CONFIG.APPROVAL_WEBAPP_URL) {
     var webAppUrl = CONFIG.APPROVAL_WEBAPP_URL;
     var btnStyle = 'display:inline-block;padding:10px 18px;margin:4px;border-radius:6px;color:white;text-decoration:none;font-weight:bold;font-size:13px;';
@@ -2691,25 +2749,29 @@ function _sendReport(results, duration, evalResult, pendingRunId) {
     var hasWinners = (results.winnersPromoted.length + results.ecomWinnersPromoted.length) > 0;
     var hasAutoOpt = (results.deviceAdjustments.length + results.scheduleAdjustments.length + results.geoAdjustments.length) > 0;
     var hasShoppingPmax = (results.shoppingProductsPaused.length + results.pmaxSearchTermsNegated.length) > 0;
+    var hasFlagged = results.smartReviewTerms.length > 0;
 
     if (hasKwPauses) {
-      email += '<a href="' + webAppUrl + '?runId=' + pendingRunId + '&category=keyword_pauses" target="_blank" style="' + btnStyle + 'background:#1565c0;">Approve Keyword Pauses (' + (results.keywordsPaused.length + results.ecomKeywordsPaused.length + results.lowQsPaused.length) + ')</a> ';
+      email += '<a href="' + webAppUrl + '?runId=' + pendingRunId + '&amp;category=keyword_pauses" target="_blank" style="' + btnStyle + 'background:#1565c0;">Approve Keyword Pauses (' + (results.keywordsPaused.length + results.ecomKeywordsPaused.length + results.lowQsPaused.length) + ')</a> ';
     }
     if (hasNegations) {
-      email += '<a href="' + webAppUrl + '?runId=' + pendingRunId + '&category=search_term_negations" target="_blank" style="' + btnStyle + 'background:#6a1b9a;">Approve Negations (' + (results.smartNegated.length + results.ngramNegatives.length) + ')</a> ';
+      email += '<a href="' + webAppUrl + '?runId=' + pendingRunId + '&amp;category=search_term_negations" target="_blank" style="' + btnStyle + 'background:#6a1b9a;">Approve Negations (' + (results.smartNegated.length + results.ngramNegatives.length) + ')</a> ';
     }
     if (hasWinners) {
-      email += '<a href="' + webAppUrl + '?runId=' + pendingRunId + '&category=winner_promotions" target="_blank" style="' + btnStyle + 'background:#00695c;">Approve Winners (' + (results.winnersPromoted.length + results.ecomWinnersPromoted.length) + ')</a> ';
+      email += '<a href="' + webAppUrl + '?runId=' + pendingRunId + '&amp;category=winner_promotions" target="_blank" style="' + btnStyle + 'background:#00695c;">Approve Winners (' + (results.winnersPromoted.length + results.ecomWinnersPromoted.length) + ')</a> ';
     }
     if (hasAutoOpt) {
-      email += '<a href="' + webAppUrl + '?runId=' + pendingRunId + '&category=auto_optimizations" target="_blank" style="' + btnStyle + 'background:#e65100;">Approve Auto-Opt (' + (results.deviceAdjustments.length + results.scheduleAdjustments.length + results.geoAdjustments.length) + ')</a> ';
+      email += '<a href="' + webAppUrl + '?runId=' + pendingRunId + '&amp;category=auto_optimizations" target="_blank" style="' + btnStyle + 'background:#e65100;">Approve Auto-Opt (' + (results.deviceAdjustments.length + results.scheduleAdjustments.length + results.geoAdjustments.length) + ')</a> ';
     }
     if (hasShoppingPmax) {
-      email += '<a href="' + webAppUrl + '?runId=' + pendingRunId + '&category=shopping_pmax" target="_blank" style="' + btnStyle + 'background:#4527a0;">Approve Shopping/PMax (' + (results.shoppingProductsPaused.length + results.pmaxSearchTermsNegated.length) + ')</a> ';
+      email += '<a href="' + webAppUrl + '?runId=' + pendingRunId + '&amp;category=shopping_pmax" target="_blank" style="' + btnStyle + 'background:#4527a0;">Approve Shopping/PMax (' + (results.shoppingProductsPaused.length + results.pmaxSearchTermsNegated.length) + ')</a> ';
+    }
+    if (hasFlagged) {
+      email += '<a href="' + webAppUrl + '?view=review_flagged&amp;runId=' + pendingRunId + '" target="_blank" style="' + btnStyle + 'background:#c62828;">Review &amp; Negate Flagged Terms (' + results.smartReviewTerms.length + ')</a> ';
     }
 
     // Approve All button
-    email += '<br><a href="' + webAppUrl + '?runId=' + pendingRunId + '&category=all" target="_blank" style="' + btnStyle + 'background:#2e7d32;font-size:15px;padding:12px 28px;margin-top:8px;">Approve All Changes</a>';
+    email += '<br><a href="' + webAppUrl + '?runId=' + pendingRunId + '&amp;category=all" target="_blank" style="' + btnStyle + 'background:#2e7d32;font-size:15px;padding:12px 28px;margin-top:8px;">Approve All Changes</a>';
     email += '</div>';
   } else if (pendingRunId && !CONFIG.APPROVAL_WEBAPP_URL) {
     email += '<div style="background:#fff3e0;padding:14px 16px;border-left:4px solid #f57c00;">';
@@ -2914,8 +2976,9 @@ function _sendReport(results, duration, evalResult, pendingRunId) {
     email += '<p style="font-size:12px;color:#666;">These terms were flagged as ambiguous by the AI. Please review and manually negate or keep.</p>';
 
     // v4.5.0: Interactive review button — links to webapp where user can select terms to negate or give natural language instructions
+    // (Uses &amp; so Gmail doesn't strip the query string)
     if (pendingRunId && CONFIG.APPROVAL_WEBAPP_URL) {
-      email += '<a href="' + CONFIG.APPROVAL_WEBAPP_URL + '?view=flagged_review&runId=' + pendingRunId + '" target="_blank" style="display:inline-block;padding:10px 18px;margin:8px 0;border-radius:6px;color:white;text-decoration:none;font-weight:bold;font-size:13px;background:#1565c0;">Review & Negate Flagged Terms (' + results.smartReviewTerms.length + ')</a>';
+      email += '<a href="' + CONFIG.APPROVAL_WEBAPP_URL + '?view=flagged_review&amp;runId=' + pendingRunId + '" target="_blank" style="display:inline-block;padding:10px 18px;margin:8px 0;border-radius:6px;color:white;text-decoration:none;font-weight:bold;font-size:13px;background:#1565c0;">Review &amp; Negate Flagged Terms (' + results.smartReviewTerms.length + ')</a>';
       email += '<p style="font-size:11px;color:#888;margin:4px 0 10px;">Click above to select which terms to negate, or type natural language instructions (e.g. "negate all competitor names but keep facebook").</p>';
     }
 
@@ -3390,18 +3453,30 @@ function _applyApprovedChanges(changesObj, approvedCategories, results) {
 
     (stData.smartNegated || []).forEach(function(s) {
       try {
-        var reason = (s.reason || '').toLowerCase();
-        var targetList = negativeListSpend;
-        if (reason.indexOf('wrong industry') !== -1 || reason.indexOf('irrelevant') !== -1) {
-          targetList = negativeListIrr;
-        } else if (reason.indexOf('job') !== -1 || reason.indexOf('career') !== -1 ||
-                   reason.indexOf('academic') !== -1 || reason.indexOf('educational') !== -1 ||
-                   reason.indexOf('informational') !== -1 || reason.indexOf('diy') !== -1 ||
-                   reason.indexOf('tutorial') !== -1 || reason.indexOf('how to') !== -1) {
-          targetList = negativeListInfo;
+        // v4.5.0: Route PMax negatives to campaign-level, others to shared lists
+        if (s.channelType === 'PERFORMANCE_MAX' && s.campaign) {
+          var pmaxIter = AdsApp.performanceMaxCampaigns()
+            .withCondition('campaign.name = "' + s.campaign.replace(/"/g, '\\"') + '"').get();
+          if (pmaxIter.hasNext()) {
+            pmaxIter.next().createNegativeKeyword('[' + s.term + ']');
+          } else if (negativeListSpend) {
+            negativeListSpend.addNegativeKeyword('[' + s.term + ']');
+          }
+        } else {
+          var reason = (s.reason || '').toLowerCase();
+          var targetList = negativeListSpend;
+          if (reason.indexOf('wrong industry') !== -1 || reason.indexOf('irrelevant') !== -1) {
+            targetList = negativeListIrr;
+          } else if (reason.indexOf('job') !== -1 || reason.indexOf('career') !== -1 ||
+                     reason.indexOf('academic') !== -1 || reason.indexOf('educational') !== -1 ||
+                     reason.indexOf('informational') !== -1 || reason.indexOf('diy') !== -1 ||
+                     reason.indexOf('tutorial') !== -1 || reason.indexOf('how to') !== -1) {
+            targetList = negativeListInfo;
+          }
+          if (targetList) targetList.addNegativeKeyword('[' + s.term + ']');
         }
-        if (targetList) { targetList.addNegativeKeyword('[' + s.term + ']'); appliedCount++; }
-        _logChange({ functionName: 'approval_apply', entity: s.term, entityType: 'SEARCH_TERM_NEGATIVE', reason: 'Approved AI negate: ' + s.reason, spend: s.cost || 0, conversions: 0 });
+        appliedCount++;
+        _logChange({ functionName: 'approval_apply', entity: s.term, entityType: 'SEARCH_TERM_NEGATIVE', campaign: s.campaign || '', reason: 'Approved AI negate: ' + s.reason, spend: s.cost || 0, conversions: 0 });
       } catch (e) { _log('WARN', 'Apply negation failed: ' + s.term + ' — ' + e.message); }
     });
 
@@ -3493,8 +3568,20 @@ function _applyApprovedChanges(changesObj, approvedCategories, results) {
       var negativeListSpendFR = _getOrCreateNegativeList(CONFIG.NEGATIVE_LIST_NAME_SPEND);
       selectedTerms.forEach(function(s) {
         try {
-          if (negativeListSpendFR) { negativeListSpendFR.addNegativeKeyword('[' + s.term + ']'); appliedCount++; }
-          _logChange({ functionName: 'approval_apply', entity: s.term, entityType: 'FLAGGED_REVIEW_NEGATIVE', reason: 'Approved flagged review negate: ' + (s.reason || ''), spend: s.cost || 0, conversions: 0 });
+          // v4.5.0: Route PMax flagged negatives to campaign-level; others to shared list
+          if (s.channelType === 'PERFORMANCE_MAX' && s.campaign) {
+            var pmaxIterFR = AdsApp.performanceMaxCampaigns()
+              .withCondition('campaign.name = "' + s.campaign.replace(/"/g, '\\"') + '"').get();
+            if (pmaxIterFR.hasNext()) {
+              pmaxIterFR.next().createNegativeKeyword('[' + s.term + ']');
+            } else if (negativeListSpendFR) {
+              negativeListSpendFR.addNegativeKeyword('[' + s.term + ']');
+            }
+          } else if (negativeListSpendFR) {
+            negativeListSpendFR.addNegativeKeyword('[' + s.term + ']');
+          }
+          appliedCount++;
+          _logChange({ functionName: 'approval_apply', entity: s.term, entityType: 'FLAGGED_REVIEW_NEGATIVE', campaign: s.campaign || '', reason: 'Approved flagged review negate: ' + (s.reason || ''), spend: s.cost || 0, conversions: 0 });
         } catch (e) { _log('WARN', 'Apply flagged review negation failed: ' + s.term + ' — ' + e.message); }
       });
       _log('INFO', 'Applied ' + selectedTerms.length + ' flagged review negations');
