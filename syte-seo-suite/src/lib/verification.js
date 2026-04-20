@@ -137,10 +137,12 @@ ${truncated}
 
 VERIFICATION RULES:
 - For articles: the page has the article if the main body contains substantial content about the same TOPIC. The H1 and meta title may differ slightly — that's normal SEO practice. Look for matching key themes, not exact title strings.
+- For AEO optimizations (change_type = aeo_optimization): the team REFORMATS the raw HTML before publishing — they add images, change headings, use icons instead of bullets, reword slightly for brand voice. Do NOT compare exact HTML. Instead check: does the page now contain the CORE INFORMATION from the optimization? For answer blocks, check if the page has a concise overview paragraph near the top. For FAQ sections, check if similar questions + answers exist anywhere on the page. For key takeaways / bullet lists, check if the page has a structured list covering the same topics. For schema, check for JSON-LD script tags. If 60%+ of the core content themes are present on the page, mark it as implemented.
 - For schema changes: check for the JSON-LD script tag.
 - For meta changes: check the <title> tag or meta description.
 - If content was fetched via wp-api (WordPress REST API), the HTML is the raw post body — check for the article content directly.
 - A WordPress draft that contains the article counts as "implemented" (it exists, just not published yet).
+- IMPORTANT: be LENIENT. The goal is to confirm the team did the work, not to grade exact copy-paste accuracy. Different formatting, slightly different wording, added images, or rearranged sections are ALL acceptable.
 
 Return ONLY valid JSON (no prose, no code fences):
 {
