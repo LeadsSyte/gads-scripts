@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useClients } from '../store/useClients.js';
-import { logImplementation } from '../lib/supabase.js';
+import { logImplementation, updateImplementation } from '../lib/supabase.js';
 import { verifyImplementation } from '../lib/verification.js';
 
 // Reusable "Mark as Implemented" button. Place it next to any generated
@@ -69,18 +69,13 @@ export default function MarkImplementedButton({
       });
 
       setPhase('verifying');
-      const status = await verifyImplementation(impl, client);
-      // Re-read the updated impl from the updateImplementation call inside
-      // verifyImplementation — the original `impl` object is stale and won't
-      // have verification_detail set on it.
-      // We pass the detail through the status return, but the canonical
-      // detail is now on the Supabase/localStorage record. For the inline
-      // display, use a sensible message based on what we know.
+      const vResult = await verifyImplementation(impl, client);
+      // vResult is now { status, detail } with the real reason.
+      const st = typeof vResult === 'string' ? vResult : vResult.status;
+      const dt = typeof vResult === 'object' ? vResult.detail : null;
       setResult({
-        status,
-        detail: status === 'verified'
-          ? 'Change confirmed on the live page.'
-          : 'Change not found — the page may be a draft, behind a login, or the content differs from what was expected. Click Re-verify after publishing.',
+        status: st,
+        detail: dt || (st === 'verified' ? 'Change confirmed on the live page.' : 'Verification failed — no detail available.'),
         impl
       });
       setPhase('done');
@@ -128,6 +123,21 @@ export default function MarkImplementedButton({
             >
               Re-verify
             </button>
+            {result.status !== 'verified' && result.impl?.id && (
+              <button
+                onClick={async () => {
+                  await updateImplementation(result.impl.id, {
+                    verification_status: 'verified',
+                    verification_detail: 'Manually verified by team member.',
+                    verified_at: new Date().toISOString()
+                  });
+                  setResult({ ...result, status: 'verified', detail: 'Manually verified by team member.' });
+                }}
+                style={{ fontSize: 10, padding: '2px 8px', marginLeft: 4, borderColor: 'var(--green)', color: 'var(--green)' }}
+              >
+                I've verified this — mark as done
+              </button>
+            )}
           </span>
         )}
       </div>

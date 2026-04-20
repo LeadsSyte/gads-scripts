@@ -93,24 +93,26 @@ async function fetchPageContent(impl, client) {
 
 export async function verifyImplementation(impl, client) {
   if (!impl?.page_url) {
+    const detail = 'No page URL to scan.';
     await updateImplementation(impl.id, {
       verification_status: 'failed',
-      verification_detail: 'No page URL to scan.',
+      verification_detail: detail,
       verified_at: new Date().toISOString()
     });
-    return 'failed';
+    return { status: 'failed', detail };
   }
 
   let pageData;
   try {
     pageData = await fetchPageContent(impl, client);
   } catch (e) {
+    const detail = 'Could not fetch the page: ' + e.message;
     await updateImplementation(impl.id, {
       verification_status: 'failed',
-      verification_detail: 'Could not fetch the page: ' + e.message,
+      verification_detail: detail,
       verified_at: new Date().toISOString()
     });
-    return 'failed';
+    return { status: 'failed', detail };
   }
 
   // If the post is a WordPress draft, note that in the verification
@@ -168,12 +170,13 @@ Return ONLY valid JSON (no prose, no code fences):
     } catch { parsed = null; }
 
     if (!parsed) {
+      const detail = 'Could not parse verification response.';
       await updateImplementation(impl.id, {
         verification_status: 'failed',
-        verification_detail: 'Could not parse verification response.',
+        verification_detail: detail,
         verified_at: new Date().toISOString()
       });
-      return 'failed';
+      return { status: 'failed', detail };
     }
 
     const status = parsed.implemented ? 'verified' : 'failed';
@@ -189,13 +192,14 @@ Return ONLY valid JSON (no prose, no code fences):
       verification_detail: detail,
       verified_at: new Date().toISOString()
     });
-    return status;
+    return { status, detail };
   } catch (e) {
+    const detail = 'Verification API error: ' + e.message;
     await updateImplementation(impl.id, {
       verification_status: 'failed',
-      verification_detail: 'Verification API error: ' + e.message,
+      verification_detail: detail,
       verified_at: new Date().toISOString()
     });
-    return 'failed';
+    return { status: 'failed', detail };
   }
 }
