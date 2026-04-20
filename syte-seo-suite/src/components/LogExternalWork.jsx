@@ -25,44 +25,67 @@ export default function LogExternalWork({ module, accent, onLog }) {
     if (!clientId && topClient?.id) setClientId(topClient.id);
   }, [topClient?.id]);
 
+  const [failedUrl, setFailedUrl] = useState(''); // tracks a URL that failed fetch so we can offer manual override
+
   async function verify() {
     const u = url.trim();
     if (!u) { setResult({ ok: false, message: 'Enter a URL.' }); return; }
     if (!clientId) { setResult({ ok: false, message: 'Select a client.' }); return; }
     try { new URL(u); } catch { setResult({ ok: false, message: 'Enter a valid URL.' }); return; }
 
-    setBusy(true); setResult(null);
+    setBusy(true); setResult(null); setFailedUrl('');
+    let pageTitle = title.trim();
+    let fetchWorked = false;
+
     try {
       const res = await corsFetch(u);
-      if (!res.ok) throw new Error('HTTP ' + res.status);
-
-      // Extract page title if not provided.
-      let pageTitle = title.trim();
-      if (!pageTitle) {
-        try {
-          const html = await res.text();
-          const m = html.match(/<title[^>]*>([^<]+)<\/title>/i);
-          if (m) pageTitle = m[1].trim();
-        } catch {}
+      if (res.ok) {
+        fetchWorked = true;
+        if (!pageTitle) {
+          try {
+            const html = await res.text();
+            const m = html.match(/<title[^>]*>([^<]+)<\/title>/i);
+            if (m) pageTitle = m[1].trim();
+          } catch {}
+        }
       }
-      if (!pageTitle) {
-        try { pageTitle = new URL(u).pathname.split('/').filter(Boolean).pop()?.replace(/-/g, ' ') || u; } catch { pageTitle = u; }
-      }
+    } catch {}
 
+    if (!pageTitle) {
+      try { pageTitle = new URL(u).pathname.split('/').filter(Boolean).pop()?.replace(/-/g, ' ') || u; } catch { pageTitle = u; }
+    }
+
+    if (fetchWorked) {
       const c = clients.find(x => x.id === clientId);
-      const entry = {
-        clientId,
-        clientName: c?.name || '',
-        url: u,
-        title: pageTitle,
-        verifiedAt: new Date().toISOString()
-      };
-      await onLog(entry);
-      setResult({ ok: true, message: `Verified & logged: "${pageTitle}" for ${c?.name || 'client'}` });
-      setUrl('');
-      setTitle('');
+      const entry = { clientId, clientName: c?.name || '', url: u, title: pageTitle, verifiedAt: new Date().toISOString() };
+      try {
+        await onLog(entry);
+        setResult({ ok: true, message: `Verified & logged: "${pageTitle}" for ${c?.name || 'client'}` });
+        setUrl(''); setTitle('');
+      } catch (e) {
+        setResult({ ok: false, message: 'Save failed: ' + e.message });
+      }
+    } else {
+      setFailedUrl(u);
+      setResult({ ok: false, message: 'Could not reach the page (site may block automated requests like Cloudflare/WAF). If you can see the page is live in your browser, click "Log Anyway" below.' });
+    }
+    setBusy(false);
+  }
+
+  async function logAnyway() {
+    const u = failedUrl || url.trim();
+    const c = clients.find(x => x.id === clientId);
+    let pageTitle = title.trim();
+    if (!pageTitle) {
+      try { pageTitle = new URL(u).pathname.split('/').filter(Boolean).pop()?.replace(/-/g, ' ') || u; } catch { pageTitle = u; }
+    }
+    setBusy(true);
+    try {
+      await onLog({ clientId, clientName: c?.name || '', url: u, title: pageTitle, verifiedAt: new Date().toISOString() });
+      setResult({ ok: true, message: `Logged (manual): "${pageTitle}" for ${c?.name || 'client'}` });
+      setUrl(''); setTitle(''); setFailedUrl('');
     } catch (e) {
-      setResult({ ok: false, message: 'URL not reachable: ' + (e.message || 'unknown error') + '. Check the URL is correct and the page is live.' });
+      setResult({ ok: false, message: 'Save failed: ' + e.message });
     } finally {
       setBusy(false);
     }
@@ -130,6 +153,17 @@ export default function LogExternalWork({ module, accent, onLog }) {
           color: result.ok ? 'var(--green)' : 'var(--red)'
         }}>
           {result.message}
+          {failedUrl && !result.ok && (
+            <div style={{ marginTop: 8 }}>
+              <button
+                onClick={logAnyway}
+                disabled={busy}
+                style={{ fontSize: 11, padding: '5px 14px', borderColor: 'var(--green)', color: 'var(--green)' }}
+              >
+                I can see it's live — Log Anyway
+              </button>
+            </div>
+          )}
         </div>
       )}
     </div>
