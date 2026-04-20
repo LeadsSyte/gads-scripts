@@ -68,10 +68,27 @@ function doGet(e) {
     }
   }
 
-  // NEW: Reject action — marks a pending run as REJECTED
+  // Reject entire run
   if (action === 'reject') {
     if (!runId) return _renderPage('Error', 'Missing runId parameter.', false);
     return _rejectRun(runId);
+  }
+
+  // Per-category reject — shows reason form
+  if (action === 'reject_category') {
+    if (!runId || !category) return _renderPage('Error', 'Missing runId or category parameter.', false);
+    return _renderRejectReasonPage(runId, category);
+  }
+
+  // Run status dashboard
+  if (view === 'run_status') {
+    if (!runId) return _renderPage('Error', 'Missing runId parameter.', false);
+    try {
+      var ss = SpreadsheetApp.openById(MASTER_SHEET_ID);
+      return _renderRunStatusPage(ss, runId);
+    } catch (e2) {
+      return _renderPage('Error', 'Could not load run status: ' + e2.message, false);
+    }
   }
 
   if (!runId || !category) {
@@ -142,25 +159,36 @@ function doGet(e) {
 
     // Write updates
     var rowNum = targetRow + 1;  // 1-indexed
+    var userEmail = Session.getActiveUser().getEmail() || 'Unknown';
+    var now = new Date().toISOString();
     sheet.getRange(rowNum, colIdx['approved_categories'] + 1).setValue(newApproved);
-    sheet.getRange(rowNum, colIdx['approved_by'] + 1).setValue(Session.getActiveUser().getEmail() || 'Unknown');
-    sheet.getRange(rowNum, colIdx['approved_at'] + 1).setValue(new Date().toISOString());
+    sheet.getRange(rowNum, colIdx['approved_by'] + 1).setValue(userEmail);
+    sheet.getRange(rowNum, colIdx['approved_at'] + 1).setValue(now);
+
+    // Write per-category decision tracking
+    var decisions = {};
+    if (colIdx['category_decisions'] !== undefined) {
+      try { decisions = JSON.parse(row[colIdx['category_decisions']] || '{}'); } catch (e) {}
+    }
+    var allCats = ['keyword_pauses', 'search_term_negations', 'winner_promotions', 'auto_optimizations', 'shopping_pmax', 'flagged_review_negations'];
+    if (category === 'all') {
+      for (var ci = 0; ci < allCats.length; ci++) {
+        if (!decisions[allCats[ci]] || decisions[allCats[ci]].decision !== 'rejected') {
+          decisions[allCats[ci]] = { decision: 'approved', reason: '', by: userEmail, at: now };
+        }
+      }
+    } else {
+      decisions[category] = { decision: 'approved', reason: '', by: userEmail, at: now };
+    }
+    if (colIdx['category_decisions'] !== undefined) {
+      sheet.getRange(rowNum, colIdx['category_decisions'] + 1).setValue(JSON.stringify(decisions));
+    }
 
     // Parse changes to show summary
     var changesJson = {};
     try { changesJson = JSON.parse(row[colIdx['changes_json']]); } catch (e) {}
 
-    var categoryLabels = {
-      keyword_pauses: 'Keyword Pauses',
-      search_term_negations: 'Search Term Negations',
-      winner_promotions: 'Winner Promotions',
-      auto_optimizations: 'Auto-Optimizations',
-      shopping_pmax: 'Shopping/PMax',
-      flagged_review_negations: 'Flagged Review Negations',
-      all: 'All Changes'
-    };
-
-    var approvedLabel = category === 'all' ? 'All Changes' : categoryLabels[category] || category;
+    var approvedLabel = category === 'all' ? 'All Changes' : (_catLabel(category) || category);
     var summary = '<strong>Account:</strong> ' + accountName + '<br>';
     summary += '<strong>Run:</strong> ' + timestamp + '<br>';
     summary += '<strong>Approved:</strong> ' + approvedLabel + '<br>';
@@ -168,12 +196,15 @@ function doGet(e) {
     summary += 'Changes will be applied on the next scheduled script run.';
 
     // Show notes form
-    summary += '<br><br><form action="' + ScriptApp.getService().getUrl() + '" method="post">';
+    var webAppUrl = ScriptApp.getService().getUrl();
+    summary += '<br><br><form action="' + webAppUrl + '" method="post">';
     summary += '<input type="hidden" name="runId" value="' + runId + '">';
     summary += '<label style="font-weight:bold;">Add a note (optional):</label><br>';
     summary += '<textarea name="notes" rows="3" cols="40" style="margin:8px 0;padding:8px;border:1px solid #ccc;border-radius:4px;width:100%;max-width:400px;"></textarea><br>';
     summary += '<button type="submit" style="background:#1565c0;color:white;border:none;padding:10px 20px;border-radius:4px;cursor:pointer;font-size:14px;">Save Note</button>';
     summary += '</form>';
+
+    summary += '<br><a href="' + webAppUrl + '?view=run_status&runId=' + runId + '" style="color:#1565c0;">View full approval status</a>';
 
     return _renderPage('Approved: ' + approvedLabel, summary, true);
 
@@ -191,6 +222,11 @@ function doPost(e) {
 
   if (!runId) {
     return _renderPage('Error', 'Missing run ID.', false);
+  }
+
+  // Per-category reject with reason
+  if (postAction === 'reject_category') {
+    return _handleCategoryReject(e);
   }
 
   // v4.5.0: Handle flagged review submission (checkboxes + optional AI instructions)
@@ -786,6 +822,235 @@ function _handleConfirmAI(e) {
 // HTML RENDERING
 // ============================================
 
+// ============================================
+// CATEGORY LABELS HELPER
+// ============================================
+
+var CATEGORY_LABELS = {
+  keyword_pauses: 'Keyword Pauses',
+  search_term_negations: 'Search Term Negations',
+  winner_promotions: 'Winner Promotions',
+  auto_optimizations: 'Auto-Optimizations',
+  shopping_pmax: 'Shopping/PMax',
+  flagged_review_negations: 'Flagged Review Negations'
+};
+
+function _catLabel(cat) { return CATEGORY_LABELS[cat] || cat; }
+
+function _countCategory(changesJson, cat) {
+  var d = changesJson[cat];
+  if (!d) return 0;
+  var n = 0;
+  for (var k in d) { if (Array.isArray(d[k])) n += d[k].length; }
+  return n;
+}
+
+
+// ============================================
+// PER-CATEGORY REJECT — REASON FORM
+// ============================================
+
+function _renderRejectReasonPage(runId, category) {
+  var result = _findPendingRow(runId);
+  if (!result) return _renderPage('Not Found', 'Run ID not found: ' + runId, false);
+
+  var status = String(result.row[result.colIdx['status']]).trim();
+  if (status === 'APPLIED') return _renderPage('Already Applied', 'These changes have already been applied.', false);
+  if (status === 'EXPIRED') return _renderPage('Expired', 'These changes have expired.', false);
+
+  var changesJson = {};
+  try { changesJson = JSON.parse(result.row[result.colIdx['changes_json']]); } catch (e) {}
+
+  var label = _catLabel(category);
+  var count = _countCategory(changesJson, category);
+  var webAppUrl = ScriptApp.getService().getUrl();
+
+  var html = '<!DOCTYPE html><html><head><meta charset="utf-8">';
+  html += '<meta name="viewport" content="width=device-width, initial-scale=1">';
+  html += '<title>Reject: ' + label + '</title>';
+  html += '<style>';
+  html += 'body{font-family:Arial,sans-serif;max-width:500px;margin:30px auto;padding:0 20px;color:#333;}';
+  html += '.card{background:#ffebee;border-left:4px solid #c62828;padding:20px;border-radius:6px;margin:16px 0;}';
+  html += 'h1{font-size:20px;margin:0 0 8px;color:#c62828;}';
+  html += 'textarea{width:100%;padding:10px;border:1px solid #ccc;border-radius:4px;margin:8px 0;box-sizing:border-box;font-size:14px;}';
+  html += '.btn{display:inline-block;padding:12px 24px;border:none;border-radius:6px;color:white;font-weight:bold;font-size:14px;cursor:pointer;margin:4px;}';
+  html += '.btn-reject{background:#c62828;}';
+  html += '.btn-cancel{background:#999;}';
+  html += '</style></head><body>';
+
+  html += '<div class="card">';
+  html += '<h1>Reject: ' + _escape(label) + '</h1>';
+  html += '<p>' + count + ' proposed change(s) in this category will NOT be applied.</p>';
+
+  html += '<form action="' + webAppUrl + '" method="post">';
+  html += '<input type="hidden" name="runId" value="' + _escape(runId) + '">';
+  html += '<input type="hidden" name="post_action" value="reject_category">';
+  html += '<input type="hidden" name="category" value="' + _escape(category) + '">';
+  html += '<label style="font-weight:bold;">Reason for rejection (required):</label>';
+  html += '<textarea name="reason" rows="4" required placeholder="e.g. Too aggressive during peak season, need to review competitor terms first"></textarea>';
+  html += '<button type="submit" class="btn btn-reject">Confirm Reject</button>';
+  html += ' <a href="' + webAppUrl + '?view=run_status&runId=' + _escape(runId) + '" class="btn btn-cancel" style="text-decoration:none;">Cancel</a>';
+  html += '</form>';
+
+  html += '</div>';
+  html += '<div style="margin-top:30px;color:#999;font-size:11px;text-align:center;">Syte Digital Agency | Optimization Approval System | syte.co.za</div>';
+  html += '</body></html>';
+
+  return HtmlService.createHtmlOutput(html).setTitle('Reject: ' + label);
+}
+
+function _handleCategoryReject(e) {
+  var runId = (e.parameter.runId || '').trim();
+  var category = (e.parameter.category || '').trim();
+  var reason = (e.parameter.reason || '').trim();
+
+  if (!runId || !category) return _renderPage('Error', 'Missing parameters.', false);
+  if (!reason) return _renderPage('Error', 'A reason is required when rejecting.', false);
+
+  var result = _findPendingRow(runId);
+  if (!result) return _renderPage('Not Found', 'Run ID not found: ' + runId, false);
+
+  var row = result.row;
+  var colIdx = result.colIdx;
+  var rowNum = result.rowNum;
+  var sheet = result.sheet;
+
+  var userEmail = Session.getActiveUser().getEmail() || 'Unknown';
+  var now = new Date().toISOString();
+
+  // Update category_decisions
+  var decisions = {};
+  if (colIdx['category_decisions'] !== undefined) {
+    try { decisions = JSON.parse(row[colIdx['category_decisions']] || '{}'); } catch (e) {}
+  }
+  decisions[category] = { decision: 'rejected', reason: reason, by: userEmail, at: now };
+  if (colIdx['category_decisions'] !== undefined) {
+    sheet.getRange(rowNum, colIdx['category_decisions'] + 1).setValue(JSON.stringify(decisions));
+  }
+
+  // Append to notes for backward-compatible visibility
+  var existingNotes = String(row[colIdx['notes']] || '').trim();
+  var noteEntry = '[REJECTED: ' + _catLabel(category) + '] ' + reason;
+  var combined = existingNotes ? existingNotes + '\n' + noteEntry : noteEntry;
+  sheet.getRange(rowNum, colIdx['notes'] + 1).setValue(combined);
+
+  sheet.getRange(rowNum, colIdx['approved_by'] + 1).setValue(userEmail);
+  sheet.getRange(rowNum, colIdx['approved_at'] + 1).setValue(now);
+
+  var webAppUrl = ScriptApp.getService().getUrl();
+  var summary = '<strong>Rejected:</strong> ' + _escape(_catLabel(category)) + '<br>';
+  summary += '<strong>Reason:</strong> ' + _escape(reason) + '<br><br>';
+  summary += 'These changes will NOT be applied.';
+  summary += '<br><br><a href="' + webAppUrl + '?view=run_status&runId=' + runId + '" style="color:#1565c0;">View full approval status</a>';
+
+  return _renderPage('Rejected: ' + _catLabel(category), summary, false);
+}
+
+
+// ============================================
+// RUN STATUS DASHBOARD
+// ============================================
+
+function _renderRunStatusPage(ss, runId) {
+  var result = _findPendingRow(runId);
+  if (!result) return _renderPage('Not Found', 'Run ID not found: ' + runId, false);
+
+  var row = result.row;
+  var colIdx = result.colIdx;
+  var accountName = row[colIdx['account_name']] || '';
+  var timestamp = row[colIdx['timestamp']] || '';
+  var status = String(row[colIdx['status']]).trim();
+  var approvedCats = String(row[colIdx['approved_categories']] || '').trim();
+
+  var decisions = {};
+  if (colIdx['category_decisions'] !== undefined) {
+    try { decisions = JSON.parse(row[colIdx['category_decisions']] || '{}'); } catch (e) {}
+  }
+
+  var changesJson = {};
+  try { changesJson = JSON.parse(row[colIdx['changes_json']]); } catch (e) {}
+
+  var webAppUrl = ScriptApp.getService().getUrl();
+  var allCats = ['keyword_pauses', 'search_term_negations', 'winner_promotions', 'auto_optimizations', 'shopping_pmax', 'flagged_review_negations'];
+
+  var html = '<!DOCTYPE html><html><head><meta charset="utf-8">';
+  html += '<meta name="viewport" content="width=device-width, initial-scale=1">';
+  html += '<title>Run Status</title>';
+  html += '<style>';
+  html += 'body{font-family:Arial,sans-serif;max-width:700px;margin:20px auto;padding:0 16px;color:#333;}';
+  html += 'h1{font-size:20px;margin:0 0 4px;}';
+  html += '.muted{color:#999;font-size:12px;}';
+  html += 'table{width:100%;border-collapse:collapse;font-size:13px;margin:12px 0;}';
+  html += 'th{background:#e3f2fd;padding:10px 8px;text-align:left;}';
+  html += 'td{padding:8px;border-bottom:1px solid #eee;vertical-align:top;}';
+  html += '.badge{display:inline-block;padding:3px 10px;border-radius:12px;font-size:11px;font-weight:bold;color:white;}';
+  html += '.badge-approved{background:#2e7d32;}';
+  html += '.badge-rejected{background:#c62828;}';
+  html += '.badge-pending{background:#9e9e9e;}';
+  html += '.reason{color:#666;font-size:12px;font-style:italic;margin-top:4px;}';
+  html += '.btn{display:inline-block;padding:6px 14px;margin:2px;border-radius:4px;color:white;text-decoration:none;font-weight:600;font-size:12px;}';
+  html += '.btn-approve{background:#2e7d32;}';
+  html += '.btn-reject{background:#c62828;}';
+  html += '.status-bar{padding:14px 16px;border-radius:6px;margin:12px 0;}';
+  html += '</style></head><body>';
+
+  html += '<h1>Approval Status</h1>';
+  html += '<p class="muted">' + _escape(String(accountName)) + ' | ' + String(timestamp).substring(0, 16) + ' | Run: ' + _escape(runId) + '</p>';
+
+  // Overall status banner
+  var statusBg = status === 'APPLIED' ? '#e8f5e9' : status === 'REJECTED' ? '#ffebee' : status === 'EXPIRED' ? '#f5f5f5' : '#fff3e0';
+  var statusColor = status === 'APPLIED' ? '#2e7d32' : status === 'REJECTED' ? '#c62828' : status === 'EXPIRED' ? '#999' : '#e65100';
+  html += '<div class="status-bar" style="background:' + statusBg + ';border-left:4px solid ' + statusColor + ';">';
+  html += '<strong style="color:' + statusColor + ';">Overall: ' + _escape(status) + '</strong>';
+  html += '</div>';
+
+  // Per-category table
+  html += '<table>';
+  html += '<tr><th>Category</th><th>Items</th><th>Status</th><th>Reason</th><th>Decided By</th><th>Actions</th></tr>';
+
+  for (var i = 0; i < allCats.length; i++) {
+    var cat = allCats[i];
+    var count = _countCategory(changesJson, cat);
+    if (count === 0 && !decisions[cat]) continue;
+
+    var d = decisions[cat] || {};
+    var dec = d.decision || 'pending';
+    var badgeClass = dec === 'approved' ? 'badge-approved' : dec === 'rejected' ? 'badge-rejected' : 'badge-pending';
+    var badgeLabel = dec === 'approved' ? 'Approved' : dec === 'rejected' ? 'Rejected' : 'Pending';
+
+    html += '<tr>';
+    html += '<td><strong>' + _escape(_catLabel(cat)) + '</strong></td>';
+    html += '<td style="text-align:center;">' + count + '</td>';
+    html += '<td><span class="badge ' + badgeClass + '">' + badgeLabel + '</span></td>';
+    html += '<td>';
+    if (d.reason) html += '<span class="reason">' + _escape(d.reason) + '</span>';
+    html += '</td>';
+    html += '<td class="muted">' + (d.by ? _escape(d.by).split('@')[0] : '') + (d.at ? '<br>' + d.at.substring(0, 16) : '') + '</td>';
+    html += '<td>';
+    if (dec === 'pending' && status === 'PENDING') {
+      html += '<a class="btn btn-approve" href="' + webAppUrl + '?runId=' + encodeURIComponent(runId) + '&category=' + cat + '">Approve</a>';
+      html += '<a class="btn btn-reject" href="' + webAppUrl + '?action=reject_category&runId=' + encodeURIComponent(runId) + '&category=' + cat + '">Reject</a>';
+    }
+    html += '</td>';
+    html += '</tr>';
+  }
+
+  html += '</table>';
+
+  // Notes
+  var notes = String(row[colIdx['notes']] || '').trim();
+  if (notes) {
+    html += '<h2 style="font-size:14px;margin-top:20px;">Notes</h2>';
+    html += '<pre style="background:#f5f5f5;padding:12px;border-radius:4px;font-size:12px;white-space:pre-wrap;">' + _escape(notes) + '</pre>';
+  }
+
+  html += '<div style="margin-top:30px;color:#999;font-size:11px;text-align:center;">Syte Digital Agency | Optimization Approval System | syte.co.za</div>';
+  html += '</body></html>';
+
+  return HtmlService.createHtmlOutput(html).setTitle('Run Status — ' + runId);
+}
+
+
 /**
  * Renders a per-client dashboard: recent digest runs, errors, and pending
  * approvals with Approve/Reject buttons. Linked from the weekly client report.
@@ -863,7 +1128,8 @@ function _renderClientDashboard(ss, accountName) {
           timestamp: pd[r][ph['timestamp']],
           approvedCategories: String(pd[r][ph['approved_categories']] || '').trim(),
           changesJson: pd[r][ph['changes_json']] || '{}',
-          evalSummary: pd[r][ph['eval_summary']] || ''
+          evalSummary: pd[r][ph['eval_summary']] || '',
+          categoryDecisions: ph['category_decisions'] !== undefined ? String(pd[r][ph['category_decisions']] || '{}') : '{}'
         });
       }
     }
@@ -909,12 +1175,10 @@ function _renderClientDashboard(ss, accountName) {
       if (pr.evalSummary) {
         html += '<strong>AI eval:</strong> <em>' + _escape(String(pr.evalSummary)) + '</em><br>';
       }
-      if (pr.approvedCategories) {
-        html += '<strong>Already approved:</strong> ' + _escape(pr.approvedCategories) + '<br>';
-      }
-      html += '<div style="margin-top:10px;">';
-      html += '<a class="btn btn-approve" href="' + webAppUrl + '?runId=' +
-              encodeURIComponent(pr.runId) + '&category=all">Approve All</a>';
+
+      // Show per-category status with badges
+      var decs = {};
+      try { decs = JSON.parse(pr.categoryDecisions || '{}'); } catch (e) {}
       var cats = [
         { k: 'keyword_pauses', label: 'Keywords' },
         { k: 'search_term_negations', label: 'Negations' },
@@ -922,14 +1186,35 @@ function _renderClientDashboard(ss, accountName) {
         { k: 'auto_optimizations', label: 'Auto-Opt' },
         { k: 'shopping_pmax', label: 'Shopping/PMax' }
       ];
+      var hasDecisions = Object.keys(decs).length > 0;
+      if (hasDecisions) {
+        html += '<div style="margin:8px 0;font-size:12px;">';
+        for (var dc = 0; dc < cats.length; dc++) {
+          var catDec = decs[cats[dc].k];
+          if (catDec && catDec.decision === 'approved') {
+            html += '<span style="background:#e8f5e9;color:#2e7d32;padding:2px 8px;border-radius:10px;margin:2px;display:inline-block;">' + cats[dc].label + ' ✓</span> ';
+          } else if (catDec && catDec.decision === 'rejected') {
+            html += '<span style="background:#ffebee;color:#c62828;padding:2px 8px;border-radius:10px;margin:2px;display:inline-block;" title="' + _escape(catDec.reason || '') + '">' + cats[dc].label + ' ✗</span> ';
+          }
+        }
+        html += '</div>';
+      }
+
+      html += '<div style="margin-top:10px;">';
+      html += '<a class="btn btn-approve" href="' + webAppUrl + '?runId=' +
+              encodeURIComponent(pr.runId) + '&category=all">Approve All</a>';
       for (var c = 0; c < cats.length; c++) {
+        var cd = decs[cats[c].k];
+        if (cd && (cd.decision === 'approved' || cd.decision === 'rejected')) continue;
         html += '<a class="btn btn-cat" href="' + webAppUrl + '?runId=' +
                 encodeURIComponent(pr.runId) + '&category=' + cats[c].k + '">' +
                 cats[c].label + '</a>';
       }
       html += '<a class="btn btn-reject" href="' + webAppUrl + '?action=reject&runId=' +
               encodeURIComponent(pr.runId) +
-              '" onclick="return confirm(\'Reject this run? All proposed changes will be discarded.\');">Reject</a>';
+              '" onclick="return confirm(\'Reject this run? All proposed changes will be discarded.\');">Reject All</a>';
+      html += ' <a class="btn btn-cat" style="background:#546e7a;" href="' + webAppUrl + '?view=run_status&runId=' +
+              encodeURIComponent(pr.runId) + '">Status</a>';
       html += '</div></div>';
     }
   }
@@ -1006,9 +1291,22 @@ function _rejectRun(runId) {
         if (status === 'APPLIED') {
           return _renderPage('Already Applied', 'Cannot reject — changes have already been applied.', false);
         }
+        var userEmail = Session.getActiveUser().getEmail() || 'Unknown';
+        var now = new Date().toISOString();
         sheet.getRange(r + 1, colIdx['status'] + 1).setValue('REJECTED');
-        sheet.getRange(r + 1, colIdx['approved_by'] + 1).setValue(Session.getActiveUser().getEmail() || 'Unknown');
-        sheet.getRange(r + 1, colIdx['approved_at'] + 1).setValue(new Date().toISOString());
+        sheet.getRange(r + 1, colIdx['approved_by'] + 1).setValue(userEmail);
+        sheet.getRange(r + 1, colIdx['approved_at'] + 1).setValue(now);
+
+        // Populate category_decisions for all categories
+        if (colIdx['category_decisions'] !== undefined) {
+          var allCats = ['keyword_pauses', 'search_term_negations', 'winner_promotions', 'auto_optimizations', 'shopping_pmax', 'flagged_review_negations'];
+          var decisions = {};
+          for (var ci = 0; ci < allCats.length; ci++) {
+            decisions[allCats[ci]] = { decision: 'rejected', reason: 'Entire run rejected', by: userEmail, at: now };
+          }
+          sheet.getRange(r + 1, colIdx['category_decisions'] + 1).setValue(JSON.stringify(decisions));
+        }
+
         return _renderPage('Rejected', 'Run ' + runId + ' has been marked as rejected. The proposed changes will not be applied.', true);
       }
     }

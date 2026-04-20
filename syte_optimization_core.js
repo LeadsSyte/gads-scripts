@@ -2738,10 +2738,11 @@ function _sendReport(results, duration, evalResult, pendingRunId) {
   if (pendingRunId && CONFIG.APPROVAL_WEBAPP_URL) {
     var webAppUrl = CONFIG.APPROVAL_WEBAPP_URL;
     var btnStyle = 'display:inline-block;padding:10px 18px;margin:4px;border-radius:6px;color:white;text-decoration:none;font-weight:bold;font-size:13px;';
+    var rejBtnStyle = 'display:inline-block;padding:6px 12px;margin:4px 2px;border-radius:6px;color:white;text-decoration:none;font-weight:bold;font-size:11px;background:#c62828;';
 
     email += '<div style="background:#e8f5e9;padding:16px 20px;border-left:4px solid #2e7d32;">';
     email += '<h3 style="margin:0 0 10px;color:#2e7d32;">Changes require your approval</h3>';
-    email += '<p style="margin:0 0 12px;font-size:13px;color:#333;">Review the proposed changes below, then click to approve by category or approve all at once.</p>';
+    email += '<p style="margin:0 0 12px;font-size:13px;color:#333;">Review the proposed changes below, then approve or reject by category.</p>';
 
     // Category buttons — only show if there are changes in that category
     var hasKwPauses = (results.keywordsPaused.length + results.ecomKeywordsPaused.length + results.lowQsPaused.length) > 0;
@@ -2752,26 +2753,40 @@ function _sendReport(results, duration, evalResult, pendingRunId) {
     var hasFlagged = results.smartReviewTerms.length > 0;
 
     if (hasKwPauses) {
-      email += '<a href="' + webAppUrl + '?runId=' + pendingRunId + '&amp;category=keyword_pauses" target="_blank" style="' + btnStyle + 'background:#1565c0;">Approve Keyword Pauses (' + (results.keywordsPaused.length + results.ecomKeywordsPaused.length + results.lowQsPaused.length) + ')</a> ';
+      var kwCount = results.keywordsPaused.length + results.ecomKeywordsPaused.length + results.lowQsPaused.length;
+      email += '<a href="' + webAppUrl + '?runId=' + pendingRunId + '&amp;category=keyword_pauses" target="_blank" style="' + btnStyle + 'background:#1565c0;">Approve Keyword Pauses (' + kwCount + ')</a>';
+      email += '<a href="' + webAppUrl + '?action=reject_category&amp;runId=' + pendingRunId + '&amp;category=keyword_pauses" target="_blank" style="' + rejBtnStyle + '">Reject</a> ';
     }
     if (hasNegations) {
-      email += '<a href="' + webAppUrl + '?runId=' + pendingRunId + '&amp;category=search_term_negations" target="_blank" style="' + btnStyle + 'background:#6a1b9a;">Approve Negations (' + (results.smartNegated.length + results.ngramNegatives.length) + ')</a> ';
+      var negCount = results.smartNegated.length + results.ngramNegatives.length;
+      email += '<a href="' + webAppUrl + '?runId=' + pendingRunId + '&amp;category=search_term_negations" target="_blank" style="' + btnStyle + 'background:#6a1b9a;">Approve Negations (' + negCount + ')</a>';
+      email += '<a href="' + webAppUrl + '?action=reject_category&amp;runId=' + pendingRunId + '&amp;category=search_term_negations" target="_blank" style="' + rejBtnStyle + '">Reject</a> ';
     }
     if (hasWinners) {
-      email += '<a href="' + webAppUrl + '?runId=' + pendingRunId + '&amp;category=winner_promotions" target="_blank" style="' + btnStyle + 'background:#00695c;">Approve Winners (' + (results.winnersPromoted.length + results.ecomWinnersPromoted.length) + ')</a> ';
+      var winCount = results.winnersPromoted.length + results.ecomWinnersPromoted.length;
+      email += '<a href="' + webAppUrl + '?runId=' + pendingRunId + '&amp;category=winner_promotions" target="_blank" style="' + btnStyle + 'background:#00695c;">Approve Winners (' + winCount + ')</a>';
+      email += '<a href="' + webAppUrl + '?action=reject_category&amp;runId=' + pendingRunId + '&amp;category=winner_promotions" target="_blank" style="' + rejBtnStyle + '">Reject</a> ';
     }
     if (hasAutoOpt) {
-      email += '<a href="' + webAppUrl + '?runId=' + pendingRunId + '&amp;category=auto_optimizations" target="_blank" style="' + btnStyle + 'background:#e65100;">Approve Auto-Opt (' + (results.deviceAdjustments.length + results.scheduleAdjustments.length + results.geoAdjustments.length) + ')</a> ';
+      var autoCount = results.deviceAdjustments.length + results.scheduleAdjustments.length + results.geoAdjustments.length;
+      email += '<a href="' + webAppUrl + '?runId=' + pendingRunId + '&amp;category=auto_optimizations" target="_blank" style="' + btnStyle + 'background:#e65100;">Approve Auto-Opt (' + autoCount + ')</a>';
+      email += '<a href="' + webAppUrl + '?action=reject_category&amp;runId=' + pendingRunId + '&amp;category=auto_optimizations" target="_blank" style="' + rejBtnStyle + '">Reject</a> ';
     }
     if (hasShoppingPmax) {
-      email += '<a href="' + webAppUrl + '?runId=' + pendingRunId + '&amp;category=shopping_pmax" target="_blank" style="' + btnStyle + 'background:#4527a0;">Approve Shopping/PMax (' + (results.shoppingProductsPaused.length + results.pmaxSearchTermsNegated.length) + ')</a> ';
+      var spCount = results.shoppingProductsPaused.length + results.pmaxSearchTermsNegated.length;
+      email += '<a href="' + webAppUrl + '?runId=' + pendingRunId + '&amp;category=shopping_pmax" target="_blank" style="' + btnStyle + 'background:#4527a0;">Approve Shopping/PMax (' + spCount + ')</a>';
+      email += '<a href="' + webAppUrl + '?action=reject_category&amp;runId=' + pendingRunId + '&amp;category=shopping_pmax" target="_blank" style="' + rejBtnStyle + '">Reject</a> ';
     }
     if (hasFlagged) {
-      email += '<a href="' + webAppUrl + '?view=review_flagged&amp;runId=' + pendingRunId + '" target="_blank" style="' + btnStyle + 'background:#c62828;">Review &amp; Negate Flagged Terms (' + results.smartReviewTerms.length + ')</a> ';
+      email += '<a href="' + webAppUrl + '?view=flagged_review&amp;runId=' + pendingRunId + '" target="_blank" style="' + btnStyle + 'background:#795548;">Review &amp; Negate Flagged Terms (' + results.smartReviewTerms.length + ')</a> ';
     }
 
-    // Approve All button
+    // Approve All / Reject All buttons
     email += '<br><a href="' + webAppUrl + '?runId=' + pendingRunId + '&amp;category=all" target="_blank" style="' + btnStyle + 'background:#2e7d32;font-size:15px;padding:12px 28px;margin-top:8px;">Approve All Changes</a>';
+    email += ' <a href="' + webAppUrl + '?action=reject&amp;runId=' + pendingRunId + '" target="_blank" style="' + rejBtnStyle + 'font-size:13px;padding:10px 20px;margin-top:8px;">Reject All</a>';
+
+    // View status link
+    email += '<br><a href="' + webAppUrl + '?view=run_status&amp;runId=' + pendingRunId + '" target="_blank" style="color:#1565c0;font-size:12px;margin-top:8px;display:inline-block;">View approval status for this run</a>';
     email += '</div>';
   } else if (pendingRunId && !CONFIG.APPROVAL_WEBAPP_URL) {
     email += '<div style="background:#fff3e0;padding:14px 16px;border-left:4px solid #f57c00;">';
@@ -3285,9 +3300,15 @@ function _getPendingChangesSheet() {
       sheet.appendRow([
         'run_id', 'timestamp', 'account_name', 'status',
         'approved_categories', 'approved_by', 'approved_at',
-        'notes', 'changes_json', 'eval_summary'
+        'notes', 'changes_json', 'eval_summary', 'category_decisions'
       ]);
       sheet.setFrozenRows(1);
+    } else {
+      // Auto-migrate: add category_decisions column if missing
+      var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+      if (headers.indexOf('category_decisions') === -1) {
+        sheet.getRange(1, sheet.getLastColumn() + 1).setValue('category_decisions');
+      }
     }
     return sheet;
   } catch (e) {
@@ -3351,7 +3372,8 @@ function _writePendingChanges(results, evalResult) {
       '',  // approved_at
       '',  // notes
       JSON.stringify(changesObj),
-      evalResult ? evalResult.summary : ''
+      evalResult ? evalResult.summary : '',
+      '{}'  // category_decisions — per-category approve/reject with reasons
     ]);
     _log('INFO', 'Pending changes written: run_id=' + runId);
   } catch (e) {
