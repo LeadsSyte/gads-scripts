@@ -622,45 +622,39 @@ export default function TechnicalSEO({ sub }) {
           <button
             onClick={async () => {
               if (!client) { setDiagResult('Select a client first'); return; }
-              setDiagResult('get_projects works! Now finding the audit method...');
+              setDiagResult('Final scan — testing remaining possibilities...');
               const pid = client.wceo_project_id || '';
-              // Try many method names with the WORKING format: { method: "...", project: "hex_id" }
-              const methods = [
-                'get_sa_overview', 'get_audit', 'get_issues', 'get_sa_data',
-                'get_site_audit', 'get_project_audit', 'get_project_issues',
-                'get_sa_errors', 'get_sa_warnings', 'get_sa_notices',
-                'get_broken_links', 'get_missing_alt', 'get_missing_meta',
-                'get_redirects', 'get_meta_tags', 'get_headings',
-                'get_crawl_data', 'get_crawl_results', 'get_pages',
-                'get_project_pages', 'get_project_report', 'get_report',
-                'get_project_summary', 'get_summary', 'get_overview',
-                'get_sa', 'sa_overview', 'sa_report', 'sa_issues',
-                'get_audit_report', 'get_audit_issues', 'get_audit_errors',
-                'get_technical_audit', 'get_onpage_audit',
-                'get_project_data', 'get_all_issues'
+              // Last batch of guesses + module/action with extra required params
+              const tests = [
+                // Rank tracking / other tools that might work
+                { label: 'get_keywords', raw: { method: 'get_keywords', project: pid } },
+                { label: 'get_rankings', raw: { method: 'get_rankings', project: pid } },
+                { label: 'get_backlinks', raw: { method: 'get_backlinks', project: pid } },
+                { label: 'get_competitors', raw: { method: 'get_competitors', project: pid } },
+                { label: 'get_account_info', raw: { method: 'get_account_info' } },
+                { label: 'get_account', raw: { method: 'get_account' } },
+                // module/action with category + date
+                { label: 'SA + category=errors', raw: { module: 'site_audit', action: 'get_report', project: pid, category: 'errors' } },
+                { label: 'SA + type=all', raw: { module: 'site_audit', action: 'get_report', project: pid, type: 'all' } },
+                { label: 'SA + report=issues', raw: { module: 'site_audit', action: 'get_report', project: pid, report: 'issues' } },
+                { label: 'SA get_list', raw: { module: 'site_audit', action: 'get_list', project: pid } },
+                { label: 'SA list', raw: { module: 'site_audit', action: 'list', project: pid } },
+                // Try direct audit tools
+                { label: 'auditor module', raw: { module: 'auditor', action: 'get_report', project: pid } },
+                { label: 'crawler module', raw: { module: 'crawler', action: 'get_results', project: pid } }
               ];
               const lines = [];
-              // Test in batches of 5
-              for (let i = 0; i < methods.length; i += 5) {
-                const batch = methods.slice(i, i + 5);
-                const results = await Promise.all(batch.map(async (m) => {
-                  try {
-                    const r = await webceoDiagnose({ raw: { method: m, project: pid } });
-                    const body = r.body.slice(0, 300);
-                    const isUnknown = body.includes('"result":10') || body.includes('Unknown command');
-                    const isBadArgs = body.includes('"result":5') || body.includes('Bad Arguments');
-                    const isSuccess = !isUnknown && !isBadArgs;
-                    return `${isSuccess ? '✓' : isUnknown ? '✗' : '?'} ${m}: ${body.slice(0, 200)}`;
-                  } catch (e) { return `✗ ${m}: ${e.message}`; }
-                }));
-                lines.push(...results);
-                // If we found a success, highlight it
-                if (results.some(r => r.startsWith('✓'))) {
-                  lines.push('\n=== FOUND WORKING METHOD ===\n');
-                  break;
-                }
+              for (const t of tests) {
+                try {
+                  const r = await webceoDiagnose({ raw: t.raw });
+                  const body = r.body.slice(0, 400);
+                  const isUnknown = body.includes('Unknown command');
+                  const isBadArgs = body.includes('Bad Arguments');
+                  const mark = (!isUnknown && !isBadArgs) ? '✓✓✓' : isUnknown ? '✗' : '?';
+                  lines.push(`${mark} [${t.label}]: ${body}`);
+                } catch (e) { lines.push(`✗ [${t.label}] ${e.message}`); }
               }
-              setDiagResult(lines.join('\n'));
+              setDiagResult(lines.join('\n\n'));
             }}
             disabled={busy || !client}
             style={{ fontSize: 11, padding: '5px 12px' }}
