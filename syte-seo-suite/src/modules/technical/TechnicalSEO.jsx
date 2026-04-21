@@ -7,6 +7,7 @@ import MarkImplementedButton from '../../components/MarkImplementedButton.jsx';
 import PipelineView from '../../components/PipelineView.jsx';
 import { technicalPipelineStatus } from '../../lib/pipelineStatus.js';
 import { getAudit, syncWebceoClients, webceoDiagnose } from './webceo.js';
+import { crawlSiteForIssues, summarizeCrawlForAI } from './crawler.js';
 import { upsertClient, listAllImplementations, saveTseoTasks, loadTseoTasks, updateTseoTask } from '../../lib/supabase.js';
 import { querySearchAnalytics } from './gsc.js';
 import { ensureToken, SCOPES, getToken, clearToken } from './googleAuth.js';
@@ -71,11 +72,23 @@ PRIORITIZATION (biggest wins first):
 `.trim();
 
 async function triageAudit(auditData, clientUrl) {
+  // auditData is now a pre-summarized string from the crawler (plus optional
+  // GSC JSON appended). When it's a string, pass it through verbatim — Claude
+  // reads the PAGE / issue / fix lines directly and creates tasks from them.
+  const dataText = typeof auditData === 'string'
+    ? auditData
+    : JSON.stringify(auditData).slice(0, 80000);
+
   const text = await claudeComplete({
     system: TRIAGE_SYSTEM,
     messages: [{
       role: 'user',
-      content: `Client URL: ${clientUrl}\n\nAudit data (may contain results from multiple WebCEO/GSC endpoints — look for specific page URLs, image URLs, and issue details):\n${JSON.stringify(auditData).slice(0, 80000)}`
+      content: `Client URL: ${clientUrl}
+
+Crawler findings (each PAGE block lists specific issues found on that URL with suggested fixes):
+${dataText.slice(0, 80000)}
+
+Create one task per MEANINGFUL issue on a SPECIFIC page. Use the exact URLs shown. When the crawler suggests a fix, use it as the copy_paste_fix (refine if needed). Prioritize critical issues (noindex, missing titles) first.`
     }],
     max_tokens: 10000,
     temperature: 0.3
@@ -234,47 +247,47 @@ export default function TechnicalSEO({ sub }) {
     return clients.filter(c => !byClient[c.id] || new Date(byClient[c.id]).getTime() < cutoff);
   }, [tasks, clients]);
 
-  // Full Technical SEO scan pipeline — WebCEO primary, GSC secondary.
-  // Steps: 1) Fetch audit data  2) AI triage & prioritize  3) Generate tasks
+  // Full Technical SEO scan pipeline — in-house crawler primary (fetches
+  // each page, parses HTML, detects issues), GSC enrichment secondary.
+  // Steps: 1) Crawl site  2) AI triage & prioritize  3) Generate tasks
   async function runScanForClient(c) {
     if (!c) { setErr('Select a client first.'); return; }
     setBusy(true); setErr(''); setMsg('');
     try {
-      // STEP 1: Fetch audit data (WebCEO first, GSC fallback)
       let auditData = null;
       let dataSource = '';
 
-      if (c.wceo_project_id) {
-        setMsg(`Step 1/3 — Fetching WebCEO audit for ${c.name}…`);
-        try {
-          auditData = await getAudit(c.wceo_project_id, c.url);
-          dataSource = 'WebCEO';
-          setMsg(`Step 1/3 — WebCEO audit loaded ✓`);
-        } catch (e) {
-          setMsg(`Step 1/3 — WebCEO failed (${e.message.slice(0, 60)}), trying GSC…`);
-        }
+      // STEP 1: Crawl the site directly (our own audit, no dependency on WebCEO).
+      setMsg(`Step 1/3 — Crawling ${c.name}…`);
+      try {
+        const crawl = await crawlSiteForIssues(c, {
+          maxPages: 50,
+          onProgress: (done, total) => setMsg(`Step 1/3 — Crawling ${c.name}: ${done}/${total} pages`)
+        });
+        auditData = summarizeCrawlForAI(crawl);
+        dataSource = 'In-house Crawler';
+        setMsg(`Step 1/3 — Crawled ${crawl.totalCrawled} pages, ${crawl.withIssues} have issues ✓`);
+      } catch (e) {
+        setMsg(`Step 1/3 — Crawler failed (${e.message.slice(0, 60)}), trying GSC…`);
       }
 
-      if (!auditData && c.gsc_property) {
-        setMsg(`Step 1/3 — Fetching GSC data for ${c.name}…`);
+      // STEP 1b: Enrich with GSC data if available (for traffic/impression context).
+      if (c.gsc_property) {
         try {
           await ensureToken([SCOPES.gsc]);
-          auditData = await querySearchAnalytics(c.gsc_property, { days: 28, dimensions: ['page'], rowLimit: 500 });
-          dataSource = 'GSC';
-          setMsg(`Step 1/3 — GSC data loaded ✓`);
+          const gscData = await querySearchAnalytics(c.gsc_property, { days: 28, dimensions: ['page'], rowLimit: 100 });
+          auditData = (auditData || '') + '\n\n=== GSC TRAFFIC DATA (last 28 days) ===\n' + JSON.stringify(gscData).slice(0, 20000);
+          dataSource += (dataSource ? ' + GSC' : 'GSC');
         } catch (e) {
-          setMsg(`Step 1/3 — GSC failed: ${e.message.slice(0, 60)}`);
+          // GSC optional — don't fail the scan.
         }
       }
 
       if (!auditData) {
-        throw new Error(`${c.name}: No audit data available. ` +
-          (!c.wceo_project_id && !c.gsc_property
-            ? 'Add a WebCEO Project ID or GSC Property in the client settings.'
-            : 'Both WebCEO and GSC returned errors — check your API keys and permissions.'));
+        throw new Error(`${c.name}: Could not crawl site. Ensure the client has a sitemap URL or valid website URL.`);
       }
 
-      // STEP 2: AI triage — send audit data to Claude for prioritized task generation
+      // STEP 2: AI triage — send crawl findings to Claude for prioritized task generation
       setMsg(`Step 2/3 — AI analyzing ${dataSource} data for ${c.name} (biggest wins first)…`);
       const triaged = await triageAudit(auditData, c.url);
 
@@ -561,18 +574,21 @@ export default function TechnicalSEO({ sub }) {
       <div className="content-area">
         <h2 style={{ marginTop: 0 }}>New Scan</h2>
 
-        {/* Option 1: Auto-scan via WebCEO API / GSC */}
+        {/* Option 1: In-house crawler + GSC enrichment */}
         <div className="card" style={{ marginBottom: 14 }}>
-          <strong>Option 1 — Auto-Scan</strong>
+          <strong>Option 1 — Auto-Scan (In-House Crawler)</strong>
           <p className="muted" style={{ fontSize: 12 }}>
-            Client: <strong style={{ color: 'var(--text)' }}>{client?.name || 'none selected'}</strong> ·
-            Will try {client?.wceo_project_id ? 'WebCEO API' : ''}{client?.wceo_project_id && client?.gsc_property ? ' + ' : ''}{client?.gsc_property ? 'GSC' : ''}{!client?.wceo_project_id && !client?.gsc_property ? 'nothing — no WebCEO or GSC connected' : ''}
+            Client: <strong style={{ color: 'var(--text)' }}>{client?.name || 'none selected'}</strong>
+          </p>
+          <p className="muted" style={{ fontSize: 11, lineHeight: 1.5 }}>
+            Fetches the sitemap, crawls up to 50 pages, parses each HTML response, and detects specific issues with exact URLs: missing meta titles/descriptions, missing H1s, images without alt text (with the specific image URL), missing canonicals, noindex tags, missing schema, thin content, and more. No external API dependency.
+            {client?.gsc_property && ' GSC traffic data is merged in for traffic context.'}
           </p>
           <div className="row">
             <button className="primary" style={{ background: ACCENT, borderColor: ACCENT }} onClick={runScan} disabled={busy || !client}>
-              {busy ? 'Scanning…' : 'Run Auto-Scan'}
+              {busy ? 'Scanning…' : 'Run Crawl Scan'}
             </button>
-            {msg && <span className="muted">{msg}</span>}
+            {msg && <span className="muted" style={{ fontSize: 11 }}>{msg}</span>}
           </div>
         </div>
 
