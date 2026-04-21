@@ -33,34 +33,41 @@ function loadTeam() { try { return JSON.parse(localStorage.getItem(TEAM_KEY) || 
 function saveTeam(t) { localStorage.setItem(TEAM_KEY, JSON.stringify(t)); }
 
 const TRIAGE_SYSTEM = `
-You are a senior technical SEO engineer. You receive raw site-audit data (WebCEO audit JSON or Google Search Console data) and must produce a prioritised task list focused on the BIGGEST WINS and EASIEST FIXES first.
+You are a senior technical SEO engineer. You receive raw site-audit data (WebCEO audit JSON or Google Search Console data) and must produce a prioritised task list.
+
+CRITICAL RULE: Every task MUST reference a SPECIFIC page URL from the audit data — never wildcards like /products/* or generic paths. If the audit shows 50 product pages missing alt text, create tasks for the TOP 5 most important ones by name with the exact URL. Never generalize into one "fix all products" task.
 
 Return ONLY valid JSON in this shape:
 {
   "tasks": [
     {
-      "title": "short imperative title",
-      "description": "why it matters + expected impact, plain English",
+      "title": "short imperative title — include the specific page name",
+      "description": "what is wrong on THIS specific page + expected impact",
       "priority": "critical|high|medium|low",
-      "page_url": "https://...",
+      "page_url": "the EXACT full URL from the audit data (e.g. https://example.com/products/hi-tall-harness-boot, NOT https://example.com/products/*)",
       "fix_type": "meta_title|meta_description|canonical|schema|internal_link|h1|image_alt|redirect|robots|sitemap|page_speed|structured_data|other",
-      "copy_paste_fix": "the literal string/HTML/code to paste into the page or CMS",
+      "copy_paste_fix": "the ACTUAL finished code/text for THIS specific page — no placeholders like [PRODUCT_NAME], use the real page title/content from the audit data",
       "impact": "high|medium|low",
       "effort": "quick|moderate|complex"
     }
   ]
 }
 
-PRIORITIZATION RULES (biggest wins first):
-- Lead with quick wins that have high impact (e.g. missing meta titles on high-traffic pages, broken canonical tags, indexing issues).
+RULES:
+- Every page_url must be a real, complete URL found in the audit data. NEVER use wildcards (*), generic paths, or invented URLs.
+- Every copy_paste_fix must be FINISHED — ready to paste. No [PLACEHOLDER] values. Use the actual page title, product name, or content from the audit data. For alt text, describe what the image shows based on the filename/context.
+- If the audit shows the same issue on many pages, pick the 3-5 MOST IMPORTANT pages (homepage, high-traffic pages, key service/product pages) and create individual tasks for each.
+- For image alt text issues: include the specific image URL and the specific page where it's found, with a real descriptive alt text based on the image filename and page context.
+- For missing meta titles/descriptions: write the actual title/description for that specific page.
+- For missing schema: write the complete JSON-LD for that specific page using real data from the audit.
+
+PRIORITIZATION (biggest wins first):
 - Critical = indexing blocked, canonical loops, redirect chains, robots.txt errors, broken pages returning 4xx/5xx.
-- High = missing/duplicate H1, broken meta title on key pages, missing schema on service pages, noindex on pages that should be indexed.
-- Medium = weak meta descriptions, missing alt text, thin content pages, slow pages, missing breadcrumb schema.
+- High = missing/duplicate H1, missing meta title on key pages, missing schema on service pages, noindex on pages that should be indexed.
+- Medium = weak meta descriptions, missing alt text on important images, thin content pages, slow pages, missing breadcrumb schema.
 - Low = minor polish, cosmetic heading issues, optional schema types.
-- Every task MUST include a copy_paste_fix with the literal code/text to implement (except fix_type "other").
-- Sort tasks: critical first, then high + quick effort, then high + moderate, then medium, then low.
-- Max 20 tasks — focus on quality over quantity. Better to have 10 excellent actionable tasks than 20 vague ones.
-- Each copy_paste_fix must be COMPLETE — a developer or AM should be able to paste it directly into the CMS without editing.
+- Sort: critical first, then high + quick effort, then high + moderate, then medium, then low.
+- Target 15-25 tasks. Each must be actionable on a specific page — not a recommendation.
 `.trim();
 
 async function triageAudit(auditData, clientUrl) {
@@ -70,7 +77,7 @@ async function triageAudit(auditData, clientUrl) {
       role: 'user',
       content: `Client URL: ${clientUrl}\n\nAudit data:\n${JSON.stringify(auditData).slice(0, 60000)}`
     }],
-    max_tokens: 6000,
+    max_tokens: 10000,
     temperature: 0.3
   });
   const parsed = extractJSON(text);
