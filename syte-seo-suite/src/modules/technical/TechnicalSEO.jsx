@@ -622,23 +622,39 @@ export default function TechnicalSEO({ sub }) {
           <button
             onClick={async () => {
               if (!client) { setDiagResult('Select a client first'); return; }
-              setDiagResult('Testing...');
+              setDiagResult('Testing structural variations...');
               const pid = client.wceo_project_id || '';
               let domain = '';
               try { domain = new URL(client.url || '').hostname; } catch {}
               const tests = [
-                { label: 'module/action + project=' + pid, raw: { module: 'site_audit', action: 'get_report', project: pid } },
-                { label: 'module/action + project=' + domain, raw: { module: 'site_audit', action: 'get_report', project: domain } },
-                { label: 'method=get_project_overview', endpoint: 'get_project_overview', body: { project_id: pid } },
-                { label: 'method=get with module', raw: { method: 'get', module: 'site_audit', project: pid } },
-                { label: 'method=site_audit.get_report', endpoint: 'site_audit.get_report', body: { project: pid } },
-                { label: 'method=get + tool=site_audit', raw: { method: 'get', tool: 'site_audit', project: pid } }
+                // Nested params
+                { label: 'method + params.project', raw: { method: 'site_audit.get_report', params: { project: pid } } },
+                { label: 'method + params.project (domain)', raw: { method: 'site_audit.get_report', params: { project: domain } } },
+                { label: 'method + params.project_id', raw: { method: 'get_project_overview', params: { project_id: pid } } },
+                // Nested data
+                { label: 'method + data.project', raw: { method: 'site_audit.get_report', data: { project: pid } } },
+                // Array batch format
+                { label: 'array batch [method+project]', raw: [{ method: 'site_audit.get_report', project: pid }] },
+                { label: 'array batch [method+project] domain', raw: [{ method: 'site_audit.get_report', project: domain }] },
+                // Commands wrapper
+                { label: 'commands array', raw: { commands: [{ method: 'site_audit.get_report', project: pid }] } },
+                // module/action with params
+                { label: 'module/action + params', raw: { module: 'site_audit', action: 'get_report', params: { project: pid } } },
+                // Try without method — just project
+                { label: 'just project_id (minimal)', raw: { project_id: pid } },
+                // Different method names
+                { label: 'method=sa.get_report', raw: { method: 'sa.get_report', project: pid } },
+                { label: 'method=get_sa_report', raw: { method: 'get_sa_report', project: pid } },
+                { label: 'method=get_project_data', raw: { method: 'get_project_data', project_id: pid } },
+                { label: 'method=get_audit_data', raw: { method: 'get_audit_data', project_id: pid } },
+                // Try full URL as project
+                { label: 'method + project=fullURL', raw: { method: 'site_audit.get_report', project: client.url || '' } }
               ];
               const lines = [];
               for (const t of tests) {
                 try {
-                  const r = await webceoDiagnose(t.raw ? { raw: t.raw } : { endpoint: t.endpoint, body: t.body });
-                  lines.push(`[${t.label}]\nStatus: ${r.status}\nBody: ${r.body.slice(0, 500)}\n`);
+                  const r = await webceoDiagnose({ raw: t.raw });
+                  lines.push(`[${t.label}]\nSent: ${JSON.stringify(t.raw).slice(0, 200)}\nStatus: ${r.status}\nBody: ${r.body.slice(0, 500)}\n`);
                 } catch (e) { lines.push(`[${t.label}] ERROR: ${e.message}\n`); }
               }
               setDiagResult(lines.join('\n'));
