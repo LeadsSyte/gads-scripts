@@ -622,38 +622,43 @@ export default function TechnicalSEO({ sub }) {
           <button
             onClick={async () => {
               if (!client) { setDiagResult('Select a client first'); return; }
-              setDiagResult('Testing...');
+              setDiagResult('get_projects works! Now finding the audit method...');
               const pid = client.wceo_project_id || '';
-              let domain = '';
-              try { domain = new URL(client.url || '').hostname; } catch {}
-              const numericPid = parseInt(pid, 16); // hex to decimal
-              const tests = [
-                // No project — might return project list or help
-                { label: 'get_project_overview (no params)', raw: { method: 'get_project_overview' } },
-                // Hex to decimal project ID
-                { label: 'get_project_overview pid=decimal(' + numericPid + ')', raw: { method: 'get_project_overview', project_id: numericPid } },
-                { label: 'get_project_overview project=decimal', raw: { method: 'get_project_overview', project: numericPid } },
-                // Help / list methods
-                { label: 'method=help', raw: { method: 'help' } },
-                { label: 'method=get_methods', raw: { method: 'get_methods' } },
-                { label: 'method=list_methods', raw: { method: 'list_methods' } },
-                // get_projects_list (might return real project IDs)
-                { label: 'get_projects_list', raw: { method: 'get_projects_list' } },
-                { label: 'get_projects', raw: { method: 'get_projects' } },
-                // SA with numeric pid
-                { label: 'sa.get_categories pid=decimal', raw: { method: 'sa.get_categories', project_id: numericPid } },
-                // module/action with numeric pid
-                { label: 'module/action project=decimal', raw: { module: 'site_audit', action: 'get_report', project: numericPid } },
-                // Try "id" param name
-                { label: 'get_project_overview id=hex', raw: { method: 'get_project_overview', id: pid } },
-                { label: 'get_project_overview id=decimal', raw: { method: 'get_project_overview', id: numericPid } }
+              // Try many method names with the WORKING format: { method: "...", project: "hex_id" }
+              const methods = [
+                'get_sa_overview', 'get_audit', 'get_issues', 'get_sa_data',
+                'get_site_audit', 'get_project_audit', 'get_project_issues',
+                'get_sa_errors', 'get_sa_warnings', 'get_sa_notices',
+                'get_broken_links', 'get_missing_alt', 'get_missing_meta',
+                'get_redirects', 'get_meta_tags', 'get_headings',
+                'get_crawl_data', 'get_crawl_results', 'get_pages',
+                'get_project_pages', 'get_project_report', 'get_report',
+                'get_project_summary', 'get_summary', 'get_overview',
+                'get_sa', 'sa_overview', 'sa_report', 'sa_issues',
+                'get_audit_report', 'get_audit_issues', 'get_audit_errors',
+                'get_technical_audit', 'get_onpage_audit',
+                'get_project_data', 'get_all_issues'
               ];
               const lines = [];
-              for (const t of tests) {
-                try {
-                  const r = await webceoDiagnose({ raw: t.raw });
-                  lines.push(`[${t.label}]\nSent: ${JSON.stringify(t.raw).slice(0, 300)}\nBody: ${r.body.slice(0, 600)}\n`);
-                } catch (e) { lines.push(`[${t.label}] ERROR: ${e.message}\n`); }
+              // Test in batches of 5
+              for (let i = 0; i < methods.length; i += 5) {
+                const batch = methods.slice(i, i + 5);
+                const results = await Promise.all(batch.map(async (m) => {
+                  try {
+                    const r = await webceoDiagnose({ raw: { method: m, project: pid } });
+                    const body = r.body.slice(0, 300);
+                    const isUnknown = body.includes('"result":10') || body.includes('Unknown command');
+                    const isBadArgs = body.includes('"result":5') || body.includes('Bad Arguments');
+                    const isSuccess = !isUnknown && !isBadArgs;
+                    return `${isSuccess ? '✓' : isUnknown ? '✗' : '?'} ${m}: ${body.slice(0, 200)}`;
+                  } catch (e) { return `✗ ${m}: ${e.message}`; }
+                }));
+                lines.push(...results);
+                // If we found a success, highlight it
+                if (results.some(r => r.startsWith('✓'))) {
+                  lines.push('\n=== FOUND WORKING METHOD ===\n');
+                  break;
+                }
               }
               setDiagResult(lines.join('\n'));
             }}
