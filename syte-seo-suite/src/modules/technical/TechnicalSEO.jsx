@@ -312,6 +312,7 @@ export default function TechnicalSEO({ sub }) {
   }
 
   // Process pasted WebCEO audit data (HTML tables, text, CSV) through Claude.
+  // Process pasted WebCEO audit data (HTML tables, text, CSV) through Claude.
   async function runFromPaste(c, pastedText) {
     if (!c) { setErr('Select a client first.'); return; }
     if (!pastedText?.trim()) { setErr('Paste the WebCEO audit data first.'); return; }
@@ -348,6 +349,8 @@ export default function TechnicalSEO({ sub }) {
     } catch (e) { setErr(e.message); }
     finally { setBusy(false); }
   }
+
+  async function runScan() { return runScanForClient(client); }
 
   function updateTask(id, patch) {
     setTasks(prev => prev.map(t => t.id === id ? { ...t, ...patch } : t));
