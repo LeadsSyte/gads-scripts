@@ -18,9 +18,52 @@ export async function webceoRequest(endpoint, body = {}) {
   return res.json();
 }
 
-// Per-project audit data — exactly what the previous tool used.
+// Per-project audit data — fetch DETAILED issues, not just the overview.
+// WebCEO has multiple audit endpoints; we try several to get the richest
+// page-level data (specific URLs, specific issues, specific images).
 export async function getAudit(projectId) {
-  return webceoRequest('get_project_overview', { project_id: projectId });
+  const results = {};
+
+  // Try detailed site audit endpoints in parallel — different WebCEO
+  // account types may support different method names.
+  const endpoints = [
+    { key: 'overview', method: 'get_project_overview', body: { project_id: projectId } },
+    { key: 'sa_results', method: 'get_sa_results', body: { project: projectId } },
+    { key: 'sa_summary', method: 'get_sa_summary', body: { project: projectId } },
+    { key: 'sa_issues', method: 'get_sa_issues', body: { project: projectId } },
+    { key: 'audit_results', method: 'get_audit_results', body: { project: projectId, project_id: projectId } },
+    { key: 'site_audit', method: 'site_audit', body: { project: projectId, project_id: projectId, action: 'get_results' } }
+  ];
+
+  const fetches = endpoints.map(async ({ key, method, body }) => {
+    try {
+      const data = await webceoRequest(method, body);
+      // Skip error responses.
+      if (data && typeof data === 'object') {
+        const isErr = Array.isArray(data)
+          ? data[0]?.errormsg
+          : data.errormsg || data.error;
+        if (!isErr) {
+          results[key] = data;
+          console.log(`[WebCEO] ${method} returned data:`, typeof data === 'object' ? Object.keys(data).join(', ') : typeof data);
+        } else {
+          console.log(`[WebCEO] ${method} error:`, isErr);
+        }
+      }
+    } catch (e) {
+      console.log(`[WebCEO] ${method} failed:`, e.message);
+    }
+  });
+
+  await Promise.all(fetches);
+
+  if (Object.keys(results).length === 0) {
+    // Last resort — try the overview alone.
+    return webceoRequest('get_project_overview', { project_id: projectId });
+  }
+
+  console.log('[WebCEO] Combined audit data from:', Object.keys(results).join(', '));
+  return results;
 }
 
 // Legacy alias so any code still calling getAuditData keeps working.

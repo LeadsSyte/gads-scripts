@@ -75,7 +75,7 @@ async function triageAudit(auditData, clientUrl) {
     system: TRIAGE_SYSTEM,
     messages: [{
       role: 'user',
-      content: `Client URL: ${clientUrl}\n\nAudit data:\n${JSON.stringify(auditData).slice(0, 60000)}`
+      content: `Client URL: ${clientUrl}\n\nAudit data (may contain results from multiple WebCEO/GSC endpoints — look for specific page URLs, image URLs, and issue details):\n${JSON.stringify(auditData).slice(0, 80000)}`
     }],
     max_tokens: 10000,
     temperature: 0.3
