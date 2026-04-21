@@ -6,7 +6,7 @@ import PushToCmsButton from '../../components/PushToCmsButton.jsx';
 import MarkImplementedButton from '../../components/MarkImplementedButton.jsx';
 import PipelineView from '../../components/PipelineView.jsx';
 import { technicalPipelineStatus } from '../../lib/pipelineStatus.js';
-import { getAudit, syncWebceoClients } from './webceo.js';
+import { getAudit, syncWebceoClients, webceoDiagnose } from './webceo.js';
 import { upsertClient, listAllImplementations, saveTseoTasks, loadTseoTasks, updateTseoTask } from '../../lib/supabase.js';
 import { querySearchAnalytics } from './gsc.js';
 import { ensureToken, SCOPES, getToken, clearToken } from './googleAuth.js';
@@ -201,6 +201,7 @@ export default function TechnicalSEO({ sub }) {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
   const [pastedAudit, setPastedAudit] = useState('');
+  const [diagResult, setDiagResult] = useState('');
   const [err, setErr] = useState('');
   const [syncResult, setSyncResult] = useState(null);
   const [customMethod, setCustomMethod] = useState('');
@@ -608,6 +609,50 @@ export default function TechnicalSEO({ sub }) {
         </div>
 
         {err && <div style={{ color: 'var(--red)', marginTop: 10 }}>{err}</div>}
+
+        {/* Diagnostic — shows full raw WebCEO API response */}
+        <div className="card" style={{ marginTop: 14 }}>
+          <strong>WebCEO API Diagnostic</strong>
+          <p className="muted" style={{ fontSize: 11 }}>
+            Sends a test request and shows the full raw response. Paste the output below if you need help debugging.
+          </p>
+          <button
+            onClick={async () => {
+              if (!client) { setDiagResult('Select a client first'); return; }
+              setDiagResult('Testing...');
+              const pid = client.wceo_project_id || '';
+              let domain = '';
+              try { domain = new URL(client.url || '').hostname; } catch {}
+              const tests = [
+                { label: 'module/action + project=' + pid, raw: { module: 'site_audit', action: 'get_report', project: pid } },
+                { label: 'module/action + project=' + domain, raw: { module: 'site_audit', action: 'get_report', project: domain } },
+                { label: 'method=get_project_overview', endpoint: 'get_project_overview', body: { project_id: pid } },
+                { label: 'method=get with module', raw: { method: 'get', module: 'site_audit', project: pid } },
+                { label: 'method=site_audit.get_report', endpoint: 'site_audit.get_report', body: { project: pid } },
+                { label: 'method=get + tool=site_audit', raw: { method: 'get', tool: 'site_audit', project: pid } }
+              ];
+              const lines = [];
+              for (const t of tests) {
+                try {
+                  const r = await webceoDiagnose(t.raw ? { raw: t.raw } : { endpoint: t.endpoint, body: t.body });
+                  lines.push(`[${t.label}]\nStatus: ${r.status}\nBody: ${r.body.slice(0, 500)}\n`);
+                } catch (e) { lines.push(`[${t.label}] ERROR: ${e.message}\n`); }
+              }
+              setDiagResult(lines.join('\n'));
+            }}
+            disabled={busy || !client}
+            style={{ fontSize: 11, padding: '5px 12px' }}
+          >
+            Run API Diagnostic
+          </button>
+          {diagResult && (
+            <pre style={{
+              marginTop: 10, padding: 12, background: '#0d0e11', border: '1px solid var(--border)',
+              borderRadius: 6, fontSize: 10, lineHeight: 1.5, color: '#c8d0d8',
+              whiteSpace: 'pre-wrap', maxHeight: 400, overflowY: 'auto'
+            }}>{diagResult}</pre>
+          )}
+        </div>
       </div>
     );
   }

@@ -32,6 +32,17 @@ export async function webceoRaw(payload) {
   return res.json();
 }
 
+// Diagnostic: send one request and return the FULL raw response for debugging.
+export async function webceoDiagnose(payload) {
+  const res = await fetch(PROXY, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(payload.raw ? payload : { raw: payload })
+  });
+  const text = await res.text();
+  return { status: res.status, body: text };
+}
+
 // Per-project audit data — fetch DETAILED issues, not just the overview.
 // WebCEO has two API formats:
 //   OLD: { method: "get_project_overview", project_id: "..." }
