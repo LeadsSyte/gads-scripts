@@ -200,6 +200,7 @@ export default function TechnicalSEO({ sub }) {
   const [team, setTeam] = useState(loadTeam());
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
+  const [pastedAudit, setPastedAudit] = useState('');
   const [err, setErr] = useState('');
   const [syncResult, setSyncResult] = useState(null);
   const [customMethod, setCustomMethod] = useState('');
@@ -309,7 +310,43 @@ export default function TechnicalSEO({ sub }) {
     finally { setBusy(false); }
   }
 
-  async function runScan() { return runScanForClient(client); }
+  // Process pasted WebCEO audit data (HTML tables, text, CSV) through Claude.
+  async function runFromPaste(c, pastedText) {
+    if (!c) { setErr('Select a client first.'); return; }
+    if (!pastedText?.trim()) { setErr('Paste the WebCEO audit data first.'); return; }
+    setBusy(true); setErr(''); setMsg('');
+    try {
+      setMsg(`Step 1/2 — AI analyzing pasted audit data for ${c.name}…`);
+      const triaged = await triageAudit(pastedText, c.url);
+
+      if (!triaged.length) {
+        setMsg(`No actionable issues found in pasted data for ${c.name}.`);
+        setBusy(false);
+        return;
+      }
+
+      setMsg(`Step 2/2 — Creating ${triaged.length} tasks for ${c.name}…`);
+      const newTasks = triaged.map((t, i) => ({
+        id: crypto.randomUUID(),
+        client_id: c.id,
+        client_name: c.name,
+        assignee: team.length ? team[i % team.length] : '',
+        status: 'open',
+        data_source: 'WebCEO (pasted)',
+        created_at: new Date().toISOString(),
+        ...t
+      }));
+      setTasks(prev => [...newTasks, ...prev]);
+      saveTseoTasks([...newTasks, ...tasks]).catch(() => {});
+
+      const critical = newTasks.filter(t => t.priority === 'critical').length;
+      const high = newTasks.filter(t => t.priority === 'high').length;
+      setMsg(`Added ${newTasks.length} tasks for ${c.name} from pasted data` +
+        (critical ? ` · ${critical} critical` : '') +
+        (high ? ` · ${high} high priority` : ''));
+    } catch (e) { setErr(e.message); }
+    finally { setBusy(false); }
+  }
 
   function updateTask(id, patch) {
     setTasks(prev => prev.map(t => t.id === id ? { ...t, ...patch } : t));
@@ -519,22 +556,58 @@ export default function TechnicalSEO({ sub }) {
     return (
       <div className="content-area">
         <h2 style={{ marginTop: 0 }}>New Scan</h2>
-        <div className="card">
-          <p className="muted">
-            Client: <strong style={{ color: 'var(--text)' }}>{client?.name || 'none selected'}</strong>
-          </p>
-          <p className="muted">
-            Will fetch {client?.wceo_project_id ? 'WebCEO audit' : client?.gsc_property ? 'GSC data' : 'nothing — missing WebCEO project ID and GSC property'},
-            then run Claude triage and auto-assign tasks round-robin.
+
+        {/* Option 1: Auto-scan via WebCEO API / GSC */}
+        <div className="card" style={{ marginBottom: 14 }}>
+          <strong>Option 1 — Auto-Scan</strong>
+          <p className="muted" style={{ fontSize: 12 }}>
+            Client: <strong style={{ color: 'var(--text)' }}>{client?.name || 'none selected'}</strong> ·
+            Will try {client?.wceo_project_id ? 'WebCEO API' : ''}{client?.wceo_project_id && client?.gsc_property ? ' + ' : ''}{client?.gsc_property ? 'GSC' : ''}{!client?.wceo_project_id && !client?.gsc_property ? 'nothing — no WebCEO or GSC connected' : ''}
           </p>
           <div className="row">
             <button className="primary" style={{ background: ACCENT, borderColor: ACCENT }} onClick={runScan} disabled={busy || !client}>
-              {busy ? 'Scanning…' : 'Run Scan'}
+              {busy ? 'Scanning…' : 'Run Auto-Scan'}
             </button>
             {msg && <span className="muted">{msg}</span>}
           </div>
-          {err && <div style={{ color: 'var(--red)', marginTop: 10 }}>{err}</div>}
         </div>
+
+        {/* Option 2: Paste WebCEO audit data */}
+        <div className="card">
+          <strong>Option 2 — Paste from WebCEO</strong>
+          <p className="muted" style={{ fontSize: 12, marginBottom: 10 }}>
+            Open WebCEO → Site Audit for this client → select all the issues text (Ctrl+A on each report page) → paste below. Claude will extract every specific URL and issue and create actionable tasks with exact copy-paste fixes.
+          </p>
+          <div className="muted" style={{ fontSize: 11, marginBottom: 8, padding: 8, background: 'var(--surface-2)', borderRadius: 6, lineHeight: 1.5 }}>
+            <strong>How to copy from WebCEO:</strong><br/>
+            1. Go to online.webceo.com → select the project<br/>
+            2. Open Site Audit → click each issue category (Missing ALT, Missing Meta, Broken Links, etc.)<br/>
+            3. Select all the text in the report (Ctrl+A) and copy (Ctrl+C)<br/>
+            4. Paste below — you can paste multiple reports, just keep adding
+          </div>
+          <textarea
+            value={pastedAudit}
+            onChange={e => setPastedAudit(e.target.value)}
+            placeholder="Paste WebCEO audit report text here — tables, issue lists, everything. The more detail you paste, the more specific the tasks will be."
+            rows={10}
+            disabled={busy}
+          />
+          <div className="row" style={{ justifyContent: 'space-between', marginTop: 10 }}>
+            <span className="muted" style={{ fontSize: 11 }}>
+              {pastedAudit.length > 0 ? `${Math.round(pastedAudit.length / 1000)}k chars pasted` : 'Nothing pasted yet'}
+            </span>
+            <button
+              className="primary"
+              style={{ background: ACCENT, borderColor: ACCENT }}
+              onClick={() => runFromPaste(client, pastedAudit)}
+              disabled={busy || !client || !pastedAudit.trim()}
+            >
+              {busy ? 'Analyzing…' : 'Generate Tasks from Pasted Data'}
+            </button>
+          </div>
+        </div>
+
+        {err && <div style={{ color: 'var(--red)', marginTop: 10 }}>{err}</div>}
       </div>
     );
   }
