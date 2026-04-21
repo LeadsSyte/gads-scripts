@@ -37,26 +37,13 @@ export async function webceoRaw(payload) {
 //   OLD: { method: "get_project_overview", project_id: "..." }
 //   NEW: { module: "site_audit", action: "get_report", project: "..." }
 // We try both formats with multiple method/module names.
-export async function getAudit(projectId) {
+export async function getAudit(projectId, clientUrl) {
   const results = {};
 
-  // Format A: the old { method, ...params } style.
-  const oldStyle = [
-    { key: 'overview', method: 'get_project_overview', body: { project_id: projectId } },
-    { key: 'sa_results', method: 'get_sa_results', body: { project: projectId } },
-    { key: 'get_sa_report', method: 'get_sa_report', body: { project: projectId, project_id: projectId } }
-  ];
-
-  // Format B: the module+action style (WebCEO v3 API).
-  const modStyle = [
-    { key: 'sa_report', module: 'site_audit', action: 'get_report', project: projectId },
-    { key: 'sa_results_v2', module: 'site_audit', action: 'get_results', project: projectId },
-    { key: 'sa_issues_v2', module: 'site_audit', action: 'get_issues', project: projectId },
-    { key: 'sa_errors', module: 'site_audit', action: 'get_errors', project: projectId },
-    { key: 'sa_all', module: 'site_audit', action: 'get_all', project: projectId },
-    { key: 'tech_audit', module: 'technical_audit', action: 'get_report', project: projectId },
-    { key: 'int_links', module: 'internal_links', action: 'get_report', project: projectId }
-  ];
+  // Extract domain from client URL for the module/action API format.
+  let domain = '';
+  try { domain = new URL(clientUrl || '').hostname; } catch {}
+  if (!domain && projectId && !/^\d+$/.test(projectId)) domain = projectId;
 
   function isErr(data) {
     if (!data || typeof data !== 'object') return 'empty';
@@ -66,33 +53,70 @@ export async function getAudit(projectId) {
     return null;
   }
 
-  // Try old-style methods.
-  const oldFetches = oldStyle.map(async ({ key, method, body }) => {
-    try {
-      const data = await webceoRequest(method, body);
-      const err = isErr(data);
-      if (!err) { results[key] = data; console.log(`[WebCEO] method:${method} ✓`, typeof data === 'object' ? (Array.isArray(data) ? data.length + ' items' : Object.keys(data).slice(0, 5).join(', ')) : typeof data); }
-      else console.log(`[WebCEO] method:${method} →`, err);
-    } catch (e) { console.log(`[WebCEO] method:${method} fail:`, e.message); }
-  });
+  // The module/action format returned "Bad Arguments" — the `project` param
+  // needs the right value. Try: projectId, domain, full URL, with various
+  // param names (project, project_id, domain, url, site).
+  const projectValues = [projectId, domain, clientUrl].filter(Boolean);
+  const paramVariants = ['project', 'project_id', 'domain', 'url', 'site'];
 
-  // Try module+action methods.
-  const modFetches = modStyle.map(async ({ key, module, action, project }) => {
-    try {
-      const data = await webceoRaw({ module, action, project });
-      const err = isErr(data);
-      if (!err) { results[key] = data; console.log(`[WebCEO] ${module}/${action} ✓`, typeof data === 'object' ? (Array.isArray(data) ? data.length + ' items' : Object.keys(data).slice(0, 5).join(', ')) : typeof data); }
-      else console.log(`[WebCEO] ${module}/${action} →`, err);
-    } catch (e) { console.log(`[WebCEO] ${module}/${action} fail:`, e.message); }
-  });
+  const modActions = [
+    { module: 'site_audit', action: 'get_report' },
+    { module: 'site_audit', action: 'get_results' },
+    { module: 'site_audit', action: 'get_issues' },
+    { module: 'site_audit', action: 'get_all' },
+    { module: 'technical_audit', action: 'get_report' },
+    { module: 'internal_links', action: 'get_report' }
+  ];
 
-  await Promise.all([...oldFetches, ...modFetches]);
+  // Try the most likely combinations first: project=domain and project=projectId.
+  const combos = [];
+  for (const { module, action } of modActions) {
+    for (const val of projectValues) {
+      for (const param of paramVariants) {
+        combos.push({ module, action, [param]: val });
+      }
+    }
+  }
+
+  // Run in batches to avoid hammering the API — try 10 at a time.
+  // Stop as soon as we get a success.
+  for (let i = 0; i < combos.length && Object.keys(results).length === 0; i += 10) {
+    const batch = combos.slice(i, i + 10);
+    await Promise.all(batch.map(async (payload) => {
+      const label = `${payload.module}/${payload.action} ${Object.entries(payload).filter(([k]) => k !== 'module' && k !== 'action').map(([k, v]) => k + '=' + v).join(',')}`;
+      try {
+        const data = await webceoRaw(payload);
+        const err = isErr(data);
+        if (!err) {
+          const key = payload.module + '_' + payload.action;
+          results[key] = data;
+          console.log(`[WebCEO] ✓ ${label}`, typeof data === 'object' ? (Array.isArray(data) ? data.length + ' items' : Object.keys(data).slice(0, 8).join(', ')) : typeof data);
+        } else {
+          console.log(`[WebCEO] ✗ ${label} →`, err);
+        }
+      } catch (e) {
+        console.log(`[WebCEO] ✗ ${label} fail:`, e.message);
+      }
+    }));
+  }
+
+  // Also try old method format as fallback.
+  if (Object.keys(results).length === 0) {
+    for (const m of ['get_project_overview', 'get_sa_results']) {
+      try {
+        const data = await webceoRequest(m, { project_id: projectId, project: projectId, domain });
+        const err = isErr(data);
+        if (!err) { results[m] = data; console.log(`[WebCEO] ✓ method:${m}`); break; }
+        else console.log(`[WebCEO] ✗ method:${m} →`, err);
+      } catch (e) { console.log(`[WebCEO] ✗ method:${m} fail:`, e.message); }
+    }
+  }
 
   const successCount = Object.keys(results).length;
-  console.log(`[WebCEO] ${successCount} endpoint(s) returned data:`, Object.keys(results).join(', '));
+  console.log(`[WebCEO] ${successCount} endpoint(s) succeeded:`, Object.keys(results).join(', '));
 
   if (successCount === 0) {
-    console.warn('[WebCEO] ALL endpoints failed. The API key or project ID may be wrong, or the API format has changed.');
+    console.warn('[WebCEO] ALL endpoints failed. Check browser console above for the exact errors.');
     return null;
   }
 

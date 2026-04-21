@@ -245,7 +245,7 @@ export default function TechnicalSEO({ sub }) {
       if (c.wceo_project_id) {
         setMsg(`Step 1/3 — Fetching WebCEO audit for ${c.name}…`);
         try {
-          auditData = await getAudit(c.wceo_project_id);
+          auditData = await getAudit(c.wceo_project_id, c.url);
           dataSource = 'WebCEO';
           setMsg(`Step 1/3 — WebCEO audit loaded ✓`);
         } catch (e) {
