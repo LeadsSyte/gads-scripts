@@ -18,51 +18,84 @@ export async function webceoRequest(endpoint, body = {}) {
   return res.json();
 }
 
+// Send a raw payload to WebCEO — supports the module+action API format.
+export async function webceoRaw(payload) {
+  const res = await fetch(PROXY, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ raw: payload })
+  });
+  if (!res.ok) {
+    const txt = await res.text().catch(() => '');
+    throw new Error(`WebCEO proxy error ${res.status} ${txt.slice(0, 200)}`);
+  }
+  return res.json();
+}
+
 // Per-project audit data — fetch DETAILED issues, not just the overview.
-// WebCEO has multiple audit endpoints; we try several to get the richest
-// page-level data (specific URLs, specific issues, specific images).
+// WebCEO has two API formats:
+//   OLD: { method: "get_project_overview", project_id: "..." }
+//   NEW: { module: "site_audit", action: "get_report", project: "..." }
+// We try both formats with multiple method/module names.
 export async function getAudit(projectId) {
   const results = {};
 
-  // Try detailed site audit endpoints in parallel — different WebCEO
-  // account types may support different method names.
-  const endpoints = [
+  // Format A: the old { method, ...params } style.
+  const oldStyle = [
     { key: 'overview', method: 'get_project_overview', body: { project_id: projectId } },
     { key: 'sa_results', method: 'get_sa_results', body: { project: projectId } },
-    { key: 'sa_summary', method: 'get_sa_summary', body: { project: projectId } },
-    { key: 'sa_issues', method: 'get_sa_issues', body: { project: projectId } },
-    { key: 'audit_results', method: 'get_audit_results', body: { project: projectId, project_id: projectId } },
-    { key: 'site_audit', method: 'site_audit', body: { project: projectId, project_id: projectId, action: 'get_results' } }
+    { key: 'get_sa_report', method: 'get_sa_report', body: { project: projectId, project_id: projectId } }
   ];
 
-  const fetches = endpoints.map(async ({ key, method, body }) => {
-    try {
-      const data = await webceoRequest(method, body);
-      // Skip error responses.
-      if (data && typeof data === 'object') {
-        const isErr = Array.isArray(data)
-          ? data[0]?.errormsg
-          : data.errormsg || data.error;
-        if (!isErr) {
-          results[key] = data;
-          console.log(`[WebCEO] ${method} returned data:`, typeof data === 'object' ? Object.keys(data).join(', ') : typeof data);
-        } else {
-          console.log(`[WebCEO] ${method} error:`, isErr);
-        }
-      }
-    } catch (e) {
-      console.log(`[WebCEO] ${method} failed:`, e.message);
-    }
-  });
+  // Format B: the module+action style (WebCEO v3 API).
+  const modStyle = [
+    { key: 'sa_report', module: 'site_audit', action: 'get_report', project: projectId },
+    { key: 'sa_results_v2', module: 'site_audit', action: 'get_results', project: projectId },
+    { key: 'sa_issues_v2', module: 'site_audit', action: 'get_issues', project: projectId },
+    { key: 'sa_errors', module: 'site_audit', action: 'get_errors', project: projectId },
+    { key: 'sa_all', module: 'site_audit', action: 'get_all', project: projectId },
+    { key: 'tech_audit', module: 'technical_audit', action: 'get_report', project: projectId },
+    { key: 'int_links', module: 'internal_links', action: 'get_report', project: projectId }
+  ];
 
-  await Promise.all(fetches);
-
-  if (Object.keys(results).length === 0) {
-    // Last resort — try the overview alone.
-    return webceoRequest('get_project_overview', { project_id: projectId });
+  function isErr(data) {
+    if (!data || typeof data !== 'object') return 'empty';
+    if (Array.isArray(data) && data[0]?.errormsg) return data[0].errormsg;
+    if (data.errormsg) return data.errormsg;
+    if (data.error) return typeof data.error === 'string' ? data.error : JSON.stringify(data.error);
+    return null;
   }
 
-  console.log('[WebCEO] Combined audit data from:', Object.keys(results).join(', '));
+  // Try old-style methods.
+  const oldFetches = oldStyle.map(async ({ key, method, body }) => {
+    try {
+      const data = await webceoRequest(method, body);
+      const err = isErr(data);
+      if (!err) { results[key] = data; console.log(`[WebCEO] method:${method} ✓`, typeof data === 'object' ? (Array.isArray(data) ? data.length + ' items' : Object.keys(data).slice(0, 5).join(', ')) : typeof data); }
+      else console.log(`[WebCEO] method:${method} →`, err);
+    } catch (e) { console.log(`[WebCEO] method:${method} fail:`, e.message); }
+  });
+
+  // Try module+action methods.
+  const modFetches = modStyle.map(async ({ key, module, action, project }) => {
+    try {
+      const data = await webceoRaw({ module, action, project });
+      const err = isErr(data);
+      if (!err) { results[key] = data; console.log(`[WebCEO] ${module}/${action} ✓`, typeof data === 'object' ? (Array.isArray(data) ? data.length + ' items' : Object.keys(data).slice(0, 5).join(', ')) : typeof data); }
+      else console.log(`[WebCEO] ${module}/${action} →`, err);
+    } catch (e) { console.log(`[WebCEO] ${module}/${action} fail:`, e.message); }
+  });
+
+  await Promise.all([...oldFetches, ...modFetches]);
+
+  const successCount = Object.keys(results).length;
+  console.log(`[WebCEO] ${successCount} endpoint(s) returned data:`, Object.keys(results).join(', '));
+
+  if (successCount === 0) {
+    console.warn('[WebCEO] ALL endpoints failed. The API key or project ID may be wrong, or the API format has changed.');
+    return null;
+  }
+
   return results;
 }
 

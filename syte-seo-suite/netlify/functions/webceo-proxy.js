@@ -26,15 +26,17 @@ export async function handler(event) {
   try { payload = JSON.parse(event.body || '{}'); }
   catch { return { statusCode: 400, headers: corsHeaders(), body: 'Invalid JSON' }; }
 
-  // Accept both the old-tool contract { endpoint, body } and my previous
-  // contract { endpoint, params } so existing call sites keep working.
+  // Accept both the old-tool contract { endpoint, body } and the new
+  // contract { endpoint, params } / { raw: {...} }. When `raw` is provided,
+  // send it directly to WebCEO (just add the key).
   const method = payload.endpoint || payload.method;
   const bodyFields = payload.body || payload.params || {};
-  if (!method) {
-    return { statusCode: 400, headers: corsHeaders(), body: 'Missing endpoint/method' };
-  }
 
-  const outgoing = { key, method, ...bodyFields };
+  // If caller sends { raw: {...} }, pass it through with just the key added.
+  // This supports the module+action WebCEO API format.
+  const outgoing = payload.raw
+    ? { key, ...payload.raw }
+    : { key, method, ...bodyFields };
 
   try {
     const res = await fetch('https://online.webceo.com/api/', {
