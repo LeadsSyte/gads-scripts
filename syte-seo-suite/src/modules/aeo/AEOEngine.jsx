@@ -210,6 +210,7 @@ function OptPageCard({ result: r, onDelete }) {
                 pageUrl={r.url}
                 title={o.name || o.title || 'AEO Optimization'}
                 description={code.slice(0, 500)}
+                onVerified={refreshImplementations}
               />
             </div>
           </div>
@@ -810,9 +811,10 @@ export default function AEOEngine({ sub }) {
 
   // -------- Pipeline state --------
   const [aeoImpls, setAeoImpls] = useState([]);
-  useEffect(() => {
+  function refreshImplementations() {
     listAllImplementations().then(setAeoImpls).catch(() => {});
-  }, []);
+  }
+  useEffect(() => { refreshImplementations(); }, []);
 
   const currentMonth = new Date().toISOString().slice(0, 7);
   const monthLabel = new Date().toLocaleString('en-US', { month: 'long', year: 'numeric' });

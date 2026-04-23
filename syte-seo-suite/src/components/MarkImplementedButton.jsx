@@ -18,7 +18,7 @@ import { verifyImplementation, verifyImplementationFromHtml, verifyImplementatio
 //   description: longer detail (the actual change content)
 //   disabled?:   boolean
 export default function MarkImplementedButton({
-  module, changeType, pageUrl, title, description, disabled
+  module, changeType, pageUrl, title, description, disabled, onVerified
 }) {
   const client = useClients(s => s.current());
   const [phase, setPhase] = useState('idle'); // idle | logging | verifying | done
@@ -116,6 +116,7 @@ export default function MarkImplementedButton({
         impl
       });
       setPhase('done');
+      if (st === 'verified') onVerified?.();
     } catch (e) {
       setErr(e.message);
       setPhase('idle');
@@ -173,6 +174,7 @@ export default function MarkImplementedButton({
                     });
                     setResult({ ...result, status: 'verified', detail: 'Visually verified by team member.' });
                     setShowPreview(false);
+                    onVerified?.();
                   }}
                   className="primary"
                   style={{ fontSize: 11, padding: '4px 14px', marginLeft: 6, background: 'var(--green)', borderColor: 'var(--green)', color: '#0a0a0c' }}
@@ -209,6 +211,7 @@ export default function MarkImplementedButton({
                     verified_at: new Date().toISOString()
                   });
                   setResult({ ...result, status: 'verified', detail: 'Visually verified via page screenshot.' });
+                  onVerified?.();
                   setShowPreview(false);
                 }}
                 className="primary"
