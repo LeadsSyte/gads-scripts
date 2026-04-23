@@ -2641,16 +2641,25 @@ function _writeDailyDigestRow(results, duration) {
     var sheet = ss.getSheetByName('DailyDigest');
     if (!sheet) {
       sheet = ss.insertSheet('DailyDigest');
-      sheet.getRange(1, 1, 1, 20).setValues([[
+      sheet.getRange(1, 1, 1, 24).setValues([[
         'date', 'time', 'account', 'mode', 'run_mode',
         'duration_s', 'keywords_paused', 'search_terms_negated',
         'ai_negated', 'ai_review', 'winners_promoted',
         'audit_findings', 'schedule_adjustments', 'device_adjustments',
         'geo_adjustments', 'ngram_negatives', 'low_qs_paused',
-        'conv_this_week', 'conv_last_week', 'errors'
+        'conv_this_week', 'conv_last_week', 'errors',
+        'cost_30d', 'conversions_30d', 'revenue_30d', 'clicks_30d'
       ]]);
-      sheet.getRange(1, 1, 1, 20).setFontWeight('bold');
+      sheet.getRange(1, 1, 1, 24).setFontWeight('bold');
       sheet.setFrozenRows(1);
+    } else {
+      // Auto-migrate: add performance columns if missing
+      var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+      if (headers.indexOf('cost_30d') === -1) {
+        var nextCol = sheet.getLastColumn() + 1;
+        sheet.getRange(1, nextCol, 1, 4).setValues([['cost_30d', 'conversions_30d', 'revenue_30d', 'clicks_30d']]);
+        sheet.getRange(1, nextCol, 1, 4).setFontWeight('bold');
+      }
     }
 
     var now = new Date();
@@ -2664,6 +2673,21 @@ function _writeDailyDigestRow(results, duration) {
     var stNegated = results.searchTermsNegated ? results.searchTermsNegated.length : 0;
     var convThis = results.conversionHealth ? results.conversionHealth.thisWeek : 0;
     var convLast = results.conversionHealth ? results.conversionHealth.lastWeek : 0;
+
+    // Pull 30-day account-level performance for MoM tracking
+    var cost30d = 0, conv30d = 0, rev30d = 0, clicks30d = 0;
+    try {
+      var perfQ = 'SELECT metrics.cost_micros, metrics.conversions, metrics.conversions_value, metrics.clicks ' +
+        'FROM customer WHERE segments.date DURING LAST_30_DAYS';
+      var perfRows = AdsApp.search(perfQ);
+      while (perfRows.hasNext()) {
+        var pr = perfRows.next();
+        cost30d += Number(pr.metrics.costMicros) / 1000000;
+        conv30d += Number(pr.metrics.conversions) || 0;
+        rev30d += Number(pr.metrics.conversionsValue) || 0;
+        clicks30d += Number(pr.metrics.clicks) || 0;
+      }
+    } catch (perfErr) { _log('WARN', 'DailyDigest perf query: ' + perfErr.message); }
 
     sheet.appendRow([
       dateStr, timeStr, accountName, CONFIG.ACCOUNT_MODE,
@@ -2681,7 +2705,8 @@ function _writeDailyDigestRow(results, duration) {
       results.ngramNegatives ? results.ngramNegatives.length : 0,
       results.lowQsPaused ? results.lowQsPaused.length : 0,
       convThis, convLast,
-      results.errors ? results.errors.length : 0
+      results.errors ? results.errors.length : 0,
+      cost30d.toFixed(2), conv30d.toFixed(1), rev30d.toFixed(2), clicks30d
     ]);
 
     // Persist individual error messages to "Errors" tab so the weekly
