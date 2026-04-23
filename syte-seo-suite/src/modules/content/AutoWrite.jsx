@@ -49,6 +49,9 @@ export default function AutoWrite() {
   const [batchMode, setBatchMode] = useState(false);
 
   const [implementations, setImplementations] = useState([]);
+  function refreshContentImpls() {
+    listAllImplementations().then(setImplementations).catch(() => {});
+  }
   const [showPipeline, setShowPipeline] = useState(true);
   const [sharedHistory, setSharedHistory] = useState([]);
 
@@ -68,7 +71,7 @@ export default function AutoWrite() {
 
   // Load implementations + content history for pipeline view.
   useEffect(() => {
-    listAllImplementations().then(setImplementations).catch(() => {});
+    refreshContentImpls();
     loadContentHistory().then(setSharedHistory).catch(() => {});
   }, []);
 
@@ -294,6 +297,7 @@ export default function AutoWrite() {
                         pageUrl={pushedUrls[a.id || i] || client.url || ''}
                         title={a.topic || a.keyword || 'Article'}
                         description={`Article: ${a.topic || ''}`}
+                        onVerified={refreshContentImpls}
                       />
                       <button onClick={() => {
                         const blob = new Blob([a.output || ''], { type: 'text/plain' });

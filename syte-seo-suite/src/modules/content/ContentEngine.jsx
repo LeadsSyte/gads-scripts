@@ -174,7 +174,7 @@ function SectionCard({ title, content, accent, mono }) {
   );
 }
 
-function ParsedOutput({ output, topic, pushItem, exportTxt, exportDocx, systemPrompt, userPrompt, onOutputUpdate, pageUrl: pageUrlProp }) {
+function ParsedOutput({ output, topic, pushItem, exportTxt, exportDocx, systemPrompt, userPrompt, onOutputUpdate, pageUrl: pageUrlProp, onVerified }) {
   const sections = React.useMemo(() => parseOutputSections(output), [output]);
   const [showRaw, setShowRaw] = React.useState(false);
   const [revision, setRevision] = React.useState('');
@@ -275,6 +275,7 @@ function ParsedOutput({ output, topic, pushItem, exportTxt, exportDocx, systemPr
                   pageUrl={pushedLiveUrl || pageUrlProp || undefined}
                   title={sections.metaTitle || topic || 'Article'}
                   description={`Meta: ${sections.metaTitle || ''} | ${sections.metaDesc || ''}`}
+                  onVerified={onVerified}
                 />
               </div>
             </div>

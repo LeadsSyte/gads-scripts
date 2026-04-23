@@ -197,6 +197,7 @@ function TaskCard({ task: t, onUpdate, onVerify, busy, buildPushItem }) {
               pageUrl={t.page_url}
               title={t.title}
               description={t.copy_paste_fix || t.description || ''}
+              onVerified={refreshTechImpls}
             />
           </div>
         </div>
@@ -391,9 +392,10 @@ export default function TechnicalSEO({ sub }) {
 
   // -------- Pipeline state --------
   const [techImpls, setTechImpls] = useState([]);
-  useEffect(() => {
+  function refreshTechImpls() {
     listAllImplementations().then(setTechImpls).catch(() => {});
-  }, []);
+  }
+  useEffect(() => { refreshTechImpls(); }, []);
 
   const currentMonth = new Date().toISOString().slice(0, 7);
   const monthLabel = new Date().toLocaleString('en-US', { month: 'long', year: 'numeric' });
