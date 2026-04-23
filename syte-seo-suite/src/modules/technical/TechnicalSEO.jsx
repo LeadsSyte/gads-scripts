@@ -98,7 +98,27 @@ Create one task per MEANINGFUL issue on a SPECIFIC page. Use the exact URLs show
 }
 
 async function verifyFix(task) {
-  // Try page-proxy first (Jina → direct → AllOrigins), fallback to CORS.
+  // For sitemap/robots tasks, just check if the URL returns a valid response.
+  if (task.fix_type === 'sitemap' || task.fix_type === 'robots') {
+    try {
+      const res = await fetch('/.netlify/functions/page-proxy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: task.page_url })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.html && data.html.length > 50) {
+          const isSitemap = task.fix_type === 'sitemap' && (data.html.includes('<urlset') || data.html.includes('<sitemapindex') || data.html.includes('<url>'));
+          const isRobots = task.fix_type === 'robots' && (data.html.includes('User-agent') || data.html.includes('Disallow') || data.html.includes('Sitemap'));
+          return isSitemap || isRobots;
+        }
+      }
+    } catch {}
+    return false;
+  }
+
+  // Standard HTML verification for all other fix types.
   let html = '';
   try {
     const res = await fetch('/.netlify/functions/page-proxy', {
