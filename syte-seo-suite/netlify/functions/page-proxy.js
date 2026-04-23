@@ -22,43 +22,81 @@ export async function handler(event) {
     return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'Missing url parameter' }) };
   }
 
+  const browserHeaders = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Cache-Control': 'no-cache',
+    'Sec-Fetch-Dest': 'document',
+    'Sec-Fetch-Mode': 'navigate',
+    'Sec-Fetch-Site': 'none',
+    'Sec-Fetch-User': '?1',
+    'Upgrade-Insecure-Requests': '1'
+  };
+
+  // TIER 1: Direct fetch with browser headers.
   try {
-    const res = await fetch(url, {
+    const res = await fetch(url, { method: 'GET', redirect: 'follow', headers: browserHeaders });
+    const html = await res.text();
+    // Detect bot-blocked responses (404 shells, Cloudflare challenges, captchas).
+    const looksBlocked = res.status === 403 ||
+      (res.status === 404 && html.length < 5000) ||
+      /Attention Required|Cloudflare|Just a moment|captcha|403 Forbidden|Access Denied/i.test(html.slice(0, 2000));
+    if (!looksBlocked && html.length > 500) {
+      return {
+        statusCode: 200,
+        headers: { 'content-type': 'application/json', ...corsHeaders() },
+        body: JSON.stringify({ status: res.status, html, finalUrl: res.url, source: 'direct' })
+      };
+    }
+    // Fall through to tier 2 if blocked.
+  } catch {}
+
+  // TIER 2: Jina AI Reader — free service that renders pages with a real
+  // browser engine and bypasses most bot detection. URL format:
+  //   https://r.jina.ai/https://example.com
+  // Returns clean markdown of the rendered page.
+  try {
+    const jinaUrl = 'https://r.jina.ai/' + url;
+    const res = await fetch(jinaUrl, {
       method: 'GET',
-      redirect: 'follow',
       headers: {
-        // Mimic a real Chrome browser so Cloudflare/WAFs don't flag us.
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Cache-Control': 'no-cache',
-        'Pragma': 'no-cache',
-        'Sec-Fetch-Dest': 'document',
-        'Sec-Fetch-Mode': 'navigate',
-        'Sec-Fetch-Site': 'none',
-        'Sec-Fetch-User': '?1',
-        'Upgrade-Insecure-Requests': '1'
+        'Accept': 'text/plain',
+        'X-Return-Format': 'html'
       }
     });
-    const html = await res.text();
-    return {
-      statusCode: 200,
-      headers: { 'content-type': 'application/json', ...corsHeaders() },
-      body: JSON.stringify({
-        status: res.status,
-        html,
-        finalUrl: res.url,
-        contentType: res.headers.get('content-type') || ''
-      })
-    };
-  } catch (e) {
-    return {
-      statusCode: 502,
-      headers: { 'content-type': 'application/json', ...corsHeaders() },
-      body: JSON.stringify({ error: e.message, stage: 'upstream fetch' })
-    };
-  }
+    if (res.ok) {
+      const content = await res.text();
+      if (content.length > 300) {
+        return {
+          statusCode: 200,
+          headers: { 'content-type': 'application/json', ...corsHeaders() },
+          body: JSON.stringify({ status: 200, html: content, finalUrl: url, source: 'jina-reader' })
+        };
+      }
+    }
+  } catch {}
+
+  // TIER 3: AllOrigins as last-resort CORS proxy.
+  try {
+    const res = await fetch('https://api.allorigins.win/raw?url=' + encodeURIComponent(url));
+    if (res.ok) {
+      const html = await res.text();
+      if (html.length > 500) {
+        return {
+          statusCode: 200,
+          headers: { 'content-type': 'application/json', ...corsHeaders() },
+          body: JSON.stringify({ status: 200, html, finalUrl: url, source: 'allorigins' })
+        };
+      }
+    }
+  } catch {}
+
+  return {
+    statusCode: 502,
+    headers: { 'content-type': 'application/json', ...corsHeaders() },
+    body: JSON.stringify({ error: 'All fetch tiers failed (direct, jina-reader, allorigins). Site may require authentication or have strong anti-bot protection.', stage: 'all-tiers-failed' })
+  };
 }
 
 function corsHeaders() {
