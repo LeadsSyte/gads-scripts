@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useClients } from '../store/useClients.js';
 import { logImplementation, updateImplementation } from '../lib/supabase.js';
-import { verifyImplementation } from '../lib/verification.js';
+import { verifyImplementation, verifyImplementationFromHtml } from '../lib/verification.js';
 
 // Reusable "Mark as Implemented" button. Place it next to any generated
 // output (article, schema, meta fix, AEO optimization). When clicked:
@@ -24,6 +24,26 @@ export default function MarkImplementedButton({
   const [phase, setPhase] = useState('idle'); // idle | logging | verifying | done
   const [result, setResult] = useState(null); // { status, detail, impl }
   const [err, setErr] = useState('');
+  const [showPasteHtml, setShowPasteHtml] = useState(false);
+  const [pastedHtml, setPastedHtml] = useState('');
+  const [pasteBusy, setPasteBusy] = useState(false);
+
+  async function verifyFromPastedHtml() {
+    if (!result?.impl?.id) return;
+    setPasteBusy(true);
+    try {
+      const r = await verifyImplementationFromHtml(result.impl, pastedHtml);
+      setResult({ ...result, status: r.status, detail: r.detail });
+      if (r.status === 'verified') {
+        setShowPasteHtml(false);
+        setPastedHtml('');
+      }
+    } catch (e) {
+      setErr(e.message);
+    } finally {
+      setPasteBusy(false);
+    }
+  }
 
   async function handleClick() {
     if (!client) { setErr('Select a client first.'); return; }
@@ -124,19 +144,27 @@ export default function MarkImplementedButton({
               Re-verify
             </button>
             {result.status !== 'verified' && result.impl?.id && (
-              <button
-                onClick={async () => {
-                  await updateImplementation(result.impl.id, {
-                    verification_status: 'verified',
-                    verification_detail: 'Manually verified by team member.',
-                    verified_at: new Date().toISOString()
-                  });
-                  setResult({ ...result, status: 'verified', detail: 'Manually verified by team member.' });
-                }}
-                style={{ fontSize: 10, padding: '2px 8px', marginLeft: 4, borderColor: 'var(--green)', color: 'var(--green)' }}
-              >
-                I've verified this — mark as done
-              </button>
+              <>
+                <button
+                  onClick={() => setShowPasteHtml(v => !v)}
+                  style={{ fontSize: 10, padding: '2px 8px', marginLeft: 4, borderColor: 'var(--blue)', color: 'var(--blue)' }}
+                >
+                  Verify with pasted HTML
+                </button>
+                <button
+                  onClick={async () => {
+                    await updateImplementation(result.impl.id, {
+                      verification_status: 'verified',
+                      verification_detail: 'Manually verified by team member.',
+                      verified_at: new Date().toISOString()
+                    });
+                    setResult({ ...result, status: 'verified', detail: 'Manually verified by team member.' });
+                  }}
+                  style={{ fontSize: 10, padding: '2px 8px', marginLeft: 4, borderColor: 'var(--green)', color: 'var(--green)' }}
+                >
+                  I've verified this — mark as done
+                </button>
+              </>
             )}
           </span>
         )}
@@ -152,6 +180,40 @@ export default function MarkImplementedButton({
           borderLeft: '2px solid ' + statusColor
         }}>
           {result.detail}
+        </div>
+      )}
+
+      {showPasteHtml && (
+        <div style={{ marginTop: 6, padding: 10, background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 6, maxWidth: 500 }}>
+          <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 4 }}>Paste the live page HTML</div>
+          <div className="muted" style={{ fontSize: 10, marginBottom: 6, lineHeight: 1.4 }}>
+            Use this when the auto-fetch is blocked (Shopify/Cloudflare returning 404/bot-check). On the live page: right-click → <em>View Page Source</em> → Ctrl+A → Ctrl+C → paste below. Claude will verify against the real HTML you see.
+          </div>
+          <textarea
+            value={pastedHtml}
+            onChange={e => setPastedHtml(e.target.value)}
+            placeholder="Paste the full HTML of the live page here..."
+            rows={5}
+            disabled={pasteBusy}
+            style={{ width: '100%', fontSize: 10, fontFamily: 'monospace' }}
+          />
+          <div className="row" style={{ justifyContent: 'space-between', marginTop: 6 }}>
+            <span className="muted" style={{ fontSize: 10 }}>
+              {pastedHtml.length > 0 ? `${Math.round(pastedHtml.length / 1000)}k chars` : ''}
+            </span>
+            <div className="row" style={{ gap: 6 }}>
+              <button onClick={() => { setShowPasteHtml(false); setPastedHtml(''); }} style={{ fontSize: 10, padding: '3px 10px' }}>
+                Cancel
+              </button>
+              <button
+                onClick={verifyFromPastedHtml}
+                disabled={pasteBusy || pastedHtml.length < 100}
+                style={{ fontSize: 10, padding: '3px 10px', borderColor: 'var(--blue)', color: 'var(--blue)' }}
+              >
+                {pasteBusy ? 'Verifying…' : 'Verify'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

@@ -107,6 +107,92 @@ async function fetchPageContent(impl, client) {
   }
 }
 
+// Verify using pasted HTML — used when automated fetching fails (Shopify
+// bot blocks, Cloudflare challenges, login walls, etc.). The user pastes
+// the live page HTML (view source → copy/paste) and Claude verifies.
+export async function verifyImplementationFromHtml(impl, pastedHtml) {
+  if (!pastedHtml || pastedHtml.length < 100) {
+    const detail = 'Pasted HTML is too short or empty.';
+    await updateImplementation(impl.id, {
+      verification_status: 'failed',
+      verification_detail: detail,
+      verified_at: new Date().toISOString()
+    });
+    return { status: 'failed', detail };
+  }
+  const pageData = { html: pastedHtml.slice(0, 40000), source: 'pasted-html' };
+  return runVerifyWithHtml(impl, pageData);
+}
+
+// Shared verification runner — takes the impl and pre-fetched pageData.
+async function runVerifyWithHtml(impl, pageData) {
+  const draftNote = pageData.wpStatus === 'draft'
+    ? '\nNOTE: This is a WordPress DRAFT (not yet published). The content was fetched via the WP REST API. Verify the content exists in the draft, not on the public site.'
+    : '';
+  const truncated = pageData.html.slice(0, 40000);
+  const wpNote = pageData.wpSlug
+    ? `\n- WordPress post slug: ${pageData.wpSlug} (ID: ${pageData.wpId})`
+    : '';
+  const prompt = `You are verifying whether an article or SEO change exists on a website.
+
+CHANGE TO VERIFY:
+- Module: ${impl.module}
+- Type: ${impl.change_type}
+- Title/topic: ${impl.title || ''}
+- Additional context: ${impl.description || '(none)'}
+- Content source: ${pageData.source}${wpNote}${draftNote}
+
+PAGE CONTENT:
+${truncated}
+
+VERIFICATION RULES:
+- For articles: the page has the article if the main body contains substantial content about the same TOPIC.
+- For AEO optimizations (change_type = aeo_optimization): check for CORE CONTENT THEMES, not exact HTML. If 60%+ of core themes are present, mark as implemented.
+- For schema: check for the JSON-LD script tag.
+- For meta changes: check the <title> tag or meta description.
+- Be LENIENT — different formatting/wording/images are acceptable. The goal is to confirm the work was done.
+
+Return ONLY valid JSON:
+{
+  "implemented": true or false,
+  "confidence": "high" | "medium" | "low",
+  "evidence": "1-2 sentences: what you found",
+  "suggestion": "if not implemented: what is missing"
+}`;
+  try {
+    const resp = await claudeComplete({
+      system: 'You verify SEO implementations. Return ONLY valid JSON.',
+      messages: [{ role: 'user', content: prompt }],
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 500,
+      temperature: 0
+    });
+    let parsed;
+    try {
+      const jsonMatch = resp.match(/\{[\s\S]*\}/);
+      parsed = jsonMatch ? JSON.parse(jsonMatch[0]) : null;
+    } catch { parsed = null; }
+    if (!parsed) {
+      const detail = 'Could not parse verification response.';
+      await updateImplementation(impl.id, { verification_status: 'failed', verification_detail: detail, verified_at: new Date().toISOString() });
+      return { status: 'failed', detail };
+    }
+    const status = parsed.implemented ? 'verified' : 'failed';
+    const detail = [
+      parsed.evidence || '',
+      parsed.suggestion ? 'Suggestion: ' + parsed.suggestion : '',
+      'Confidence: ' + (parsed.confidence || 'unknown'),
+      '(Source: ' + pageData.source + ')'
+    ].filter(Boolean).join(' · ');
+    await updateImplementation(impl.id, { verification_status: status, verification_detail: detail, verified_at: new Date().toISOString() });
+    return { status, detail };
+  } catch (e) {
+    const detail = 'Verification API error: ' + e.message;
+    await updateImplementation(impl.id, { verification_status: 'failed', verification_detail: detail, verified_at: new Date().toISOString() });
+    return { status: 'failed', detail };
+  }
+}
+
 export async function verifyImplementation(impl, client) {
   if (!impl?.page_url) {
     const detail = 'No page URL to scan.';
