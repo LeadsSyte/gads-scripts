@@ -74,7 +74,23 @@ async function fetchPageContent(impl, client) {
     }
   }
 
-  // 2. Public fetch via CORS proxy (non-WP sites, or WP without credentials).
+  // 2. Server-side page proxy (bypasses CORS + most WAFs with real browser
+  //    headers). This is the most reliable option for public pages.
+  try {
+    const res = await fetch('/.netlify/functions/page-proxy', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: impl.page_url })
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data.html && data.html.length > 500 && !/<title>.*(Log In|Attention Required).*<\/title>/i.test(data.html)) {
+        return { html: data.html, source: 'page-proxy' + (data.status !== 200 ? '-' + data.status : '') };
+      }
+    }
+  } catch {}
+
+  // 3. Public fetch via CORS proxy (fallback).
   try {
     const html = await corsFetchText(impl.page_url);
     if (html.length > 500 && !/<title>.*Log In.*<\/title>/i.test(html)) {
@@ -82,7 +98,7 @@ async function fetchPageContent(impl, client) {
     }
   } catch {}
 
-  // 3. Last resort CORS with different proxies.
+  // 4. Last resort CORS with different proxies.
   try {
     const html = await corsFetchText(impl.page_url);
     return { html, source: 'cors-fallback' };

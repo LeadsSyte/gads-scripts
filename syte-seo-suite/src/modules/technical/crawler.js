@@ -221,7 +221,21 @@ function analyzeDocument(url, doc) {
 
 async function analyzeUrl(url) {
   try {
-    const html = await corsFetchText(url);
+    // Try the server-side page proxy first (bypasses CORS + WAFs).
+    let html = '';
+    try {
+      const res = await fetch('/.netlify/functions/page-proxy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.html && data.html.length > 200) html = data.html;
+      }
+    } catch {}
+    // Fallback to CORS proxy.
+    if (!html) html = await corsFetchText(url);
     if (!html || html.length < 200) {
       return { url, error: 'Empty or very short response — page may not be accessible' };
     }
