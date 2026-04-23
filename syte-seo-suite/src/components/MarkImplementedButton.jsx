@@ -132,41 +132,30 @@ export default function MarkImplementedButton({
           </span>
         )}
         {phase === 'done' && result && (
-          <span style={{ fontSize: 11 }}>
+          <div style={{ fontSize: 11 }}>
             <span style={{ color: statusColor, fontWeight: 600 }}>
-              {result.status === 'verified' ? '✓ Verified' : '✗ Not found'}
+              {result.status === 'verified' ? '✓ Verified' : '✗ Auto-verify failed'}
             </span>
-            {' '}
-            <button
-              onClick={handleClick}
-              style={{ fontSize: 10, padding: '2px 8px', marginLeft: 6 }}
-            >
-              Re-verify
-            </button>
-            {result.status !== 'verified' && result.impl?.id && (
-              <>
-                <button
-                  onClick={() => setShowPasteHtml(v => !v)}
-                  style={{ fontSize: 10, padding: '2px 8px', marginLeft: 4, borderColor: 'var(--blue)', color: 'var(--blue)' }}
-                >
-                  Verify with pasted HTML
-                </button>
-                <button
-                  onClick={async () => {
-                    await updateImplementation(result.impl.id, {
-                      verification_status: 'verified',
-                      verification_detail: 'Manually verified by team member.',
-                      verified_at: new Date().toISOString()
-                    });
-                    setResult({ ...result, status: 'verified', detail: 'Manually verified by team member.' });
-                  }}
-                  style={{ fontSize: 10, padding: '2px 8px', marginLeft: 4, borderColor: 'var(--green)', color: 'var(--green)' }}
-                >
-                  I've verified this — mark as done
-                </button>
-              </>
+            {result.status === 'verified' && (
+              <button onClick={handleClick} style={{ fontSize: 10, padding: '2px 8px', marginLeft: 6 }}>Re-verify</button>
             )}
-          </span>
+            {result.status !== 'verified' && result.impl?.id && (
+              <button
+                onClick={async () => {
+                  await updateImplementation(result.impl.id, {
+                    verification_status: 'verified',
+                    verification_detail: 'Manually verified by team member.',
+                    verified_at: new Date().toISOString()
+                  });
+                  setResult({ ...result, status: 'verified', detail: 'Manually verified by team member.' });
+                }}
+                className="primary"
+                style={{ fontSize: 11, padding: '4px 14px', marginLeft: 8, background: 'var(--green)', borderColor: 'var(--green)', color: '#0a0a0c' }}
+              >
+                ✓ I can see it's live — Mark Verified
+              </button>
+            )}
+          </div>
         )}
       </div>
 
