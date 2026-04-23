@@ -345,6 +345,10 @@ function main() {
   }
   email += '</table></div>';
 
+  // Month-on-Month performance comparison
+  var momHtml = _buildMonthOnMonthTable(data, col, accountNames);
+  if (momHtml) email += momHtml;
+
   // Approval activity (optional — only if PendingChanges tab exists)
   var approvalHtml = _buildApprovalSection(ss, cutoff);
   if (approvalHtml) email += approvalHtml;
@@ -413,6 +417,122 @@ function _linkAccount(name, webAppUrl) {
             'view=client&account=' + encodeURIComponent(name);
   return '<a href="' + url + '" style="color:#1565c0;text-decoration:none;">' + safe + '</a>';
 }
+
+/**
+ * Builds a month-on-month performance comparison table from DailyDigest data.
+ * Uses the cost_30d, conversions_30d, revenue_30d, clicks_30d columns added in v4.5.0.
+ * For each account, takes the LATEST row per calendar month and compares current vs previous month.
+ */
+function _buildMonthOnMonthTable(data, col, activeAccounts) {
+  if (col['cost_30d'] === undefined) return '';
+
+  // Group by account → month, keeping latest row per month
+  var byAccountMonth = {};
+  for (var i = 1; i < data.length; i++) {
+    var dateStr = String(data[i][col['date']] || '');
+    if (!dateStr || dateStr.length < 7) continue;
+    var account = String(data[i][col['account']] || '').trim();
+    if (!account) continue;
+
+    var monthKey = dateStr.substring(0, 7);  // YYYY-MM
+    var cost = Number(data[i][col['cost_30d']]) || 0;
+    var conv = Number(data[i][col['conversions_30d']]) || 0;
+    var rev = Number(data[i][col['revenue_30d']]) || 0;
+    var clicks = Number(data[i][col['clicks_30d']]) || 0;
+    if (cost === 0 && conv === 0 && clicks === 0) continue;
+
+    if (!byAccountMonth[account]) byAccountMonth[account] = {};
+    if (!byAccountMonth[account][monthKey] || dateStr > byAccountMonth[account][monthKey].date) {
+      byAccountMonth[account][monthKey] = { date: dateStr, cost: cost, conv: conv, rev: rev, clicks: clicks };
+    }
+  }
+
+  var accountList = Object.keys(byAccountMonth);
+  if (accountList.length === 0) return '';
+
+  // Determine current and previous month keys
+  var now = new Date();
+  var curYear = now.getFullYear();
+  var curMonth = now.getMonth() + 1;
+  var prevMonth = curMonth === 1 ? 12 : curMonth - 1;
+  var prevYear = curMonth === 1 ? curYear - 1 : curYear;
+  var curKey = curYear + '-' + (curMonth < 10 ? '0' : '') + curMonth;
+  var prevKey = prevYear + '-' + (prevMonth < 10 ? '0' : '') + prevMonth;
+
+  var curMonthLabel = Utilities.formatDate(now, TIMEZONE, 'MMM yyyy');
+  var prevDate = new Date(prevYear, prevMonth - 1, 1);
+  var prevMonthLabel = Utilities.formatDate(prevDate, TIMEZONE, 'MMM yyyy');
+
+  var html = '<div style="padding:15px;">';
+  html += '<h3 style="margin:0 0 10px;color:#1565c0;">Month-on-Month Performance</h3>';
+  html += '<p style="font-size:12px;color:#666;margin:0 0 8px;">Comparing latest 30-day snapshot per month. ' + prevMonthLabel + ' vs ' + curMonthLabel + '.</p>';
+  html += '<table style="width:100%;border-collapse:collapse;font-size:12px;">';
+  html += '<tr style="background:#e3f2fd;">';
+  html += '<th style="padding:8px;text-align:left;">Client</th>';
+  html += '<th style="padding:8px;text-align:right;">Cost (' + prevMonthLabel + ')</th>';
+  html += '<th style="padding:8px;text-align:right;">Cost (' + curMonthLabel + ')</th>';
+  html += '<th style="padding:8px;text-align:right;">Δ</th>';
+  html += '<th style="padding:8px;text-align:right;">Conv (' + prevMonthLabel + ')</th>';
+  html += '<th style="padding:8px;text-align:right;">Conv (' + curMonthLabel + ')</th>';
+  html += '<th style="padding:8px;text-align:right;">Δ</th>';
+  html += '<th style="padding:8px;text-align:right;">Revenue (' + prevMonthLabel + ')</th>';
+  html += '<th style="padding:8px;text-align:right;">Revenue (' + curMonthLabel + ')</th>';
+  html += '<th style="padding:8px;text-align:right;">Δ</th>';
+  html += '</tr>';
+
+  accountList.sort();
+  var hasData = false;
+  for (var a = 0; a < accountList.length; a++) {
+    var acct = accountList[a];
+    var months = byAccountMonth[acct];
+    var cur = months[curKey] || null;
+    var prev = months[prevKey] || null;
+    if (!cur && !prev) continue;
+
+    hasData = true;
+    var curCost = cur ? cur.cost : 0;
+    var prevCost = prev ? prev.cost : 0;
+    var curConv = cur ? cur.conv : 0;
+    var prevConv = prev ? prev.conv : 0;
+    var curRev = cur ? cur.rev : 0;
+    var prevRev = prev ? prev.rev : 0;
+
+    var costDelta = prevCost > 0 ? ((curCost - prevCost) / prevCost * 100) : (curCost > 0 ? 100 : 0);
+    var convDelta = prevConv > 0 ? ((curConv - prevConv) / prevConv * 100) : (curConv > 0 ? 100 : 0);
+    var revDelta = prevRev > 0 ? ((curRev - prevRev) / prevRev * 100) : (curRev > 0 ? 100 : 0);
+
+    var cs = 'R';
+
+    html += '<tr style="border-bottom:1px solid #eee;">';
+    html += '<td style="padding:6px 8px;font-weight:600;">' + acct + '</td>';
+
+    html += '<td style="padding:6px 8px;text-align:right;">' + cs + prevCost.toFixed(0) + '</td>';
+    html += '<td style="padding:6px 8px;text-align:right;">' + cs + curCost.toFixed(0) + '</td>';
+    html += '<td style="padding:6px 8px;text-align:right;color:' + (costDelta > 5 ? '#c62828' : costDelta < -5 ? '#2e7d32' : '#999') + ';">' +
+            (costDelta >= 0 ? '+' : '') + costDelta.toFixed(0) + '%</td>';
+
+    html += '<td style="padding:6px 8px;text-align:right;">' + prevConv.toFixed(1) + '</td>';
+    html += '<td style="padding:6px 8px;text-align:right;">' + curConv.toFixed(1) + '</td>';
+    html += '<td style="padding:6px 8px;text-align:right;color:' + (convDelta >= 5 ? '#2e7d32' : convDelta <= -5 ? '#c62828' : '#999') + ';">' +
+            (convDelta >= 0 ? '+' : '') + convDelta.toFixed(0) + '%</td>';
+
+    html += '<td style="padding:6px 8px;text-align:right;">' + cs + prevRev.toFixed(0) + '</td>';
+    html += '<td style="padding:6px 8px;text-align:right;">' + cs + curRev.toFixed(0) + '</td>';
+    html += '<td style="padding:6px 8px;text-align:right;color:' + (revDelta >= 5 ? '#2e7d32' : revDelta <= -5 ? '#c62828' : '#999') + ';">' +
+            (revDelta >= 0 ? '+' : '') + revDelta.toFixed(0) + '%</td>';
+
+    html += '</tr>';
+  }
+  html += '</table>';
+
+  if (!hasData) {
+    html += '<p style="font-size:12px;color:#999;">No performance data available yet. Data will appear after the first optimization run with v4.5.0+.</p>';
+  }
+
+  html += '</div>';
+  return html;
+}
+
 
 /**
  * Accepts either a raw sheet ID or a full sheet URL and returns the ID.
