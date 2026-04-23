@@ -221,8 +221,8 @@ function analyzeDocument(url, doc) {
 
 async function analyzeUrl(url) {
   try {
-    // Try the server-side page proxy first (bypasses CORS + WAFs).
     let html = '';
+    let httpStatus = 200;
     try {
       const res = await fetch('/.netlify/functions/page-proxy', {
         method: 'POST',
@@ -231,18 +231,30 @@ async function analyzeUrl(url) {
       });
       if (res.ok) {
         const data = await res.json();
+        httpStatus = data.status || 200;
         if (data.html && data.html.length > 200) html = data.html;
       }
     } catch {}
-    // Fallback to CORS proxy.
-    if (!html) html = await corsFetchText(url);
+    if (!html) {
+      try { html = await corsFetchText(url); } catch {}
+    }
     if (!html || html.length < 200) {
-      return { url, error: 'Empty or very short response — page may not be accessible' };
+      return { url, error: 'Page not accessible', skipped: true };
+    }
+    // Skip 404/410/5xx — dead pages, not worth auditing.
+    if (httpStatus === 404 || httpStatus === 410 || httpStatus >= 500) {
+      return { url, error: `HTTP ${httpStatus} — page does not exist`, skipped: true };
+    }
+    // Detect soft 404s (200 but content says "not found").
+    const top = html.slice(0, 5000);
+    if (/<title>[^<]*(404|not found|page not found)[^<]*<\/title>/i.test(top) ||
+        /<h1>[^<]*(not found|404|doesn.t exist|no longer)[^<]*<\/h1>/i.test(top)) {
+      return { url, error: 'Soft 404 — page says "not found"', skipped: true };
     }
     const doc = new DOMParser().parseFromString(html, 'text/html');
     return analyzeDocument(url, doc);
   } catch (e) {
-    return { url, error: e.message };
+    return { url, error: e.message, skipped: true };
   }
 }
 
@@ -335,8 +347,8 @@ export function summarizeCrawlForAI(crawlResult) {
   lines.push(`Crawled ${crawlResult.totalCrawled} pages · ${crawlResult.withIssues} with issues · ${crawlResult.withErrors} unreachable`);
   lines.push('');
   for (const page of crawlResult.pages) {
-    if (page.error) {
-      lines.push(`[ERROR] ${page.url}: ${page.error}`);
+    if (page.error || page.skipped) {
+      // Don't include 404/error pages — Claude should NOT create tasks for them.
       continue;
     }
     if (page.issueCount === 0) continue;
