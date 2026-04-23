@@ -25,6 +25,7 @@ export default function MarkImplementedButton({
   const [result, setResult] = useState(null); // { status, detail, impl }
   const [err, setErr] = useState('');
   const [showPasteHtml, setShowPasteHtml] = useState(false);
+  const [showPreview, setShowPreview] = useState(false);
   const [pastedHtml, setPastedHtml] = useState('');
   const [pasteBusy, setPasteBusy] = useState(false);
 
@@ -140,21 +141,66 @@ export default function MarkImplementedButton({
               <button onClick={handleClick} style={{ fontSize: 10, padding: '2px 8px', marginLeft: 6 }}>Re-verify</button>
             )}
             {result.status !== 'verified' && result.impl?.id && (
+              <>
+                <button
+                  onClick={() => setShowPreview(v => !v)}
+                  style={{ fontSize: 10, padding: '3px 10px', marginLeft: 8, borderColor: 'var(--blue)', color: 'var(--blue)' }}
+                >
+                  {showPreview ? 'Hide preview' : 'Show live page preview'}
+                </button>
+                <button
+                  onClick={async () => {
+                    await updateImplementation(result.impl.id, {
+                      verification_status: 'verified',
+                      verification_detail: 'Visually verified by team member.',
+                      verified_at: new Date().toISOString()
+                    });
+                    setResult({ ...result, status: 'verified', detail: 'Visually verified by team member.' });
+                    setShowPreview(false);
+                  }}
+                  className="primary"
+                  style={{ fontSize: 11, padding: '4px 14px', marginLeft: 6, background: 'var(--green)', borderColor: 'var(--green)', color: '#0a0a0c' }}
+                >
+                  ✓ Mark Verified
+                </button>
+              </>
+            )}
+          </div>
+        )}
+
+        {showPreview && result?.impl?.page_url && (
+          <div style={{ marginTop: 8, padding: 10, background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 8, maxWidth: 600 }}>
+            <div className="muted" style={{ fontSize: 10, marginBottom: 6 }}>
+              Live rendered preview of <strong>{result.impl.page_url}</strong> — check if the content is visible, then click Mark Verified above.
+            </div>
+            <div style={{ border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden', background: '#fff' }}>
+              <img
+                src={'https://image.thum.io/get/width/800/crop/1400/noanimate/' + result.impl.page_url}
+                alt="Live page screenshot"
+                style={{ width: '100%', display: 'block' }}
+                loading="lazy"
+              />
+            </div>
+            <div className="row" style={{ justifyContent: 'space-between', marginTop: 8 }}>
+              <a href={result.impl.page_url} target="_blank" rel="noreferrer" className="muted" style={{ fontSize: 10 }}>
+                Open live page in new tab →
+              </a>
               <button
                 onClick={async () => {
                   await updateImplementation(result.impl.id, {
                     verification_status: 'verified',
-                    verification_detail: 'Manually verified by team member.',
+                    verification_detail: 'Visually verified via page screenshot.',
                     verified_at: new Date().toISOString()
                   });
-                  setResult({ ...result, status: 'verified', detail: 'Manually verified by team member.' });
+                  setResult({ ...result, status: 'verified', detail: 'Visually verified via page screenshot.' });
+                  setShowPreview(false);
                 }}
                 className="primary"
-                style={{ fontSize: 11, padding: '4px 14px', marginLeft: 8, background: 'var(--green)', borderColor: 'var(--green)', color: '#0a0a0c' }}
+                style={{ fontSize: 11, padding: '5px 16px', background: 'var(--green)', borderColor: 'var(--green)', color: '#0a0a0c' }}
               >
-                ✓ I can see it's live — Mark Verified
+                ✓ I can see the content — Verify
               </button>
-            )}
+            </div>
           </div>
         )}
       </div>
