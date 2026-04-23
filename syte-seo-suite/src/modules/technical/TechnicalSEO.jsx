@@ -98,9 +98,26 @@ Create one task per MEANINGFUL issue on a SPECIFIC page. Use the exact URLs show
 }
 
 async function verifyFix(task) {
-  const html = await corsFetchText(task.page_url);
+  // Try page-proxy first (Jina → direct → AllOrigins), fallback to CORS.
+  let html = '';
+  try {
+    const res = await fetch('/.netlify/functions/page-proxy', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: task.page_url })
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data.html && data.html.length > 200) html = data.html;
+    }
+  } catch {}
+  if (!html) {
+    try { html = await corsFetchText(task.page_url); } catch {}
+  }
+  if (!html || html.length < 200) return false;
+
   const verdict = await claudeComplete({
-    system: 'You verify SEO fixes. Return ONLY JSON: {"implemented": true|false, "evidence": "..."}',
+    system: 'You verify SEO fixes on live pages. Be LENIENT — different formatting, wording, or styling from the expected fix is acceptable as long as the core fix is present. Return ONLY JSON: {"implemented": true|false, "evidence": "..."}',
     messages: [{
       role: 'user',
       content: `Task: ${task.title}\nFix_type: ${task.fix_type}\nExpected fix: ${task.copy_paste_fix}\n\nLive page HTML (truncated):\n${html.slice(0, 40000)}`

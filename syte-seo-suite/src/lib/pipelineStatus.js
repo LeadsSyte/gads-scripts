@@ -107,12 +107,17 @@ export function technicalPipelineStatus(client, implementations, tasks, month) {
   const done = clientTasks.filter(t => t.status === 'done' || t.status === 'verified').length;
   const allTasksDone = clientTasks.length > 0 && open === 0;
 
-  // Only "verified-on-site" when ALL tasks are done (none open) and verifications exist.
-  if (allTasksDone && verified.length > 0) {
+  // "Verified on Site" when at least 1 implementation is verified on the live site.
+  if (verified.length > 0) {
+    const parts = [clientTasks.length + ' tasks'];
+    if (verified.length > 0) parts.push(verified.length + ' verified');
+    if (open > 0) parts.push(open + ' open');
     return {
       section: 'verified-on-site',
-      summary: verified.length + ' verified',
-      detail: verified.map(v => v.title).slice(0, 3).join(', ')
+      summary: parts.join(' · '),
+      detail: allTasksDone
+        ? 'All ' + verified.length + ' fixes verified on site'
+        : verified.length + ' of ' + clientTasks.length + ' verified · ' + open + ' still open'
     };
   }
 
