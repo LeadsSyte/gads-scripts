@@ -68,7 +68,7 @@ PRIORITIZATION (biggest wins first):
 - Medium = weak meta descriptions, missing alt text on important images, thin content pages, slow pages, missing breadcrumb schema.
 - Low = minor polish, cosmetic heading issues, optional schema types.
 - Sort: critical first, then high + quick effort, then high + moderate, then medium, then low.
-- Target 15-25 tasks. Each must be actionable on a specific page — not a recommendation.
+- Generate exactly 5 tasks — the 5 MOST IMPACTFUL issues to fix THIS MONTH. Quality over quantity. Pick the fixes that will move the needle most for rankings and user experience. If there are critical issues, those come first. Otherwise, pick the highest-ROI quick wins.
 `.trim();
 
 async function triageAudit(auditData, clientUrl) {

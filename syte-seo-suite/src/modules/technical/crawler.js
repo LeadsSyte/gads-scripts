@@ -250,8 +250,27 @@ async function analyzeUrl(url) {
 async function discoverLinksFromHomepage(baseUrl) {
   const links = new Set();
   links.add(baseUrl.replace(/\/$/, '') + '/');
+  let html = '';
+
+  // Try page-proxy first (Jina renders JS, bypasses WAFs).
   try {
-    const html = await corsFetchText(baseUrl);
+    const res = await fetch('/.netlify/functions/page-proxy', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: baseUrl })
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data.html && data.html.length > 500) html = data.html;
+    }
+  } catch {}
+
+  // Fallback to CORS proxy.
+  if (!html) {
+    try { html = await corsFetchText(baseUrl); } catch {}
+  }
+
+  if (html) {
     const doc = new DOMParser().parseFromString(html, 'text/html');
     const origin = new URL(baseUrl).origin;
     for (const a of doc.querySelectorAll('a[href]')) {
@@ -264,7 +283,7 @@ async function discoverLinksFromHomepage(baseUrl) {
         }
       } catch {}
     }
-  } catch {}
+  }
   return Array.from(links);
 }
 
