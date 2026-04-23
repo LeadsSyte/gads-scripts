@@ -232,6 +232,28 @@ async function analyzeUrl(url) {
   }
 }
 
+// Discover real pages by crawling the homepage and extracting internal links.
+async function discoverLinksFromHomepage(baseUrl) {
+  const links = new Set();
+  links.add(baseUrl.replace(/\/$/, '') + '/');
+  try {
+    const html = await corsFetchText(baseUrl);
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const origin = new URL(baseUrl).origin;
+    for (const a of doc.querySelectorAll('a[href]')) {
+      let href = a.getAttribute('href') || '';
+      if (href.startsWith('#') || href.startsWith('mailto:') || href.startsWith('tel:') || href.startsWith('javascript:')) continue;
+      try {
+        const full = new URL(href, baseUrl).href;
+        if (full.startsWith(origin) && !full.includes('#')) {
+          links.add(full.split('?')[0]);
+        }
+      } catch {}
+    }
+  } catch {}
+  return Array.from(links);
+}
+
 // Main crawler entry point.
 export async function crawlSiteForIssues(client, { maxPages = 50, onProgress } = {}) {
   // 1. Get URL list from sitemap, with homepage fallback.
@@ -240,17 +262,14 @@ export async function crawlSiteForIssues(client, { maxPages = 50, onProgress } =
     urls = await fetchSitemapUrls(client.sitemap_url, client.sitemap_raw);
   } catch {}
   if (!urls.length && client.url) {
-    // No sitemap — crawl just the homepage + common pages.
-    const base = client.url.replace(/\/$/, '');
-    urls = [
-      base + '/',
-      base + '/about/',
-      base + '/about-us/',
-      base + '/services/',
-      base + '/products/',
-      base + '/contact/',
-      base + '/blog/'
-    ];
+    // No sitemap — discover real pages from the homepage links instead of
+    // guessing generic paths that may not exist (e.g. Shopify uses /pages/).
+    try {
+      urls = await discoverLinksFromHomepage(client.url);
+    } catch {}
+    if (!urls.length) {
+      urls = [client.url.replace(/\/$/, '') + '/'];
+    }
   }
   if (!urls.length) {
     throw new Error('No URLs to crawl — client needs a sitemap URL or website URL');

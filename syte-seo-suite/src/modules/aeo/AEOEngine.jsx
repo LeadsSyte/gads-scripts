@@ -577,17 +577,30 @@ export default function AEOEngine({ sub }) {
       if (sitemapUrls.length > 0) {
         setProgress(`Step 1/4 — ${sitemapUrls.length} pages from sitemap ✓`);
       } else if (c.url) {
-        // Sitemap failed — generate a list from the client URL + common page patterns.
-        // This ensures we optimize more than just the homepage.
+        // Sitemap failed — discover real pages from the homepage links instead
+        // of guessing generic paths that may not exist (Shopify uses /pages/, etc.)
+        setProgress('Step 1/4 — No sitemap, discovering pages from homepage links…');
         const base = c.url.replace(/\/$/, '');
-        sitemapUrls = [
-          base + '/',
-          base + '/about/',
-          base + '/services/',
-          base + '/contact/',
-          base + '/blog/'
-        ];
-        setProgress('Step 1/4 — Sitemap unavailable, using ' + sitemapUrls.length + ' inferred pages');
+        try {
+          const homepageHtml = await corsFetchText(base + '/');
+          const tempDoc = new DOMParser().parseFromString(homepageHtml, 'text/html');
+          const origin = new URL(base).origin;
+          const discovered = new Set([base + '/']);
+          for (const a of tempDoc.querySelectorAll('a[href]')) {
+            let href = a.getAttribute('href') || '';
+            if (href.startsWith('#') || href.startsWith('mailto:') || href.startsWith('tel:') || href.startsWith('javascript:')) continue;
+            try {
+              const full = new URL(href, base).href;
+              if (full.startsWith(origin) && !full.includes('#')) {
+                discovered.add(full.split('?')[0]);
+              }
+            } catch {}
+          }
+          sitemapUrls = Array.from(discovered);
+        } catch {
+          sitemapUrls = [base + '/'];
+        }
+        setProgress(`Step 1/4 — Discovered ${sitemapUrls.length} pages from homepage links`);
       } else {
         setErr(c.name + ' has no sitemap URL, pasted XML, or website URL.');
         setBusy(false);
