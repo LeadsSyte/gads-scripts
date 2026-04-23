@@ -60,18 +60,27 @@ export async function handler(event) {
     const jinaUrl = 'https://r.jina.ai/' + url;
     const res = await fetch(jinaUrl, {
       method: 'GET',
-      headers: {
-        'Accept': 'text/plain',
-        'X-Return-Format': 'html'
-      }
+      headers: { 'Accept': 'text/html', 'X-Return-Format': 'html' }
     });
     if (res.ok) {
-      const content = await res.text();
+      let content = await res.text();
       if (content.length > 300) {
         return {
           statusCode: 200,
           headers: { 'content-type': 'application/json', ...corsHeaders() },
           body: JSON.stringify({ status: 200, html: content, finalUrl: url, source: 'jina-reader' })
+        };
+      }
+    }
+    // Jina might return markdown — try again without HTML format request.
+    const res2 = await fetch(jinaUrl, { method: 'GET' });
+    if (res2.ok) {
+      const content = await res2.text();
+      if (content.length > 300) {
+        return {
+          statusCode: 200,
+          headers: { 'content-type': 'application/json', ...corsHeaders() },
+          body: JSON.stringify({ status: 200, html: content, finalUrl: url, source: 'jina-markdown' })
         };
       }
     }

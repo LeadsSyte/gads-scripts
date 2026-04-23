@@ -48,19 +48,19 @@ export default function MarkImplementedButton({
   async function handleClick() {
     if (!client) { setErr('Select a client first.'); return; }
 
-    // Always ask for the actual page URL — the default might just be the
-    // client's homepage which won't contain the specific article/change.
-    // Prefer the live_url from a previous CMS push (the real WordPress
-    // permalink), then fall back to deriving a slug from the title.
+    // For AEO/technical, the optimization goes ON the existing page — use
+    // the page URL as-is. Only derive a slug for content articles (new pages).
     let suggestedUrl = pageUrl || client.url || '';
-    const baseOnly = suggestedUrl && !suggestedUrl.replace(/^https?:\/\//, '').includes('/') ||
-                     suggestedUrl.replace(/\/$/, '').split('/').length <= 3;
-    if (baseOnly && title) {
-      const slug = title.toLowerCase()
-        .replace(/[^a-z0-9\s-]/g, '')
-        .replace(/\s+/g, '-')
-        .replace(/-+/g, '-');
-      suggestedUrl = suggestedUrl.replace(/\/$/, '') + '/' + slug + '/';
+    if (module === 'content') {
+      const baseOnly = suggestedUrl && !suggestedUrl.replace(/^https?:\/\//, '').includes('/') ||
+                       suggestedUrl.replace(/\/$/, '').split('/').length <= 3;
+      if (baseOnly && title) {
+        const slug = title.toLowerCase()
+          .replace(/[^a-z0-9\s-]/g, '')
+          .replace(/\s+/g, '-')
+          .replace(/-+/g, '-');
+        suggestedUrl = suggestedUrl.replace(/\/$/, '') + '/' + slug + '/';
+      }
     }
     // NOTE: The slug above is a best-guess. WordPress may have generated a
     // different slug from the meta title. If you pushed this via CMS Push,
