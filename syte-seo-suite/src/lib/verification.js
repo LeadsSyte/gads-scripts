@@ -200,18 +200,23 @@ Return ONLY valid JSON:
 export async function verifyImplementationVisually(impl) {
   if (!impl?.page_url) return { status: 'failed', detail: 'No page URL.' };
 
-  // thum.io renders JS and returns a screenshot. We fetch it as base64.
-  const screenshotUrl = 'https://image.thum.io/get/width/1280/crop/2000/noanimate/' + impl.page_url;
+  // thum.io renders JS and returns a screenshot. Fetch as base64 for Claude Vision.
+  const screenshotUrl = 'https://image.thum.io/get/png/width/800/crop/1200/noanimate/' + impl.page_url;
   let imageBase64;
+  let mediaType = 'image/png';
   try {
     const res = await fetch(screenshotUrl);
     if (!res.ok) throw new Error('Screenshot service returned ' + res.status);
-    const blob = await res.blob();
-    imageBase64 = await new Promise((resolve) => {
-      const reader = new FileReader();
-      reader.onloadend = () => resolve(reader.result.split(',')[1]);
-      reader.readAsDataURL(blob);
-    });
+    const ct = res.headers.get('content-type') || '';
+    if (ct.includes('jpeg') || ct.includes('jpg')) mediaType = 'image/jpeg';
+    else if (ct.includes('webp')) mediaType = 'image/webp';
+    else if (ct.includes('gif')) mediaType = 'image/gif';
+    const arrayBuf = await res.arrayBuffer();
+    const bytes = new Uint8Array(arrayBuf);
+    let binary = '';
+    for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+    imageBase64 = btoa(binary);
+    if (!imageBase64 || imageBase64.length < 100) throw new Error('Screenshot is empty or too small');
   } catch (e) {
     const detail = 'Could not capture page screenshot: ' + e.message;
     await updateImplementation(impl.id, { verification_status: 'failed', verification_detail: detail, verified_at: new Date().toISOString() });
@@ -231,7 +236,7 @@ export async function verifyImplementationVisually(impl) {
         content: [
           {
             type: 'image',
-            source: { type: 'base64', media_type: 'image/png', data: imageBase64 }
+            source: { type: 'base64', media_type: mediaType, data: imageBase64 }
           },
           {
             type: 'text',

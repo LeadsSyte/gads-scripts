@@ -26,6 +26,7 @@ export default function MarkImplementedButton({
   const [err, setErr] = useState('');
   const [showPasteHtml, setShowPasteHtml] = useState(false);
   const [showPreview, setShowPreview] = useState(false);
+  const [verifyPhase, setVerifyPhase] = useState('');
   const [pastedHtml, setPastedHtml] = useState('');
   const [pasteBusy, setPasteBusy] = useState(false);
 
@@ -89,7 +90,7 @@ export default function MarkImplementedButton({
         verification_status: 'pending'
       });
 
-      setPhase('verifying');
+      setPhase('verifying'); setVerifyPhase('Step 1/2 — Fetching and scanning page HTML…');
       let vResult = await verifyImplementation(impl, client);
       let st = typeof vResult === 'string' ? vResult : vResult.status;
       let dt = typeof vResult === 'object' ? vResult.detail : null;
@@ -97,7 +98,7 @@ export default function MarkImplementedButton({
       // If HTML verification failed, automatically try visual verification
       // (screenshot-based) — catches JS-rendered content on Shopify/React sites.
       if (st !== 'verified') {
-        setPhase('verifying');
+        setVerifyPhase('Step 2/2 — Taking screenshot and visual check with AI…');
         try {
           const visualResult = await verifyImplementationVisually(impl);
           if (visualResult.status === 'verified') {
@@ -144,7 +145,7 @@ export default function MarkImplementedButton({
         {phase === 'verifying' && (
           <span style={{ fontSize: 11, color: 'var(--blue)' }}>
             <span className="spinner" style={{ width: 12, height: 12, borderWidth: 2, marginRight: 6 }} />
-            Scanning live page…
+            {verifyPhase || 'Scanning live page…'}
           </span>
         )}
         {phase === 'done' && result && (
