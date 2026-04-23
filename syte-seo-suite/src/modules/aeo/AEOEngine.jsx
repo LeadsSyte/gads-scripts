@@ -1085,28 +1085,75 @@ export default function AEOEngine({ sub }) {
   }
 
   if (sub === 'Latest Results') {
-    const mine = Object.values(results).filter(r => !client || r.client_id === client.id);
+    // Group ALL results by client — not filtered by top-bar selection.
+    // Lets the AM see every optimization across every client in one place.
+    const allResults = Object.values(results);
+    const byClient = {};
+    for (const r of allResults) {
+      const cid = r.client_id || 'unknown';
+      if (!byClient[cid]) byClient[cid] = { client_id: cid, results: [] };
+      byClient[cid].results.push(r);
+    }
+    const clientGroups = Object.values(byClient)
+      .map(g => ({
+        ...g,
+        client: clients.find(c => c.id === g.client_id),
+        totalOpts: g.results.reduce((a, r) => a + (r.optimizations?.length || 0), 0)
+      }))
+      .sort((a, b) => b.totalOpts - a.totalOpts);
+
+    const totalOpts = allResults.reduce((a, r) => a + (r.optimizations?.length || 0), 0);
+
     return (
       <div className="content-area">
-        <div className="row" style={{ justifyContent: 'space-between', marginBottom: 14 }}>
-          <h2 style={{ margin: 0 }}>Latest Results</h2>
-          {mine.length > 0 && (
-            <button onClick={pushAllForClient} disabled={busy} style={{ borderColor: 'var(--mod-cms)', color: 'var(--mod-cms)' }}>
-              {busy ? 'Pushing…' : 'Push All to CMS'}
-            </button>
-          )}
+        <div className="row" style={{ justifyContent: 'space-between', marginBottom: 14, flexWrap: 'wrap', gap: 10 }}>
+          <div>
+            <h2 style={{ margin: 0 }}>Latest Results — All Clients</h2>
+            <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+              {totalOpts} optimizations across {allResults.length} pages · {clientGroups.length} clients
+            </div>
+          </div>
         </div>
-        {mine.length === 0 && <div className="muted">No results yet. Run optimizations from the pipeline above.</div>}
-        {mine.length > 0 && (
-          <div className="muted" style={{ marginBottom: 10, fontSize: 12 }}>
-            {mine.reduce((a, r) => a + (r.optimizations?.length || 0), 0)} total optimizations across {mine.length} pages
-          </div>
-        )}
-        {mine.map(r => (
-          <div className="card" key={r.url} style={{ marginBottom: 10, padding: 0, overflow: 'hidden' }}>
-            <OptPageCard result={r} onDelete={() => deleteResult(r.url, r.client_id)} />
-          </div>
-        ))}
+        {allResults.length === 0 && <div className="muted">No results yet. Run optimizations from Run Optimizations.</div>}
+        {clientGroups.map(g => {
+          const cName = g.client?.name || 'Unknown client';
+          const isOpen = expandedClient === g.client_id;
+          return (
+            <div key={g.client_id} className="card" style={{ marginBottom: 12, padding: 0, overflow: 'hidden' }}>
+              <div
+                className="row"
+                style={{ padding: '12px 14px', justifyContent: 'space-between', cursor: 'pointer', background: isOpen ? 'var(--surface-2)' : 'transparent' }}
+                onClick={() => setExpandedClient(isOpen ? null : g.client_id)}
+              >
+                <div>
+                  <strong style={{ fontSize: 14 }}>{cName}</strong>
+                  <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
+                    {g.totalOpts} optimizations · {g.results.length} page{g.results.length > 1 ? 's' : ''}
+                  </div>
+                </div>
+                <div className="row" style={{ gap: 8 }}>
+                  {g.client && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        useClients.getState().select(g.client_id);
+                        pushAllForClient();
+                      }}
+                      disabled={busy}
+                      style={{ fontSize: 11, padding: '4px 10px', borderColor: 'var(--mod-cms)', color: 'var(--mod-cms)' }}
+                    >
+                      Push All to CMS
+                    </button>
+                  )}
+                  <span className="muted" style={{ fontSize: 10 }}>{isOpen ? '▼' : '▶'}</span>
+                </div>
+              </div>
+              {isOpen && g.results.map(r => (
+                <OptPageCard key={r.url} result={r} onDelete={() => deleteResult(r.url, r.client_id)} />
+              ))}
+            </div>
+          );
+        })}
       </div>
     );
   }
