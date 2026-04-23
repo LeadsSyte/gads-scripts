@@ -34,28 +34,8 @@ export async function handler(event) {
     'Upgrade-Insecure-Requests': '1'
   };
 
-  // TIER 1: Direct fetch with browser headers.
-  try {
-    const res = await fetch(url, { method: 'GET', redirect: 'follow', headers: browserHeaders });
-    const html = await res.text();
-    // Detect bot-blocked responses (404 shells, Cloudflare challenges, captchas).
-    const looksBlocked = res.status === 403 ||
-      (res.status === 404 && html.length < 5000) ||
-      /Attention Required|Cloudflare|Just a moment|captcha|403 Forbidden|Access Denied/i.test(html.slice(0, 2000));
-    if (!looksBlocked && html.length > 500) {
-      return {
-        statusCode: 200,
-        headers: { 'content-type': 'application/json', ...corsHeaders() },
-        body: JSON.stringify({ status: res.status, html, finalUrl: res.url, source: 'direct' })
-      };
-    }
-    // Fall through to tier 2 if blocked.
-  } catch {}
-
-  // TIER 2: Jina AI Reader — free service that renders pages with a real
-  // browser engine and bypasses most bot detection. URL format:
-  //   https://r.jina.ai/https://example.com
-  // Returns clean markdown of the rendered page.
+  // TIER 1: Jina AI Reader — renders JS so it sees Shopify/React/Vue content
+  // that isn't in the raw server HTML. Most reliable for modern sites.
   try {
     const jinaUrl = 'https://r.jina.ai/' + url;
     const res = await fetch(jinaUrl, {
@@ -63,7 +43,7 @@ export async function handler(event) {
       headers: { 'Accept': 'text/html', 'X-Return-Format': 'html' }
     });
     if (res.ok) {
-      let content = await res.text();
+      const content = await res.text();
       if (content.length > 300) {
         return {
           statusCode: 200,
@@ -72,7 +52,6 @@ export async function handler(event) {
         };
       }
     }
-    // Jina might return markdown — try again without HTML format request.
     const res2 = await fetch(jinaUrl, { method: 'GET' });
     if (res2.ok) {
       const content = await res2.text();
@@ -86,7 +65,23 @@ export async function handler(event) {
     }
   } catch {}
 
-  // TIER 3: AllOrigins as last-resort CORS proxy.
+  // TIER 2: Direct fetch with browser headers (fallback for sites Jina can't reach).
+  try {
+    const res = await fetch(url, { method: 'GET', redirect: 'follow', headers: browserHeaders });
+    const html = await res.text();
+    const looksBlocked = res.status === 403 ||
+      (res.status === 404 && html.length < 5000) ||
+      /Attention Required|Cloudflare|Just a moment|captcha|403 Forbidden|Access Denied/i.test(html.slice(0, 2000));
+    if (!looksBlocked && html.length > 500) {
+      return {
+        statusCode: 200,
+        headers: { 'content-type': 'application/json', ...corsHeaders() },
+        body: JSON.stringify({ status: res.status, html, finalUrl: res.url, source: 'direct' })
+      };
+    }
+  } catch {}
+
+  // TIER 3: AllOrigins CORS proxy — last resort.
   try {
     const res = await fetch('https://api.allorigins.win/raw?url=' + encodeURIComponent(url));
     if (res.ok) {
