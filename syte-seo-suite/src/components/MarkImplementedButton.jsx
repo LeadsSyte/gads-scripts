@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useClients } from '../store/useClients.js';
 import { logImplementation, updateImplementation } from '../lib/supabase.js';
-import { verifyImplementation, verifyImplementationFromHtml } from '../lib/verification.js';
+import { verifyImplementation, verifyImplementationFromHtml, verifyImplementationVisually } from '../lib/verification.js';
 
 // Reusable "Mark as Implemented" button. Place it next to any generated
 // output (article, schema, meta fix, AEO optimization). When clicked:
@@ -90,10 +90,25 @@ export default function MarkImplementedButton({
       });
 
       setPhase('verifying');
-      const vResult = await verifyImplementation(impl, client);
-      // vResult is now { status, detail } with the real reason.
-      const st = typeof vResult === 'string' ? vResult : vResult.status;
-      const dt = typeof vResult === 'object' ? vResult.detail : null;
+      let vResult = await verifyImplementation(impl, client);
+      let st = typeof vResult === 'string' ? vResult : vResult.status;
+      let dt = typeof vResult === 'object' ? vResult.detail : null;
+
+      // If HTML verification failed, automatically try visual verification
+      // (screenshot-based) — catches JS-rendered content on Shopify/React sites.
+      if (st !== 'verified') {
+        setPhase('verifying');
+        try {
+          const visualResult = await verifyImplementationVisually(impl);
+          if (visualResult.status === 'verified') {
+            st = 'verified';
+            dt = visualResult.detail;
+          } else {
+            dt = (dt || '') + '\n\nVisual check: ' + (visualResult.detail || 'also failed');
+          }
+        } catch {}
+      }
+
       setResult({
         status: st,
         detail: dt || (st === 'verified' ? 'Change confirmed on the live page.' : 'Verification failed — no detail available.'),

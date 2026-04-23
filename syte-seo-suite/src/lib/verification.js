@@ -193,6 +193,96 @@ Return ONLY valid JSON:
   }
 }
 
+// Visual verification — takes a screenshot of the rendered page (including
+// JS content) and asks Claude Vision to check if the specific change is
+// visible. Works for Shopify/React/Vue sites where server-side HTML doesn't
+// contain the JS-rendered content.
+export async function verifyImplementationVisually(impl) {
+  if (!impl?.page_url) return { status: 'failed', detail: 'No page URL.' };
+
+  // thum.io renders JS and returns a screenshot. We fetch it as base64.
+  const screenshotUrl = 'https://image.thum.io/get/width/1280/crop/2000/noanimate/' + impl.page_url;
+  let imageBase64;
+  try {
+    const res = await fetch(screenshotUrl);
+    if (!res.ok) throw new Error('Screenshot service returned ' + res.status);
+    const blob = await res.blob();
+    imageBase64 = await new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(reader.result.split(',')[1]);
+      reader.readAsDataURL(blob);
+    });
+  } catch (e) {
+    const detail = 'Could not capture page screenshot: ' + e.message;
+    await updateImplementation(impl.id, { verification_status: 'failed', verification_detail: detail, verified_at: new Date().toISOString() });
+    return { status: 'failed', detail };
+  }
+
+  // Ask Claude Vision to check if the content is visible.
+  const changeDesc = impl.change_type === 'aeo_optimization'
+    ? `AEO optimization titled "${impl.title}". Look for: answer blocks (styled paragraph blocks near the top), FAQ sections (accordion or Q&A lists), key takeaways (bullet point summaries), or similar structured content sections that weren't part of the original page design.`
+    : `${impl.change_type}: "${impl.title}". Content: ${(impl.description || '').slice(0, 300)}`;
+
+  try {
+    const resp = await claudeComplete({
+      system: 'You visually verify SEO changes on live web pages by examining screenshots. Return ONLY valid JSON.',
+      messages: [{
+        role: 'user',
+        content: [
+          {
+            type: 'image',
+            source: { type: 'base64', media_type: 'image/png', data: imageBase64 }
+          },
+          {
+            type: 'text',
+            text: `Look at this screenshot of ${impl.page_url} and determine if the following change is visible on the page:
+
+${changeDesc}
+
+RULES:
+- Look for the VISUAL PRESENCE of the content — styled blocks, FAQ sections, bullet lists, answer paragraphs, schema indicators.
+- The exact HTML/styling may differ from the original implementation — that's fine. Check if the CONTENT THEMES are present.
+- For "Answer Block": look for a prominent text block near the top of the page with a brand definition or summary paragraph, often with a colored background or left border.
+- For "FAQ Section": look for a list of questions with expandable answers, an accordion, or Q&A pairs.
+- For "Key Takeaways": look for a bulleted or numbered list summarizing key services/features.
+- Be LENIENT — different styling is acceptable. The goal is: did they add the content?
+
+Return ONLY JSON:
+{
+  "visible": true or false,
+  "confidence": "high" | "medium" | "low",
+  "evidence": "1-2 sentences describing what you see that confirms or denies the change"
+}`
+          }
+        ]
+      }],
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 500,
+      temperature: 0
+    });
+
+    let parsed;
+    try {
+      const m = resp.match(/\{[\s\S]*\}/);
+      parsed = m ? JSON.parse(m[0]) : null;
+    } catch { parsed = null; }
+
+    if (!parsed) {
+      await updateImplementation(impl.id, { verification_status: 'failed', verification_detail: 'Could not parse visual verification.', verified_at: new Date().toISOString() });
+      return { status: 'failed', detail: 'Could not parse visual verification response.' };
+    }
+
+    const status = parsed.visible ? 'verified' : 'failed';
+    const detail = (parsed.evidence || '') + ' · Confidence: ' + (parsed.confidence || '?') + ' · (Visual verification via screenshot)';
+    await updateImplementation(impl.id, { verification_status: status, verification_detail: detail, verified_at: new Date().toISOString() });
+    return { status, detail };
+  } catch (e) {
+    const detail = 'Visual verification error: ' + e.message;
+    await updateImplementation(impl.id, { verification_status: 'failed', verification_detail: detail, verified_at: new Date().toISOString() });
+    return { status: 'failed', detail };
+  }
+}
+
 export async function verifyImplementation(impl, client) {
   if (!impl?.page_url) {
     const detail = 'No page URL to scan.';
