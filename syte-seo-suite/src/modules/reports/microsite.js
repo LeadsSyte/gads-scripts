@@ -81,29 +81,33 @@ export function buildMicrositeHtml({ micro, client, monthLabel, rankscale }) {
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>${esc(client.name || 'Client')} — ${esc(monthLabel)} Report</title>
-<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=Syne:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
   :root {
-    --bg: #0a0a0c;
-    --surface: #111316;
-    --surface-2: #191b1f;
-    --border: #2a2a32;
-    --text: #e8e8ed;
-    --muted: #8b8b96;
-    --accent: #a78bfa;
-    --green: #34d399;
-    --red: #ff4d4d;
-    --orange: #ff9f43;
+    --bg: #0c0c0e;
+    --surface: #15151a;
+    --surface-2: #1d1d24;
+    --border: #2a2a33;
+    --text: #f5f5f7;
+    --muted: #9a9aa6;
+    --faint: #5a5a66;
+    --accent: #c8f060;
+    --accent-blue: #4F8EF7;
+    --green: #4ade80;
+    --red: #f87171;
+    --orange: #fbbf24;
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
     background: var(--bg); color: var(--text);
-    font-family: 'DM Sans', system-ui, sans-serif;
+    font-family: 'Syne', system-ui, sans-serif;
     line-height: 1.55; font-size: 15px;
   }
-  h1, h2, h3 { font-family: 'Instrument Serif', Georgia, serif; font-weight: 400; letter-spacing: -0.01em; }
-  .wrap { max-width: 880px; margin: 0 auto; padding: 48px 24px; }
-  .logo { font-family: 'Instrument Serif', serif; font-size: 22px; letter-spacing: .08em; text-transform: uppercase; }
+  h1, h2, h3 { font-family: 'DM Serif Display', Georgia, serif; font-weight: 400; letter-spacing: -0.01em; }
+  .wrap { max-width: 1200px; margin: 0 auto; padding: 48px 24px; }
+  .logo { font-family: 'Syne', sans-serif; font-size: 22px; font-weight: 800; letter-spacing: .02em; text-transform: uppercase; }
   .pill {
     display: inline-block; padding: 4px 12px; border-radius: 999px;
     background: var(--surface-2); border: 1px solid var(--border);
@@ -125,7 +129,7 @@ export function buildMicrositeHtml({ micro, client, monthLabel, rankscale }) {
     background: var(--surface); border: 1px solid var(--border);
     border-radius: 12px; padding: 18px;
   }
-  .metric-val { font-family: 'Instrument Serif', serif; font-size: 36px; line-height: 1; }
+  .metric-val { font-family: 'DM Serif Display', serif; font-size: 36px; line-height: 1; }
   .metric-label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .05em; margin-top: 6px; }
   .metric-delta { margin-top: 4px; font-size: 13px; font-weight: 500; }
   .metric-delta.pos { color: var(--green); }
@@ -142,13 +146,13 @@ export function buildMicrositeHtml({ micro, client, monthLabel, rankscale }) {
   .aeo { background: linear-gradient(180deg, rgba(167, 139, 250, .06), transparent); }
   .aeo-head { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 20px; margin-bottom: 20px; }
   .aeo-score {
-    font-family: 'Instrument Serif', serif; font-size: 88px; line-height: 1;
+    font-family: 'DM Serif Display', serif; font-size: 88px; line-height: 1;
   }
   .aeo-score-delta { color: var(--muted); font-size: 14px; }
   .engines { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin: 20px 0; }
   .engine-tile { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px; }
   .engine-name { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
-  .engine-score { font-family: 'Instrument Serif', serif; font-size: 28px; margin: 4px 0 8px; }
+  .engine-score { font-family: 'DM Serif Display', serif; font-size: 28px; margin: 4px 0 8px; }
   .engine-bar { height: 6px; background: var(--surface-2); border-radius: 3px; overflow: hidden; }
   .engine-bar > div { height: 100%; transition: width .3s; }
   table { width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 13px; }
@@ -185,7 +189,7 @@ export function buildMicrositeHtml({ micro, client, monthLabel, rankscale }) {
     border: 1px solid rgba(52, 211, 153, .3); border-radius: 12px;
     padding: 24px; margin-top: 16px; text-align: center;
   }
-  .ppc-value { font-family: 'Instrument Serif', serif; font-size: 48px; color: var(--green); line-height: 1; }
+  .ppc-value { font-family: 'DM Serif Display', serif; font-size: 48px; color: var(--green); line-height: 1; }
   .ppc-label { color: var(--muted); font-size: 13px; margin-top: 8px; }
   .ppc-detail { color: var(--muted); font-size: 12px; margin-top: 4px; }
 
