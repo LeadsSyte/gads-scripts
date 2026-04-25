@@ -55,13 +55,49 @@ function sentenceAt(text, offset) {
 }
 
 export function detectBrand(text, { name, url, competitors }) {
-  const brandDomain = (url || '').replace(/^https?:\/\//, '').replace(/\/.*$/, '').split('.')[0];
-  const brandNeedles = [name, brandDomain].filter(Boolean);
+  // Build multiple needles from the brand name + domain for broader matching.
+  const brandDomain = (url || '').replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+  const brandDomainNoTld = brandDomain.split('.')[0];
+  const brandNeedles = [
+    name,                                          // "Hot Leathers"
+    brandDomain,                                   // "hotleathers.com"
+    brandDomainNoTld,                              // "hotleathers"
+    name?.replace(/\s+/g, ''),                     // "HotLeathers"
+    // Also try "www." prefix stripped
+    brandDomain.replace(/^www\./, '')              // "hotleathers.com" without www
+  ].filter(Boolean).filter(n => n.length >= 3);    // skip very short matches
+
+  // Also try individual significant words (3+ chars) from the brand name.
+  // If 2+ unique words match in the response, count it as a brand mention.
+  const brandWords = (name || '').split(/\s+/).filter(w => w.length >= 4).map(w => w.toLowerCase());
+
   const competitorList = (competitors || '')
     .split(',')
     .map(s => s.trim())
     .filter(Boolean);
 
+  // Check for any needle match.
+  const lower = (text || '').toLowerCase();
+  let mentioned = false;
+  let matchOffset = -1;
+  for (const needle of brandNeedles) {
+    const idx = lower.indexOf(needle.toLowerCase());
+    if (idx !== -1) {
+      mentioned = true;
+      if (matchOffset === -1 || idx < matchOffset) matchOffset = idx;
+    }
+  }
+
+  // Fallback: if 2+ significant brand words appear, count as mentioned.
+  if (!mentioned && brandWords.length >= 2) {
+    const matchedWords = brandWords.filter(w => lower.includes(w));
+    if (matchedWords.length >= 2) {
+      mentioned = true;
+      matchOffset = lower.indexOf(matchedWords[0]);
+    }
+  }
+
+  // Build competitor + brand mention order for position scoring.
   const allBrands = [
     ...brandNeedles.map(n => ({ key: 'self', name: n })),
     ...competitorList.map(n => ({ key: n, name: n }))
@@ -77,13 +113,11 @@ export function detectBrand(text, { name, url, competitors }) {
   }
 
   const selfIdx = uniqueOrder.findIndex(h => h.key === 'self');
-  const mentioned = selfIdx !== -1;
-  const position = mentioned ? selfIdx + 1 : null;
+  const position = mentioned ? (selfIdx !== -1 ? selfIdx + 1 : 1) : null;
 
   let excerpt = '';
-  if (mentioned) {
-    const offset = firstIndexOfAny(text, brandNeedles);
-    if (offset !== -1) excerpt = sentenceAt(text, offset);
+  if (mentioned && matchOffset !== -1) {
+    excerpt = sentenceAt(text, matchOffset);
   }
 
   const competitorHits = uniqueOrder

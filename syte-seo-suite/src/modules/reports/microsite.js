@@ -15,7 +15,7 @@ function scoreColor(s) {
 
 // micro: parsed microsite JSON from Claude, client: full client record,
 // monthLabel: e.g. "April 2026", rankscale: optional share URL.
-export function buildMicrositeHtml({ micro, client, monthLabel, rankscale, reportData }) {
+export function buildMicrositeHtml({ micro, client, monthLabel, rankscale, reportData, aeoProbe }) {
   const aeo = micro?.aeoSection || {};
   const showAeo = !!aeo.show;
   const ppc = micro?.ppcEquivalent || {};
@@ -25,6 +25,7 @@ export function buildMicrositeHtml({ micro, client, monthLabel, rankscale, repor
   const rd = reportData || {};
   const traffic = rd.traffic || {};
   const isEcom = rd.clientType === 'ecommerce';
+  const probe = aeoProbe || {};
 
   const highlights = (micro?.highlights || []).map(h => `
     <div class="metric">
@@ -286,6 +287,67 @@ export function buildMicrositeHtml({ micro, client, monthLabel, rankscale, repor
       ${aeo.narrative ? `<p class="narrative" style="margin-top:16px">${esc(aeo.narrative)}</p>` : ''}
       <p class="aeo-footer">Tracked across ChatGPT, Gemini, Perplexity &amp; Claude using Syte's proprietary AEO Snapshot methodology.</p>
       ${rankscaleBtn}
+    </section>` : ''}
+
+    ${probe.per_query?.length > 0 ? `
+    <section>
+      <h2>AI Engine Visibility</h2>
+      <p style="color:var(--muted);font-size:13px;margin-bottom:16px;">
+        We probed ${probe.engines_used?.length || 0} AI engine${(probe.engines_used?.length || 0) > 1 ? 's' : ''}
+        (${(probe.engines_used || []).join(', ')}) with ${new Set(probe.per_query.map(r => r.query)).size} queries
+        to test whether <strong>${esc(client.name)}</strong> gets recommended.
+        ${probe.sentiment || ''}
+      </p>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px;margin-bottom:20px;">
+        <div style="padding:16px;background:var(--surface);border:1px solid var(--border);border-radius:12px;text-align:center;">
+          <div style="font-family:'DM Serif Display',serif;font-size:42px;color:${probe.overall_score >= 60 ? 'var(--accent)' : probe.overall_score >= 30 ? 'var(--orange)' : 'var(--red)'};">${probe.overall_score || 0}</div>
+          <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;">AEO Score</div>
+        </div>
+        <div style="padding:16px;background:var(--surface);border:1px solid var(--border);border-radius:12px;text-align:center;">
+          <div style="font-family:'DM Serif Display',serif;font-size:42px;color:var(--accent);">${probe.per_query?.filter(r => r.mentioned).length || 0}/${probe.per_query?.length || 0}</div>
+          <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;">Citations</div>
+        </div>
+        ${Object.entries(probe.engine_scores || {}).map(([eng, score]) => `
+          <div style="padding:16px;background:var(--surface);border:1px solid var(--border);border-radius:12px;text-align:center;">
+            <div style="font-family:'DM Serif Display',serif;font-size:32px;color:${score >= 60 ? 'var(--accent)' : score >= 30 ? 'var(--orange)' : 'var(--red)'};">${score}</div>
+            <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;">${esc(eng)}</div>
+          </div>
+        `).join('')}
+      </div>
+      <table class="data-table" style="width:100%;border-collapse:collapse;font-size:12px;">
+        <thead>
+          <tr style="border-bottom:2px solid var(--border);text-align:left;">
+            <th style="padding:8px 10px;color:var(--muted);font-size:10px;text-transform:uppercase;">Query</th>
+            <th style="padding:8px 10px;color:var(--muted);font-size:10px;text-transform:uppercase;">Engine</th>
+            <th style="padding:8px 10px;text-align:center;color:var(--muted);font-size:10px;text-transform:uppercase;">Cited?</th>
+            <th style="padding:8px 10px;text-align:center;color:var(--muted);font-size:10px;text-transform:uppercase;">Position</th>
+            <th style="padding:8px 10px;color:var(--muted);font-size:10px;text-transform:uppercase;">Sentiment</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${probe.per_query.filter(r => !r.error).map(r => `
+            <tr style="border-bottom:1px solid var(--border);">
+              <td style="padding:6px 10px;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(r.query)}</td>
+              <td style="padding:6px 10px;">${esc(r.engine)}</td>
+              <td style="padding:6px 10px;text-align:center;">${r.mentioned ? '<span style="color:var(--accent);">✓</span>' : '<span style="color:var(--red);">✗</span>'}</td>
+              <td style="padding:6px 10px;text-align:center;">${r.position || '—'}</td>
+              <td style="padding:6px 10px;color:${r.sentiment === 'positive' ? 'var(--accent)' : r.sentiment === 'negative' ? 'var(--red)' : 'var(--muted)'};">${r.mentioned ? (r.sentiment || '—') : '—'}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+      ${(probe.competitors || []).length > 0 ? `
+        <div style="margin-top:16px;">
+          <h3 style="font-size:14px;margin-bottom:8px;">Competitor Mentions</h3>
+          <div style="display:flex;gap:12px;flex-wrap:wrap;">
+            ${probe.competitors.map(c => `
+              <div style="padding:8px 16px;background:var(--surface);border:1px solid var(--border);border-radius:8px;font-size:12px;">
+                <strong>${esc(c.name)}</strong> <span style="color:var(--muted);margin-left:8px;">${c.appearances} mention${c.appearances !== 1 ? 's' : ''}</span>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      ` : ''}
     </section>` : ''}
 
     ${micro?.whatNext ? `

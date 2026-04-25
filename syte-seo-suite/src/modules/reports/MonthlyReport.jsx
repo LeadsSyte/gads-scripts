@@ -4,6 +4,7 @@ import { claudeComplete, extractJSON } from '../../lib/anthropic.js';
 import { listAeoSnapshots, logReportSent } from '../../lib/supabase.js';
 import { ALICE_SYSTEM, MICROSITE_SYSTEM, QA_SYSTEM, buildAlicePayload, getWorkSummary } from './reportPrompts.js';
 import { buildMicrositeHtml, downloadMicrosite } from './microsite.js';
+import { runSnapshot, snapshotPreflight } from './aeoRunner.js';
 import { ensureToken, SCOPES, getToken } from '../technical/googleAuth.js';
 import { fetchReportData } from './reportData.js';
 import ReportDashboard from './ReportDashboard.jsx';
@@ -53,6 +54,7 @@ export default function MonthlyReport() {
   const [sent, setSent] = useState(false);
   const [showMicroFull, setShowMicroFull] = useState(false);
   const [reportData, setReportData] = useState(null);
+  const [liveAeoProbe, setLiveAeoProbe] = useState(null);
 
   // Auto-fetch GA4 + GSC data when client or month changes.
   useEffect(() => {
@@ -152,9 +154,10 @@ export default function MonthlyReport() {
       client,
       monthLabel: monthLabel(month),
       rankscale: client.rankscale_url,
-      reportData
+      reportData,
+      aeoProbe: liveAeoProbe
     });
-  }, [microJson, client, month, reportData]);
+  }, [microJson, client, month, reportData, liveAeoProbe]);
 
   async function generate() {
     if (!client) return;
@@ -170,6 +173,29 @@ export default function MonthlyReport() {
     }, aeoSnap, workSummary);
 
     try {
+      // 0. Live AEO probe — run probe queries against available AI engines
+      // to check brand visibility. Uses existing snapshot infrastructure.
+      const preflight = snapshotPreflight(client);
+      if (preflight.canRun) {
+        setPhase('aeo-probe');
+        try {
+          const probeResult = await runSnapshot(client, {
+            onProgress: (p) => setPhase('aeo-probe: ' + (p.engine || '') + ' — ' + (p.query || '').slice(0, 40))
+          });
+          setLiveAeoProbe(probeResult);
+          // Feed probe results into form for Alice email
+          setForm(prev => ({
+            ...prev,
+            aeoScore: probeResult.overall_score,
+            aeoSentiment: probeResult.sentiment,
+            aeoEngines: probeResult.engines_used?.join(', '),
+            aeoCitations: probeResult.per_query?.filter(r => r.mentioned).length + ' of ' + probeResult.per_query?.length
+          }));
+        } catch (e) {
+          console.warn('[Report] AEO probe failed:', e.message);
+        }
+      }
+
       // 1. Alice email
       setPhase('alice');
       const aliceText = await claudeComplete({
@@ -246,6 +272,7 @@ export default function MonthlyReport() {
   const hasSnapshot = !!aeoSnap;
 
   const PHASES = [
+    { key: 'aeo-probe', label: 'AEO Probe' },
     { key: 'alice', label: 'Alice email' },
     { key: 'micro', label: 'Microsite JSON' },
     { key: 'qa',    label: 'QA check' }
@@ -419,8 +446,8 @@ export default function MonthlyReport() {
               <span key={p.key} style={{
                 fontSize: 11, padding: '4px 10px', borderRadius: 999,
                 border: '1px solid var(--border)',
-                background: phase === p.key ? ACCENT : 'transparent',
-                color: phase === p.key ? '#0a0a0c'
+                background: phase.startsWith(p.key) ? ACCENT : 'transparent',
+                color: phase.startsWith(p.key) ? '#0a0a0c'
                        : (phase === 'review' || (phase === 'micro' && p.key === 'alice') || (phase === 'qa' && p.key !== 'qa')) ? 'var(--green)' : 'var(--text-muted)'
               }}>{p.label}</span>
             ))}
