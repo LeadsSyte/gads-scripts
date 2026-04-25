@@ -151,9 +151,10 @@ export default function MonthlyReport() {
       micro: microJson,
       client,
       monthLabel: monthLabel(month),
-      rankscale: client.rankscale_url
+      rankscale: client.rankscale_url,
+      reportData
     });
-  }, [microJson, client, month]);
+  }, [microJson, client, month, reportData]);
 
   async function generate() {
     if (!client) return;

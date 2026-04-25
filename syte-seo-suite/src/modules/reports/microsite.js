@@ -15,13 +15,16 @@ function scoreColor(s) {
 
 // micro: parsed microsite JSON from Claude, client: full client record,
 // monthLabel: e.g. "April 2026", rankscale: optional share URL.
-export function buildMicrositeHtml({ micro, client, monthLabel, rankscale }) {
+export function buildMicrositeHtml({ micro, client, monthLabel, rankscale, reportData }) {
   const aeo = micro?.aeoSection || {};
   const showAeo = !!aeo.show;
   const ppc = micro?.ppcEquivalent || {};
   const showPpc = !!ppc.show;
   const work = micro?.workDone || {};
   const showWork = !!work.show && (work.items || []).length > 0;
+  const rd = reportData || {};
+  const traffic = rd.traffic || {};
+  const isEcom = rd.clientType === 'ecommerce';
 
   const highlights = (micro?.highlights || []).map(h => `
     <div class="metric">
@@ -289,6 +292,103 @@ export function buildMicrositeHtml({ micro, client, monthLabel, rankscale }) {
     <section>
       <h2>What's Next</h2>
       <div class="next">${esc(micro.whatNext)}</div>
+    </section>` : ''}
+
+    ${traffic.current ? `
+    <section>
+      <h2>Organic Performance — Detailed Comparison</h2>
+      <table class="data-table" style="width:100%;border-collapse:collapse;font-size:13px;margin-bottom:24px;">
+        <thead>
+          <tr style="border-bottom:2px solid var(--border);text-align:left;">
+            <th style="padding:10px;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.06em;">Metric</th>
+            <th style="padding:10px;text-align:right;color:var(--muted);font-size:11px;text-transform:uppercase;">This Month</th>
+            <th style="padding:10px;text-align:right;color:var(--muted);font-size:11px;text-transform:uppercase;">Prev Month</th>
+            <th style="padding:10px;text-align:right;color:var(--muted);font-size:11px;text-transform:uppercase;">MoM Change</th>
+            <th style="padding:10px;text-align:right;color:var(--muted);font-size:11px;text-transform:uppercase;">Same Month LY</th>
+            <th style="padding:10px;text-align:right;color:var(--muted);font-size:11px;text-transform:uppercase;">YoY Change</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${['users', 'sessions', 'conversions'].concat(isEcom ? ['revenue'] : []).map(key => {
+            const labels = { users: 'Organic Users', sessions: 'Organic Sessions', conversions: isEcom ? 'Transactions' : 'Conversions (Leads)', revenue: 'Revenue' };
+            const cur = traffic.current?.[key] || 0;
+            const prev = traffic.previous?.[key] || 0;
+            const yoy = traffic.yoy?.[key] || 0;
+            const momPct = traffic.momChange?.[key];
+            const yoyPct = traffic.yoyChange?.[key];
+            const fmtN = n => Number(n).toLocaleString();
+            const arrow = v => v == null ? '—' : v > 0 ? '<span style="color:var(--green);">▲ ' + Math.abs(v) + '%</span>' : v < 0 ? '<span style="color:var(--red);">▼ ' + Math.abs(v) + '%</span>' : '—';
+            return `<tr style="border-bottom:1px solid var(--border);">
+              <td style="padding:10px;font-weight:600;">${labels[key] || key}</td>
+              <td style="padding:10px;text-align:right;font-family:'JetBrains Mono',monospace;font-size:12px;">${key === 'revenue' ? 'R' : ''}${fmtN(cur)}</td>
+              <td style="padding:10px;text-align:right;color:var(--muted);">${key === 'revenue' ? 'R' : ''}${fmtN(prev)}</td>
+              <td style="padding:10px;text-align:right;">${arrow(momPct)}</td>
+              <td style="padding:10px;text-align:right;color:var(--muted);">${key === 'revenue' ? 'R' : ''}${fmtN(yoy)}</td>
+              <td style="padding:10px;text-align:right;">${arrow(yoyPct)}</td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>
+    </section>` : ''}
+
+    ${(rd.keywords || []).length > 0 ? `
+    <section>
+      <h2>Keyword Rankings</h2>
+      <p style="color:var(--muted);font-size:13px;margin-bottom:14px;">Top ${Math.min(rd.keywords.length, 30)} keywords by impressions — position change vs previous month</p>
+      <table class="data-table" style="width:100%;border-collapse:collapse;font-size:12px;">
+        <thead>
+          <tr style="border-bottom:2px solid var(--border);text-align:left;">
+            <th style="padding:8px 10px;color:var(--muted);font-size:10px;text-transform:uppercase;">Keyword</th>
+            <th style="padding:8px 10px;text-align:right;color:var(--muted);font-size:10px;text-transform:uppercase;">Position</th>
+            <th style="padding:8px 10px;text-align:right;color:var(--muted);font-size:10px;text-transform:uppercase;">Change</th>
+            <th style="padding:8px 10px;text-align:right;color:var(--muted);font-size:10px;text-transform:uppercase;">Clicks</th>
+            <th style="padding:8px 10px;text-align:right;color:var(--muted);font-size:10px;text-transform:uppercase;">Impressions</th>
+            <th style="padding:8px 10px;text-align:right;color:var(--muted);font-size:10px;text-transform:uppercase;">CTR</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rd.keywords.slice(0, 30).map(kw => {
+            const changeHtml = kw.change != null
+              ? (kw.change > 0 ? '<span style="color:var(--green);">▲ ' + Math.abs(kw.change).toFixed(1) + '</span>' : kw.change < 0 ? '<span style="color:var(--red);">▼ ' + Math.abs(kw.change).toFixed(1) + '</span>' : '—')
+              : '<span style="color:var(--muted);font-size:10px;">new</span>';
+            return `<tr style="border-bottom:1px solid var(--border);">
+              <td style="padding:6px 10px;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(kw.query)}</td>
+              <td style="padding:6px 10px;text-align:right;font-family:'JetBrains Mono',monospace;">${kw.position}</td>
+              <td style="padding:6px 10px;text-align:right;">${changeHtml}</td>
+              <td style="padding:6px 10px;text-align:right;">${Number(kw.clicks).toLocaleString()}</td>
+              <td style="padding:6px 10px;text-align:right;">${Number(kw.impressions).toLocaleString()}</td>
+              <td style="padding:6px 10px;text-align:right;color:var(--muted);">${kw.ctr}</td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>
+    </section>` : ''}
+
+    ${(rd.topPages || []).length > 0 ? `
+    <section>
+      <h2>Top Pages by Organic Clicks</h2>
+      <table class="data-table" style="width:100%;border-collapse:collapse;font-size:12px;">
+        <thead>
+          <tr style="border-bottom:2px solid var(--border);text-align:left;">
+            <th style="padding:8px 10px;color:var(--muted);font-size:10px;text-transform:uppercase;">Page</th>
+            <th style="padding:8px 10px;text-align:right;color:var(--muted);font-size:10px;text-transform:uppercase;">Clicks</th>
+            <th style="padding:8px 10px;text-align:right;color:var(--muted);font-size:10px;text-transform:uppercase;">Impressions</th>
+            <th style="padding:8px 10px;text-align:right;color:var(--muted);font-size:10px;text-transform:uppercase;">Avg Position</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rd.topPages.map(p => {
+            let path = p.page;
+            try { path = new URL(p.page).pathname; } catch {}
+            return `<tr style="border-bottom:1px solid var(--border);">
+              <td style="padding:6px 10px;font-family:'JetBrains Mono',monospace;font-size:11px;max-width:400px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(path)}</td>
+              <td style="padding:6px 10px;text-align:right;">${Number(p.clicks).toLocaleString()}</td>
+              <td style="padding:6px 10px;text-align:right;">${Number(p.impressions).toLocaleString()}</td>
+              <td style="padding:6px 10px;text-align:right;">${p.position}</td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>
     </section>` : ''}
 
     <footer>
