@@ -4,9 +4,9 @@ import { claudeComplete, extractJSON } from '../../lib/anthropic.js';
 import { listAeoSnapshots, logReportSent } from '../../lib/supabase.js';
 import { ALICE_SYSTEM, MICROSITE_SYSTEM, QA_SYSTEM, buildAlicePayload, getWorkSummary } from './reportPrompts.js';
 import { buildMicrositeHtml, downloadMicrosite } from './microsite.js';
-import { runReport } from '../aeo/ga4.js';
-import { querySearchAnalytics } from '../technical/gsc.js';
 import { ensureToken, SCOPES, getToken } from '../technical/googleAuth.js';
+import { fetchReportData } from './reportData.js';
+import ReportDashboard from './ReportDashboard.jsx';
 
 const ACCENT = '#a78bfa';
 
@@ -52,6 +52,7 @@ export default function MonthlyReport() {
   const [qa, setQa] = useState(null);
   const [sent, setSent] = useState(false);
   const [showMicroFull, setShowMicroFull] = useState(false);
+  const [reportData, setReportData] = useState(null);
 
   // Auto-fetch GA4 + GSC data when client or month changes.
   useEffect(() => {
@@ -74,189 +75,72 @@ export default function MonthlyReport() {
     }).catch(() => {});
   }, [client?.id, month]);
 
-  // Pull GA4 traffic + GSC search data automatically.
+  // Pull all report data (GA4 traffic + conversions + GSC keywords) via reportData.js.
   async function autoFetchMetrics(c, m) {
     if (!c) return;
     setFetchStatus('Checking Google connection…');
+    setReportData(null);
 
-    // Calculate date ranges for the report month.
-    const [year, mo] = m.split('-').map(Number);
-    const thisStart = new Date(year, mo - 1, 1);
-    const thisEnd = new Date(year, mo, 0); // last day of month
-    const lastStart = new Date(year, mo - 2, 1);
-    const lastEnd = new Date(year, mo - 1, 0);
-    // Same month last year
-    const yoyStart = new Date(year - 1, mo - 1, 1);
-    const yoyEnd = new Date(year - 1, mo, 0);
-
-    // Try to get a valid Google token. If one exists it's reused silently;
-    // if expired or missing, ensureToken will prompt the user to sign in.
     let token = getToken();
     if (!token?.access_token && (c.ga4_property_id || c.gsc_property)) {
       setFetchStatus('Connecting to Google — please sign in if prompted…');
       try {
         token = await ensureToken([SCOPES.ga4, SCOPES.gsc]);
-      } catch (e) {
-        setFetchStatus('Google auth failed — enter metrics manually or try again');
+      } catch {
+        setFetchStatus('Google auth failed — try again');
         return;
       }
     }
-    if (!token?.access_token && (c.ga4_property_id || c.gsc_property)) {
-      setFetchStatus('Google not connected — enter metrics manually or connect in Settings');
-      return;
-    }
 
-    // GA4 traffic data
-    if (c.ga4_property_id) {
-      setFetchStatus('Pulling GA4 traffic data…');
-      try {
-        // This month
-        const thisMonth = await fetchGA4Month(c.ga4_property_id, thisStart, thisEnd);
-        // Last month
-        const lastMonth = await fetchGA4Month(c.ga4_property_id, lastStart, lastEnd);
-        // Same month last year
-        let yoyMonth = null;
-        try { yoyMonth = await fetchGA4Month(c.ga4_property_id, yoyStart, yoyEnd); } catch {}
+    const [year, mo] = m.split('-').map(Number);
+    setFetchStatus('Pulling GA4 + GSC data for ' + monthLabel(m) + '…');
+    try {
+      const data = await fetchReportData(c, year, mo);
+      setReportData(data);
 
+      // Also populate form fields for the Alice email generator.
+      if (data.traffic?.current) {
+        const t = data.traffic;
         setForm(prev => ({
           ...prev,
-          seoUsersThis: thisMonth.totalUsers,
-          seoUsersLast: lastMonth.totalUsers,
-          seoUsersYoy: yoyMonth?.totalUsers || '',
-          seoOrganicThis: thisMonth.organicUsers,
-          seoOrganicLast: lastMonth.organicUsers,
-          seoConvThis: thisMonth.conversions,
-          seoConvLast: lastMonth.conversions,
-          seoSessThis: thisMonth.sessions,
-          seoSessLast: lastMonth.sessions
+          seoOrganicThis: String(t.current.users),
+          seoOrganicLast: String(t.previous?.users || ''),
+          seoUsersYoy: String(t.yoy?.users || ''),
+          seoConvThis: String(t.current.conversions),
+          seoConvLast: String(t.previous?.conversions || ''),
+          seoSessThis: String(t.current.sessions),
+          seoSessLast: String(t.previous?.sessions || ''),
+          seoRevenueThis: String(t.current.revenue || ''),
+          seoRevenueLast: String(t.previous?.revenue || '')
         }));
-        setFetchStatus('GA4 ✓');
-      } catch (e) {
-        setFetchStatus('GA4 failed: ' + e.message.slice(0, 60));
       }
-    }
-
-    // GSC search data
-    if (c.gsc_property) {
-      setFetchStatus(prev => (prev.includes('✓') ? prev + ' · ' : '') + 'Pulling GSC data…');
-      try {
-        const daysDiff = Math.round((thisEnd - thisStart) / 86400000) + 1;
-        const thisDaysAgo = Math.round((Date.now() - thisStart) / 86400000);
-
-        // This month's GSC data
-        const gscThis = await querySearchAnalytics(c.gsc_property, {
-          days: daysDiff,
-          dimensions: ['page'],
-          rowLimit: 50
-        });
-
-        const totalClicks = (gscThis.rows || []).reduce((s, r) => s + (r.clicks || 0), 0);
-        const totalImpressions = (gscThis.rows || []).reduce((s, r) => s + (r.impressions || 0), 0);
-        const avgCtr = totalImpressions > 0 ? ((totalClicks / totalImpressions) * 100).toFixed(1) + '%' : '—';
-        const avgPos = (gscThis.rows || []).length > 0
-          ? ((gscThis.rows || []).reduce((s, r) => s + (r.position || 0), 0) / gscThis.rows.length).toFixed(1)
-          : '—';
-
-        // Top pages
-        const topPages = (gscThis.rows || [])
-          .sort((a, b) => (b.clicks || 0) - (a.clicks || 0))
-          .slice(0, 10)
-          .map(r => {
-            const path = r.keys?.[0] || '';
-            try { return new URL(path).pathname + ' — ' + (r.clicks || 0) + ' clicks'; } catch { return path + ' — ' + (r.clicks || 0) + ' clicks'; }
-          })
-          .join('\n');
-
-        // Top queries
-        const gscQueries = await querySearchAnalytics(c.gsc_property, {
-          days: daysDiff,
-          dimensions: ['query'],
-          rowLimit: 20
-        });
-        const topQueries = (gscQueries.rows || [])
-          .sort((a, b) => (b.impressions || 0) - (a.impressions || 0))
-          .slice(0, 10)
-          .map(r => r.keys?.[0] + ' — ' + (r.clicks || 0) + ' clicks, pos ' + (r.position || 0).toFixed(1))
-          .join('\n');
-
+      if (data.keywords?.length > 0) {
         setForm(prev => ({
           ...prev,
-          gscClicksThis: String(totalClicks),
-          gscImpressionsThis: String(totalImpressions),
-          gscCtrThis: avgCtr,
-          gscPosThis: avgPos,
-          topPages,
-          topQueries
+          topQueries: data.keywords.slice(0, 10).map(k =>
+            k.query + ' — pos ' + k.position + (k.change != null ? ' (' + (k.change > 0 ? '+' : '') + k.change + ')' : '') + ', ' + k.clicks + ' clicks'
+          ).join('\n')
         }));
-        setFetchStatus(prev => prev.replace('Pulling GSC data…', 'GSC ✓'));
-      } catch (e) {
-        setFetchStatus(prev => prev.replace('Pulling GSC data…', 'GSC failed: ' + e.message.slice(0, 40)));
       }
+      if (data.topPages?.length > 0) {
+        setForm(prev => ({
+          ...prev,
+          topPages: data.topPages.slice(0, 10).map(p => {
+            let path = p.page;
+            try { path = new URL(p.page).pathname; } catch {}
+            return path + ' — ' + p.clicks + ' clicks';
+          }).join('\n')
+        }));
+      }
+
+      const parts = [];
+      if (data.traffic?.current) parts.push('GA4 ✓');
+      if (data.keywords?.length > 0) parts.push('GSC ✓ (' + data.keywords.length + ' keywords)');
+      if (data.errors?.length > 0) parts.push(data.errors.join(' · '));
+      setFetchStatus(parts.join(' · ') || 'No data available');
+    } catch (e) {
+      setFetchStatus('Failed: ' + e.message.slice(0, 80));
     }
-
-    if (!c.ga4_property_id && !c.gsc_property) {
-      setFetchStatus('No GA4 or GSC configured — enter metrics manually or set up in client settings');
-    }
-  }
-
-  // Helper to fetch GA4 metrics for a specific date range.
-  async function fetchGA4Month(propertyId, start, end) {
-    const res = await fetch(
-      'https://analyticsdata.googleapis.com/v1beta/properties/' + propertyId + ':runReport',
-      {
-        method: 'POST',
-        headers: {
-          Authorization: 'Bearer ' + getToken().access_token,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          dateRanges: [{
-            startDate: start.toISOString().slice(0, 10),
-            endDate: end.toISOString().slice(0, 10)
-          }],
-          metrics: [
-            { name: 'totalUsers' },
-            { name: 'sessions' },
-            { name: 'conversions' }
-          ],
-          dimensionFilter: {
-            filter: {
-              fieldName: 'sessionDefaultChannelGroup',
-              stringFilter: { matchType: 'EXACT', value: 'Organic Search' }
-            }
-          }
-        })
-      }
-    );
-    if (!res.ok) throw new Error('GA4 ' + res.status);
-    const data = await res.json();
-    const row = data.rows?.[0];
-    // Also get total (all channels) users
-    const totalRes = await fetch(
-      'https://analyticsdata.googleapis.com/v1beta/properties/' + propertyId + ':runReport',
-      {
-        method: 'POST',
-        headers: {
-          Authorization: 'Bearer ' + getToken().access_token,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          dateRanges: [{
-            startDate: start.toISOString().slice(0, 10),
-            endDate: end.toISOString().slice(0, 10)
-          }],
-          metrics: [{ name: 'totalUsers' }]
-        })
-      }
-    );
-    const totalData = totalRes.ok ? await totalRes.json() : null;
-
-    return {
-      totalUsers: totalData?.rows?.[0]?.metricValues?.[0]?.value || '—',
-      organicUsers: row?.metricValues?.[0]?.value || '0',
-      sessions: row?.metricValues?.[1]?.value || '0',
-      conversions: row?.metricValues?.[2]?.value || '0'
-    };
   }
 
   const update = (k, v) => setForm(prev => ({ ...prev, [k]: v }));
@@ -407,70 +291,33 @@ export default function MonthlyReport() {
         </div>
       )}
 
-      {/* Step 2: SEO data (auto-fetched, editable) */}
-      {form.hasSeo && (
-        <div className="card" style={{ marginBottom: 14 }}>
-          <div className="row" style={{ justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
-            <strong>SEO Data</strong>
-            <div className="row" style={{ gap: 8 }}>
-              {(form.seoUsersThis || form.gscClicksThis) && (
-                <span className="badge green" style={{ fontSize: 9 }}>Auto-populated from GA4 + GSC</span>
-              )}
-              {client.looker_url && (
-                <a
-                  href={client.looker_url}
-                  target="_blank"
-                  rel="noreferrer"
-                  style={{
-                    display: 'inline-flex', alignItems: 'center', gap: 6,
-                    padding: '6px 14px', borderRadius: 'var(--radius)',
-                    background: 'rgba(167,139,250,.1)', border: '1px solid rgba(167,139,250,.3)',
-                    color: ACCENT, fontSize: 12, fontWeight: 600, textDecoration: 'none'
-                  }}
-                >
-                  📊 Open Looker Report →
-                </a>
-              )}
-            </div>
-          </div>
-          {!client.looker_url && (
-            <div className="muted" style={{ fontSize: 11, marginTop: 6, padding: '6px 10px', background: 'var(--surface-2)', borderRadius: 6 }}>
-              Tip: Add this client's Looker Studio URL in <strong>Edit Client → Reporting & AEO → Looker Dashboard URL</strong> for quick access to their full SEO dashboard.
-            </div>
-          )}
-          <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--text-dim)', margin: '12px 0 6px' }}>Traffic</div>
-          <div className="grid-3">
-            <div><label>Total users (this)</label><input value={form.seoUsersThis || ''} onChange={e => update('seoUsersThis', e.target.value)} /></div>
-            <div><label>Total users (last)</label><input value={form.seoUsersLast || ''} onChange={e => update('seoUsersLast', e.target.value)} /></div>
-            <div><label>Total users (YoY)</label><input value={form.seoUsersYoy || ''} onChange={e => update('seoUsersYoy', e.target.value)} /></div>
-            <div><label>Organic users (this)</label><input value={form.seoOrganicThis || ''} onChange={e => update('seoOrganicThis', e.target.value)} /></div>
-            <div><label>Organic users (last)</label><input value={form.seoOrganicLast || ''} onChange={e => update('seoOrganicLast', e.target.value)} /></div>
-            <div></div>
-            <div><label>Organic conv. (this)</label><input value={form.seoConvThis || ''} onChange={e => update('seoConvThis', e.target.value)} /></div>
-            <div><label>Organic conv. (last)</label><input value={form.seoConvLast || ''} onChange={e => update('seoConvLast', e.target.value)} /></div>
-            <div></div>
-            <div><label>Organic sessions (this)</label><input value={form.seoSessThis || ''} onChange={e => update('seoSessThis', e.target.value)} /></div>
-            <div><label>Organic sessions (last)</label><input value={form.seoSessLast || ''} onChange={e => update('seoSessLast', e.target.value)} /></div>
-          </div>
-          <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--text-dim)', margin: '14px 0 6px' }}>Search Console</div>
-          <div className="grid-3">
-            <div><label>Clicks (this)</label><input value={form.gscClicksThis || ''} onChange={e => update('gscClicksThis', e.target.value)} /></div>
-            <div><label>Clicks (last)</label><input value={form.gscClicksLast || ''} onChange={e => update('gscClicksLast', e.target.value)} /></div>
-            <div><label>Impressions (this)</label><input value={form.gscImpressionsThis || ''} onChange={e => update('gscImpressionsThis', e.target.value)} /></div>
-            <div><label>Site CTR % (this)</label><input value={form.gscCtrThis || ''} onChange={e => update('gscCtrThis', e.target.value)} /></div>
-            <div><label>Avg position (this)</label><input value={form.gscPosThis || ''} onChange={e => update('gscPosThis', e.target.value)} /></div>
-            <div><label>Avg position (last)</label><input value={form.gscPosLast || ''} onChange={e => update('gscPosLast', e.target.value)} /></div>
-          </div>
-          <div style={{ marginTop: 10 }}>
-            <label>Top pages (paste from Looker)</label>
-            <textarea value={form.topPages || ''} onChange={e => update('topPages', e.target.value)} rows={3} placeholder="/page/ — 57 users (+42%)" />
-          </div>
-          <div>
-            <label>Top queries</label>
-            <textarea value={form.topQueries || ''} onChange={e => update('topQueries', e.target.value)} rows={3} />
+      {/* Step 2: SEO Performance Dashboard (auto-fetched) */}
+      <div className="card" style={{ marginBottom: 14 }}>
+        <div className="row" style={{ justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
+          <strong>SEO Performance — {monthLabel(month)}</strong>
+          <div className="row" style={{ gap: 8 }}>
+            {reportData && <span className="badge green" style={{ fontSize: 9 }}>Auto-populated from GA4 + GSC</span>}
+            {client.looker_url && (
+              <a href={client.looker_url} target="_blank" rel="noreferrer" style={{
+                display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 14px',
+                borderRadius: 'var(--radius)', background: 'rgba(167,139,250,.1)',
+                border: '1px solid rgba(167,139,250,.3)', color: ACCENT, fontSize: 12,
+                fontWeight: 600, textDecoration: 'none'
+              }}>
+                Open Looker Report →
+              </a>
+            )}
           </div>
         </div>
-      )}
+        <ReportDashboard data={reportData} client={client} monthLabel={monthLabel(month)} />
+        {!reportData && !fetchStatus.includes('Pulling') && (
+          <div className="muted" style={{ fontSize: 12 }}>
+            {!client.ga4_property_id && !client.gsc_property
+              ? 'No GA4 or GSC configured — set up in Edit Client → Google Connections.'
+              : 'Loading…'}
+          </div>
+        )}
+      </div>
 
       {/* Step 3: AEO manual override (only shown if snapshot missing) */}
       {form.hasAeo && !hasSnapshot && (
