@@ -348,6 +348,14 @@ Return ONLY valid JSON: { "queries": ["...", "..."] }`;
           Reporting & AEO
         </div>
         <div className="grid-2">
+          <div>
+            <label>Client Type</label>
+            <select value={f.client_type || ''} onChange={e => update('client_type', e.target.value)}>
+              <option value="">— Not set —</option>
+              <option value="ecommerce">Ecommerce (tracks transactions + revenue)</option>
+              <option value="lead_gen">Lead Generation (tracks form submissions + leads)</option>
+            </select>
+          </div>
           {REPORTING_FIELDS.map(([k, label, type]) => (
             <Field key={k} k={k} label={label} type={type} value={f[k]} onChange={update} />
           ))}

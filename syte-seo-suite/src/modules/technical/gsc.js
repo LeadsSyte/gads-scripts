@@ -41,15 +41,17 @@ export async function querySearchAnalytics(siteUrl, {
   days = 90,
   dimensions = ['query'],
   rowLimit = 1000,
-  startRow = 0
+  startRow = 0,
+  startDate,
+  endDate
 } = {}) {
-  const end = new Date();
-  const start = new Date(Date.now() - days * 86400000);
+  const ed = endDate || new Date().toISOString().slice(0, 10);
+  const sd = startDate || new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
   return gscFetch('/webmasters/v3/sites/' + encodeURIComponent(siteUrl) + '/searchAnalytics/query', {
     method: 'POST',
     body: JSON.stringify({
-      startDate: start.toISOString().slice(0, 10),
-      endDate:   end.toISOString().slice(0, 10),
+      startDate: sd,
+      endDate: ed,
       dimensions,
       rowLimit,
       startRow
