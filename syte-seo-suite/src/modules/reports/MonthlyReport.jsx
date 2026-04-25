@@ -159,6 +159,93 @@ export default function MonthlyReport() {
     });
   }, [microJson, client, month, reportData, liveAeoProbe]);
 
+  // Generate AEO-only report — skips SEO data, focuses on AI visibility.
+  async function generateAeoOnly() {
+    if (!client) return;
+    setErr(''); setEmail({ subject: '', body: '' }); setMicroJson(null); setQa(null); setSent(false); setLiveAeoProbe(null);
+
+    try {
+      // Step 1: Run AEO probe
+      const preflight = snapshotPreflight(client);
+      if (!preflight.canRun) {
+        setErr('Add AEO probe queries to this client first (Edit → AEO Probe Queries → Generate from brand context).');
+        return;
+      }
+      setPhase('aeo-probe');
+      const probeResult = await runSnapshot(client, {
+        onProgress: (p) => setPhase('aeo-probe: ' + (p.engine || '') + ' — ' + (p.query || '').slice(0, 40))
+      });
+      setLiveAeoProbe(probeResult);
+
+      // Step 2: Generate AEO-focused email
+      setPhase('alice');
+      const citedCount = probeResult.per_query?.filter(r => r.mentioned).length || 0;
+      const totalCount = probeResult.per_query?.length || 0;
+      const aeoPayload = `Client: ${client.name}
+Industry: ${client.industry || ''}
+Month: ${monthLabel(month)}
+
+AEO REPORT — AI Visibility Assessment
+
+AEO Score: ${probeResult.overall_score}/100
+Citations: ${citedCount} out of ${totalCount} AI responses mentioned ${client.name}
+Sentiment: ${probeResult.sentiment}
+Engines tested: ${(probeResult.engines_used || []).join(', ')}
+Per-engine scores: ${JSON.stringify(probeResult.engine_scores || {})}
+
+Top cited queries:
+${probeResult.per_query?.filter(r => r.mentioned).map(r => '- "' + r.query + '" on ' + r.engine + ' (position ' + r.position + ', ' + r.sentiment + ')').join('\n') || 'None'}
+
+Queries where brand was NOT cited:
+${probeResult.per_query?.filter(r => !r.mentioned && !r.error).map(r => '- "' + r.query + '" on ' + r.engine).join('\n') || 'None'}
+
+Competitors appearing in responses:
+${(probeResult.competitors || []).map(c => '- ' + c.name + ': ' + c.appearances + ' mentions').join('\n') || 'None tracked'}
+
+Write an AEO performance email covering: what AI engines are saying about this brand, where they're cited, what's missing, and what the next steps are to improve AI visibility. Focus on actionable insights.`;
+
+      const aliceText = await claudeComplete({
+        system: ALICE_SYSTEM,
+        messages: [{ role: 'user', content: aeoPayload }],
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 1200,
+        temperature: 0.7
+      });
+      setEmail(parseAliceOutput(aliceText));
+
+      // Step 3: Generate microsite JSON
+      setPhase('micro');
+      const micrositeText = await claudeComplete({
+        system: MICROSITE_SYSTEM,
+        messages: [{ role: 'user', content: aeoPayload }],
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 1200,
+        temperature: 0.5
+      });
+      const microObj = extractJSON(micrositeText);
+      if (!microObj) throw new Error('Microsite JSON could not be parsed.');
+      if (!microObj.clientName) microObj.clientName = client.name;
+      setMicroJson(microObj);
+
+      // Step 4: QA
+      setPhase('qa');
+      const qaText = await claudeComplete({
+        system: QA_SYSTEM,
+        messages: [{ role: 'user', content: 'Alice email to review:\n\n' + aliceText }],
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 500,
+        temperature: 0
+      });
+      const qaObj = extractJSON(qaText);
+      if (qaObj) setQa(qaObj);
+
+      setPhase('review');
+    } catch (e) {
+      setErr(e.message);
+      setPhase('idle');
+    }
+  }
+
   async function generate() {
     if (!client) return;
     setErr(''); setEmail({ subject: '', body: '' }); setMicroJson(null); setQa(null); setSent(false);
@@ -452,9 +539,14 @@ export default function MonthlyReport() {
               }}>{p.label}</span>
             ))}
           </div>
-          <button className="primary" onClick={generate} disabled={phase !== 'idle' && phase !== 'review'} style={{ background: ACCENT, borderColor: ACCENT, color: '#0a0a0c' }}>
-            {phase === 'idle' || phase === 'review' ? 'Generate Report' : 'Working…'}
-          </button>
+          <div className="row" style={{ gap: 8 }}>
+            <button className="primary" onClick={generate} disabled={phase !== 'idle' && phase !== 'review'} style={{ background: ACCENT, borderColor: ACCENT, color: '#0a0a0c' }}>
+              {phase === 'idle' || phase === 'review' ? 'Generate Full Report' : 'Working…'}
+            </button>
+            <button onClick={generateAeoOnly} disabled={phase !== 'idle' && phase !== 'review'} style={{ borderColor: 'var(--mod-aeo)', color: 'var(--mod-aeo)' }}>
+              {phase === 'idle' || phase === 'review' ? 'Generate AEO Report Only' : 'Working…'}
+            </button>
+          </div>
         </div>
         {err && <div style={{ color: 'var(--red)', marginTop: 10 }}>{err}</div>}
       </div>
