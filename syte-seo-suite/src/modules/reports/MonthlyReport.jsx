@@ -540,12 +540,16 @@ Write an AEO performance email covering: what AI engines are saying about this b
             ))}
           </div>
           <div className="row" style={{ gap: 8 }}>
-            <button className="primary" onClick={generate} disabled={phase !== 'idle' && phase !== 'review'} style={{ background: ACCENT, borderColor: ACCENT, color: '#0a0a0c' }}>
-              {phase === 'idle' || phase === 'review' ? 'Generate Full Report' : 'Working…'}
-            </button>
-            <button onClick={generateAeoOnly} disabled={phase !== 'idle' && phase !== 'review'} style={{ borderColor: 'var(--mod-aeo)', color: 'var(--mod-aeo)' }}>
-              {phase === 'idle' || phase === 'review' ? 'Generate AEO Report Only' : 'Working…'}
-            </button>
+            {(client.does_content !== false || client.does_technical !== false) && (
+              <button className="primary" onClick={generate} disabled={phase !== 'idle' && phase !== 'review'} style={{ background: ACCENT, borderColor: ACCENT, color: '#0a0a0c' }}>
+                {phase === 'idle' || phase === 'review' ? 'Generate Full Report' : 'Working…'}
+              </button>
+            )}
+            {client.does_aeo !== false && (
+              <button onClick={generateAeoOnly} disabled={phase !== 'idle' && phase !== 'review'} style={{ borderColor: 'var(--mod-aeo)', color: 'var(--mod-aeo)' }}>
+                {phase === 'idle' || phase === 'review' ? 'Generate AEO Report' : 'Working…'}
+              </button>
+            )}
           </div>
         </div>
         {err && <div style={{ color: 'var(--red)', marginTop: 10 }}>{err}</div>}
