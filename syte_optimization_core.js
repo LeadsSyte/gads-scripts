@@ -2760,7 +2760,16 @@ function _sendReport(results, duration, evalResult, pendingRunId) {
 
   // v4.4.0: Approval buttons bar
   // v4.5.0: Fixed — encode & as &amp; in HTML href attributes so Gmail doesn't strip query params.
-  if (pendingRunId && CONFIG.APPROVAL_WEBAPP_URL) {
+  // Suppress approval UI entirely when no categories have changes proposed.
+  var hasKwPauses = (results.keywordsPaused.length + results.ecomKeywordsPaused.length + results.lowQsPaused.length) > 0;
+  var hasNegations = (results.smartNegated.length + results.ngramNegatives.length) > 0;
+  var hasWinners = (results.winnersPromoted.length + results.ecomWinnersPromoted.length) > 0;
+  var hasAutoOpt = (results.deviceAdjustments.length + results.scheduleAdjustments.length + results.geoAdjustments.length) > 0;
+  var hasShoppingPmax = (results.shoppingProductsPaused.length + results.pmaxSearchTermsNegated.length) > 0;
+  var hasFlagged = results.smartReviewTerms.length > 0;
+  var hasAnyChanges = hasKwPauses || hasNegations || hasWinners || hasAutoOpt || hasShoppingPmax || hasFlagged;
+
+  if (pendingRunId && CONFIG.APPROVAL_WEBAPP_URL && hasAnyChanges) {
     var webAppUrl = CONFIG.APPROVAL_WEBAPP_URL;
     var btnStyle = 'display:inline-block;padding:10px 18px;margin:4px;border-radius:6px;color:white;text-decoration:none;font-weight:bold;font-size:13px;';
     var rejBtnStyle = 'display:inline-block;padding:6px 12px;margin:4px 2px;border-radius:6px;color:white;text-decoration:none;font-weight:bold;font-size:11px;background:#c62828;';
@@ -2768,14 +2777,6 @@ function _sendReport(results, duration, evalResult, pendingRunId) {
     email += '<div style="background:#e8f5e9;padding:16px 20px;border-left:4px solid #2e7d32;">';
     email += '<h3 style="margin:0 0 10px;color:#2e7d32;">Changes require your approval</h3>';
     email += '<p style="margin:0 0 12px;font-size:13px;color:#333;">Review the proposed changes below, then approve or reject by category.</p>';
-
-    // Category buttons — only show if there are changes in that category
-    var hasKwPauses = (results.keywordsPaused.length + results.ecomKeywordsPaused.length + results.lowQsPaused.length) > 0;
-    var hasNegations = (results.smartNegated.length + results.ngramNegatives.length) > 0;
-    var hasWinners = (results.winnersPromoted.length + results.ecomWinnersPromoted.length) > 0;
-    var hasAutoOpt = (results.deviceAdjustments.length + results.scheduleAdjustments.length + results.geoAdjustments.length) > 0;
-    var hasShoppingPmax = (results.shoppingProductsPaused.length + results.pmaxSearchTermsNegated.length) > 0;
-    var hasFlagged = results.smartReviewTerms.length > 0;
 
     if (hasKwPauses) {
       var kwCount = results.keywordsPaused.length + results.ecomKeywordsPaused.length + results.lowQsPaused.length;
@@ -2813,10 +2814,14 @@ function _sendReport(results, duration, evalResult, pendingRunId) {
     // View status link
     email += '<br><a href="' + webAppUrl + '?view=run_status&amp;runId=' + pendingRunId + '" target="_blank" style="color:#1565c0;font-size:12px;margin-top:8px;display:inline-block;">View approval status for this run</a>';
     email += '</div>';
-  } else if (pendingRunId && !CONFIG.APPROVAL_WEBAPP_URL) {
+  } else if (pendingRunId && !CONFIG.APPROVAL_WEBAPP_URL && hasAnyChanges) {
     email += '<div style="background:#fff3e0;padding:14px 16px;border-left:4px solid #f57c00;">';
     email += '<p style="margin:0;font-size:13px;">Changes are pending approval but no APPROVAL_WEBAPP_URL is configured. ';
     email += 'Add APPROVAL_WEBAPP_URL to the master sheet Config tab to enable email approval buttons.</p>';
+    email += '</div>';
+  } else if (pendingRunId && !hasAnyChanges) {
+    email += '<div style="background:#e8f5e9;padding:14px 16px;border-left:4px solid #2e7d32;">';
+    email += '<p style="margin:0;font-size:13px;color:#2e7d32;"><strong>No changes proposed</strong> — nothing to approve or reject this run.</p>';
     email += '</div>';
   }
 
