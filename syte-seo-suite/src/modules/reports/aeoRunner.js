@@ -279,11 +279,31 @@ export async function runSnapshot(client, { onProgress, iterations } = {}) {
     engineScores[eng.id] = runs ? Math.round((hits / runs) * 100) : 0;
   }
 
-  // Overall score — back-compat 0-100 number used by older callers.
-  // We use the average of (visibility × 5) capped at 100, which lifts
-  // mid-range visibility (10-20%) into a meaningful 50-100 score range.
-  // This matches industry tools where 8% visibility is considered strong.
-  const overallScore = Math.min(100, Math.round(visibilityScore * 5));
+  // Composite "AEO Performance Index" — a weighted 0-100 number that
+  // balances four quality dimensions instead of being a glorified
+  // mention-count. The visibility-only version was effectively
+  // (citations / total) × constant, which is exactly the "X out of N
+  // cited" framing that makes reports read poorly for clients who are
+  // early on their AEO journey.
+  //
+  // Weights:
+  //   Visibility       40%  — are we showing up at all? (×5 to map low
+  //                           absolute % into the 0-100 range; capped 100)
+  //   Top-3 rate       25%  — when we show up, are we prominent? (×5)
+  //   Citation density 20%  — are URLs being cited? (citations per response)
+  //   Sentiment        15%  — when mentioned, is the language positive?
+  const visibilityComponent = Math.min(100, visibilityScore * 5);
+  const top3Component       = Math.min(100, top3Rate * 5);
+  const citationDensity     = brandRuns.length
+    ? Math.min(100, Math.round((brandCitations / brandRuns.length) * 100))
+    : 0;
+  const sentimentComponent  = sentimentPct;
+  const overallScore = Math.round(
+    visibilityComponent * 0.40 +
+    top3Component       * 0.25 +
+    citationDensity     * 0.20 +
+    sentimentComponent  * 0.15
+  );
 
   // Phase 6: categorize keyword wins for the strategy section.
   // Active = ≥70% visibility on at least one engine
@@ -320,7 +340,13 @@ export async function runSnapshot(client, { onProgress, iterations } = {}) {
     month,
 
     // Hero metrics — what the report leads with
-    overall_score: overallScore,
+    overall_score: overallScore,                  // Composite AEO Performance Index
+    score_components: {                           // Transparency on what made up the composite
+      visibility: Math.round(visibilityComponent),
+      top3:       Math.round(top3Component),
+      citations:  citationDensity,
+      sentiment:  Math.round(sentimentComponent)
+    },
     visibility_score: visibilityScore,    // % of all responses where brand mentioned
     detection_rate: detectionRate,        // % of queries hit at least once
     top3_rate: top3Rate,                  // % of responses where brand in top 3
