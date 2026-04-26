@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useClients } from '../../store/useClients.js';
 import { snapshotPreflight, runSnapshot } from './aeoRunner.js';
-import { saveAeoSnapshot, listAeoSnapshots } from '../../lib/supabase.js';
+import { saveAeoSnapshot, listAeoSnapshots, getCachedReportData } from '../../lib/supabase.js';
 import { ALL_ENGINES } from './aeoEngines.js';
 import { readinessFor } from '../../lib/clientReadiness.js';
+import { probeCandidatesFromGSC, mergeProbeQueries } from './keywordBuckets.js';
 
 const ACCENT = '#a78bfa';
 
@@ -34,6 +35,7 @@ export default function AEOSnapshot() {
   const client = useClients(s => s.current());
   const allClients = useClients(s => s.clients);
   const selectClient = useClients(s => s.select);
+  const saveClient = useClients(s => s.save);
   const [preflight, setPreflight] = useState(null);
   const [progress, setProgress] = useState(null);
   const [snapshot, setSnapshot] = useState(null);
@@ -41,6 +43,8 @@ export default function AEOSnapshot() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [msg, setMsg] = useState('');
+  const [gscCandidates, setGscCandidates] = useState([]);
+  const [expandBusy, setExpandBusy] = useState(false);
 
   // Bulk-run state
   const [bulkBusy, setBulkBusy] = useState(false);
@@ -71,14 +75,59 @@ export default function AEOSnapshot() {
   }, [allClients]);
 
   useEffect(() => {
-    if (!client) { setPreflight(null); setSnapshot(null); setLastSnapshot(null); return; }
+    if (!client) { setPreflight(null); setSnapshot(null); setLastSnapshot(null); setGscCandidates([]); return; }
     setPreflight(snapshotPreflight(client));
     setSnapshot(null);
     // Load the most recent saved snapshot for delta comparison.
     listAeoSnapshots(client.id).then(rows => {
       setLastSnapshot(rows[0] || null);
     }).catch(() => {});
+
+    // Sniff cached GSC report data for this client to surface a
+    // "expand probe queries from GSC head terms" affordance — these are
+    // queries the brand actually gets impressions for, so they map to
+    // real visibility, not guessed-up phrases.
+    (async () => {
+      const months = [];
+      const now = new Date();
+      for (let i = 0; i < 3; i++) {
+        const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+        months.push(d.toISOString().slice(0, 7));
+      }
+      let candidates = [];
+      for (const m of months) {
+        try {
+          const cached = await getCachedReportData(client.id, m);
+          const kws = cached?.data?.keywords;
+          if (kws?.length) {
+            candidates = probeCandidatesFromGSC(kws, client.name, { limit: 50 });
+            if (candidates.length > 0) break;
+          }
+        } catch {}
+      }
+      setGscCandidates(candidates);
+    })();
   }, [client?.id]);
+
+  async function expandProbeFromGSC() {
+    if (!client || !gscCandidates.length) return;
+    setExpandBusy(true); setErr(''); setMsg('');
+    try {
+      const { merged, addedCount, totalCount } = mergeProbeQueries(
+        client.aeo_probe_queries, gscCandidates
+      );
+      if (addedCount === 0) {
+        setMsg('No new queries — all GSC head terms are already in the probe list.');
+      } else {
+        await saveClient({ ...client, aeo_probe_queries: merged });
+        setMsg(`Added ${addedCount} GSC head-term queries · probe list now ${totalCount}`);
+      }
+    } catch (e) {
+      setErr('Could not save: ' + e.message);
+    } finally {
+      setExpandBusy(false);
+    }
+  }
 
   const delta = useMemo(() => {
     if (!snapshot || !lastSnapshot) return null;
@@ -298,6 +347,31 @@ export default function AEOSnapshot() {
         {preflight?.missingEngines.length > 0 && (
           <div className="muted" style={{ fontSize: 12, marginTop: 8 }}>
             Missing engines: {preflight.missingEngines.map(e => e.label).join(', ')} (Suite Settings → AEO Engine Keys)
+          </div>
+        )}
+
+        {gscCandidates.length > 0 && (
+          <div className="row" style={{
+            marginTop: 12, padding: '10px 14px',
+            background: 'rgba(167,139,250,.05)',
+            border: '1px solid rgba(167,139,250,.2)',
+            borderRadius: 'var(--radius)',
+            justifyContent: 'space-between', flexWrap: 'wrap', gap: 10
+          }}>
+            <div style={{ fontSize: 12, flex: 1, minWidth: 240 }}>
+              <strong>{gscCandidates.length} head-term queries</strong> from GSC available to expand the probe list.
+              <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
+                Real queries this brand already gets impressions for — better probe targets than guessed phrases.
+                Currently probing {queries.length} {queries.length === 1 ? 'query' : 'queries'}.
+              </div>
+            </div>
+            <button
+              onClick={expandProbeFromGSC}
+              disabled={expandBusy}
+              style={{ fontSize: 12, padding: '6px 14px', borderColor: ACCENT, color: ACCENT, whiteSpace: 'nowrap' }}
+            >
+              {expandBusy ? 'Adding…' : `Add ${gscCandidates.length} GSC queries`}
+            </button>
           </div>
         )}
 

@@ -175,13 +175,36 @@ export function buildMicrositeHtml({ micro, client, monthLabel, previousMonthLab
     </div>
   `).join('');
 
-  const topPages = aeoOnly ? '' : (micro?.topPages || []).map(p => `
-    <li>
-      <span class="page-path">${esc(p.page)}</span>
-      <span class="page-users">${esc(p.users)} users</span>
-      <span class="page-delta">${esc(p.delta || '')}</span>
-    </li>
-  `).join('');
+  // Top performing pages — prefer real GSC data over AI-fabricated lists.
+  // The AI was inventing pages with "0 users" because it didn't have the
+  // real data in scope. Always defer to rd.topPages when available; only
+  // fall back to micro.topPages if GSC data is missing AND we're not in
+  // AEO-only mode.
+  let topPages = '';
+  if (!aeoOnly) {
+    if ((rd.topPages || []).length > 0) {
+      topPages = rd.topPages.slice(0, 8).map(p => {
+        let path = p.page;
+        try { path = new URL(p.page).pathname; } catch {}
+        return `<li>
+          <span class="page-path">${esc(path)}</span>
+          <span class="page-users">${Number(p.clicks).toLocaleString()} clicks · ${Number(p.impressions).toLocaleString()} imp</span>
+          <span class="page-delta">avg pos #${p.position}</span>
+        </li>`;
+      }).join('');
+    } else if ((micro?.topPages || []).length > 0) {
+      // Only render AI-supplied list if it has at least one entry with
+      // a non-zero users figure — drops the "0 users" fabrications.
+      const real = (micro.topPages || []).filter(p => Number(String(p.users || '').replace(/,/g, '')) > 0);
+      topPages = real.slice(0, 8).map(p => `
+        <li>
+          <span class="page-path">${esc(p.page)}</span>
+          <span class="page-users">${esc(p.users)} users</span>
+          <span class="page-delta">${esc(p.delta || '')}</span>
+        </li>
+      `).join('');
+    }
+  }
 
   const engineTiles = showAeo ? Object.entries(aeo.byEngine || {}).map(([k, v]) => `
     <div class="engine-tile">
