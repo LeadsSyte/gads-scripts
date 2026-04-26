@@ -8,6 +8,7 @@
 
 import { ensureToken, SCOPES } from '../technical/googleAuth.js';
 import { querySearchAnalytics } from '../technical/gsc.js';
+import { buildKeywordBuckets, classifyKeywords } from './keywordBuckets.js';
 
 // ─── Date helpers ────────────────────────────────────────────
 function monthRange(year, month) {
@@ -93,12 +94,15 @@ async function fetchGA4Period(propertyId, dateRange, clientType) {
 }
 
 // ─── GSC Keyword Rankings ────────────────────────────────────
+// Pull a deep slice (500 rows) so we can build category buckets —
+// top 3 / top 10 / improved / striking distance — instead of a flat
+// "top 30 by impressions" table that buries head-term wins.
 async function fetchKeywordRankings(gscProperty, dateRange) {
   return querySearchAnalytics(gscProperty, {
     startDate: dateRange.startDate,
     endDate: dateRange.endDate,
     dimensions: ['query'],
-    rowLimit: 50
+    rowLimit: 500
   });
 }
 
@@ -190,6 +194,13 @@ export async function fetchReportData(client, year, month1Based) {
     return +(((current - previous) / previous) * 100).toFixed(1);
   }
 
+  // Classify each keyword (head-term / long-tail / branded) and build
+  // bucketed views — top 3, top 10, improved, striking distance, head
+  // term wins. Branded queries are excluded from the showcase buckets
+  // since they would rank #1 regardless of SEO work.
+  const classifiedKeywords = classifyKeywords(keywords, client.name);
+  const keywordBuckets = buildKeywordBuckets(classifiedKeywords, client.name);
+
   const summary = {
     clientType,
     period: periods,
@@ -208,7 +219,8 @@ export async function fetchReportData(client, year, month1Based) {
         revenue: pctChange(traffic.current.revenue, traffic.yoy.revenue)
       } : null
     },
-    keywords,
+    keywords: classifiedKeywords,
+    keywordBuckets,
     topPages,
     errors
   };

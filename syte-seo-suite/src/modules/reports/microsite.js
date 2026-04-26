@@ -27,18 +27,139 @@ function fmt(n) {
   return typeof n === 'number' ? n.toLocaleString() : String(n);
 }
 
+function changePill(change) {
+  if (change == null) return '<span style="color:var(--muted);font-size:10px;">new</span>';
+  if (change > 0) return '<span style="color:var(--green);font-weight:600;">▲ ' + Math.abs(change).toFixed(1) + '</span>';
+  if (change < 0) return '<span style="color:var(--red);font-weight:600;">▼ ' + Math.abs(change).toFixed(1) + '</span>';
+  return '<span style="color:var(--muted);">—</span>';
+}
+
+function keywordRow(kw, opts = {}) {
+  const headBadge = kw.classification?.headTerm
+    ? '<span style="display:inline-block;padding:1px 6px;margin-left:6px;background:rgba(200,240,96,.12);color:var(--accent);border-radius:4px;font-size:10px;font-weight:600;letter-spacing:.04em;">HEAD</span>'
+    : '';
+  const showChange = opts.showChange !== false;
+  return `<tr style="border-bottom:1px solid var(--border);">
+    <td style="padding:6px 10px;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+      ${esc(kw.query)}${headBadge}
+    </td>
+    <td style="padding:6px 10px;text-align:right;font-family:'JetBrains Mono',monospace;font-weight:600;">${kw.position}</td>
+    ${showChange ? `<td style="padding:6px 10px;text-align:right;">${changePill(kw.change)}</td>` : ''}
+    <td style="padding:6px 10px;text-align:right;">${Number(kw.clicks).toLocaleString()}</td>
+    <td style="padding:6px 10px;text-align:right;color:var(--muted);">${Number(kw.impressions).toLocaleString()}</td>
+  </tr>`;
+}
+
+// Render the bucketed keyword sections — top 3, top 10, improved,
+// striking distance — instead of a flat top-N-by-impressions table.
+// Clients care more about competitive head-term wins than long-tail
+// volume, so head terms are flagged and surfaced first within each bucket.
+function renderKeywordSections(rd) {
+  const buckets = rd.keywordBuckets;
+  if (!buckets) {
+    // Fallback for legacy callers that don't provide buckets.
+    return '';
+  }
+
+  const tableHead = (extraCol = true) => `
+    <thead>
+      <tr style="border-bottom:2px solid var(--border);text-align:left;">
+        <th style="padding:8px 10px;color:var(--muted);font-size:10px;text-transform:uppercase;">Keyword</th>
+        <th style="padding:8px 10px;text-align:right;color:var(--muted);font-size:10px;text-transform:uppercase;">Position</th>
+        ${extraCol ? '<th style="padding:8px 10px;text-align:right;color:var(--muted);font-size:10px;text-transform:uppercase;">Change</th>' : ''}
+        <th style="padding:8px 10px;text-align:right;color:var(--muted);font-size:10px;text-transform:uppercase;">Clicks</th>
+        <th style="padding:8px 10px;text-align:right;color:var(--muted);font-size:10px;text-transform:uppercase;">Impressions</th>
+      </tr>
+    </thead>`;
+
+  const sectionTable = (rows, title, subtitle, accent, max = 25) => {
+    if (!rows.length) return '';
+    return `
+      <section>
+        <h2 style="display:flex;align-items:center;gap:10px;">
+          <span>${title}</span>
+          <span style="font-family:'JetBrains Mono',monospace;font-size:14px;color:${accent};background:${accent}1a;border:1px solid ${accent}40;padding:2px 10px;border-radius:6px;">${rows.length}</span>
+        </h2>
+        <p style="color:var(--muted);font-size:13px;margin-bottom:14px;">${subtitle}</p>
+        <table class="data-table" style="width:100%;border-collapse:collapse;font-size:12px;">
+          ${tableHead(true)}
+          <tbody>${rows.slice(0, max).map(kw => keywordRow(kw)).join('')}</tbody>
+        </table>
+      </section>`;
+  };
+
+  // Showcase strip: top head-term wins as feature cards (the showpiece).
+  const headWins = buckets.headTermWins.slice(0, 8);
+  const headWinsHtml = headWins.length > 0 ? `
+    <section>
+      <h2>Head-Term Wins</h2>
+      <p style="color:var(--muted);font-size:13px;margin-bottom:14px;">
+        Competitive, high-volume keywords ranking on page 1. These are the terms that prove market position —
+        clients win on "shelving" and "racking", not on long-tail location queries.
+      </p>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px;">
+        ${headWins.map(kw => `
+          <div style="padding:14px 16px;background:var(--surface);border:1px solid rgba(200,240,96,.25);border-left:3px solid var(--accent);border-radius:8px;">
+            <div style="font-size:14px;font-weight:600;margin-bottom:6px;">${esc(kw.query)}</div>
+            <div style="display:flex;justify-content:space-between;align-items:baseline;">
+              <span style="font-family:'DM Serif Display',serif;font-size:32px;color:var(--accent);">#${kw.position}</span>
+              <span style="font-size:11px;color:var(--muted);">${Number(kw.impressions).toLocaleString()} imp · ${changePill(kw.change)}</span>
+            </div>
+          </div>
+        `).join('')}
+      </div>
+    </section>` : '';
+
+  return [
+    headWinsHtml,
+    sectionTable(buckets.top3,     'Top 3 Rankings',     'Keywords ranking in the top 3 positions on Google. Head terms first, then by impressions.', 'var(--green)', 30),
+    sectionTable(buckets.top10,    'Top 10 Rankings',    'Page 1 visibility — positions 4-10. Head terms flagged.', 'var(--accent)', 30),
+    sectionTable(buckets.improved, 'Most Improved',      'Biggest position gains vs last month. Movement of 0.5+ positions only.', 'var(--green)', 25),
+    sectionTable(buckets.striking, 'Striking Distance',  'Page 2 keywords (positions 11-20) — the queries closest to breaking into the top 10. Highest-impact next push.', 'var(--orange)', 25),
+    buckets.branded.length > 0 ? `
+      <section>
+        <h2 style="display:flex;align-items:center;gap:10px;"><span>Branded Queries</span>
+          <span style="font-family:'JetBrains Mono',monospace;font-size:14px;color:var(--muted);background:rgba(154,154,166,.1);border:1px solid var(--border);padding:2px 10px;border-radius:6px;">${buckets.branded.length}</span>
+        </h2>
+        <p style="color:var(--muted);font-size:13px;margin-bottom:14px;">Searches that include the brand name — context only, not part of competitive SEO performance.</p>
+        <table class="data-table" style="width:100%;border-collapse:collapse;font-size:12px;">
+          ${tableHead(true)}
+          <tbody>${buckets.branded.slice(0, 12).map(kw => keywordRow(kw)).join('')}</tbody>
+        </table>
+      </section>
+    ` : '',
+    `<section>
+      <h2 style="display:flex;align-items:center;gap:10px;"><span>Full Keyword Detail</span>
+        <span style="font-family:'JetBrains Mono',monospace;font-size:14px;color:var(--muted);background:rgba(154,154,166,.1);border:1px solid var(--border);padding:2px 10px;border-radius:6px;">${buckets.counts.eligible}</span>
+      </h2>
+      <p style="color:var(--muted);font-size:13px;margin-bottom:14px;">Every non-branded keyword GSC reported, sorted by impressions.</p>
+      <table class="data-table" style="width:100%;border-collapse:collapse;font-size:12px;">
+        ${tableHead(true)}
+        <tbody>
+          ${(rd.keywords || [])
+            .filter(kw => !kw.classification || !kw.classification.branded)
+            .slice(0, 60)
+            .map(kw => keywordRow(kw)).join('')}
+        </tbody>
+      </table>
+    </section>`
+  ].filter(Boolean).join('');
+}
+
 // micro: parsed microsite JSON from Claude, client: full client record,
 // monthLabel: e.g. "April 2026", rankscale: optional share URL.
 // aeoCompare: { current, previous, deltas, has_previous } from aeoCompare.js
 // aeoRanking: sorted competitive landscape including the brand
-export function buildMicrositeHtml({ micro, client, monthLabel, previousMonthLabel, rankscale, reportData, aeoProbe, aeoCompare, aeoRanking }) {
+// aeoOnly: when true, suppress all SEO sections (traffic table, keywords,
+//          top pages, PPC equivalent, generic top-pages from microJson).
+export function buildMicrositeHtml({ micro, client, monthLabel, previousMonthLabel, rankscale, reportData, aeoProbe, aeoCompare, aeoRanking, aeoOnly = false }) {
   const aeo = micro?.aeoSection || {};
-  const showAeo = !!aeo.show;
+  const showAeo = !!aeo.show && !aeoOnly;
   const ppc = micro?.ppcEquivalent || {};
-  const showPpc = !!ppc.show;
+  const showPpc = !!ppc.show && !aeoOnly;
   const work = micro?.workDone || {};
-  const showWork = !!work.show && (work.items || []).length > 0;
-  const rd = reportData || {};
+  const showWork = !!work.show && (work.items || []).length > 0 && !aeoOnly;
+  const rd = aeoOnly ? {} : (reportData || {});
   const traffic = rd.traffic || {};
   const isEcom = rd.clientType === 'ecommerce';
   const probe = aeoProbe || {};
@@ -54,7 +175,7 @@ export function buildMicrositeHtml({ micro, client, monthLabel, previousMonthLab
     </div>
   `).join('');
 
-  const topPages = (micro?.topPages || []).map(p => `
+  const topPages = aeoOnly ? '' : (micro?.topPages || []).map(p => `
     <li>
       <span class="page-path">${esc(p.page)}</span>
       <span class="page-users">${esc(p.users)} users</span>
@@ -550,38 +671,7 @@ export function buildMicrositeHtml({ micro, client, monthLabel, previousMonthLab
       </table>
     </section>` : ''}
 
-    ${(rd.keywords || []).length > 0 ? `
-    <section>
-      <h2>Keyword Rankings</h2>
-      <p style="color:var(--muted);font-size:13px;margin-bottom:14px;">Top ${Math.min(rd.keywords.length, 30)} keywords by impressions — position change vs previous month</p>
-      <table class="data-table" style="width:100%;border-collapse:collapse;font-size:12px;">
-        <thead>
-          <tr style="border-bottom:2px solid var(--border);text-align:left;">
-            <th style="padding:8px 10px;color:var(--muted);font-size:10px;text-transform:uppercase;">Keyword</th>
-            <th style="padding:8px 10px;text-align:right;color:var(--muted);font-size:10px;text-transform:uppercase;">Position</th>
-            <th style="padding:8px 10px;text-align:right;color:var(--muted);font-size:10px;text-transform:uppercase;">Change</th>
-            <th style="padding:8px 10px;text-align:right;color:var(--muted);font-size:10px;text-transform:uppercase;">Clicks</th>
-            <th style="padding:8px 10px;text-align:right;color:var(--muted);font-size:10px;text-transform:uppercase;">Impressions</th>
-            <th style="padding:8px 10px;text-align:right;color:var(--muted);font-size:10px;text-transform:uppercase;">CTR</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${rd.keywords.slice(0, 30).map(kw => {
-            const changeHtml = kw.change != null
-              ? (kw.change > 0 ? '<span style="color:var(--green);">▲ ' + Math.abs(kw.change).toFixed(1) + '</span>' : kw.change < 0 ? '<span style="color:var(--red);">▼ ' + Math.abs(kw.change).toFixed(1) + '</span>' : '—')
-              : '<span style="color:var(--muted);font-size:10px;">new</span>';
-            return `<tr style="border-bottom:1px solid var(--border);">
-              <td style="padding:6px 10px;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(kw.query)}</td>
-              <td style="padding:6px 10px;text-align:right;font-family:'JetBrains Mono',monospace;">${kw.position}</td>
-              <td style="padding:6px 10px;text-align:right;">${changeHtml}</td>
-              <td style="padding:6px 10px;text-align:right;">${Number(kw.clicks).toLocaleString()}</td>
-              <td style="padding:6px 10px;text-align:right;">${Number(kw.impressions).toLocaleString()}</td>
-              <td style="padding:6px 10px;text-align:right;color:var(--muted);">${kw.ctr}</td>
-            </tr>`;
-          }).join('')}
-        </tbody>
-      </table>
-    </section>` : ''}
+    ${(rd.keywords || []).length > 0 ? renderKeywordSections(rd) : ''}
 
     ${(rd.topPages || []).length > 0 ? `
     <section>

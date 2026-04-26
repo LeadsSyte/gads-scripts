@@ -2,7 +2,11 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { useClients } from '../../store/useClients.js';
 import { claudeComplete, extractJSON } from '../../lib/anthropic.js';
 import { listAeoSnapshots, logReportSent, getCachedReportData, setCachedReportData } from '../../lib/supabase.js';
-import { ALICE_SYSTEM, MICROSITE_SYSTEM, QA_SYSTEM, buildAlicePayload, getWorkSummary, buildAeoPayload } from './reportPrompts.js';
+import {
+  ALICE_SYSTEM, MICROSITE_SYSTEM, QA_SYSTEM,
+  ALICE_AEO_SYSTEM, MICROSITE_AEO_SYSTEM, QA_AEO_SYSTEM,
+  buildAlicePayload, getWorkSummary, buildAeoPayload
+} from './reportPrompts.js';
 import { buildMicrositeHtml, downloadMicrosite } from './microsite.js';
 import { runSnapshot, snapshotPreflight } from './aeoRunner.js';
 import { compareSnapshots, rankBrandWithCompetitors } from './aeoCompare.js';
@@ -57,11 +61,13 @@ export default function MonthlyReport() {
   const [reportData, setReportData] = useState(null);
   const [liveAeoProbe, setLiveAeoProbe] = useState(null);
   const [previousAeoSnap, setPreviousAeoSnap] = useState(null);
+  const [aeoOnly, setAeoOnly] = useState(false);
 
   // Auto-fetch GA4 + GSC data when client or month changes.
   useEffect(() => {
     setEmail({ subject: '', body: '' });
     setMicroJson(null); setQa(null); setSent(false); setPhase('idle'); setErr('');
+    setAeoOnly(false);
     const hasSeo = client?.does_content !== false || client?.does_technical !== false;
     const hasAeo = client?.does_aeo !== false;
     setForm({ hasSeo, hasAeo, industry: client?.industry || '' });
@@ -189,14 +195,16 @@ export default function MonthlyReport() {
       reportData,
       aeoProbe,
       aeoCompare,
-      aeoRanking
+      aeoRanking,
+      aeoOnly
     });
-  }, [microJson, client, month, reportData, liveAeoProbe, aeoSnap, previousAeoSnap]);
+  }, [microJson, client, month, reportData, liveAeoProbe, aeoSnap, previousAeoSnap, aeoOnly]);
 
   // Generate AEO-only report — skips SEO data, focuses on AI visibility.
   async function generateAeoOnly() {
     if (!client) return;
     setErr(''); setEmail({ subject: '', body: '' }); setMicroJson(null); setQa(null); setSent(false); setLiveAeoProbe(null);
+    setAeoOnly(true);
 
     try {
       // Step 1: Run AEO probe
@@ -227,7 +235,7 @@ export default function MonthlyReport() {
       });
 
       const aliceText = await claudeComplete({
-        system: ALICE_SYSTEM,
+        system: ALICE_AEO_SYSTEM,
         messages: [{ role: 'user', content: aeoPayload }],
         model: 'claude-sonnet-4-20250514',
         max_tokens: 1200,
@@ -235,10 +243,10 @@ export default function MonthlyReport() {
       });
       setEmail(parseAliceOutput(aliceText));
 
-      // Step 3: Generate microsite JSON
+      // Step 3: Generate microsite JSON (AEO-only shape)
       setPhase('micro');
       const micrositeText = await claudeComplete({
-        system: MICROSITE_SYSTEM,
+        system: MICROSITE_AEO_SYSTEM,
         messages: [{ role: 'user', content: aeoPayload }],
         model: 'claude-sonnet-4-20250514',
         max_tokens: 1200,
@@ -249,10 +257,10 @@ export default function MonthlyReport() {
       if (!microObj.clientName) microObj.clientName = client.name;
       setMicroJson(microObj);
 
-      // Step 4: QA
+      // Step 4: QA (AEO-specific checks: no SEO talk, no doom framing)
       setPhase('qa');
       const qaText = await claudeComplete({
-        system: QA_SYSTEM,
+        system: QA_AEO_SYSTEM,
         messages: [{ role: 'user', content: 'Alice email to review:\n\n' + aliceText }],
         model: 'claude-sonnet-4-20250514',
         max_tokens: 500,
@@ -271,6 +279,7 @@ export default function MonthlyReport() {
   async function generate() {
     if (!client) return;
     setErr(''); setEmail({ subject: '', body: '' }); setMicroJson(null); setQa(null); setSent(false);
+    setAeoOnly(false);
 
     // Compute MoM comparison and ranking from saved snapshot if we have one,
     // so Alice can lead with momentum metrics ("+68% citations MoM") even
