@@ -617,6 +617,52 @@ export async function loadContentHistory() {
   return JSON.parse(localStorage.getItem(BLOGS_KEY) || '[]');
 }
 
+// ---------------------------------------------------------------------------
+// Report data cache — saves fetched GA4/GSC data per client per month
+// so it doesn't re-fetch every time the report page opens.
+// ---------------------------------------------------------------------------
+
+export async function getCachedReportData(clientId, month) {
+  if (supabase) {
+    const { data } = await supabase
+      .from('syte_suite_report_cache')
+      .select('data, fetched_at')
+      .eq('client_id', clientId)
+      .eq('month', month)
+      .limit(1)
+      .single();
+    return data || null;
+  }
+  try {
+    const cache = JSON.parse(localStorage.getItem(LS_PREFIX + 'report_cache') || '{}');
+    return cache[clientId + '::' + month] || null;
+  } catch { return null; }
+}
+
+export async function setCachedReportData(clientId, month, reportData) {
+  if (supabase) {
+    const { data: existing } = await supabase
+      .from('syte_suite_report_cache')
+      .select('id')
+      .eq('client_id', clientId)
+      .eq('month', month)
+      .limit(1);
+    if (existing?.length > 0) {
+      await supabase.from('syte_suite_report_cache')
+        .update({ data: reportData, fetched_at: new Date().toISOString() })
+        .eq('id', existing[0].id);
+    } else {
+      await supabase.from('syte_suite_report_cache')
+        .insert({ client_id: clientId, month, data: reportData });
+    }
+  }
+  try {
+    const cache = JSON.parse(localStorage.getItem(LS_PREFIX + 'report_cache') || '{}');
+    cache[clientId + '::' + month] = { data: reportData, fetched_at: new Date().toISOString() };
+    localStorage.setItem(LS_PREFIX + 'report_cache', JSON.stringify(cache));
+  } catch {}
+}
+
 export async function deleteBlogResult(id) {
   if (supabase) {
     await supabase.from('syte_suite_content_blogs').delete().eq('id', id);

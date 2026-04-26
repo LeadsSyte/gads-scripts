@@ -102,3 +102,18 @@ create index if not exists syte_suite_content_blogs_client_idx
   on syte_suite_content_blogs(client_id, generated_at desc);
 
 alter table syte_suite_content_blogs disable row level security;
+
+-- 6. Cached report data — GA4 + GSC metrics per client per month.
+-- Avoids re-fetching every time the report page is opened.
+create table if not exists syte_suite_report_cache (
+  id uuid primary key default gen_random_uuid(),
+  client_id uuid references syte_suite_clients(id) on delete cascade,
+  month text not null,                   -- YYYY-MM
+  data jsonb not null,                   -- full reportData object
+  fetched_at timestamptz default now()
+);
+
+create unique index if not exists syte_suite_report_cache_uniq
+  on syte_suite_report_cache(client_id, month);
+
+alter table syte_suite_report_cache disable row level security;

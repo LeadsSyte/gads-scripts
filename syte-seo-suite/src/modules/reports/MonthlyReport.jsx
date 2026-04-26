@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useClients } from '../../store/useClients.js';
 import { claudeComplete, extractJSON } from '../../lib/anthropic.js';
-import { listAeoSnapshots, logReportSent } from '../../lib/supabase.js';
+import { listAeoSnapshots, logReportSent, getCachedReportData, setCachedReportData } from '../../lib/supabase.js';
 import { ALICE_SYSTEM, MICROSITE_SYSTEM, QA_SYSTEM, buildAlicePayload, getWorkSummary } from './reportPrompts.js';
 import { buildMicrositeHtml, downloadMicrosite } from './microsite.js';
 import { runSnapshot, snapshotPreflight } from './aeoRunner.js';
-import { ensureToken, SCOPES, getToken } from '../technical/googleAuth.js';
+import { ensureToken, SCOPES, getToken, switchAccount } from '../technical/googleAuth.js';
 import { fetchReportData } from './reportData.js';
 import ReportDashboard from './ReportDashboard.jsx';
 
@@ -78,8 +78,21 @@ export default function MonthlyReport() {
   }, [client?.id, month]);
 
   // Pull all report data (GA4 traffic + conversions + GSC keywords) via reportData.js.
-  async function autoFetchMetrics(c, m) {
+  async function autoFetchMetrics(c, m, forceRefresh = false) {
     if (!c) return;
+
+    // Check cache first (unless forced refresh).
+    if (!forceRefresh) {
+      try {
+        const cached = await getCachedReportData(c.id, m);
+        if (cached?.data) {
+          setReportData(cached.data);
+          setFetchStatus('Loaded from cache (fetched ' + new Date(cached.fetched_at).toLocaleDateString() + ') · Click Switch Google Account to re-fetch');
+          return;
+        }
+      } catch {}
+    }
+
     setFetchStatus('Checking Google connection…');
     setReportData(null);
 
@@ -99,6 +112,8 @@ export default function MonthlyReport() {
     try {
       const data = await fetchReportData(c, year, mo);
       setReportData(data);
+      // Cache for future visits.
+      setCachedReportData(c.id, m, data).catch(() => {});
 
       // Also populate form fields for the Alice email generator.
       if (data.traffic?.current) {
@@ -396,12 +411,36 @@ Write an AEO performance email covering: what AI engines are saying about this b
 
       {/* Data fetch status */}
       {fetchStatus && (
-        <div className="card" style={{ marginBottom: 14, padding: '10px 16px', borderColor: fetchStatus.includes('✓') ? 'rgba(52,211,153,.3)' : 'var(--border)' }}>
-          <div className="row" style={{ gap: 8, fontSize: 12 }}>
+        <div className="card" style={{ marginBottom: 14, padding: '10px 16px', borderColor: fetchStatus.includes('✓') ? 'rgba(52,211,153,.3)' : fetchStatus.includes('403') || fetchStatus.includes('permission') ? 'rgba(255,77,77,.3)' : 'var(--border)' }}>
+          <div className="row" style={{ gap: 8, fontSize: 12, flexWrap: 'wrap' }}>
             {fetchStatus.includes('Pulling') && <span className="spinner" style={{ width: 12, height: 12, borderWidth: 2 }} />}
-            <span style={{ color: fetchStatus.includes('✓') ? 'var(--green)' : fetchStatus.includes('failed') ? 'var(--orange)' : 'var(--text-muted)' }}>
+            <span style={{ color: fetchStatus.includes('✓') ? 'var(--green)' : fetchStatus.includes('failed') || fetchStatus.includes('403') ? 'var(--orange)' : 'var(--text-muted)', flex: 1 }}>
               {fetchStatus}
             </span>
+            {fetchStatus.includes('cache') && (
+              <button
+                onClick={() => autoFetchMetrics(client, month, true)}
+                style={{ fontSize: 11, padding: '4px 12px', borderColor: 'var(--green)', color: 'var(--green)', whiteSpace: 'nowrap' }}
+              >
+                Refresh Data
+              </button>
+            )}
+            {(fetchStatus.includes('403') || fetchStatus.includes('permission') || fetchStatus.includes('failed')) && (
+              <button
+                onClick={async () => {
+                  try {
+                    setFetchStatus('Switching Google account…');
+                    await switchAccount([SCOPES.ga4, SCOPES.gsc]);
+                    autoFetchMetrics(client, month, true);
+                  } catch (e) {
+                    setFetchStatus('Re-auth failed: ' + e.message);
+                  }
+                }}
+                style={{ fontSize: 11, padding: '4px 12px', borderColor: 'var(--blue)', color: 'var(--blue)', whiteSpace: 'nowrap' }}
+              >
+                Switch Google Account
+              </button>
+            )}
           </div>
         </div>
       )}
