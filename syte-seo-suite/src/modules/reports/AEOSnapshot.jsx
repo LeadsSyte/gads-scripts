@@ -46,6 +46,7 @@ export default function AEOSnapshot() {
   const [bulkBusy, setBulkBusy] = useState(false);
   const [bulkProgress, setBulkProgress] = useState(null);
   const [pendingMonthly, setPendingMonthly] = useState([]);
+  const [iterations, setIterations] = useState(3);
 
   // Compute the list of AEO-enabled clients that haven't had a snapshot
   // yet this month. Runs once when clients load.
@@ -90,6 +91,7 @@ export default function AEOSnapshot() {
     setProgress({ phase: 'starting', index: 0, total: 0 });
     try {
       const result = await runSnapshot(client, {
+        iterations,
         onProgress: (p) => setProgress(p)
       });
       setSnapshot(result);
@@ -299,24 +301,37 @@ export default function AEOSnapshot() {
           </div>
         )}
 
-        <div className="row" style={{ marginTop: 14, justifyContent: 'space-between' }}>
+        <div className="row" style={{ marginTop: 14, justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
           <span className="muted" style={{ fontSize: 12 }}>
             {progress ? (
               progress.phase === 'complete'
                 ? 'Complete'
                 : progress.phase === 'sentiment'
                   ? `Sentiment: ${progress.query?.slice(0, 40)}…`
-                  : `${progress.index} / ${progress.total} — ${progress.engine || ''}`
+                  : `${progress.index} / ${progress.total} — ${progress.engine || ''}${progress.iteration ? ' #' + progress.iteration : ''}`
             ) : ''}
           </span>
-          <button
-            className="primary"
-            onClick={run}
-            disabled={busy || !preflight?.canRun}
-            style={{ background: ACCENT, borderColor: ACCENT, color: '#0a0a0c' }}
-          >
-            {busy ? 'Running…' : 'Run AEO Snapshot'}
-          </button>
+          <div className="row" style={{ gap: 10, alignItems: 'center' }}>
+            <label style={{ fontSize: 11, color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 6 }}>
+              Iterations
+              <input
+                type="number" min={1} max={10}
+                value={iterations}
+                onChange={e => setIterations(Math.max(1, Math.min(10, Number(e.target.value) || 1)))}
+                style={{ width: 56, padding: '4px 8px', fontSize: 12 }}
+                disabled={busy}
+                title="How many times to ask each (query × engine). 3+ gives meaningful visibility percentages."
+              />
+            </label>
+            <button
+              className="primary"
+              onClick={run}
+              disabled={busy || !preflight?.canRun}
+              style={{ background: ACCENT, borderColor: ACCENT, color: '#0a0a0c' }}
+            >
+              {busy ? 'Running…' : 'Run AEO Snapshot'}
+            </button>
+          </div>
         </div>
 
         {progress && progress.total > 0 && (
@@ -335,23 +350,41 @@ export default function AEOSnapshot() {
       {snapshot && (
         <>
           <div className="card" style={{ marginBottom: 14 }}>
-            <div className="row" style={{ justifyContent: 'space-between', alignItems: 'baseline' }}>
+            <div className="row" style={{ justifyContent: 'space-between', alignItems: 'baseline', gap: 24, flexWrap: 'wrap' }}>
               <div>
-                <div className="muted" style={{ fontSize: 11, textTransform: 'uppercase' }}>Overall Visibility</div>
+                <div className="muted" style={{ fontSize: 11, textTransform: 'uppercase' }}>Visibility</div>
                 <div style={{
                   fontFamily: 'Instrument Serif, serif',
                   fontSize: 72, lineHeight: 1,
                   color: scoreColor(snapshot.overall_score)
                 }}>
-                  {snapshot.overall_score}<span style={{ fontSize: 24, color: 'var(--text-muted)' }}>/100</span>
+                  {snapshot.visibility_score ?? 0}<span style={{ fontSize: 24, color: 'var(--text-muted)' }}>%</span>
                 </div>
                 {delta != null && (
                   <div style={{ fontSize: 13, color: delta >= 0 ? 'var(--green)' : 'var(--red)' }}>
                     {delta >= 0 ? '+' : ''}{delta} pts vs {lastSnapshot?.month}
                   </div>
                 )}
+                <div className="muted" style={{ fontSize: 11, marginTop: 6 }}>
+                  composite score {snapshot.overall_score}/100
+                </div>
               </div>
-              <div style={{ minWidth: 280, flex: 1, maxWidth: 420 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(120px, 1fr))', gap: 12, flex: 1, minWidth: 280 }}>
+                {[
+                  { label: 'Mentions',       value: snapshot.mentions ?? 0 },
+                  { label: 'Citations',      value: snapshot.citations ?? 0 },
+                  { label: 'Detection rate', value: (snapshot.detection_rate ?? 0) + '%' },
+                  { label: 'Top-3 rate',     value: (snapshot.top3_rate ?? 0) + '%' },
+                  { label: 'Sentiment',      value: (snapshot.sentiment_score ?? 0) + '%' },
+                  { label: 'Iterations',     value: snapshot.iterations ?? 1 }
+                ].map(m => (
+                  <div key={m.label} style={{ padding: 10, background: 'var(--surface-2)', borderRadius: 8 }}>
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '.05em' }}>{m.label}</div>
+                    <div style={{ fontSize: 18, fontWeight: 600, marginTop: 2 }}>{m.value}</div>
+                  </div>
+                ))}
+              </div>
+              <div style={{ minWidth: 240, flex: 1, maxWidth: 360 }}>
                 {engineRow.filter(e => e.configured).map(e => (
                   <ScoreBar key={e.id} label={e.label} value={e.score} />
                 ))}
@@ -359,7 +392,7 @@ export default function AEOSnapshot() {
               <button onClick={handleSave}>Save Snapshot</button>
             </div>
             <div className="muted" style={{ marginTop: 12, fontSize: 12 }}>
-              {snapshot.sentiment} · engines: {snapshot.engines_used.join(', ')}
+              {snapshot.sentiment} · engines: {snapshot.engines_used.join(', ')} · {snapshot.total_runs || snapshot.per_query.length} total responses
             </div>
           </div>
 
@@ -383,14 +416,13 @@ export default function AEOSnapshot() {
                         const row = snapshot.per_query.find(r => r.query === q && r.engine === eng.id);
                         if (!row) return <td key={eng.id} className="muted">—</td>;
                         if (row.error) return <td key={eng.id} className="muted" title={row.error}>err</td>;
-                        if (!row.mentioned) return <td key={eng.id}><span className="badge">—</span></td>;
-                        const color = row.sentiment === 'positive' ? 'green'
-                                    : row.sentiment === 'negative' ? 'red'
-                                    : 'blue';
+                        const v = row.visibility ?? (row.mentioned ? 100 : 0);
+                        if (v === 0) return <td key={eng.id}><span className="badge" title={`0/${row.iterations || 1} iterations`}>0%</span></td>;
+                        const color = v >= 70 ? 'green' : v >= 30 ? 'orange' : 'blue';
                         return (
                           <td key={eng.id}>
-                            <span className={'badge ' + color} title={row.excerpt}>
-                              #{row.position} · {row.score}
+                            <span className={'badge ' + color} title={(row.excerpt || '') + ' · ' + (row.hits || 0) + '/' + (row.iterations || 1) + ' iterations'}>
+                              {v}% · #{row.avg_position ?? row.position ?? '—'}
                             </span>
                           </td>
                         );
@@ -404,17 +436,51 @@ export default function AEOSnapshot() {
 
           {snapshot.competitors.length > 0 && (
             <div className="card" style={{ marginBottom: 14 }}>
-              <strong>Competitor Visibility</strong>
-              <table style={{ marginTop: 10 }}>
-                <thead><tr><th>Competitor</th><th>Appearances</th></tr></thead>
+              <strong>Competitive Landscape</strong>
+              <div className="muted" style={{ fontSize: 11, marginTop: 4, marginBottom: 8 }}>
+                Same metrics as the brand — visibility, top-3 rate, mentions, citations.
+              </div>
+              <table style={{ marginTop: 6 }}>
+                <thead>
+                  <tr>
+                    <th>Brand</th>
+                    <th>Visibility</th>
+                    <th>Top-3</th>
+                    <th>Mentions</th>
+                    <th>Citations</th>
+                    <th>Avg Pos</th>
+                  </tr>
+                </thead>
                 <tbody>
-                  {snapshot.competitors
-                    .slice()
-                    .sort((a, b) => b.appearances - a.appearances)
-                    .map(c => (
-                      <tr key={c.name}>
-                        <td>{c.name}</td>
-                        <td>{c.appearances} / {snapshot.per_query.length}</td>
+                  {[
+                    {
+                      name: client.name, isBrand: true,
+                      visibility: snapshot.visibility_score ?? 0,
+                      top3: snapshot.top3_rate ?? 0,
+                      mentions: snapshot.mentions ?? 0,
+                      citations: snapshot.citations ?? 0,
+                      avg_position: snapshot.avg_position
+                    },
+                    ...snapshot.competitors.map(c => ({
+                      name: c.name, isBrand: false,
+                      visibility: c.visibility ?? 0,
+                      top3: c.top3_rate ?? 0,
+                      mentions: c.mentions ?? c.appearances ?? 0,
+                      citations: c.citations ?? 0,
+                      avg_position: c.avg_position
+                    }))
+                  ]
+                    .sort((a, b) => b.visibility - a.visibility)
+                    .map((c, i) => (
+                      <tr key={c.name} style={c.isBrand ? { background: 'rgba(167,139,250,.06)' } : undefined}>
+                        <td style={{ fontWeight: c.isBrand ? 700 : 400 }}>
+                          {c.isBrand ? '✦ ' : ''}#{i + 1} {c.name}
+                        </td>
+                        <td>{c.visibility}%</td>
+                        <td>{c.top3}%</td>
+                        <td>{c.mentions}</td>
+                        <td>{c.citations}</td>
+                        <td className="muted">{c.avg_position != null ? '#' + c.avg_position : '—'}</td>
                       </tr>
                     ))}
                 </tbody>
@@ -425,14 +491,13 @@ export default function AEOSnapshot() {
           <div className="card">
             <strong>Response Excerpts</strong>
             <div style={{ marginTop: 10 }}>
-              {snapshot.per_query
-                .filter(r => r.mentioned || r.error)
+              {(snapshot.excerpts || snapshot.per_query.filter(r => r.mentioned || r.error))
                 .map((r, i) => (
                   <details key={i} style={{ marginBottom: 6 }}>
                     <summary style={{ cursor: 'pointer', fontSize: 13 }}>
                       <span className="badge" style={{ marginRight: 8 }}>{r.engine}</span>
                       {r.query}
-                      {r.mentioned && <span style={{ marginLeft: 8, color: 'var(--green)', fontSize: 11 }}>#{r.position} · {r.sentiment}</span>}
+                      {r.sentiment && <span style={{ marginLeft: 8, color: 'var(--green)', fontSize: 11 }}>{r.sentiment}</span>}
                       {r.error && <span style={{ marginLeft: 8, color: 'var(--red)', fontSize: 11 }}>error</span>}
                     </summary>
                     <div style={{ padding: '8px 12px', fontSize: 12, color: 'var(--text-muted)' }}>

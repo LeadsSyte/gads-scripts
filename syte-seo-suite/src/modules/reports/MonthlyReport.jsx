@@ -2,9 +2,10 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { useClients } from '../../store/useClients.js';
 import { claudeComplete, extractJSON } from '../../lib/anthropic.js';
 import { listAeoSnapshots, logReportSent, getCachedReportData, setCachedReportData } from '../../lib/supabase.js';
-import { ALICE_SYSTEM, MICROSITE_SYSTEM, QA_SYSTEM, buildAlicePayload, getWorkSummary } from './reportPrompts.js';
+import { ALICE_SYSTEM, MICROSITE_SYSTEM, QA_SYSTEM, buildAlicePayload, getWorkSummary, buildAeoPayload } from './reportPrompts.js';
 import { buildMicrositeHtml, downloadMicrosite } from './microsite.js';
 import { runSnapshot, snapshotPreflight } from './aeoRunner.js';
+import { compareSnapshots, rankBrandWithCompetitors } from './aeoCompare.js';
 import { ensureToken, SCOPES, getToken, switchAccount } from '../technical/googleAuth.js';
 import { fetchReportData } from './reportData.js';
 import ReportDashboard from './ReportDashboard.jsx';
@@ -55,6 +56,7 @@ export default function MonthlyReport() {
   const [showMicroFull, setShowMicroFull] = useState(false);
   const [reportData, setReportData] = useState(null);
   const [liveAeoProbe, setLiveAeoProbe] = useState(null);
+  const [previousAeoSnap, setPreviousAeoSnap] = useState(null);
 
   // Auto-fetch GA4 + GSC data when client or month changes.
   useEffect(() => {
@@ -70,10 +72,14 @@ export default function MonthlyReport() {
   }, [client?.id, month]);
 
   useEffect(() => {
-    if (!client) { setAeoSnap(null); setWorkSummary(null); return; }
+    if (!client) { setAeoSnap(null); setPreviousAeoSnap(null); setWorkSummary(null); return; }
     listAeoSnapshots(client.id).then(rows => {
-      const match = rows.find(r => r.month === month) || null;
+      // Sort newest-first then find this month + the most recent prior month.
+      const sorted = (rows || []).slice().sort((a, b) => (b.month || '').localeCompare(a.month || ''));
+      const match = sorted.find(r => r.month === month) || null;
+      const prev = sorted.find(r => r.month && r.month < month) || null;
       setAeoSnap(match);
+      setPreviousAeoSnap(prev);
     }).catch(() => {});
   }, [client?.id, month]);
 
@@ -164,15 +170,28 @@ export default function MonthlyReport() {
 
   const micrositeHtml = useMemo(() => {
     if (!microJson || !client) return '';
+    // Use the live probe if we just ran one; otherwise fall back to the
+    // saved snapshot for this month so the report renders even without
+    // a fresh probe in the same session.
+    const aeoProbe = liveAeoProbe || aeoSnap || null;
+    const aeoCompare = aeoProbe
+      ? compareSnapshots(aeoProbe, previousAeoSnap)
+      : null;
+    const aeoRanking = aeoProbe
+      ? rankBrandWithCompetitors(aeoProbe, client.name)
+      : null;
     return buildMicrositeHtml({
       micro: microJson,
       client,
       monthLabel: monthLabel(month),
+      previousMonthLabel: previousAeoSnap ? monthLabel(previousAeoSnap.month) : null,
       rankscale: client.rankscale_url,
       reportData,
-      aeoProbe: liveAeoProbe
+      aeoProbe,
+      aeoCompare,
+      aeoRanking
     });
-  }, [microJson, client, month, reportData, liveAeoProbe]);
+  }, [microJson, client, month, reportData, liveAeoProbe, aeoSnap, previousAeoSnap]);
 
   // Generate AEO-only report — skips SEO data, focuses on AI visibility.
   async function generateAeoOnly() {
@@ -194,30 +213,18 @@ export default function MonthlyReport() {
 
       // Step 2: Generate AEO-focused email
       setPhase('alice');
-      const citedCount = probeResult.per_query?.filter(r => r.mentioned).length || 0;
-      const totalCount = probeResult.per_query?.length || 0;
-      const aeoPayload = `Client: ${client.name}
-Industry: ${client.industry || ''}
-Month: ${monthLabel(month)}
-
-AEO REPORT — AI Visibility Assessment
-
-AEO Score: ${probeResult.overall_score}/100
-Citations: ${citedCount} out of ${totalCount} AI responses mentioned ${client.name}
-Sentiment: ${probeResult.sentiment}
-Engines tested: ${(probeResult.engines_used || []).join(', ')}
-Per-engine scores: ${JSON.stringify(probeResult.engine_scores || {})}
-
-Top cited queries:
-${probeResult.per_query?.filter(r => r.mentioned).map(r => '- "' + r.query + '" on ' + r.engine + ' (position ' + r.position + ', ' + r.sentiment + ')').join('\n') || 'None'}
-
-Queries where brand was NOT cited:
-${probeResult.per_query?.filter(r => !r.mentioned && !r.error).map(r => '- "' + r.query + '" on ' + r.engine).join('\n') || 'None'}
-
-Competitors appearing in responses:
-${(probeResult.competitors || []).map(c => '- ' + c.name + ': ' + c.appearances + ' mentions').join('\n') || 'None tracked'}
-
-Write an AEO performance email covering: what AI engines are saying about this brand, where they're cited, what's missing, and what the next steps are to improve AI visibility. Focus on actionable insights.`;
+      const compare = compareSnapshots(probeResult, previousAeoSnap);
+      const ranking = rankBrandWithCompetitors(probeResult, client.name);
+      const brandRank = ranking.findIndex(r => r.isBrand) + 1;
+      const aeoPayload = buildAeoPayload({
+        client,
+        monthLabel: monthLabel(month),
+        previousMonthLabel: previousAeoSnap ? monthLabel(previousAeoSnap.month) : null,
+        probe: probeResult,
+        compare,
+        ranking,
+        brandRank
+      });
 
       const aliceText = await claudeComplete({
         system: ALICE_SYSTEM,
@@ -265,12 +272,24 @@ Write an AEO performance email covering: what AI engines are saying about this b
     if (!client) return;
     setErr(''); setEmail({ subject: '', body: '' }); setMicroJson(null); setQa(null); setSent(false);
 
+    // Compute MoM comparison and ranking from saved snapshot if we have one,
+    // so Alice can lead with momentum metrics ("+68% citations MoM") even
+    // when not running a fresh probe.
+    const aeoForCompare = aeoSnap || liveAeoProbe;
+    const aeoCompare = aeoForCompare ? compareSnapshots(aeoForCompare, previousAeoSnap) : null;
+    const aeoRanking = aeoForCompare ? rankBrandWithCompetitors(aeoForCompare, client.name) : null;
+    const brandRank = aeoRanking ? aeoRanking.findIndex(r => r.isBrand) + 1 : null;
+
     const payload = buildAlicePayload({
       clientName: client.name,
       industry: client.industry || '',
       goals: client.context,
       month: monthLabel(month),
+      previousMonthLabel: previousAeoSnap ? monthLabel(previousAeoSnap.month) : null,
       algorithmContext: algContext,
+      aeoCompare,
+      aeoRanking,
+      brandRank,
       ...form
     }, aeoSnap, workSummary);
 

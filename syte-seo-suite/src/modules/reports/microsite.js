@@ -13,9 +13,25 @@ function scoreColor(s) {
   return '#34d399';
 }
 
+function fmtDelta(delta, suffix = 'pp') {
+  if (!delta || delta.absolute == null) return '';
+  const sign = delta.absolute >= 0 ? '+' : '';
+  const arrow = delta.absolute >= 0 ? '↑' : '↓';
+  const colour = delta.absolute >= 0 ? 'var(--green)' : 'var(--red)';
+  const pct = delta.percent != null ? ` (${delta.percent >= 0 ? '+' : ''}${delta.percent}%)` : '';
+  return `<span style="color:${colour};font-weight:600;">${arrow} ${sign}${delta.absolute}${suffix}${pct}</span>`;
+}
+
+function fmt(n) {
+  if (n == null || n === '') return '—';
+  return typeof n === 'number' ? n.toLocaleString() : String(n);
+}
+
 // micro: parsed microsite JSON from Claude, client: full client record,
 // monthLabel: e.g. "April 2026", rankscale: optional share URL.
-export function buildMicrositeHtml({ micro, client, monthLabel, rankscale, reportData, aeoProbe }) {
+// aeoCompare: { current, previous, deltas, has_previous } from aeoCompare.js
+// aeoRanking: sorted competitive landscape including the brand
+export function buildMicrositeHtml({ micro, client, monthLabel, previousMonthLabel, rankscale, reportData, aeoProbe, aeoCompare, aeoRanking }) {
   const aeo = micro?.aeoSection || {};
   const showAeo = !!aeo.show;
   const ppc = micro?.ppcEquivalent || {};
@@ -26,6 +42,9 @@ export function buildMicrositeHtml({ micro, client, monthLabel, rankscale, repor
   const traffic = rd.traffic || {};
   const isEcom = rd.clientType === 'ecommerce';
   const probe = aeoProbe || {};
+  const cmp = aeoCompare || null;
+  const ranking = aeoRanking || null;
+  const brandRank = ranking ? ranking.findIndex(r => r.isBrand) + 1 : null;
 
   const highlights = (micro?.highlights || []).map(h => `
     <div class="metric">
@@ -291,63 +310,201 @@ export function buildMicrositeHtml({ micro, client, monthLabel, rankscale, repor
 
     ${probe.per_query?.length > 0 ? `
     <section>
-      <h2>AI Engine Visibility</h2>
+      <h2>AI Visibility — Headline Metrics</h2>
       <p style="color:var(--muted);font-size:13px;margin-bottom:16px;">
-        We probed ${probe.engines_used?.length || 0} AI engine${(probe.engines_used?.length || 0) > 1 ? 's' : ''}
-        (${(probe.engines_used || []).join(', ')}) with ${new Set(probe.per_query.map(r => r.query)).size} queries
-        to test whether <strong>${esc(client.name)}</strong> gets recommended.
-        ${probe.sentiment || ''}
+        Probed ${probe.engines_used?.length || 0} AI engine${(probe.engines_used?.length || 0) > 1 ? 's' : ''}
+        (${(probe.engines_used || []).join(', ')}) across ${probe.queries_count || new Set(probe.per_query.map(r => r.query)).size} queries × ${probe.iterations || 1} iterations = ${probe.total_runs || probe.per_query.length} total responses.
       </p>
-      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px;margin-bottom:20px;">
-        <div style="padding:16px;background:var(--surface);border:1px solid var(--border);border-radius:12px;text-align:center;">
-          <div style="font-family:'DM Serif Display',serif;font-size:42px;color:${probe.overall_score >= 60 ? 'var(--accent)' : probe.overall_score >= 30 ? 'var(--orange)' : 'var(--red)'};">${probe.overall_score || 0}</div>
-          <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;">AEO Score</div>
-        </div>
-        <div style="padding:16px;background:var(--surface);border:1px solid var(--border);border-radius:12px;text-align:center;">
-          <div style="font-family:'DM Serif Display',serif;font-size:42px;color:var(--accent);">${probe.per_query?.filter(r => r.mentioned).length || 0}/${probe.per_query?.length || 0}</div>
-          <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;">Citations</div>
-        </div>
-        ${Object.entries(probe.engine_scores || {}).map(([eng, score]) => `
-          <div style="padding:16px;background:var(--surface);border:1px solid var(--border);border-radius:12px;text-align:center;">
-            <div style="font-family:'DM Serif Display',serif;font-size:32px;color:${score >= 60 ? 'var(--accent)' : score >= 30 ? 'var(--orange)' : 'var(--red)'};">${score}</div>
-            <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;">${esc(eng)}</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-bottom:20px;">
+        ${[
+          { label: 'Visibility Score', value: (probe.visibility_score ?? 0) + '%', delta: cmp?.deltas?.visibility, deltaSuffix: 'pp' },
+          { label: 'Mentions',        value: fmt(probe.mentions),                  delta: cmp?.deltas?.mentions,   deltaSuffix: '' },
+          { label: 'Citations',       value: fmt(probe.citations),                 delta: cmp?.deltas?.citations,  deltaSuffix: '' },
+          { label: 'Detection Rate',  value: (probe.detection_rate ?? 0) + '%',    delta: cmp?.deltas?.detection,  deltaSuffix: 'pp' },
+          { label: 'Top-3 Rate',      value: (probe.top3_rate ?? 0) + '%',         delta: cmp?.deltas?.top3,       deltaSuffix: 'pp' },
+          { label: 'Sentiment',       value: (probe.sentiment_score ?? 0) + '%',   delta: cmp?.deltas?.sentiment,  deltaSuffix: 'pp' }
+        ].map(m => `
+          <div style="padding:18px;background:var(--surface);border:1px solid var(--border);border-radius:12px;">
+            <div style="font-family:'DM Serif Display',serif;font-size:36px;line-height:1;color:var(--accent);">${m.value}</div>
+            <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-top:6px;">${m.label}</div>
+            ${m.delta ? `<div style="font-size:12px;margin-top:4px;">${fmtDelta(m.delta, m.deltaSuffix)}</div>` : ''}
           </div>
         `).join('')}
       </div>
+      ${cmp?.has_previous ? `<p style="color:var(--muted);font-size:12px;font-style:italic;">Deltas vs ${esc(previousMonthLabel || cmp.previous_month || 'last month')}</p>` : '<p style="color:var(--muted);font-size:12px;font-style:italic;">First snapshot — this is the baseline. MoM deltas appear from next month.</p>'}
+      ${micro?.aeoMomNarrative ? `<p class="narrative" style="margin-top:14px;">${esc(micro.aeoMomNarrative)}</p>` : ''}
+      ${rankscaleBtn}
+    </section>` : ''}
+
+    ${cmp?.has_previous && cmp.deltas ? `
+    <section>
+      <h2>Month-on-Month</h2>
+      <p style="color:var(--muted);font-size:13px;margin-bottom:14px;">Two-month comparison across every AEO metric we track.</p>
+      <table class="data-table" style="width:100%;border-collapse:collapse;font-size:13px;">
+        <thead>
+          <tr style="border-bottom:2px solid var(--border);text-align:left;">
+            <th style="padding:10px;color:var(--muted);font-size:11px;text-transform:uppercase;">Metric</th>
+            <th style="padding:10px;text-align:right;color:var(--muted);font-size:11px;text-transform:uppercase;">${esc(previousMonthLabel || cmp.previous_month || 'Previous')}</th>
+            <th style="padding:10px;text-align:right;color:var(--muted);font-size:11px;text-transform:uppercase;">${esc(monthLabel)}</th>
+            <th style="padding:10px;text-align:right;color:var(--muted);font-size:11px;text-transform:uppercase;">Change</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${[
+            { label: 'Visibility Score',  prev: cmp.previous?.visibility, curr: cmp.current?.visibility, delta: cmp.deltas.visibility, suffix: '%', deltaSuffix: 'pp' },
+            { label: 'Mentions',          prev: cmp.previous?.mentions,   curr: cmp.current?.mentions,   delta: cmp.deltas.mentions,   suffix: '',  deltaSuffix: '' },
+            { label: 'Citations',         prev: cmp.previous?.citations,  curr: cmp.current?.citations,  delta: cmp.deltas.citations,  suffix: '',  deltaSuffix: '' },
+            { label: 'Detection Rate',    prev: cmp.previous?.detection,  curr: cmp.current?.detection,  delta: cmp.deltas.detection,  suffix: '%', deltaSuffix: 'pp' },
+            { label: 'Top-3 Rate',        prev: cmp.previous?.top3,       curr: cmp.current?.top3,       delta: cmp.deltas.top3,       suffix: '%', deltaSuffix: 'pp' },
+            { label: 'Sentiment Score',   prev: cmp.previous?.sentiment,  curr: cmp.current?.sentiment,  delta: cmp.deltas.sentiment,  suffix: '%', deltaSuffix: 'pp' }
+          ].map(row => `
+            <tr style="border-bottom:1px solid var(--border);">
+              <td style="padding:10px;font-weight:600;">${row.label}</td>
+              <td style="padding:10px;text-align:right;color:var(--muted);font-family:'JetBrains Mono',monospace;">${row.prev != null ? row.prev + row.suffix : '—'}</td>
+              <td style="padding:10px;text-align:right;font-family:'JetBrains Mono',monospace;">${row.curr != null ? row.curr + row.suffix : '—'}</td>
+              <td style="padding:10px;text-align:right;">${fmtDelta(row.delta, row.deltaSuffix)}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </section>` : ''}
+
+    ${ranking && ranking.length > 1 ? `
+    <section>
+      <h2>Competitive Landscape</h2>
+      <p style="color:var(--muted);font-size:13px;margin-bottom:14px;">
+        ${brandRank === 1
+          ? `<strong style="color:var(--green);">${esc(client.name)} leads</strong> all tracked competitors on visibility.`
+          : `${esc(client.name)} ranks <strong>#${brandRank}</strong> of ${ranking.length} brands tracked. Closest leader: ${esc(ranking[0].name)} at ${ranking[0].visibility}%.`}
+      </p>
+      ${micro?.aeoCompetitiveNarrative ? `<p class="narrative" style="margin-bottom:14px;">${esc(micro.aeoCompetitiveNarrative)}</p>` : ''}
+      <table class="data-table" style="width:100%;border-collapse:collapse;font-size:12px;">
+        <thead>
+          <tr style="border-bottom:2px solid var(--border);text-align:left;">
+            <th style="padding:8px 10px;color:var(--muted);font-size:10px;text-transform:uppercase;">Brand</th>
+            <th style="padding:8px 10px;text-align:right;color:var(--muted);font-size:10px;text-transform:uppercase;">Visibility</th>
+            <th style="padding:8px 10px;text-align:right;color:var(--muted);font-size:10px;text-transform:uppercase;">Top-3 Rate</th>
+            <th style="padding:8px 10px;text-align:right;color:var(--muted);font-size:10px;text-transform:uppercase;">Mentions</th>
+            <th style="padding:8px 10px;text-align:right;color:var(--muted);font-size:10px;text-transform:uppercase;">Citations</th>
+            <th style="padding:8px 10px;text-align:right;color:var(--muted);font-size:10px;text-transform:uppercase;">Avg Pos</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${ranking.map((r, i) => `
+            <tr style="border-bottom:1px solid var(--border);${r.isBrand ? 'background:rgba(200,240,96,.06);' : ''}">
+              <td style="padding:8px 10px;font-weight:${r.isBrand ? '700' : '500'};color:${r.isBrand ? 'var(--accent)' : 'var(--text)'};">
+                ${r.isBrand ? `✦ #${i + 1} ` : `#${i + 1} `}${esc(r.name)}
+              </td>
+              <td style="padding:8px 10px;text-align:right;font-family:'JetBrains Mono',monospace;font-weight:${r.isBrand ? '700' : '400'};">${r.visibility}%</td>
+              <td style="padding:8px 10px;text-align:right;font-family:'JetBrains Mono',monospace;">${r.top3_rate}%</td>
+              <td style="padding:8px 10px;text-align:right;font-family:'JetBrains Mono',monospace;">${r.mentions}</td>
+              <td style="padding:8px 10px;text-align:right;font-family:'JetBrains Mono',monospace;">${r.citations}</td>
+              <td style="padding:8px 10px;text-align:right;color:var(--muted);">${r.avg_position != null ? '#' + r.avg_position : '—'}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </section>` : ''}
+
+    ${(probe.keyword_wins?.active?.length || probe.keyword_wins?.emerging?.length) ? `
+    <section>
+      <h2>Keyword Performance</h2>
+      ${probe.keyword_wins?.active?.length ? `
+        <h3 style="font-size:16px;margin:14px 0 10px;color:var(--green);">✅ Active Wins <span style="font-size:12px;color:var(--muted);font-weight:400;">— ≥70% visibility</span></h3>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px;">
+          ${probe.keyword_wins.active.slice(0, 12).map(w => `
+            <div style="padding:12px 14px;background:var(--surface);border:1px solid rgba(74,222,128,.3);border-left:3px solid var(--green);border-radius:8px;">
+              <div style="font-size:13px;font-weight:600;">${esc(w.query)}</div>
+              <div style="font-size:11px;color:var(--muted);margin-top:4px;display:flex;justify-content:space-between;">
+                <span>${esc(w.engine_label || w.engine)}</span>
+                <span style="color:var(--green);font-weight:600;">${w.visibility}%</span>
+              </div>
+            </div>
+          `).join('')}
+        </div>
+      ` : ''}
+      ${probe.keyword_wins?.emerging?.length ? `
+        <h3 style="font-size:16px;margin:20px 0 10px;color:var(--orange);">🔬 Emerging Wins <span style="font-size:12px;color:var(--muted);font-weight:400;">— 30-69% visibility, building momentum</span></h3>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px;">
+          ${probe.keyword_wins.emerging.slice(0, 12).map(w => `
+            <div style="padding:12px 14px;background:var(--surface);border:1px solid rgba(251,191,36,.3);border-left:3px solid var(--orange);border-radius:8px;">
+              <div style="font-size:13px;font-weight:600;">${esc(w.query)}</div>
+              <div style="font-size:11px;color:var(--muted);margin-top:4px;display:flex;justify-content:space-between;">
+                <span>${esc(w.engine_label || w.engine)}</span>
+                <span style="color:var(--orange);font-weight:600;">${w.visibility}%</span>
+              </div>
+            </div>
+          `).join('')}
+        </div>
+      ` : ''}
+      ${probe.keyword_wins?.zero?.length ? `
+        <p style="color:var(--muted);font-size:12px;margin-top:16px;">
+          <strong style="color:var(--text);">${probe.keyword_wins.zero.length} zero-visibility queries</strong>
+          — biggest opportunity. Listed in next month's strategy below.
+        </p>
+      ` : ''}
+    </section>` : ''}
+
+    ${micro?.aeoStrategy?.show && (micro.aeoStrategy?.priorities?.length || micro.aeoStrategy?.zeroOpportunity) ? `
+    <section>
+      <h2>Next Month's Strategy</h2>
+      <p style="color:var(--muted);font-size:13px;margin-bottom:14px;">Based on emerging wins and zero-visibility category terms — these are the queries we're attacking next.</p>
+      ${(micro.aeoStrategy.priorities || []).map((p, i) => `
+        <div style="padding:18px;background:var(--surface);border:1px solid var(--border);border-left:4px solid ${p.tier === 'Quick Win' ? 'var(--green)' : p.tier === 'Grow Share' ? 'var(--orange)' : 'var(--accent)'};border-radius:10px;margin-bottom:12px;">
+          <div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:6px;">
+            Priority ${i + 1} — ${esc(p.tier || 'Strategy')}
+          </div>
+          <div style="font-size:18px;font-weight:600;margin-bottom:8px;">${esc(p.title || '')}</div>
+          <p style="font-size:14px;color:var(--muted);margin-bottom:10px;">${esc(p.rationale || '')}</p>
+          ${(p.tags || []).length ? `
+            <div style="display:flex;gap:8px;flex-wrap:wrap;">
+              ${p.tags.map(t => `<span style="padding:3px 10px;background:var(--surface-2);border:1px solid var(--border);border-radius:999px;font-size:11px;color:var(--muted);">${esc(t)}</span>`).join('')}
+            </div>
+          ` : ''}
+        </div>
+      `).join('')}
+      ${micro.aeoStrategy.zeroOpportunity ? `
+        <div style="padding:16px 20px;background:linear-gradient(135deg,rgba(200,240,96,.08),rgba(167,139,250,.04));border:1px solid rgba(200,240,96,.25);border-radius:10px;margin-top:14px;">
+          <div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--accent);margin-bottom:6px;">The 0% Terms — Biggest Opportunity</div>
+          <p style="font-size:14px;">${esc(micro.aeoStrategy.zeroOpportunity)}</p>
+        </div>
+      ` : ''}
+    </section>` : ''}
+
+    ${probe.per_query?.length > 0 ? `
+    <section>
+      <h2>Query × Engine Visibility Detail</h2>
+      <p style="color:var(--muted);font-size:13px;margin-bottom:14px;">Per-engine visibility for every probe query — the granular data behind the scores above.</p>
       <table class="data-table" style="width:100%;border-collapse:collapse;font-size:12px;">
         <thead>
           <tr style="border-bottom:2px solid var(--border);text-align:left;">
             <th style="padding:8px 10px;color:var(--muted);font-size:10px;text-transform:uppercase;">Query</th>
             <th style="padding:8px 10px;color:var(--muted);font-size:10px;text-transform:uppercase;">Engine</th>
-            <th style="padding:8px 10px;text-align:center;color:var(--muted);font-size:10px;text-transform:uppercase;">Cited?</th>
-            <th style="padding:8px 10px;text-align:center;color:var(--muted);font-size:10px;text-transform:uppercase;">Position</th>
+            <th style="padding:8px 10px;text-align:center;color:var(--muted);font-size:10px;text-transform:uppercase;">Visibility</th>
+            <th style="padding:8px 10px;text-align:center;color:var(--muted);font-size:10px;text-transform:uppercase;">Top-3 Rate</th>
+            <th style="padding:8px 10px;text-align:center;color:var(--muted);font-size:10px;text-transform:uppercase;">Avg Pos</th>
             <th style="padding:8px 10px;color:var(--muted);font-size:10px;text-transform:uppercase;">Sentiment</th>
           </tr>
         </thead>
         <tbody>
-          ${probe.per_query.filter(r => !r.error).map(r => `
-            <tr style="border-bottom:1px solid var(--border);">
-              <td style="padding:6px 10px;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(r.query)}</td>
-              <td style="padding:6px 10px;">${esc(r.engine)}</td>
-              <td style="padding:6px 10px;text-align:center;">${r.mentioned ? '<span style="color:var(--accent);">✓</span>' : '<span style="color:var(--red);">✗</span>'}</td>
-              <td style="padding:6px 10px;text-align:center;">${r.position || '—'}</td>
-              <td style="padding:6px 10px;color:${r.sentiment === 'positive' ? 'var(--accent)' : r.sentiment === 'negative' ? 'var(--red)' : 'var(--muted)'};">${r.mentioned ? (r.sentiment || '—') : '—'}</td>
-            </tr>
-          `).join('')}
+          ${probe.per_query
+            .filter(r => !r.error)
+            .slice()
+            .sort((a, b) => (b.visibility || 0) - (a.visibility || 0))
+            .map(r => {
+              const v = r.visibility ?? (r.mentioned ? 100 : 0);
+              const visColour = v >= 70 ? 'var(--green)' : v >= 30 ? 'var(--orange)' : 'var(--muted)';
+              return `<tr style="border-bottom:1px solid var(--border);">
+                <td style="padding:6px 10px;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(r.query)}</td>
+                <td style="padding:6px 10px;">${esc(r.engine_label || r.engine)}</td>
+                <td style="padding:6px 10px;text-align:center;color:${visColour};font-weight:600;">${v}%</td>
+                <td style="padding:6px 10px;text-align:center;color:var(--muted);">${r.top3_rate != null ? r.top3_rate + '%' : '—'}</td>
+                <td style="padding:6px 10px;text-align:center;color:var(--muted);">${r.avg_position != null ? '#' + r.avg_position : '—'}</td>
+                <td style="padding:6px 10px;color:${r.sentiment === 'positive' ? 'var(--accent)' : r.sentiment === 'negative' ? 'var(--red)' : 'var(--muted)'};">${r.hits ? (r.sentiment || '—') : '—'}</td>
+              </tr>`;
+            }).join('')}
         </tbody>
       </table>
-      ${(probe.competitors || []).length > 0 ? `
-        <div style="margin-top:16px;">
-          <h3 style="font-size:14px;margin-bottom:8px;">Competitor Mentions</h3>
-          <div style="display:flex;gap:12px;flex-wrap:wrap;">
-            ${probe.competitors.map(c => `
-              <div style="padding:8px 16px;background:var(--surface);border:1px solid var(--border);border-radius:8px;font-size:12px;">
-                <strong>${esc(c.name)}</strong> <span style="color:var(--muted);margin-left:8px;">${c.appearances} mention${c.appearances !== 1 ? 's' : ''}</span>
-              </div>
-            `).join('')}
-          </div>
-        </div>
-      ` : ''}
     </section>` : ''}
 
     ${micro?.whatNext ? `
