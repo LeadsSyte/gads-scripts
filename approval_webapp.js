@@ -91,6 +91,13 @@ function doGet(e) {
     }
   }
 
+  // Defensive: if an action was passed that we don't recognize, refuse instead of
+  // falling through to the approve flow. Prevents silently approving when an older
+  // deployment doesn't yet handle a newer action (e.g. reject_category).
+  if (action) {
+    return _renderPage('Error', 'Unknown action: ' + _escape(action) + '. The approval web app may need to be redeployed to a newer version.', false);
+  }
+
   if (!runId || !category) {
     return _renderPage('Error', 'Missing runId or category parameter.', false);
   }
@@ -926,6 +933,22 @@ function _handleCategoryReject(e) {
   decisions[category] = { decision: 'rejected', reason: reason, by: userEmail, at: now };
   if (colIdx['category_decisions'] !== undefined) {
     sheet.getRange(rowNum, colIdx['category_decisions'] + 1).setValue(JSON.stringify(decisions));
+  }
+
+  // If this category was previously approved, remove it from approved_categories so
+  // the apply step doesn't pick it up. ("all" expands to every remaining category
+  // except this one, since the apply step also honors category_decisions.)
+  var existingApproved = String(row[colIdx['approved_categories']] || '').trim();
+  if (existingApproved) {
+    var newApproved;
+    if (existingApproved === 'all') {
+      var allCats = ['keyword_pauses', 'search_term_negations', 'winner_promotions', 'auto_optimizations', 'shopping_pmax', 'flagged_review_negations'];
+      newApproved = allCats.filter(function(c) { return c !== category; }).join(',');
+    } else {
+      newApproved = existingApproved.split(',').map(function(c) { return c.trim(); })
+        .filter(function(c) { return c && c !== category; }).join(',');
+    }
+    sheet.getRange(rowNum, colIdx['approved_categories'] + 1).setValue(newApproved);
   }
 
   // Append to notes for backward-compatible visibility

@@ -3455,7 +3455,9 @@ function _checkAndApplyPendingChanges(results) {
       _log('INFO', 'Found approved pending changes: ' + runId + ' | categories: ' + approvedCategories);
       try {
         var changesJson = JSON.parse(row[colIdx['changes_json']]);
-        var applied = _applyApprovedChanges(changesJson, approvedCategories, results);
+        var decisionsRaw = colIdx['category_decisions'] !== undefined
+          ? String(row[colIdx['category_decisions']] || '') : '';
+        var applied = _applyApprovedChanges(changesJson, approvedCategories, results, decisionsRaw);
         sheet.getRange(r + 1, colIdx['status'] + 1).setValue('APPLIED');
         _log('INFO', 'Applied ' + applied + ' changes from run ' + runId);
       } catch (e) {
@@ -3470,10 +3472,22 @@ function _checkAndApplyPendingChanges(results) {
  * Applies approved changes by category. Executes the actual Google Ads API calls.
  * Returns the total number of changes applied.
  */
-function _applyApprovedChanges(changesObj, approvedCategories, results) {
+function _applyApprovedChanges(changesObj, approvedCategories, results, decisionsRaw) {
   var categories = approvedCategories === 'all'
     ? ['keyword_pauses', 'search_term_negations', 'winner_promotions', 'auto_optimizations', 'shopping_pmax', 'flagged_review_negations']
     : approvedCategories.split(',').map(function(c) { return c.trim(); });
+
+  // Drop any category whose decision was explicitly 'rejected' — protects against
+  // stale approved_categories rows where the rejection wasn't reflected (e.g. when
+  // the approval web app silently routed reject clicks to the approve handler).
+  if (decisionsRaw) {
+    try {
+      var decisions = JSON.parse(decisionsRaw);
+      categories = categories.filter(function(c) {
+        return !decisions[c] || decisions[c].decision !== 'rejected';
+      });
+    } catch (e) {}
+  }
 
   var appliedCount = 0;
 
