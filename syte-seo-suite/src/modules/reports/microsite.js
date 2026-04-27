@@ -112,10 +112,10 @@ function renderKeywordSections(rd) {
 
   return [
     headWinsHtml,
-    sectionTable(buckets.top3,     'Top 3 Rankings',     'Keywords ranking in the top 3 positions on Google. Head terms first, then by impressions.', 'var(--green)', 30),
-    sectionTable(buckets.top10,    'Top 10 Rankings',    'Page 1 visibility — positions 4-10. Head terms flagged.', 'var(--accent)', 30),
-    sectionTable(buckets.improved, 'Most Improved',      'Biggest position gains vs last month. Movement of 0.5+ positions only.', 'var(--green)', 25),
-    sectionTable(buckets.striking, 'Striking Distance',  'Page 2 keywords (positions 11-20) — the queries closest to breaking into the top 10. Highest-impact next push.', 'var(--orange)', 25),
+    sectionTable(buckets.top3,     'Top 3 Rankings',     `All ${buckets.counts.top3} keywords ranking in positions 1-3 on Google. Head terms first, then by impressions.`, 'var(--green)', 200),
+    sectionTable(buckets.top10,    'Top 10 Rankings',    `All ${buckets.counts.top10} keywords on page 1 (positions 4-10). Head terms flagged.`, 'var(--accent)', 200),
+    sectionTable(buckets.improved, 'Most Improved',      `${buckets.counts.improved} keywords with position gains of 0.5+ vs last month. Sorted by improvement size.`, 'var(--green)', 150),
+    sectionTable(buckets.striking, 'Striking Distance',  `${buckets.counts.striking} page-2 keywords (positions 11-20) — the queries closest to breaking into the top 10. Highest-impact next push.`, 'var(--orange)', 100),
     buckets.branded.length > 0 ? `
       <section>
         <h2 style="display:flex;align-items:center;gap:10px;"><span>Branded Queries</span>
@@ -657,7 +657,18 @@ export function buildMicrositeHtml({ micro, client, monthLabel, previousMonthLab
       <div class="next">${esc(micro.whatNext)}</div>
     </section>` : ''}
 
-    ${traffic.current ? `
+    ${(() => {
+      // Hide the detailed traffic comparison when both MoM and YoY for
+      // organic users are negative — the report shouldn't lead with bad
+      // news. The headline metrics + work done + AEO sections already
+      // cover the positive story; this table is the deep-dive that gets
+      // skipped on a doubly-down month.
+      if (!traffic.current) return '';
+      const momU = traffic.momChange?.users;
+      const yoyU = traffic.yoyChange?.users;
+      const bothDown = momU != null && yoyU != null && momU < 0 && yoyU < 0;
+      if (bothDown) return '';
+      return `
     <section>
       <h2>Organic Performance — Detailed Comparison</h2>
       <table class="data-table" style="width:100%;border-collapse:collapse;font-size:13px;margin-bottom:24px;">
@@ -692,7 +703,8 @@ export function buildMicrositeHtml({ micro, client, monthLabel, previousMonthLab
           }).join('')}
         </tbody>
       </table>
-    </section>` : ''}
+    </section>`;
+    })()}
 
     ${(rd.keywords || []).length > 0 ? renderKeywordSections(rd) : ''}
 
