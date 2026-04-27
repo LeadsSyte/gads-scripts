@@ -94,16 +94,29 @@ async function fetchGA4Period(propertyId, dateRange, clientType) {
 }
 
 // ─── GSC Keyword Rankings ────────────────────────────────────
-// Pull a deep slice (500 rows) so we can build category buckets —
-// top 3 / top 10 / improved / striking distance — instead of a flat
-// "top 30 by impressions" table that buries head-term wins.
+// Paginate through GSC to pull up to MAX_KEYWORD_ROWS keywords. The
+// flat top-N-by-impressions pull was missing low-volume head terms
+// that rank in the top 3 — those keywords have small impressions but
+// huge commercial weight. Pulling 10k rows makes sure every keyword
+// the brand has any meaningful presence on is included in the buckets.
+const MAX_KEYWORD_ROWS = 10000;
+const PAGE_SIZE = 2500;
+
 async function fetchKeywordRankings(gscProperty, dateRange) {
-  return querySearchAnalytics(gscProperty, {
-    startDate: dateRange.startDate,
-    endDate: dateRange.endDate,
-    dimensions: ['query'],
-    rowLimit: 500
-  });
+  const all = [];
+  for (let startRow = 0; startRow < MAX_KEYWORD_ROWS; startRow += PAGE_SIZE) {
+    const page = await querySearchAnalytics(gscProperty, {
+      startDate: dateRange.startDate,
+      endDate: dateRange.endDate,
+      dimensions: ['query'],
+      rowLimit: PAGE_SIZE,
+      startRow
+    });
+    const rows = page.rows || [];
+    all.push(...rows);
+    if (rows.length < PAGE_SIZE) break; // No more rows.
+  }
+  return { rows: all };
 }
 
 async function fetchTopPages(gscProperty, dateRange) {
