@@ -108,7 +108,65 @@ export async function ensureToken(scopes) {
   const t = getToken();
   const needed = Array.isArray(scopes) ? scopes : [scopes];
   if (t && needed.every(s => (t.scope || '').includes(s))) return t;
+  // Try a silent refresh first — if the user is still signed into
+  // Google in this browser they won't see any popup.
+  const silent = await silentRefresh(needed);
+  if (silent) return silent;
   return requestToken(needed);
+}
+
+// Attempt to renew the access token without showing any popup.
+// Works when the user is still signed into Google in this browser
+// AND has previously granted these scopes — which is the normal case
+// after the initial consent. Returns null on failure (caller decides
+// whether to fall back to a popup-based flow).
+export async function silentRefresh(scopes, { timeoutMs = 4000 } = {}) {
+  try {
+    await loadGis();
+  } catch { return null; }
+
+  const scopeStr = Array.isArray(scopes) ? scopes.join(' ') : scopes;
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(result);
+    };
+    const timer = setTimeout(() => finish(null), timeoutMs);
+
+    try {
+      const client = window.google.accounts.oauth2.initTokenClient({
+        client_id: GOOGLE_CLIENT_ID,
+        scope: scopeStr,
+        prompt: '',          // empty → silent attempt
+        callback: (resp) => {
+          if (resp.error) { finish(null); return; }
+          const token = {
+            access_token: resp.access_token,
+            expires_at: Date.now() + (resp.expires_in || 3600) * 1000,
+            scope: resp.scope
+          };
+          localStorage.setItem(TOKEN_KEY, JSON.stringify(token));
+          finish(token);
+        },
+        error_callback: () => finish(null)
+      });
+      client.requestAccessToken({ prompt: '' });
+    } catch {
+      finish(null);
+    }
+  });
+}
+
+// On app start, kick off a background silent refresh if the saved
+// token is expired or missing. Doesn't await — the caller should not
+// block UI on this. If it succeeds the next call to getToken() will
+// return the fresh token; if it fails the user will be prompted only
+// when they trigger an action that needs Google.
+export function backgroundSilentRefresh(scopes = ALL_READ_SCOPES) {
+  silentRefresh(scopes).catch(() => {});
 }
 
 // Force the account picker to show (used by the "Switch account" button).

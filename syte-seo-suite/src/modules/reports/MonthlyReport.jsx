@@ -10,7 +10,7 @@ import {
 import { buildMicrositeHtml, downloadMicrosite } from './microsite.js';
 import { runSnapshot, snapshotPreflight } from './aeoRunner.js';
 import { compareSnapshots, rankBrandWithCompetitors } from './aeoCompare.js';
-import { ensureToken, SCOPES, getToken, switchAccount } from '../technical/googleAuth.js';
+import { ensureToken, SCOPES, getToken, switchAccount, silentRefresh } from '../technical/googleAuth.js';
 import { fetchReportData } from './reportData.js';
 import ReportDashboard from './ReportDashboard.jsx';
 
@@ -125,13 +125,18 @@ export default function MonthlyReport() {
 
     // ── Auth handling ──
     // Don't auto-pop the Google sign-in modal on mount/month change.
-    // If we don't already have a token, show a Connect Google control
-    // and STOP. The user clicks it explicitly when they want fresh data.
+    // First try a silent refresh — works without a popup if the user is
+    // still signed into Google in this browser. Only if that fails do
+    // we surface the Connect Google control.
     let token = getToken();
     const needsGoogle = c.ga4_property_id || c.gsc_property;
     if (!token?.access_token && needsGoogle && !forceRefresh) {
-      setFetchStatus('Not connected to Google — click Connect Google to fetch fresh SEO data (cached AEO and saved client data still available)');
-      return;
+      setFetchStatus('Reconnecting to Google in the background…');
+      token = await silentRefresh([SCOPES.ga4, SCOPES.gsc]);
+      if (!token?.access_token) {
+        setFetchStatus('Not connected to Google — click Connect Google to fetch fresh SEO data (cached AEO and saved client data still available)');
+        return;
+      }
     }
 
     if (!token?.access_token && needsGoogle && forceRefresh) {
