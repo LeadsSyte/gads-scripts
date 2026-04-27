@@ -525,13 +525,35 @@ export default function MonthlyReport() {
           </div>
         </div>
         <ReportDashboard data={reportData} client={client} monthLabel={monthLabel(month)} />
-        {!reportData && !fetchStatus.includes('Pulling') && (
-          <div className="muted" style={{ fontSize: 12 }}>
-            {!client.ga4_property_id && !client.gsc_property
-              ? 'No GA4 or GSC configured — set up in Edit Client → Google Connections.'
-              : 'Loading…'}
-          </div>
-        )}
+        {!reportData && (() => {
+          // Only show a generic loading note when we're actually loading.
+          // If fetchStatus already says "Not connected" / "Click Refresh"
+          // / "Loaded older cache" the banner above is the signal — adding
+          // "Loading…" underneath it just looks broken.
+          const isPulling = fetchStatus.includes('Pulling') || fetchStatus.includes('Reconnecting');
+          const isStopped = fetchStatus.includes('Not connected') ||
+                            fetchStatus.includes('Click Refresh') ||
+                            fetchStatus.includes('Loaded older cache') ||
+                            fetchStatus.includes('failed');
+          if (isStopped) {
+            return (
+              <div className="muted" style={{ fontSize: 12 }}>
+                SEO performance data unavailable until you reconnect Google. AEO snapshot, work history, and AI tools all still work without it.
+              </div>
+            );
+          }
+          if (!isPulling && !client.ga4_property_id && !client.gsc_property) {
+            return (
+              <div className="muted" style={{ fontSize: 12 }}>
+                No GA4 or GSC configured — set up in Edit Client → Google Connections.
+              </div>
+            );
+          }
+          if (isPulling) {
+            return <div className="muted" style={{ fontSize: 12 }}>Loading…</div>;
+          }
+          return null;
+        })()}
       </div>
 
       {/* Step 3: AEO manual override (only shown if snapshot missing) */}
