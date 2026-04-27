@@ -6,6 +6,7 @@ import { saveAeoSnapshot, listAeoSnapshots, getCachedReportData } from '../../li
 import { ALL_ENGINES } from './aeoEngines.js';
 import { readinessFor } from '../../lib/clientReadiness.js';
 import { probeCandidatesFromGSC, mergeProbeQueries } from './keywordBuckets.js';
+import { buildDiscoveryQueries, runDiscoverySweep } from './aeoDiscovery.js';
 
 const ACCENT = '#a78bfa';
 
@@ -46,6 +47,11 @@ export default function AEOSnapshot() {
   const [msg, setMsg] = useState('');
   const [gscCandidates, setGscCandidates] = useState([]);
   const [expandBusy, setExpandBusy] = useState(false);
+  // Discovery state
+  const [discoveryBusy, setDiscoveryBusy] = useState(false);
+  const [discoveryProgress, setDiscoveryProgress] = useState(null);
+  const [discoveryResult, setDiscoveryResult] = useState(null);
+  const [discoverySelected, setDiscoverySelected] = useState(new Set());
 
   // Bulk-run state
   const [bulkBusy, setBulkBusy] = useState(false);
@@ -128,6 +134,61 @@ export default function AEOSnapshot() {
     } finally {
       setExpandBusy(false);
     }
+  }
+
+  // Discovery: run a wide net of broad category × city queries to find
+  // the ones AI engines actually cite this brand for. Then surface them
+  // so the user can pick which to add to the saved probe list.
+  async function runDiscovery() {
+    if (!client) return;
+    const queries = buildDiscoveryQueries(client);
+    if (!queries.length) {
+      setErr('Set client industry first — discovery needs a category to probe with.');
+      return;
+    }
+    setDiscoveryBusy(true); setErr(''); setMsg(''); setDiscoveryResult(null);
+    setDiscoverySelected(new Set());
+    try {
+      const result = await runDiscoverySweep(client, {
+        queries,
+        onProgress: (p) => setDiscoveryProgress(p)
+      });
+      setDiscoveryResult(result);
+      // Pre-select all citing queries by default — usually the user wants them all.
+      setDiscoverySelected(new Set(result.citingQueries.map(c => c.query)));
+    } catch (e) {
+      setErr('Discovery failed: ' + e.message);
+    } finally {
+      setDiscoveryBusy(false);
+      setDiscoveryProgress(null);
+    }
+  }
+
+  async function addDiscoveredToProbe() {
+    if (!client || !discoveryResult || discoverySelected.size === 0) return;
+    const toAdd = [...discoverySelected];
+    try {
+      const { merged, addedCount, totalCount } = mergeProbeQueries(
+        client.aeo_probe_queries, toAdd
+      );
+      if (addedCount === 0) {
+        setMsg('No new queries — all selected discovery queries are already in the probe list.');
+      } else {
+        await saveClient({ ...client, aeo_probe_queries: merged });
+        setMsg(`Added ${addedCount} discovered queries · probe list now ${totalCount}`);
+        setDiscoveryResult(null);
+      }
+    } catch (e) {
+      setErr('Could not save: ' + e.message);
+    }
+  }
+
+  function toggleDiscoverySelection(query) {
+    setDiscoverySelected(prev => {
+      const next = new Set(prev);
+      if (next.has(query)) next.delete(query); else next.add(query);
+      return next;
+    });
   }
 
   const delta = useMemo(() => {
@@ -373,6 +434,107 @@ export default function AEOSnapshot() {
             >
               {expandBusy ? 'Adding…' : `Add ${gscCandidates.length} GSC queries`}
             </button>
+          </div>
+        )}
+
+        {/* Discovery — find queries the brand is actually cited for */}
+        <div className="row" style={{
+          marginTop: 12, padding: '10px 14px',
+          background: 'rgba(74,222,128,.04)',
+          border: '1px solid rgba(74,222,128,.2)',
+          borderRadius: 'var(--radius)',
+          justifyContent: 'space-between', flexWrap: 'wrap', gap: 10
+        }}>
+          <div style={{ fontSize: 12, flex: 1, minWidth: 280 }}>
+            <strong>Discovery sweep</strong> — find queries AI engines actually cite this brand for.
+            <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
+              Probes ~{buildDiscoveryQueries(client).length} broad category × city queries (e.g. "shelving companies in Durban") and reports which ones cite {client.name}. Works as a reverse-scrape of real visibility.
+            </div>
+          </div>
+          <button
+            onClick={runDiscovery}
+            disabled={discoveryBusy || !preflight?.canRun}
+            style={{ fontSize: 12, padding: '6px 14px', borderColor: 'var(--green)', color: 'var(--green)', whiteSpace: 'nowrap' }}
+          >
+            {discoveryBusy ? 'Running…' : 'Run Discovery'}
+          </button>
+        </div>
+
+        {discoveryBusy && discoveryProgress && (
+          <div style={{ marginTop: 8, fontSize: 11, color: 'var(--text-muted)' }}>
+            {discoveryProgress.index} / {discoveryProgress.total} — {discoveryProgress.engine || ''} · "{(discoveryProgress.query || '').slice(0, 60)}…"
+            <div style={{ height: 4, background: 'var(--surface-2)', borderRadius: 2, marginTop: 6, overflow: 'hidden' }}>
+              <div style={{
+                width: Math.round((discoveryProgress.index / discoveryProgress.total) * 100) + '%',
+                height: '100%', background: 'var(--green)', transition: 'width .3s'
+              }} />
+            </div>
+          </div>
+        )}
+
+        {discoveryResult && (
+          <div style={{
+            marginTop: 12, padding: '14px 16px',
+            background: 'var(--surface)',
+            border: '1px solid rgba(74,222,128,.3)',
+            borderRadius: 'var(--radius)'
+          }}>
+            <div className="row" style={{ justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, marginBottom: 10 }}>
+              <strong style={{ fontSize: 14 }}>
+                Discovery: {discoveryResult.citingQueries.length} citing queries found
+                <span className="muted" style={{ fontSize: 11, fontWeight: 400, marginLeft: 8 }}>
+                  out of {discoveryResult.totalQueries} probed across {discoveryResult.totalRuns} responses
+                </span>
+              </strong>
+              <div className="row" style={{ gap: 6 }}>
+                <button
+                  onClick={() => setDiscoveryResult(null)}
+                  style={{ fontSize: 11, padding: '4px 10px' }}
+                >
+                  Dismiss
+                </button>
+                {discoveryResult.citingQueries.length > 0 && (
+                  <button
+                    onClick={addDiscoveredToProbe}
+                    disabled={discoverySelected.size === 0}
+                    style={{ fontSize: 11, padding: '4px 12px', borderColor: ACCENT, color: ACCENT }}
+                  >
+                    Add {discoverySelected.size} selected to probe
+                  </button>
+                )}
+              </div>
+            </div>
+            {discoveryResult.citingQueries.length === 0 ? (
+              <div className="muted" style={{ fontSize: 12 }}>
+                No citations found. Try expanding the probe queries manually or running a fresh probe with iterations=5.
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 360, overflowY: 'auto' }}>
+                {discoveryResult.citingQueries.map(c => (
+                  <label
+                    key={c.query}
+                    style={{
+                      display: 'flex', alignItems: 'flex-start', gap: 10,
+                      padding: '8px 10px', background: 'var(--surface-2)',
+                      borderRadius: 6, cursor: 'pointer', fontSize: 12
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={discoverySelected.has(c.query)}
+                      onChange={() => toggleDiscoverySelection(c.query)}
+                      style={{ marginTop: 2 }}
+                    />
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontWeight: 600 }}>{c.query}</div>
+                      <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
+                        Cited on: {c.engines.join(', ')}
+                      </div>
+                    </div>
+                  </label>
+                ))}
+              </div>
+            )}
           </div>
         )}
 
