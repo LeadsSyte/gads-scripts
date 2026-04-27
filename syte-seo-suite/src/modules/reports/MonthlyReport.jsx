@@ -91,9 +91,9 @@ export default function MonthlyReport() {
 
   // Bump this whenever the report data shape changes in a way that
   // makes old cache entries stale (e.g. keyword pull went 50 → 500,
-  // bucket structure added). Cache entries without a matching version
+  // pagination added at v3). Cache entries without a matching version
   // are treated as a miss and refetched.
-  const REPORT_DATA_VERSION = 2;
+  const REPORT_DATA_VERSION = 3;
 
   // Pull all report data (GA4 traffic + conversions + GSC keywords) via reportData.js.
   async function autoFetchMetrics(c, m, forceRefresh = false) {
@@ -627,8 +627,57 @@ export default function MonthlyReport() {
           <textarea value={algContext} onChange={e => setAlgContext(e.target.value)} rows={2} placeholder="e.g. Google March 2025 core update rolled out mid-month…" />
         </div>
 
-        <div className="row" style={{ justifyContent: 'space-between', marginTop: 14 }}>
-          <div className="row" style={{ gap: 8 }}>
+        {/* Generate CTAs — pulled into their own row above the phase
+            pills so they're obvious. Big targets, accent-coloured. */}
+        <div style={{
+          marginTop: 18, padding: 18,
+          background: 'linear-gradient(135deg, rgba(167,139,250,.08), rgba(167,139,250,.02))',
+          border: '1px solid rgba(167,139,250,.25)',
+          borderRadius: 12
+        }}>
+          <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 14 }}>
+            <div>
+              <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>
+                Ready to generate the report
+              </div>
+              <div className="muted" style={{ fontSize: 12 }}>
+                Pulls the latest data, runs Alice + microsite + QA, then opens for review.
+              </div>
+            </div>
+            <div className="row" style={{ gap: 10, flexWrap: 'wrap' }}>
+              {(client.does_content !== false || client.does_technical !== false) && (
+                <button
+                  className="primary"
+                  onClick={generate}
+                  disabled={phase !== 'idle' && phase !== 'review'}
+                  style={{
+                    background: ACCENT, borderColor: ACCENT, color: '#0a0a0c',
+                    padding: '12px 22px', fontSize: 14, fontWeight: 600
+                  }}
+                >
+                  {phase === 'idle' || phase === 'review' ? '▶ Generate Full Report' : 'Working…'}
+                </button>
+              )}
+              {client.does_aeo !== false && (
+                <button
+                  onClick={generateAeoOnly}
+                  disabled={phase !== 'idle' && phase !== 'review'}
+                  style={{
+                    borderColor: 'var(--mod-aeo)', color: 'var(--mod-aeo)',
+                    padding: '12px 22px', fontSize: 14, fontWeight: 600
+                  }}
+                >
+                  {phase === 'idle' || phase === 'review' ? '▶ Generate AEO Report' : 'Working…'}
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Phase indicators — moved below the CTA so the buttons lead. */}
+        <div className="row" style={{ marginTop: 12, gap: 8, flexWrap: 'wrap' }}>
+          <span className="muted" style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '.06em' }}>Pipeline:</span>
+          <div className="row" style={{ gap: 6 }}>
             {PHASES.map(p => (
               <span key={p.key} style={{
                 fontSize: 11, padding: '4px 10px', borderRadius: 999,
@@ -638,18 +687,6 @@ export default function MonthlyReport() {
                        : (phase === 'review' || (phase === 'micro' && p.key === 'alice') || (phase === 'qa' && p.key !== 'qa')) ? 'var(--green)' : 'var(--text-muted)'
               }}>{p.label}</span>
             ))}
-          </div>
-          <div className="row" style={{ gap: 8 }}>
-            {(client.does_content !== false || client.does_technical !== false) && (
-              <button className="primary" onClick={generate} disabled={phase !== 'idle' && phase !== 'review'} style={{ background: ACCENT, borderColor: ACCENT, color: '#0a0a0c' }}>
-                {phase === 'idle' || phase === 'review' ? 'Generate Full Report' : 'Working…'}
-              </button>
-            )}
-            {client.does_aeo !== false && (
-              <button onClick={generateAeoOnly} disabled={phase !== 'idle' && phase !== 'review'} style={{ borderColor: 'var(--mod-aeo)', color: 'var(--mod-aeo)' }}>
-                {phase === 'idle' || phase === 'review' ? 'Generate AEO Report' : 'Working…'}
-              </button>
-            )}
           </div>
         </div>
         {err && <div style={{ color: 'var(--red)', marginTop: 10 }}>{err}</div>}
