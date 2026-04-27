@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useClients } from '../../store/useClients.js';
 import { snapshotPreflight, runSnapshot } from './aeoRunner.js';
+import { normalizeSnapshot } from './aeoCompare.js';
 import { saveAeoSnapshot, listAeoSnapshots, getCachedReportData } from '../../lib/supabase.js';
 import { ALL_ENGINES } from './aeoEngines.js';
 import { readinessFor } from '../../lib/clientReadiness.js';

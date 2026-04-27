@@ -9,7 +9,7 @@ import {
 } from './reportPrompts.js';
 import { buildMicrositeHtml, downloadMicrosite } from './microsite.js';
 import { runSnapshot, snapshotPreflight } from './aeoRunner.js';
-import { compareSnapshots, rankBrandWithCompetitors } from './aeoCompare.js';
+import { compareSnapshots, rankBrandWithCompetitors, normalizeSnapshot } from './aeoCompare.js';
 import { ensureToken, SCOPES, getToken, switchAccount, silentRefresh } from '../technical/googleAuth.js';
 import { fetchReportData } from './reportData.js';
 import ReportDashboard from './ReportDashboard.jsx';
@@ -210,10 +210,11 @@ export default function MonthlyReport() {
     if (!microJson || !client) return '';
     // Use the live probe if we just ran one; otherwise fall back to the
     // saved snapshot for this month so the report renders even without
-    // a fresh probe in the same session.
-    const aeoProbe = liveAeoProbe || aeoSnap || null;
+    // a fresh probe in the same session. Normalize either way so legacy
+    // snapshots get derived visibility / detection / keyword_wins fields.
+    const aeoProbe = normalizeSnapshot(liveAeoProbe || aeoSnap || null);
     const aeoCompare = aeoProbe
-      ? compareSnapshots(aeoProbe, previousAeoSnap)
+      ? compareSnapshots(aeoProbe, normalizeSnapshot(previousAeoSnap))
       : null;
     const aeoRanking = aeoProbe
       ? rankBrandWithCompetitors(aeoProbe, client.name)
