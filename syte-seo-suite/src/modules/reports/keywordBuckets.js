@@ -166,3 +166,59 @@ export function buildKeywordBuckets(keywords, brandName, opts = {}) {
     }
   };
 }
+
+// Pull AEO probe candidates from GSC keyword data. The idea: queries
+// the brand already gets impressions for are real queries real users
+// type — better probe targets than guessed-up ones. We prioritize
+// head terms (no location, no qualifier) since the user wants the
+// probe to test competitive market visibility, not long-tail niche.
+//
+// Returns up to `limit` deduped, lowercased query strings, sorted by
+// impressions desc with head terms floated to the top.
+export function probeCandidatesFromGSC(keywords, brandName, { limit = 30 } = {}) {
+  const classified = classifyKeywords(keywords, brandName);
+
+  // Drop branded (would always rank #1 for the brand) and queries with
+  // weak signal (< 5 impressions over the month).
+  const eligible = classified.filter(kw =>
+    !kw.classification.branded &&
+    (kw.impressions || 0) >= 5
+  );
+
+  // Head terms first, then by impressions.
+  eligible.sort((a, b) => {
+    const aHead = a.classification.headTerm ? 1 : 0;
+    const bHead = b.classification.headTerm ? 1 : 0;
+    if (aHead !== bHead) return bHead - aHead;
+    return (b.impressions || 0) - (a.impressions || 0);
+  });
+
+  const seen = new Set();
+  const out = [];
+  for (const kw of eligible) {
+    const q = (kw.query || '').toLowerCase().trim();
+    if (!q || seen.has(q)) continue;
+    seen.add(q);
+    out.push(q);
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
+// Merge new probe queries into an existing newline-separated list,
+// case-insensitive deduping, preserving the existing order. Returns
+// { merged: string, addedCount: number, totalCount: number }.
+export function mergeProbeQueries(existingRaw, newQueries) {
+  const existing = (existingRaw || '').split('\n').map(s => s.trim()).filter(Boolean);
+  const seen = new Set(existing.map(s => s.toLowerCase()));
+  let added = 0;
+  const merged = existing.slice();
+  for (const q of (newQueries || [])) {
+    const lower = q.toLowerCase().trim();
+    if (!lower || seen.has(lower)) continue;
+    seen.add(lower);
+    merged.push(q.trim());
+    added++;
+  }
+  return { merged: merged.join('\n'), addedCount: added, totalCount: merged.length };
+}

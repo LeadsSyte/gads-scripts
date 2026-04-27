@@ -9,8 +9,8 @@ import {
 } from './reportPrompts.js';
 import { buildMicrositeHtml, downloadMicrosite } from './microsite.js';
 import { runSnapshot, snapshotPreflight } from './aeoRunner.js';
-import { compareSnapshots, rankBrandWithCompetitors } from './aeoCompare.js';
-import { ensureToken, SCOPES, getToken, switchAccount } from '../technical/googleAuth.js';
+import { compareSnapshots, rankBrandWithCompetitors, normalizeSnapshot } from './aeoCompare.js';
+import { ensureToken, SCOPES, getToken, switchAccount, silentRefresh } from '../technical/googleAuth.js';
 import { fetchReportData } from './reportData.js';
 import ReportDashboard from './ReportDashboard.jsx';
 
@@ -89,6 +89,12 @@ export default function MonthlyReport() {
     }).catch(() => {});
   }, [client?.id, month]);
 
+  // Bump this whenever the report data shape changes in a way that
+  // makes old cache entries stale (e.g. keyword pull went 50 → 500,
+  // bucket structure added). Cache entries without a matching version
+  // are treated as a miss and refetched.
+  const REPORT_DATA_VERSION = 2;
+
   // Pull all report data (GA4 traffic + conversions + GSC keywords) via reportData.js.
   async function autoFetchMetrics(c, m, forceRefresh = false) {
     if (!c) return;
@@ -97,19 +103,44 @@ export default function MonthlyReport() {
     if (!forceRefresh) {
       try {
         const cached = await getCachedReportData(c.id, m);
-        if (cached?.data) {
+        const isCurrentVersion = cached?.data?.version === REPORT_DATA_VERSION;
+        if (cached?.data && isCurrentVersion) {
           setReportData(cached.data);
-          setFetchStatus('Loaded from cache (fetched ' + new Date(cached.fetched_at).toLocaleDateString() + ') · Click Switch Google Account to re-fetch');
+          setFetchStatus('Loaded from cache (fetched ' + new Date(cached.fetched_at).toLocaleDateString() + ') · Click Refresh Data to re-fetch');
           return;
+        }
+        if (cached?.data && !isCurrentVersion) {
+          // Old-shape cache exists. Show it as a fallback so the page
+          // isn't blank, then silently try to refresh in the background
+          // ONLY if a token is already present (no popup).
+          setReportData(cached.data);
+          setFetchStatus('Loaded older cache · Refreshing with new keyword depth…');
+          if (!getToken()?.access_token) {
+            setFetchStatus('Loaded older cache · Click Refresh Data to pull the latest keyword set');
+            return;
+          }
         }
       } catch {}
     }
 
-    setFetchStatus('Checking Google connection…');
-    setReportData(null);
-
+    // ── Auth handling ──
+    // Don't auto-pop the Google sign-in modal on mount/month change.
+    // First try a silent refresh — works without a popup if the user is
+    // still signed into Google in this browser. Only if that fails do
+    // we surface the Connect Google control.
     let token = getToken();
-    if (!token?.access_token && (c.ga4_property_id || c.gsc_property)) {
+    const needsGoogle = c.ga4_property_id || c.gsc_property;
+    if (!token?.access_token && needsGoogle && !forceRefresh) {
+      setFetchStatus('Reconnecting to Google in the background…');
+      token = await silentRefresh([SCOPES.ga4, SCOPES.gsc]);
+      if (!token?.access_token) {
+        setFetchStatus('Not connected to Google — click Connect Google to fetch fresh SEO data (cached AEO and saved client data still available)');
+        return;
+      }
+    }
+
+    if (!token?.access_token && needsGoogle && forceRefresh) {
+      // forceRefresh = user explicitly clicked a button, OK to pop auth.
       setFetchStatus('Connecting to Google — please sign in if prompted…');
       try {
         token = await ensureToken([SCOPES.ga4, SCOPES.gsc]);
@@ -123,6 +154,7 @@ export default function MonthlyReport() {
     setFetchStatus('Pulling GA4 + GSC data for ' + monthLabel(m) + '…');
     try {
       const data = await fetchReportData(c, year, mo);
+      data.version = REPORT_DATA_VERSION;
       setReportData(data);
       // Cache for future visits.
       setCachedReportData(c.id, m, data).catch(() => {});
@@ -178,10 +210,11 @@ export default function MonthlyReport() {
     if (!microJson || !client) return '';
     // Use the live probe if we just ran one; otherwise fall back to the
     // saved snapshot for this month so the report renders even without
-    // a fresh probe in the same session.
-    const aeoProbe = liveAeoProbe || aeoSnap || null;
+    // a fresh probe in the same session. Normalize either way so legacy
+    // snapshots get derived visibility / detection / keyword_wins fields.
+    const aeoProbe = normalizeSnapshot(liveAeoProbe || aeoSnap || null);
     const aeoCompare = aeoProbe
-      ? compareSnapshots(aeoProbe, previousAeoSnap)
+      ? compareSnapshots(aeoProbe, normalizeSnapshot(previousAeoSnap))
       : null;
     const aeoRanking = aeoProbe
       ? rankBrandWithCompetitors(aeoProbe, client.name)
@@ -445,12 +478,12 @@ export default function MonthlyReport() {
             <span style={{ color: fetchStatus.includes('✓') ? 'var(--green)' : fetchStatus.includes('failed') || fetchStatus.includes('403') ? 'var(--orange)' : 'var(--text-muted)', flex: 1 }}>
               {fetchStatus}
             </span>
-            {fetchStatus.includes('cache') && (
+            {(fetchStatus.includes('cache') || fetchStatus.includes('Not connected')) && (
               <button
                 onClick={() => autoFetchMetrics(client, month, true)}
                 style={{ fontSize: 11, padding: '4px 12px', borderColor: 'var(--green)', color: 'var(--green)', whiteSpace: 'nowrap' }}
               >
-                Refresh Data
+                {fetchStatus.includes('Not connected') ? 'Connect Google' : 'Refresh Data'}
               </button>
             )}
             {(fetchStatus.includes('403') || fetchStatus.includes('permission') || fetchStatus.includes('failed')) && (
