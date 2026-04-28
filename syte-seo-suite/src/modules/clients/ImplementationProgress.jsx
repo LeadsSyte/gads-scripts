@@ -8,9 +8,10 @@ import { verifyImplementation } from '../../lib/verification.js';
 // without waiting for the Monday email.
 
 const STATUS_STYLES = {
-  verified: { color: 'var(--green)',  label: '✓ Verified', badge: 'green' },
-  failed:   { color: 'var(--red)',    label: '✗ Failed',   badge: 'red' },
-  pending:  { color: 'var(--orange)', label: '⏳ Pending', badge: 'orange' }
+  verified:        { color: 'var(--green)',  label: '✓ Verified',         badge: 'green' },
+  failed:          { color: 'var(--red)',    label: '✗ Failed',           badge: 'red' },
+  pending:         { color: 'var(--orange)', label: '⏳ Pending',          badge: 'orange' },
+  manual_required: { color: 'var(--orange)', label: '⚑ Manual required',  badge: 'orange' }
 };
 
 export default function ImplementationProgress() {
@@ -59,10 +60,11 @@ export default function ImplementationProgress() {
   }, [filtered, clientMap]);
 
   const counts = useMemo(() => ({
-    total:    items.length,
-    verified: items.filter(r => r.verification_status === 'verified').length,
-    failed:   items.filter(r => r.verification_status === 'failed').length,
-    pending:  items.filter(r => r.verification_status === 'pending').length
+    total:           items.length,
+    verified:        items.filter(r => r.verification_status === 'verified').length,
+    failed:          items.filter(r => r.verification_status === 'failed').length,
+    pending:         items.filter(r => r.verification_status === 'pending').length,
+    manual_required: items.filter(r => r.verification_status === 'manual_required').length
   }), [items]);
 
   const modules = useMemo(() => {
@@ -73,7 +75,7 @@ export default function ImplementationProgress() {
   async function reverify(impl) {
     setVerifyingId(impl.id);
     try {
-      await verifyImplementation(impl);
+      await verifyImplementation(impl, clientMap[impl.client_id]);
       await load(); // refresh the list
     } catch {}
     finally { setVerifyingId(null); }
@@ -118,7 +120,7 @@ export default function ImplementationProgress() {
 
       {/* Filters */}
       <div className="row" style={{ gap: 8, marginBottom: 14, flexWrap: 'wrap' }}>
-        {['all', 'verified', 'failed', 'pending'].map(f => (
+        {['all', 'verified', 'failed', 'manual_required', 'pending'].map(f => (
           <button
             key={f}
             onClick={() => setFilter(f)}

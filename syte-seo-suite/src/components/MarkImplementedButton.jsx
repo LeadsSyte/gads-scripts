@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useClients } from '../store/useClients.js';
 import { logImplementation, updateImplementation } from '../lib/supabase.js';
-import { verifyImplementation, verifyImplementationFromHtml, verifyImplementationVisually } from '../lib/verification.js';
+import { verifyImplementation, verifyImplementationFromHtml, verifyImplementationVisually, isOffPageTask } from '../lib/verification.js';
 
 // Reusable "Mark as Implemented" button. Place it next to any generated
 // output (article, schema, meta fix, AEO optimization). When clicked:
@@ -90,14 +90,21 @@ export default function MarkImplementedButton({
         verification_status: 'pending'
       });
 
-      setPhase('verifying'); setVerifyPhase('Step 1/2 — Fetching and scanning page HTML…');
+      const offPage = isOffPageTask(impl);
+      setPhase('verifying');
+      setVerifyPhase(offPage
+        ? 'Running off-page check (sitemap / robots / GSC / analytics)…'
+        : 'Step 1/2 — Fetching and scanning page HTML…');
       let vResult = await verifyImplementation(impl, client);
       let st = typeof vResult === 'string' ? vResult : vResult.status;
       let dt = typeof vResult === 'object' ? vResult.detail : null;
 
-      // If HTML verification failed, automatically try visual verification
-      // (screenshot-based) — catches JS-rendered content on Shopify/React sites.
-      if (st !== 'verified') {
+      // For on-page tasks only: if HTML verification failed, fall back to
+      // screenshot/visual verification. Skip this for off-page tasks (GSC,
+      // sitemap, analytics) — the screenshot can't show admin-console work
+      // and thum.io frequently 403s, which produced misleading "failed"
+      // messages on tasks that were actually done correctly.
+      if (!offPage && st !== 'verified') {
         setVerifyPhase('Step 2/2 — Taking screenshot and visual check with AI…');
         try {
           const visualResult = await verifyImplementationVisually(impl);
@@ -123,7 +130,14 @@ export default function MarkImplementedButton({
     }
   }
 
-  const statusColor = result?.status === 'verified' ? 'var(--green)' : 'var(--red)';
+  const statusColor =
+    result?.status === 'verified' ? 'var(--green)' :
+    result?.status === 'manual_required' ? 'var(--orange)' :
+    'var(--red)';
+  const statusLabel =
+    result?.status === 'verified' ? '✓ Verified' :
+    result?.status === 'manual_required' ? '⚑ Manual verification required' :
+    '✗ Auto-verify failed';
 
   return (
     <div style={{ display: 'inline-flex', flexDirection: 'column', gap: 6 }}>
@@ -152,19 +166,21 @@ export default function MarkImplementedButton({
         {phase === 'done' && result && (
           <div style={{ fontSize: 11 }}>
             <span style={{ color: statusColor, fontWeight: 600 }}>
-              {result.status === 'verified' ? '✓ Verified' : '✗ Auto-verify failed'}
+              {statusLabel}
             </span>
             {result.status === 'verified' && (
               <button onClick={handleClick} style={{ fontSize: 10, padding: '2px 8px', marginLeft: 6 }}>Re-verify</button>
             )}
             {result.status !== 'verified' && result.impl?.id && (
               <>
-                <button
-                  onClick={() => setShowPreview(v => !v)}
-                  style={{ fontSize: 10, padding: '3px 10px', marginLeft: 8, borderColor: 'var(--blue)', color: 'var(--blue)' }}
-                >
-                  {showPreview ? 'Hide preview' : 'Show live page preview'}
-                </button>
+                {result.status !== 'manual_required' && (
+                  <button
+                    onClick={() => setShowPreview(v => !v)}
+                    style={{ fontSize: 10, padding: '3px 10px', marginLeft: 8, borderColor: 'var(--blue)', color: 'var(--blue)' }}
+                  >
+                    {showPreview ? 'Hide preview' : 'Show live page preview'}
+                  </button>
+                )}
                 <button
                   onClick={async () => {
                     await updateImplementation(result.impl.id, {

@@ -9,6 +9,7 @@ import { technicalPipelineStatus } from '../../lib/pipelineStatus.js';
 import { getAudit, syncWebceoClients, webceoDiagnose } from './webceo.js';
 import { crawlSiteForIssues, summarizeCrawlForAI } from './crawler.js';
 import { upsertClient, listAllImplementations, saveTseoTasks, loadTseoTasks, updateTseoTask } from '../../lib/supabase.js';
+import { checkOffPageTask, isOffPageTask } from '../../lib/verification.js';
 import { querySearchAnalytics } from './gsc.js';
 import { ensureToken, SCOPES, getToken, clearToken } from './googleAuth.js';
 
@@ -46,7 +47,7 @@ Return ONLY valid JSON in this shape:
       "description": "what is wrong on THIS specific page + expected impact",
       "priority": "critical|high|medium|low",
       "page_url": "the EXACT full URL from the audit data (e.g. https://example.com/products/hi-tall-harness-boot, NOT https://example.com/products/*)",
-      "fix_type": "meta_title|meta_description|canonical|schema|internal_link|h1|image_alt|redirect|robots|sitemap|page_speed|structured_data|other",
+      "fix_type": "meta_title|meta_description|canonical|schema|internal_link|h1|image_alt|redirect|robots|sitemap|sitemap_submission|page_speed|structured_data|gsc_setup|domain_ownership|analytics_setup|gtm_setup|other",
       "copy_paste_fix": "the ACTUAL finished code/text for THIS specific page — no placeholders like [PRODUCT_NAME], use the real page title/content from the audit data",
       "impact": "high|medium|low",
       "effort": "quick|moderate|complex"
@@ -61,6 +62,12 @@ RULES:
 - For image alt text issues: include the specific image URL and the specific page where it's found, with a real descriptive alt text based on the image filename and page context.
 - For missing meta titles/descriptions: write the actual title/description for that specific page.
 - For missing schema: write the complete JSON-LD for that specific page using real data from the audit.
+
+OFF-PAGE / BACKEND fix_types — use these when the work happens in an external admin console rather than in page HTML:
+- gsc_setup / domain_ownership: Google Search Console property creation, ownership verification (TXT record, HTML file, GSC tag).
+- sitemap_submission: submitting an XML sitemap inside Search Console (different from creating the sitemap itself, which is fix_type=sitemap).
+- analytics_setup / gtm_setup: installing GA4, Universal Analytics, or a GTM container.
+For these tasks, copy_paste_fix should describe the exact step-by-step admin actions (e.g. "1. Open search.google.com/search-console 2. Add property fleetwoodonsea.co.za 3. Choose DNS verification 4. Copy TXT record into Cloudflare DNS"). Do NOT write HTML/markup — there's nothing to paste into the page.
 
 PRIORITIZATION (biggest wins first):
 - Critical = indexing blocked, canonical loops, redirect chains, robots.txt errors, broken pages returning 4xx/5xx.
@@ -97,25 +104,24 @@ Create one task per MEANINGFUL issue on a SPECIFIC page. Use the exact URLs show
   return parsed?.tasks || [];
 }
 
-async function verifyFix(task) {
-  // For sitemap/robots tasks, just check if the URL returns a valid response.
-  if (task.fix_type === 'sitemap' || task.fix_type === 'robots') {
-    try {
-      const res = await fetch('/.netlify/functions/page-proxy', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: task.page_url })
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.html && data.html.length > 50) {
-          const isSitemap = task.fix_type === 'sitemap' && (data.html.includes('<urlset') || data.html.includes('<sitemapindex') || data.html.includes('<url>'));
-          const isRobots = task.fix_type === 'robots' && (data.html.includes('User-agent') || data.html.includes('Disallow') || data.html.includes('Sitemap'));
-          return isSitemap || isRobots;
-        }
-      }
-    } catch {}
-    return false;
+async function verifyFix(task, client) {
+  // Off-page tasks (GSC setup, domain ownership, sitemap submission,
+  // analytics install, robots) cannot be confirmed from page HTML. Run
+  // the targeted off-page check instead — it returns 'verified',
+  // 'failed', or 'manual_required'.
+  const looksOffPage = isOffPageTask({
+    change_type: task.fix_type,
+    title: task.title,
+    description: task.description
+  });
+  if (looksOffPage) {
+    const synthetic = {
+      change_type: task.fix_type,
+      page_url: task.page_url,
+      title: task.title,
+      description: task.description
+    };
+    return checkOffPageTask(synthetic, client);
   }
 
   // Standard HTML verification for all other fix types.
@@ -134,7 +140,9 @@ async function verifyFix(task) {
   if (!html) {
     try { html = await corsFetchText(task.page_url); } catch {}
   }
-  if (!html || html.length < 200) return false;
+  if (!html || html.length < 200) {
+    return { status: 'failed', detail: 'Could not fetch the page to verify.' };
+  }
 
   const verdict = await claudeComplete({
     system: 'You verify SEO fixes on live pages. Be LENIENT — different formatting, wording, or styling from the expected fix is acceptable as long as the core fix is present. Return ONLY JSON: {"implemented": true|false, "evidence": "..."}',
@@ -146,7 +154,10 @@ async function verifyFix(task) {
     temperature: 0
   });
   const parsed = extractJSON(verdict);
-  return parsed?.implemented === true;
+  return {
+    status: parsed?.implemented === true ? 'verified' : 'failed',
+    detail: parsed?.evidence || ''
+  };
 }
 
 function priorityClass(p) {
@@ -409,10 +420,18 @@ export default function TechnicalSEO({ sub }) {
   }
 
   async function handleVerify(task) {
-    setBusy(true); setErr('');
+    setBusy(true); setErr(''); setMsg('');
     try {
-      const ok = await verifyFix(task);
-      updateTask(task.id, { status: ok ? 'verified' : 'failed' });
+      const r = await verifyFix(task, client);
+      // 'manual_required' = off-page check couldn't be automated. Don't
+      // overwrite the task status as failed — surface a message instead so
+      // the user knows to confirm manually.
+      if (r.status === 'manual_required') {
+        setMsg('Manual verification required: ' + (r.detail || 'this task happens off-page.'));
+      } else {
+        updateTask(task.id, { status: r.status });
+        if (r.detail) setMsg(r.detail);
+      }
     } catch (e) { setErr(e.message); }
     finally { setBusy(false); }
   }
