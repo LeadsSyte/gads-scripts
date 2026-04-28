@@ -288,7 +288,7 @@ async function fetchPageContent(impl, client) {
     });
     if (res.ok) {
       const data = await res.json();
-      if (data.html && data.html.length > 500 && !/<title>.*(Log In|Attention Required).*<\/title>/i.test(data.html)) {
+      if (data.html && hasUsefulBody(data.html) && !/<title>.*(Log In|Attention Required).*<\/title>/i.test(data.html)) {
         return { html: data.html, source: 'page-proxy' + (data.status !== 200 ? '-' + data.status : '') };
       }
     }
@@ -297,7 +297,7 @@ async function fetchPageContent(impl, client) {
   // 3. Public fetch via CORS proxy (fallback).
   try {
     const html = await corsFetchText(impl.page_url);
-    if (html.length > 500 && !/<title>.*Log In.*<\/title>/i.test(html)) {
+    if (hasUsefulBody(html) && !/<title>.*Log In.*<\/title>/i.test(html)) {
       return { html, source: 'public' };
     }
   } catch {}
@@ -305,10 +305,32 @@ async function fetchPageContent(impl, client) {
   // 4. Last resort CORS with different proxies.
   try {
     const html = await corsFetchText(impl.page_url);
-    return { html, source: 'cors-fallback' };
+    if (hasUsefulBody(html)) return { html, source: 'cors-fallback' };
+    throw new Error('All sources returned head-only or empty HTML');
   } catch (e) {
     throw new Error('Could not fetch the page via any method: ' + e.message);
   }
+}
+
+// Reject responses that are head + CSS only (a class of upstream-proxy
+// failures). Without this we sent empty bodies to Claude and got the
+// false "page HTML contains only the head section" error from the
+// verifier.
+function hasUsefulBody(html) {
+  if (!html || html.length < 200) return false;
+  const bodyMatch = html.match(/<body\b[^>]*>([\s\S]*?)<\/body>/i);
+  const inner = bodyMatch ? bodyMatch[1] : html;
+  const text = inner
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  // Threshold of 60 chars cleanly separates head-only stubs (0 body
+  // text, or "Loading..."/"Error") from any real page (every meaningful
+  // page has at least a heading + some content). Set low enough that
+  // we don't reject genuinely small pages.
+  return text.length >= 60;
 }
 
 // Verify using pasted HTML — used when automated fetching fails (Shopify
