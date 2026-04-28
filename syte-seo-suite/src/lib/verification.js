@@ -6,10 +6,181 @@
 // IMPORTANT: WordPress drafts are NOT publicly accessible, so verification
 // will always fail for unpublished content. In that case we route through
 // the wp-proxy to fetch the draft's content via the REST API instead.
+//
+// OFF-PAGE TASKS: GSC setup, domain ownership verification, sitemap
+// submission, analytics installs etc. are NOT verifiable from page HTML
+// or screenshots — the work happens in external admin consoles. These
+// are routed through verifyOffPageTask() which runs the appropriate
+// targeted check (sitemap XML fetch, robots.txt fetch, GSC API ownership
+// check) or returns 'manual_required' so the UI prompts the user to
+// confirm rather than showing a misleading "auto-verify failed".
 
 import { corsFetchText } from './corsProxy.js';
 import { claudeComplete } from './anthropic.js';
 import { updateImplementation } from './supabase.js';
+import { listSites } from '../modules/technical/gsc.js';
+
+// Task types whose evidence does NOT live in the page HTML or screenshot.
+// For these we run a targeted external check (or fall back to manual).
+const OFF_PAGE_TYPES = new Set([
+  'gsc_setup', 'gsc', 'search_console', 'domain_ownership', 'ownership_verification',
+  'sitemap', 'sitemap_submission', 'xml_sitemap',
+  'robots', 'robots_txt',
+  'analytics_setup', 'ga_setup', 'gtm_setup', 'tracking_install',
+  'indexing_request', 'index_now', 'page_speed', 'core_web_vitals',
+  'redirect', 'dns', 'ssl', 'https_setup'
+]);
+
+function normalizeType(t) {
+  return String(t || '').toLowerCase().replace(/[\s-]/g, '_');
+}
+
+export function isOffPageTask(impl) {
+  const ct = normalizeType(impl?.change_type);
+  if (OFF_PAGE_TYPES.has(ct)) return true;
+  // Heuristic: look at title/description for off-page keywords. Catches
+  // tasks the AI labeled "other" but described GSC/sitemap/analytics work.
+  const blob = ((impl?.title || '') + ' ' + (impl?.description || '')).toLowerCase();
+  return /\bsearch console\b|\bgsc\b|\bdomain ownership\b|\bxml sitemap\b|submit\s+(?:the\s+)?sitemap|google analytics|gtag|gtm|tag manager|robots\.txt/i.test(blob);
+}
+
+// Try to fetch a resource via page-proxy first (most resilient), then
+// fall back to corsFetchText. Returns { text, status } or throws.
+async function fetchResource(url) {
+  try {
+    const res = await fetch('/.netlify/functions/page-proxy', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url })
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data.html) return { text: data.html, status: data.status || 200 };
+    }
+  } catch {}
+  const text = await corsFetchText(url);
+  return { text, status: 200 };
+}
+
+function originOf(url) {
+  try { return new URL(url).origin; } catch { return null; }
+}
+
+async function verifySitemap(targetUrl) {
+  // If the URL doesn't look like a sitemap path, derive one from the origin.
+  const tryUrls = [];
+  if (/sitemap.*\.xml/i.test(targetUrl)) tryUrls.push(targetUrl);
+  const origin = originOf(targetUrl);
+  if (origin) {
+    tryUrls.push(origin + '/sitemap.xml');
+    tryUrls.push(origin + '/sitemap_index.xml');
+    tryUrls.push(origin + '/wp-sitemap.xml');
+  }
+  for (const url of tryUrls) {
+    try {
+      const { text } = await fetchResource(url);
+      if (text && /<(urlset|sitemapindex)\b/i.test(text)) {
+        return { ok: true, detail: 'Sitemap is live and valid XML at ' + url };
+      }
+    } catch {}
+  }
+  return { ok: false, detail: 'No valid XML sitemap reachable at /sitemap.xml, /sitemap_index.xml, or the provided URL.' };
+}
+
+async function verifyRobots(targetUrl) {
+  const origin = originOf(targetUrl);
+  if (!origin) return { ok: false, detail: 'No origin to check robots.txt.' };
+  try {
+    const { text } = await fetchResource(origin + '/robots.txt');
+    if (text && /(User-agent|Disallow|Sitemap)/i.test(text)) {
+      const hasSitemap = /Sitemap:\s*https?:/i.test(text);
+      return {
+        ok: true,
+        detail: 'robots.txt reachable at ' + origin + '/robots.txt' +
+          (hasSitemap ? ' and references a Sitemap directive.' : ' (no Sitemap directive found — consider adding one).')
+      };
+    }
+  } catch {}
+  return { ok: false, detail: 'robots.txt is not reachable at ' + origin + '/robots.txt.' };
+}
+
+async function verifyGscOwnership(client) {
+  const property = client?.gsc_property;
+  if (!property) {
+    return { ok: false, manual: true, detail: 'No GSC property is linked to this client. Open Settings → Connect GSC, then verify in Search Console.' };
+  }
+  try {
+    const data = await listSites();
+    const sites = data?.siteEntry || [];
+    const match = sites.find(s => s.siteUrl === property);
+    if (match) {
+      const lvl = match.permissionLevel || '';
+      const verified = /owner|full|restricted/i.test(lvl);
+      if (verified) {
+        return { ok: true, detail: 'GSC reports ownership of ' + property + ' (permission: ' + lvl + ').' };
+      }
+      return { ok: false, detail: 'GSC sees the property but permission level is "' + lvl + '" — ownership is not verified yet.' };
+    }
+    return { ok: false, detail: property + ' is not in the list of GSC sites this Google account can access. Add the property and verify ownership in Search Console.' };
+  } catch (e) {
+    // GSC not connected or token missing — fall back to manual confirmation.
+    return { ok: false, manual: true, detail: 'Could not check GSC ownership automatically (' + (e.message || 'GSC not connected') + '). Confirm in Search Console: ownership shows a green tick.' };
+  }
+}
+
+async function verifyAnalyticsTag(impl) {
+  if (!impl?.page_url) return { ok: false, manual: true, detail: 'No page URL to scan for analytics tag.' };
+  try {
+    const { text } = await fetchResource(impl.page_url);
+    const hasGA4   = /gtag\(\s*['"]config['"]\s*,\s*['"]G-[A-Z0-9]+/i.test(text) || /googletagmanager\.com\/gtag\/js\?id=G-/i.test(text);
+    const hasUA    = /UA-\d{4,}-\d+/.test(text);
+    const hasGTM   = /googletagmanager\.com\/gtm\.js\?id=GTM-/i.test(text) || /GTM-[A-Z0-9]+/.test(text);
+    if (hasGA4 || hasGTM || hasUA) {
+      const found = [hasGA4 && 'GA4 (gtag)', hasGTM && 'GTM container', hasUA && 'Universal Analytics'].filter(Boolean).join(', ');
+      return { ok: true, detail: 'Tracking tag found on ' + impl.page_url + ': ' + found + '.' };
+    }
+    return { ok: false, detail: 'No GA4, GTM, or Universal Analytics tag detected in the page HTML.' };
+  } catch (e) {
+    return { ok: false, manual: true, detail: 'Could not fetch the page to scan for an analytics tag (' + e.message + ').' };
+  }
+}
+
+// Pure check — runs the right targeted off-page verification by task type
+// and returns { status, detail } WITHOUT writing to Supabase. Call this
+// from contexts that own their own persistence (e.g. tseo_tasks).
+export async function checkOffPageTask(impl, client) {
+  const ct = normalizeType(impl?.change_type);
+  const blob = ((impl?.title || '') + ' ' + (impl?.description || '')).toLowerCase();
+
+  let result;
+  if (ct === 'sitemap' || ct === 'sitemap_submission' || ct === 'xml_sitemap' || /\bxml sitemap\b|submit.*sitemap/.test(blob)) {
+    result = await verifySitemap(impl.page_url || client?.url || '');
+  } else if (ct === 'robots' || ct === 'robots_txt' || /robots\.txt/.test(blob)) {
+    result = await verifyRobots(impl.page_url || client?.url || '');
+  } else if (ct === 'gsc_setup' || ct === 'gsc' || ct === 'search_console' || ct === 'domain_ownership' || ct === 'ownership_verification' || /search console|domain ownership/.test(blob)) {
+    result = await verifyGscOwnership(client);
+  } else if (ct === 'analytics_setup' || ct === 'ga_setup' || ct === 'gtm_setup' || ct === 'tracking_install' || /google analytics|gtag|gtm|tag manager/.test(blob)) {
+    result = await verifyAnalyticsTag(impl);
+  } else {
+    result = { ok: false, manual: true, detail: 'This task happens off-page (in an admin console). Confirm it manually and click Mark Verified.' };
+  }
+
+  const status = result.ok ? 'verified' : (result.manual ? 'manual_required' : 'failed');
+  const detail = result.detail + ' · (Off-page check)';
+  return { status, detail };
+}
+
+// Main entry point for off-page tasks on implementation records. Persists
+// the result to syte_suite_implementations.
+export async function verifyOffPageTask(impl, client) {
+  const { status, detail } = await checkOffPageTask(impl, client);
+  await updateImplementation(impl.id, {
+    verification_status: status,
+    verification_detail: detail,
+    verified_at: new Date().toISOString()
+  });
+  return { status, detail };
+}
 
 // Try to fetch the page content. For WordPress sites with credentials,
 // ALWAYS prefer the REST API — it bypasses Wordfence, Cloudflare, and
@@ -289,6 +460,13 @@ Return ONLY JSON:
 }
 
 export async function verifyImplementation(impl, client) {
+  // Off-page tasks (GSC ownership, sitemap submission, analytics install,
+  // robots.txt) cannot be verified from page HTML or screenshots — they
+  // need a different check entirely. Route them before fetching the page.
+  if (isOffPageTask(impl)) {
+    return verifyOffPageTask(impl, client);
+  }
+
   if (!impl?.page_url) {
     const detail = 'No page URL to scan.';
     await updateImplementation(impl.id, {
