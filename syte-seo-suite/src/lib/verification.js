@@ -66,15 +66,34 @@ function originOf(url) {
   try { return new URL(url).origin; } catch { return null; }
 }
 
-async function verifySitemap(targetUrl) {
-  // If the URL doesn't look like a sitemap path, derive one from the origin.
+// Build a candidate set of origins to probe. A task's page_url is often
+// the client's homepage, but it can also be a third-party URL (e.g.
+// search.google.com for a GSC setup task). Always prefer the client's
+// own origin for sitemap/robots probes; fall back to page_url's origin.
+function probeOrigins(pageUrl, clientUrl) {
+  const seen = new Set();
+  const list = [];
+  for (const u of [clientUrl, pageUrl]) {
+    const o = originOf(u);
+    if (o && !/(?:google|googleusercontent|searchconsole)\.com$/i.test(new URL(o).hostname) && !seen.has(o)) {
+      seen.add(o);
+      list.push(o);
+    }
+  }
+  return list;
+}
+
+async function verifySitemap(pageUrl, clientUrl) {
   const tryUrls = [];
-  if (/sitemap.*\.xml/i.test(targetUrl)) tryUrls.push(targetUrl);
-  const origin = originOf(targetUrl);
-  if (origin) {
+  // If page_url is itself a sitemap path, probe it first.
+  if (/sitemap.*\.xml/i.test(pageUrl || '')) tryUrls.push(pageUrl);
+  for (const origin of probeOrigins(pageUrl, clientUrl)) {
     tryUrls.push(origin + '/sitemap.xml');
     tryUrls.push(origin + '/sitemap_index.xml');
     tryUrls.push(origin + '/wp-sitemap.xml');
+  }
+  if (tryUrls.length === 0) {
+    return { ok: false, manual: true, detail: 'No client domain configured to check for a sitemap.' };
   }
   for (const url of tryUrls) {
     try {
@@ -84,24 +103,26 @@ async function verifySitemap(targetUrl) {
       }
     } catch {}
   }
-  return { ok: false, detail: 'No valid XML sitemap reachable at /sitemap.xml, /sitemap_index.xml, or the provided URL.' };
+  return { ok: false, detail: 'No valid XML sitemap reachable at any of: ' + tryUrls.join(', ') + '.' };
 }
 
-async function verifyRobots(targetUrl) {
-  const origin = originOf(targetUrl);
-  if (!origin) return { ok: false, detail: 'No origin to check robots.txt.' };
-  try {
-    const { text } = await fetchResource(origin + '/robots.txt');
-    if (text && /(User-agent|Disallow|Sitemap)/i.test(text)) {
-      const hasSitemap = /Sitemap:\s*https?:/i.test(text);
-      return {
-        ok: true,
-        detail: 'robots.txt reachable at ' + origin + '/robots.txt' +
-          (hasSitemap ? ' and references a Sitemap directive.' : ' (no Sitemap directive found — consider adding one).')
-      };
-    }
-  } catch {}
-  return { ok: false, detail: 'robots.txt is not reachable at ' + origin + '/robots.txt.' };
+async function verifyRobots(pageUrl, clientUrl) {
+  const origins = probeOrigins(pageUrl, clientUrl);
+  if (origins.length === 0) return { ok: false, manual: true, detail: 'No client domain configured to check robots.txt.' };
+  for (const origin of origins) {
+    try {
+      const { text } = await fetchResource(origin + '/robots.txt');
+      if (text && /(User-agent|Disallow|Sitemap)/i.test(text)) {
+        const hasSitemap = /Sitemap:\s*https?:/i.test(text);
+        return {
+          ok: true,
+          detail: 'robots.txt reachable at ' + origin + '/robots.txt' +
+            (hasSitemap ? ' and references a Sitemap directive.' : ' (no Sitemap directive found — consider adding one).')
+        };
+      }
+    } catch {}
+  }
+  return { ok: false, detail: 'robots.txt is not reachable at ' + origins.map(o => o + '/robots.txt').join(' or ') + '.' };
 }
 
 async function verifyGscOwnership(client) {
@@ -154,9 +175,9 @@ export async function checkOffPageTask(impl, client) {
 
   let result;
   if (ct === 'sitemap' || ct === 'sitemap_submission' || ct === 'xml_sitemap' || /\bxml sitemap\b|submit.*sitemap/.test(blob)) {
-    result = await verifySitemap(impl.page_url || client?.url || '');
+    result = await verifySitemap(impl.page_url, client?.url);
   } else if (ct === 'robots' || ct === 'robots_txt' || /robots\.txt/.test(blob)) {
-    result = await verifyRobots(impl.page_url || client?.url || '');
+    result = await verifyRobots(impl.page_url, client?.url);
   } else if (ct === 'gsc_setup' || ct === 'gsc' || ct === 'search_console' || ct === 'domain_ownership' || ct === 'ownership_verification' || /search console|domain ownership/.test(blob)) {
     result = await verifyGscOwnership(client);
   } else if (ct === 'analytics_setup' || ct === 'ga_setup' || ct === 'gtm_setup' || ct === 'tracking_install' || /google analytics|gtag|gtm|tag manager/.test(blob)) {
