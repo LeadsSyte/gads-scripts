@@ -46,18 +46,27 @@ export function isOffPageTask(impl) {
 
 // Try to fetch a resource via page-proxy first (most resilient), then
 // fall back to corsFetchText. Returns { text, status } or throws.
-async function fetchResource(url) {
-  try {
-    const res = await fetch('/.netlify/functions/page-proxy', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url })
-    });
-    if (res.ok) {
-      const data = await res.json();
-      if (data.html) return { text: data.html, status: data.status || 200 };
-    }
-  } catch {}
+//
+// For RAW resources (XML sitemaps, robots.txt) pass { raw: true } to skip
+// page-proxy. page-proxy's TIER 1 routes through Jina Reader, which is
+// designed to extract main content from HTML pages and may not preserve
+// XML tag structure — a sitemap could come back without <urlset> after
+// Jina has "rendered" it. corsFetchText goes through allorigins which
+// returns the response body verbatim.
+async function fetchResource(url, { raw = false } = {}) {
+  if (!raw) {
+    try {
+      const res = await fetch('/.netlify/functions/page-proxy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.html) return { text: data.html, status: data.status || 200 };
+      }
+    } catch {}
+  }
   const text = await corsFetchText(url);
   return { text, status: 200 };
 }
@@ -97,8 +106,11 @@ async function verifySitemap(pageUrl, clientUrl) {
   }
   for (const url of tryUrls) {
     try {
-      const { text } = await fetchResource(url);
-      if (text && /<(urlset|sitemapindex)\b/i.test(text)) {
+      const { text } = await fetchResource(url, { raw: true });
+      // Accept either raw XML tags or any body that looks like a sitemap
+      // (xmlns reference, <loc> entries) — covers proxies that may have
+      // wrapped or reformatted the response.
+      if (text && (/<(urlset|sitemapindex)\b/i.test(text) || /sitemaps\.org\/schemas\/sitemap/i.test(text) || /<loc>https?:/i.test(text))) {
         return { ok: true, detail: 'Sitemap is live and valid XML at ' + url };
       }
     } catch {}
@@ -111,7 +123,7 @@ async function verifyRobots(pageUrl, clientUrl) {
   if (origins.length === 0) return { ok: false, manual: true, detail: 'No client domain configured to check robots.txt.' };
   for (const origin of origins) {
     try {
-      const { text } = await fetchResource(origin + '/robots.txt');
+      const { text } = await fetchResource(origin + '/robots.txt', { raw: true });
       if (text && /(User-agent|Disallow|Sitemap)/i.test(text)) {
         const hasSitemap = /Sitemap:\s*https?:/i.test(text);
         return {
