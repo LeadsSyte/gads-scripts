@@ -96,6 +96,9 @@ async function probeOne(eng, query, client, brandList, competitorList) {
 
 // onProgress gets called with { phase, engine, query, index, total }.
 export async function runSnapshot(client, { onProgress, iterations } = {}) {
+  if (!client?.id) {
+    throw new Error('runSnapshot called without a valid client.id — pick a client first.');
+  }
   const engines = activeEngines();
   const queries = parseQueries(client.aeo_probe_queries);
   const competitorList = parseCompetitors(client.competitors);
