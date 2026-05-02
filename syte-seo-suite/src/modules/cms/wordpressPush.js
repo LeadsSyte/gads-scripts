@@ -133,7 +133,9 @@ export async function pushContentToWordPress(client, item) {
   const hasImageApi = !!(settings.openaiKey || settings.googleAiKey);
   if (hasImageApi) {
     try {
-      const img = await generateHeroImage(title, keyword, client);
+      // Auto flow on CMS push — try whichever provider works, since the
+      // user isn't watching to pick.
+      const img = await generateHeroImage(title, keyword, client, { allowFallback: true });
       const base64 = img.dataUrl.replace(/^data:image\/\w+;base64,/, '');
       const safeName = (title || 'hero').replace(/[^a-z0-9]+/gi, '-').slice(0, 50) + '.png';
       const attachment = await uploadMedia(client, base64, safeName);
