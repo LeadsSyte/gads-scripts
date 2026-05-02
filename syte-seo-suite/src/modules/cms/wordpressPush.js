@@ -5,7 +5,7 @@
 import { wpRequest, findBySlug, updatePostMeta, createDraftPost, uploadMedia } from './wpApi.js';
 import { generateHeroImage } from '../content/imageGen.js';
 import { loadSettings } from '../../lib/settings.js';
-import { markdownToHtml } from '../content/articleParser.js';
+import { markdownToHtml, parseOutputSections } from '../content/articleParser.js';
 
 function slugFromUrl(pageUrl) {
   try {
@@ -17,34 +17,25 @@ function slugFromUrl(pageUrl) {
 
 // Parse the raw Claude output into body vs metadata sections so we only
 // push clean article HTML to WordPress, not the meta/schema/QA blocks.
+//
+// Uses parseOutputSections from articleParser.js (the same one AutoWrite
+// shows in its preview) so a single fix to body extraction lands
+// everywhere. The previous local copy diverged: it sliced
+// raw.slice(0, bodyEnd) which broke when bodyEnd was 0 (the typical case
+// — Meta Title is the first line) and silently published the meta lines
+// and QA JSON into the WordPress draft.
 function parseArticleBody(raw) {
-  if (!raw) return { body: '', metaTitle: '', metaDesc: '' };
-
-  let text = raw;
-
-  // Strip code fences: ```html ... ``` or ``` ... ```
-  text = text.replace(/^```(?:html)?\s*\n?/i, '').replace(/\n?```\s*$/i, '');
-  // If the whole thing is wrapped in a single code fence, strip it.
-  if (/^```/.test(text)) {
-    text = text.replace(/^```(?:html)?\s*\n/i, '');
-    const lastFence = text.lastIndexOf('```');
-    if (lastFence > 0) text = text.slice(0, lastFence);
-  }
-
-  const metaTitleMatch = text.match(/\*?\*?Meta Title\*?\*?:?\s*(.+)/i);
-  const metaDescMatch  = text.match(/\*?\*?Meta Description\*?\*?:?\s*(.+)/i);
-
-  // The article body is everything before the first **Meta Title or ```json.
-  const bodyEnd = text.search(/\*?\*?Meta Title\*?\*?:|```json/i);
-  let body = bodyEnd > 0 ? text.slice(0, bodyEnd).trim() : text.trim();
-
-  // Strip any remaining code fences inside the body.
-  body = body.replace(/```(?:html)?\s*\n?/gi, '').replace(/\n?```/g, '');
-
+  const sections = parseOutputSections(raw);
+  if (!sections) return { body: '', metaTitle: '', metaDesc: '' };
+  // Strip any leftover ```...``` fences that snuck into the body.
+  const body = (sections.body || '')
+    .replace(/```(?:html)?\s*\n?/gi, '')
+    .replace(/\n?```/g, '')
+    .trim();
   return {
     body,
-    metaTitle: metaTitleMatch ? metaTitleMatch[1].trim().replace(/\*+/g, '') : '',
-    metaDesc:  metaDescMatch  ? metaDescMatch[1].trim().replace(/\*+/g, '') : '',
+    metaTitle: sections.metaTitle || '',
+    metaDesc:  sections.metaDesc  || ''
   };
 }
 
