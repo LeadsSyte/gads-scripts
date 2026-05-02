@@ -131,5 +131,31 @@ await t('deleteBlogResult removes the row by id', async () => {
   assertEq(list.length, 0, 'row gone after delete');
 });
 
+// ===========================================================================
+// REGRESSION — loadContentHistory must include the `output` column.
+// The Articles Written expanded view renders the inline preview only
+// when a.output is truthy. Earlier the select() left `output` out, so
+// every preview was silently hidden. The user-facing symptom was
+// "I can see the cards but there's no dropdown to view the article".
+// ===========================================================================
+await t('loadContentHistory: returns output field on each row', async () => {
+  await sb.saveBlogResult({
+    ...BLOG, output: '# Heading\n\nFull article body here.'
+  });
+  const all = await sb.loadContentHistory();
+  assertEq(all.length, 1, 'one row');
+  if (!('output' in all[0])) throw new Error('REGRESSION: output column missing from loadContentHistory');
+  assertEq(all[0].output, '# Heading\n\nFull article body here.', 'full output text returned');
+});
+
+await t('loadContentHistory: empty-output rows still returned (so users can delete them)', async () => {
+  // LogExternalWork saves with output:'' — those rows must show up so
+  // the user can clean them up via the Delete button.
+  await sb.saveBlogResult({ ...BLOG, output: '', tab: 'Manual' });
+  const all = await sb.loadContentHistory();
+  assertEq(all.length, 1);
+  assertEq(all[0].output, '', 'empty output preserved (not undefined)');
+});
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 if (fail > 0) process.exit(1);

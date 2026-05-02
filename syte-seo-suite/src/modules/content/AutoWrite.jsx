@@ -312,8 +312,40 @@ export default function AutoWrite() {
             return <div className="muted" style={{ padding: 12, fontSize: 12 }}>No articles found for this month.</div>;
           }
           const hasWp = client.cms_type === 'WordPress' && client.wp_url && client.wp_username && client.wp_app_password;
+          // Stub rows = saved blog records with no actual content. Usually
+          // legacy duplicates from before saveBlogResult became upsert-by-
+          // (client_id, topic, month), or interrupted streams. Surface a
+          // bulk-cleanup control so users don't confirm-each-one.
+          const stubArticles = articles.filter(a => !a.output && a.tab !== 'Manual' && a.id);
           return (
             <div>
+              {stubArticles.length > 0 && (
+                <div style={{
+                  padding: '10px 14px', background: 'var(--surface-2)',
+                  borderBottom: '1px solid var(--border)',
+                  display: 'flex', justifyContent: 'space-between',
+                  alignItems: 'center', gap: 10, flexWrap: 'wrap'
+                }}>
+                  <span className="muted" style={{ fontSize: 11 }}>
+                    ⚠ {stubArticles.length} {stubArticles.length === 1 ? 'row has' : 'rows have'} no saved content (legacy stub{stubArticles.length === 1 ? '' : 's'} or interrupted streams).
+                  </span>
+                  <button
+                    onClick={async () => {
+                      if (!confirm('Delete ' + stubArticles.length + ' empty stub article row' + (stubArticles.length === 1 ? '' : 's') + ' for ' + client.name + '? This cannot be undone.')) return;
+                      for (const a of stubArticles) {
+                        try { await deleteBlogResult(a.id); } catch (e) {
+                          console.warn('[AutoWrite] stub delete failed:', e.message);
+                        }
+                      }
+                      const fresh = await loadContentHistory();
+                      setSharedHistory(fresh);
+                    }}
+                    style={{ fontSize: 11, padding: '4px 12px', borderColor: 'var(--red)', color: 'var(--red)' }}
+                  >
+                    Delete {stubArticles.length} empty row{stubArticles.length === 1 ? '' : 's'}
+                  </button>
+                </div>
+              )}
               {articles.map((a, i) => (
                 <div key={a.id || i} style={{ padding: '10px 14px', borderBottom: '1px solid var(--border)' }}>
                   <div className="row" style={{ justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
@@ -369,7 +401,26 @@ export default function AutoWrite() {
                       </button>
                     </div>
                   </div>
-                  {a.output && (() => {
+                  {(() => {
+                    // Always render SOMETHING under the title row — either
+                    // the full preview (when content is present) or a
+                    // "stub row" notice with a regenerate hint (so users
+                    // know they can clean up legacy / interrupted records).
+                    if (!a.output) {
+                      return (
+                        <div style={{
+                          marginTop: 8, padding: '8px 12px',
+                          background: 'var(--surface-2)', border: '1px solid var(--border)',
+                          borderLeft: '3px solid var(--orange)', borderRadius: 4,
+                          fontSize: 11, color: 'var(--text-muted)'
+                        }}>
+                          ⚠ This row has no saved content.
+                          {a.tab === 'Manual'
+                            ? ' (logged via External Work — content lives elsewhere.)'
+                            : ' Either the generation was interrupted or this is a legacy stub. Use Delete to remove it.'}
+                        </div>
+                      );
+                    }
                     const parsed = parseOutputSections(a.output);
                     const bodyHtml = markdownToHtml(parsed?.body || '');
                     return (
