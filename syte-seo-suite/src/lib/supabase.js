@@ -255,6 +255,68 @@ export async function listSentReports(clientId) {
   return clientId ? list.filter(r => r.client_id === clientId) : list;
 }
 
+// Generation tracking — records when a report microsite has been built
+// (regardless of whether it has been sent yet). Used by the Reports module
+// to surface "Generated" cards distinct from "Sent" cards.
+export async function logReportGenerated(row) {
+  const payload = { ...row, generated_at: row.generated_at || new Date().toISOString() };
+  if (supabase) {
+    try {
+      const { data: existing } = await supabase
+        .from('syte_suite_report_generated_log')
+        .select('id')
+        .eq('client_id', payload.client_id)
+        .eq('month', payload.month)
+        .limit(1);
+      if (existing?.length > 0) {
+        const { data, error } = await supabase
+          .from('syte_suite_report_generated_log')
+          .update(payload)
+          .eq('id', existing[0].id)
+          .select()
+          .single();
+        if (error) throw error;
+        return data;
+      }
+      const { data, error } = await supabase
+        .from('syte_suite_report_generated_log')
+        .insert(payload)
+        .select()
+        .single();
+      if (error) throw error;
+      return data;
+    } catch (e) {
+      // Fall through to localStorage if the table doesn't exist yet.
+      console.warn('[reports] logReportGenerated DB write failed, using localStorage:', e.message);
+    }
+  }
+  const list = JSON.parse(localStorage.getItem(LS_PREFIX + 'report_generated_log') || '[]');
+  const idx = list.findIndex(r => r.client_id === payload.client_id && r.month === payload.month);
+  if (idx >= 0) list[idx] = { ...list[idx], ...payload };
+  else list.push({ id: crypto.randomUUID(), ...payload });
+  localStorage.setItem(LS_PREFIX + 'report_generated_log', JSON.stringify(list));
+  return payload;
+}
+
+export async function listGeneratedReports(clientId) {
+  if (supabase) {
+    try {
+      let q = supabase
+        .from('syte_suite_report_generated_log')
+        .select('*')
+        .order('generated_at', { ascending: false });
+      if (clientId) q = q.eq('client_id', clientId);
+      const { data, error } = await q;
+      if (error) throw error;
+      return data || [];
+    } catch {
+      // Table may not exist — fall back to localStorage.
+    }
+  }
+  const list = JSON.parse(localStorage.getItem(LS_PREFIX + 'report_generated_log') || '[]');
+  return clientId ? list.filter(r => r.client_id === clientId) : list;
+}
+
 // ---------------------------------------------------------------------------
 // Implementation tracking — cross-module change verification.
 // ---------------------------------------------------------------------------

@@ -393,10 +393,74 @@ export function buildMicrositeHtml({ micro, client, monthLabel, rankscale, repor
       </table>
     </section>` : ''}
 
-    ${(rd.keywords || []).length > 0 ? `
+    ${(rd.keywords || []).length > 0 ? (() => {
+      const kws = rd.keywords;
+      const improved = kws.filter(k => k.change != null && k.change > 0).sort((a, b) => b.change - a.change);
+      const declined = kws.filter(k => k.change != null && k.change < 0).sort((a, b) => a.change - b.change);
+      const newKws = kws.filter(k => k.change == null && k.clicks > 0).sort((a, b) => b.clicks - a.clicks);
+      const top3Page = kws.filter(k => k.position <= 3).length;
+      const top10Page = kws.filter(k => k.position <= 10).length;
+      const renderKwCard = (k, kind) => `
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px;border-left:3px solid ${kind === 'up' ? 'var(--green)' : kind === 'down' ? 'var(--red)' : 'var(--accent-blue)'};">
+          <div style="font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(k.query)}</div>
+          <div style="display:flex;justify-content:space-between;margin-top:6px;font-size:11px;color:var(--muted);">
+            <span>Pos ${k.position}${k.prevPosition != null ? ' (was ' + k.prevPosition + ')' : ''}</span>
+            <span style="color:${kind === 'up' ? 'var(--green)' : kind === 'down' ? 'var(--red)' : 'var(--accent-blue)'};font-weight:600;">
+              ${kind === 'up' ? '▲ +' + k.change.toFixed(1) : kind === 'down' ? '▼ ' + k.change.toFixed(1) : 'NEW'}
+            </span>
+          </div>
+          <div style="font-size:11px;color:var(--muted);margin-top:4px;">${Number(k.clicks).toLocaleString()} clicks · ${Number(k.impressions).toLocaleString()} impressions</div>
+        </div>`;
+      return `
     <section>
-      <h2>Keyword Rankings</h2>
-      <p style="color:var(--muted);font-size:13px;margin-bottom:14px;">Top ${Math.min(rd.keywords.length, 30)} keywords by impressions — position change vs previous month</p>
+      <h2>SEO Keyword Performance</h2>
+      <p style="color:var(--muted);font-size:14px;margin-bottom:18px;max-width:700px;">
+        Highlights from Google Search Console — where rankings moved this month, what's new, and where attention is needed.
+      </p>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:24px;">
+        <div style="padding:16px;background:var(--surface);border:1px solid var(--border);border-radius:12px;text-align:center;">
+          <div style="font-family:'DM Serif Display',serif;font-size:36px;color:var(--green);line-height:1;">${improved.length}</div>
+          <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-top:6px;">Keywords Improved</div>
+        </div>
+        <div style="padding:16px;background:var(--surface);border:1px solid var(--border);border-radius:12px;text-align:center;">
+          <div style="font-family:'DM Serif Display',serif;font-size:36px;color:var(--accent-blue);line-height:1;">${newKws.length}</div>
+          <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-top:6px;">New Rankings</div>
+        </div>
+        <div style="padding:16px;background:var(--surface);border:1px solid var(--border);border-radius:12px;text-align:center;">
+          <div style="font-family:'DM Serif Display',serif;font-size:36px;color:var(--accent);line-height:1;">${top3Page}</div>
+          <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-top:6px;">In Top 3</div>
+        </div>
+        <div style="padding:16px;background:var(--surface);border:1px solid var(--border);border-radius:12px;text-align:center;">
+          <div style="font-family:'DM Serif Display',serif;font-size:36px;color:var(--accent);line-height:1;">${top10Page}</div>
+          <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-top:6px;">In Top 10</div>
+        </div>
+        <div style="padding:16px;background:var(--surface);border:1px solid var(--border);border-radius:12px;text-align:center;">
+          <div style="font-family:'DM Serif Display',serif;font-size:36px;color:var(--orange);line-height:1;">${declined.length}</div>
+          <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-top:6px;">Keywords Declined</div>
+        </div>
+      </div>
+      ${improved.length > 0 ? `
+        <h3 style="font-size:18px;margin-bottom:10px;">Top Improvements</h3>
+        <p style="color:var(--muted);font-size:12px;margin-bottom:12px;">Biggest position gains vs previous month</p>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:10px;margin-bottom:24px;">
+          ${improved.slice(0, 6).map(k => renderKwCard(k, 'up')).join('')}
+        </div>` : ''}
+      ${newKws.length > 0 ? `
+        <h3 style="font-size:18px;margin-bottom:10px;">New Keywords Earning Clicks</h3>
+        <p style="color:var(--muted);font-size:12px;margin-bottom:12px;">Queries that didn't rank last month and now are</p>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:10px;margin-bottom:24px;">
+          ${newKws.slice(0, 6).map(k => renderKwCard(k, 'new')).join('')}
+        </div>` : ''}
+      ${declined.length > 0 ? `
+        <h3 style="font-size:18px;margin-bottom:10px;">Needs Attention</h3>
+        <p style="color:var(--muted);font-size:12px;margin-bottom:12px;">Keywords that lost ground — opportunity for next month's plan</p>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:10px;margin-bottom:24px;">
+          ${declined.slice(0, 6).map(k => renderKwCard(k, 'down')).join('')}
+        </div>` : ''}
+    </section>
+    <section>
+      <h2>Full Keyword Rankings</h2>
+      <p style="color:var(--muted);font-size:13px;margin-bottom:14px;">Top ${Math.min(kws.length, 30)} keywords by impressions — position change vs previous month</p>
       <table class="data-table" style="width:100%;border-collapse:collapse;font-size:12px;">
         <thead>
           <tr style="border-bottom:2px solid var(--border);text-align:left;">
@@ -424,7 +488,8 @@ export function buildMicrositeHtml({ micro, client, monthLabel, rankscale, repor
           }).join('')}
         </tbody>
       </table>
-    </section>` : ''}
+    </section>`;
+    })() : ''}
 
     ${(rd.topPages || []).length > 0 ? `
     <section>

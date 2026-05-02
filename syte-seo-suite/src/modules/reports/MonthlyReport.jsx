@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useClients } from '../../store/useClients.js';
 import { claudeComplete, extractJSON } from '../../lib/anthropic.js';
-import { listAeoSnapshots, logReportSent, getCachedReportData, setCachedReportData } from '../../lib/supabase.js';
+import { listAeoSnapshots, logReportSent, logReportGenerated, getCachedReportData, setCachedReportData } from '../../lib/supabase.js';
 import { ALICE_SYSTEM, MICROSITE_SYSTEM, QA_SYSTEM, buildAlicePayload, getWorkSummary } from './reportPrompts.js';
 import { buildMicrositeHtml, downloadMicrosite } from './microsite.js';
 import { runSnapshot, snapshotPreflight } from './aeoRunner.js';
@@ -254,6 +254,14 @@ Write an AEO performance email covering: what AI engines are saying about this b
       const qaObj = extractJSON(qaText);
       if (qaObj) setQa(qaObj);
 
+      logReportGenerated({
+        client_id: client.id,
+        month,
+        report_type: 'aeo',
+        qa_score: qaObj?.overallScore || null,
+        email_subject: parseAliceOutput(aliceText).subject || ''
+      }).catch(() => {});
+
       setPhase('review');
     } catch (e) {
       setErr(e.message);
@@ -335,6 +343,14 @@ Write an AEO performance email covering: what AI engines are saying about this b
       });
       const qaObj = extractJSON(qaText);
       if (qaObj) setQa(qaObj);
+
+      logReportGenerated({
+        client_id: client.id,
+        month,
+        report_type: 'full',
+        qa_score: qaObj?.overallScore || null,
+        email_subject: parsed.subject || ''
+      }).catch(() => {});
 
       setPhase('review');
     } catch (e) {
