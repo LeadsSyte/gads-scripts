@@ -5,13 +5,19 @@
 
 import { test, expect, TEST_CLIENT } from './fixtures.js';
 
+// Scope client-name assertions to the module's content area — the topbar's
+// client-picker <select> also renders an <option>Test Client</option>, which
+// trips strict-mode locator matches and (because <option> is hidden until
+// the select opens) also fails toBeVisible() on .first().
+const inContent = (page) => page.locator('.content-area');
+
 test('app boots, lock screen bypassed, sidebar present', async ({ page }) => {
   await page.goto('/');
   // Sidebar logo is the simplest "we got past the lock screen" signal.
   await expect(page.getByText('Syte', { exact: false })).toBeVisible();
   // The seeded client appears once we navigate to Clients.
   await page.getByRole('button', { name: 'Clients' }).first().click();
-  await expect(page.getByText(TEST_CLIENT.name)).toBeVisible();
+  await expect(inContent(page).getByText(TEST_CLIENT.name).first()).toBeVisible();
 });
 
 test('Technical SEO → Run Scan button is reachable for the seeded client', async ({ page }) => {
@@ -19,7 +25,7 @@ test('Technical SEO → Run Scan button is reachable for the seeded client', asy
   await page.getByRole('button', { name: 'Technical SEO' }).first().click();
   // Default sub is Dashboard; the pipeline lists clients and renders the
   // Run Scan action button. The bug we fixed had this button hidden.
-  await expect(page.getByText(TEST_CLIENT.name).first()).toBeVisible();
+  await expect(inContent(page).getByText(TEST_CLIENT.name).first()).toBeVisible();
   // The button's label may be 'Run Scan' or 'Re-scan' depending on bucket.
   const scanBtn = page.getByRole('button', { name: /Run Scan|Re-scan/i }).first();
   await expect(scanBtn).toBeVisible();
@@ -28,7 +34,7 @@ test('Technical SEO → Run Scan button is reachable for the seeded client', asy
 test('Reports → Monthly Report shows the client and a Generate button', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('button', { name: 'Reports' }).first().click();
-  await expect(page.getByText(TEST_CLIENT.name)).toBeVisible();
+  await expect(inContent(page).getByText(TEST_CLIENT.name).first()).toBeVisible();
   await expect(page.getByRole('button', { name: /Generate Report/i }).first()).toBeVisible();
 });
 
@@ -59,13 +65,15 @@ test('CMS sub-nav loads without crashing', async ({ page }) => {
 // though the crawler is perfectly capable of scanning it.
 // =============================================================================
 test('regression: crawler-only client does NOT land in Credentials Missing', async ({ page }) => {
-  await page.goto('/');
-  // Strip GSC from the seed so this client really is crawler-only.
-  await page.evaluate((seed) => {
+  // Re-seed BEFORE the first navigation so we don't need a reload — reload
+  // under Vite/HMR was flaky in CI and the test ran out its 30s budget.
+  // addInitScript runs again on the next goto.
+  await page.addInitScript((seed) => {
     const c = { ...seed, gsc_property: '', wceo_project_id: '' };
     localStorage.setItem('syte-suite-clients', JSON.stringify([c]));
+    localStorage.setItem('syte-suite-selected-client', c.id);
   }, TEST_CLIENT);
-  await page.reload();
+  await page.goto('/');
   await page.getByRole('button', { name: 'Technical SEO' }).first().click();
   // The Credentials Missing section header may exist with 0 clients;
   // what we want is that the seeded client is NOT in that section.
