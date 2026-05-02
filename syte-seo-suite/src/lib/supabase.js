@@ -720,13 +720,19 @@ export async function listBlogResults(clientId) {
 }
 
 // Shared content history — used by the pipeline status to count articles
-// written per client per month. Returns ALL content entries (Auto Write +
-// Quick Blog + New Article + Rewrite etc.). Cached in localStorage for
-// offline fallback.
+// written per client per month AND by the per-client expanded card to
+// render the inline preview / Copy buttons / Delete control. The output
+// column is included because AutoWrite needs the full body to:
+//   • Detect "stub" rows with no actual content (e.g. legacy duplicates
+//     or LogExternalWork rows where output was never populated).
+//   • Render the parsed-output preview (Meta Title / Description /
+//     Article Body / FAQ / QA) without an extra round trip.
+// Cached in localStorage for offline fallback.
 export async function loadContentHistory() {
   if (supabase) {
     const { data, error } = await supabase
-      .from('syte_suite_content_blogs').select('id,client_id,client_name,topic,keyword,tab,opportunity_type,generated_at,created_at')
+      .from('syte_suite_content_blogs')
+      .select('id,client_id,client_name,topic,keyword,tab,opportunity_type,output,generated_at,created_at')
       .order('generated_at', { ascending: false })
       .limit(500);
     if (!error && data) {

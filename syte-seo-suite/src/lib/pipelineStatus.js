@@ -62,12 +62,15 @@ export function contentPipelineStatus(client, implementations, month, contentHis
     const parts = [written + ' written'];
     if (verifiedCount > 0) parts.push(verifiedCount + '/' + required + ' verified');
     else parts.push('0 verified');
+    // Use `written` (the actual count) in the detail message — using
+    // `required` (pages_per_month) led to "3 written · All 2 articles
+    // written…" mismatches when more than the quota had been generated.
     return {
       section: 'articles-written',
       summary: parts.join(' · '),
       detail: verifiedCount > 0
-        ? verifiedCount + ' of ' + required + ' verified — ' + (required - verifiedCount) + ' awaiting verification'
-        : 'All ' + required + ' articles written, awaiting upload & verification'
+        ? verifiedCount + ' of ' + written + ' verified — ' + (written - verifiedCount) + ' awaiting verification'
+        : 'All ' + written + ' articles written, awaiting upload & verification'
     };
   }
 
