@@ -1,0 +1,41 @@
+name: CI
+
+# Runs the syte-seo-suite test pack and a production build on every push
+# and pull request. Failing this gate should block merges — that's the
+# whole point: refactors that miss a caller (the WebCEO -> crawler bug
+# class) get caught here instead of in the user's browser.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Lint, test, build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: syte-seo-suite
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: syte-seo-suite/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run test suite
+        run: npm test
+
+      - name: Production build
+        # Catches import-path mistakes and JSX/syntax errors that node tests
+        # don't see (the test suite imports plain .js, not .jsx components).
+        run: npm run build

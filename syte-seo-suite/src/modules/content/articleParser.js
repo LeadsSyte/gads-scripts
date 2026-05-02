@@ -23,9 +23,21 @@ export function parseOutputSections(raw) {
   const qaBlock = jsonBlocks.length > 0 ? jsonBlocks[jsonBlocks.length - 1] : null;
   const faqBlock = jsonBlocks.length > 1 ? jsonBlocks[jsonBlocks.length - 2] : null;
 
-  // Article body is everything before the first **Meta Title or first ```json fence.
-  const bodyEnd = raw.search(/\*?\*?Meta Title\*?\*?:|```json/i);
-  const body = bodyEnd > 0 ? raw.slice(0, bodyEnd).trim() : raw;
+  // Article body sits between the Meta Title/Description/AEO Summary
+  // header lines and the first ```json fence. Earlier code took
+  // `raw.slice(0, firstMatch)` which broke when the output started
+  // with **Meta Title:** (firstMatch === 0 → falls back to the whole
+  // raw string, leaking the QA JSON into the copy-body button).
+  let body = raw;
+  const jsonStart = raw.search(/```json/i);
+  if (jsonStart >= 0) body = raw.slice(0, jsonStart);
+  // Strip leading Meta Title / Meta Description / AEO Summary header
+  // lines so the "Article Body" copy field is just the H1 + prose.
+  body = body
+    .replace(/^\s*\*?\*?Meta Title\*?\*?:?[^\n]*\n+/im, '')
+    .replace(/^\s*\*?\*?Meta Description\*?\*?:?[^\n]*\n+/im, '')
+    .replace(/^\s*\*?\*?AEO Summary Block\*?\*?:?[\s\S]*?(?=\n#|\n\n|$)/im, '')
+    .trim();
 
   return {
     body,
