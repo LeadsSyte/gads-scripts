@@ -9,7 +9,7 @@ import AutoWrite from './AutoWrite.jsx';
 import GenerateImageButton from '../../components/GenerateImageButton.jsx';
 import MarkImplementedButton from '../../components/MarkImplementedButton.jsx';
 import { saveBlogResult, listBlogResults, deleteBlogResult, loadContentHistory } from '../../lib/supabase.js';
-import { parseOutputSections } from './articleParser.js';
+import { parseOutputSections, markdownToHtml } from './articleParser.js';
 
 const ACCENT = '#c8ff00';
 const HISTORY_KEY = 'syte-suite-content-history';
@@ -26,26 +26,8 @@ function escapeHtml(s = '') {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-// Convert Markdown → HTML so .docx export preserves headings, bold, lists.
-function markdownToHtml(md) {
-  if (!md) return '';
-  return md
-    .replace(/^#### (.+)$/gm, '<h4>$1</h4>')
-    .replace(/^### (.+)$/gm, '<h3>$1</h3>')
-    .replace(/^## (.+)$/gm, '<h2>$1</h2>')
-    .replace(/^# (.+)$/gm, '<h1>$1</h1>')
-    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    .replace(/\*(.+?)\*/g, '<em>$1</em>')
-    .replace(/^[-*] (.+)$/gm, '<li>$1</li>')
-    .replace(/(<li>[\s\S]*?<\/li>)/gm, (match) => '<ul>' + match + '</ul>')
-    .replace(/<\/ul>\s*<ul>/g, '')
-    .replace(/^\d+\. (.+)$/gm, '<li>$1</li>')
-    .replace(/```[\s\S]*?```/g, m => '<pre>' + m.slice(3, -3).trim() + '</pre>')
-    .replace(/`([^`]+)`/g, '<code>$1</code>')
-    .replace(/\n{2,}/g, '</p><p>')
-    .replace(/^(?!<[hluop])(.+)$/gm, '<p>$1</p>')
-    .replace(/<p><\/p>/g, '');
-}
+// markdownToHtml + GFM table support is in articleParser.js (shared with
+// wordpressPush.js + AutoWrite's "Copy as HTML" button).
 
 // .docx export — converts Markdown to HTML first so Word preserves headings,
 // bold, and list structure. Uses the "save as .doc" HTML envelope trick.
@@ -213,11 +195,14 @@ function ParsedOutput({ output, topic, pushItem, exportTxt, exportDocx, systemPr
               borderLeft: '3px solid var(--mod-content)',
               borderRadius: 'var(--radius)'
             }}>
-              <div className="row" style={{ justifyContent: 'space-between', marginBottom: 6 }}>
+              <div className="row" style={{ justifyContent: 'space-between', marginBottom: 6, flexWrap: 'wrap', gap: 6 }}>
                 <strong style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '.05em', color: 'var(--mod-content)' }}>
                   Article Body
                 </strong>
-                <CopyButton text={sections.body} />
+                <div className="row" style={{ gap: 6 }}>
+                  <CopyButton text={sections.body} label="Copy markdown" />
+                  <CopyButton text={markdownToHtml(sections.body)} label="Copy HTML" />
+                </div>
               </div>
               <details>
                 <summary className="muted" style={{ fontSize: 11, cursor: 'pointer' }}>
