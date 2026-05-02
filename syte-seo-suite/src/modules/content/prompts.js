@@ -129,7 +129,10 @@ Topic / angle: ${topic}
 Target length: ${length || 1500} words
 
 MANDATORY OUTPUT CHECKLIST (do not skip any):
-1. Full HTML article with proper heading hierarchy
+1. Article body in clean GitHub-flavoured Markdown — # for H1, ##/### for
+   subheadings, **bold**, *italic*, - for bullets, GFM tables with | pipes
+   and a separator row. Do NOT mix raw HTML tags with markdown. The suite
+   converts to HTML for paste/CMS push automatically.
 2. At least one comparison table OR step-by-step guide
 3. At least one clear call-to-action (CTA) — match to audience intent
 4. Author attribution with credentials in opening or closing paragraph
@@ -137,9 +140,17 @@ MANDATORY OUTPUT CHECKLIST (do not skip any):
 6. Meta Description (150-160 chars)
 7. AEO Summary Block (40-80 words, answer-first, right after H1)
 8. FAQ section (schema-ready, 5+ questions)
-9. QA JSON scoring block
+9. QA JSON scoring block (\`\`\`json fenced)
 
-Return all items in this exact order.
+Return in this EXACT order so the suite can split sections cleanly:
+   **Meta Title:** …
+   **Meta Description:** …
+   # H1
+   **AEO Summary Block:** …
+   ## …  (rest of article body)
+   FAQ section
+   \`\`\`json (FAQ Schema JSON-LD) \`\`\`
+   \`\`\`json (QA scoring) \`\`\`
 `.trim(),
 
   'Rewrite & Expand': (existing, keyword, length) => `

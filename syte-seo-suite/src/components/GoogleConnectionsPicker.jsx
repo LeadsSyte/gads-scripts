@@ -5,7 +5,8 @@ import {
   requestToken,
   switchAccount,
   signOut,
-  ALL_READ_SCOPES
+  ALL_READ_SCOPES,
+  TOKEN_EVENT
 } from '../modules/technical/googleAuth.js';
 import {
   fetchGa4Properties,
@@ -22,6 +23,19 @@ import {
 export default function GoogleConnectionsPicker({ ga4Value, onChangeGa4, gscValue, onChangeGsc }) {
   const [signedIn, setSignedIn] = useState(!!getToken());
   const [email, setEmail] = useState(null);
+
+  // The picker is often rendered before App.jsx's background silent
+  // refresh has finished. Re-check signed-in state whenever the auth
+  // module reports a token change, plus on cross-tab storage events.
+  useEffect(() => {
+    const recheck = () => setSignedIn(!!getToken());
+    window.addEventListener(TOKEN_EVENT, recheck);
+    window.addEventListener('storage', recheck);
+    return () => {
+      window.removeEventListener(TOKEN_EVENT, recheck);
+      window.removeEventListener('storage', recheck);
+    };
+  }, []);
   const [ga4Props, setGa4Props] = useState([]);
   const [gscSites, setGscSites] = useState([]);
   const [loading, setLoading] = useState(false);

@@ -8,6 +8,7 @@
 
 import { ensureToken, SCOPES } from '../technical/googleAuth.js';
 import { querySearchAnalytics } from '../technical/gsc.js';
+import { buildKeywordBuckets, classifyKeywords } from './keywordBuckets.js';
 
 // ─── Date helpers ────────────────────────────────────────────
 function monthRange(year, month) {
@@ -93,13 +94,29 @@ async function fetchGA4Period(propertyId, dateRange, clientType) {
 }
 
 // ─── GSC Keyword Rankings ────────────────────────────────────
+// Paginate through GSC to pull up to MAX_KEYWORD_ROWS keywords. The
+// flat top-N-by-impressions pull was missing low-volume head terms
+// that rank in the top 3 — those keywords have small impressions but
+// huge commercial weight. Pulling 10k rows makes sure every keyword
+// the brand has any meaningful presence on is included in the buckets.
+const MAX_KEYWORD_ROWS = 10000;
+const PAGE_SIZE = 2500;
+
 async function fetchKeywordRankings(gscProperty, dateRange) {
-  return querySearchAnalytics(gscProperty, {
-    startDate: dateRange.startDate,
-    endDate: dateRange.endDate,
-    dimensions: ['query'],
-    rowLimit: 50
-  });
+  const all = [];
+  for (let startRow = 0; startRow < MAX_KEYWORD_ROWS; startRow += PAGE_SIZE) {
+    const page = await querySearchAnalytics(gscProperty, {
+      startDate: dateRange.startDate,
+      endDate: dateRange.endDate,
+      dimensions: ['query'],
+      rowLimit: PAGE_SIZE,
+      startRow
+    });
+    const rows = page.rows || [];
+    all.push(...rows);
+    if (rows.length < PAGE_SIZE) break; // No more rows.
+  }
+  return { rows: all };
 }
 
 async function fetchTopPages(gscProperty, dateRange) {
@@ -190,6 +207,13 @@ export async function fetchReportData(client, year, month1Based) {
     return +(((current - previous) / previous) * 100).toFixed(1);
   }
 
+  // Classify each keyword (head-term / long-tail / branded) and build
+  // bucketed views — top 3, top 10, improved, striking distance, head
+  // term wins. Branded queries are excluded from the showcase buckets
+  // since they would rank #1 regardless of SEO work.
+  const classifiedKeywords = classifyKeywords(keywords, client.name);
+  const keywordBuckets = buildKeywordBuckets(classifiedKeywords, client.name);
+
   const summary = {
     clientType,
     period: periods,
@@ -208,7 +232,8 @@ export async function fetchReportData(client, year, month1Based) {
         revenue: pctChange(traffic.current.revenue, traffic.yoy.revenue)
       } : null
     },
-    keywords,
+    keywords: classifiedKeywords,
+    keywordBuckets,
     topPages,
     errors
   };
