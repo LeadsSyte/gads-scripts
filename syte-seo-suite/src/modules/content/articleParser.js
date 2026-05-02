@@ -39,10 +39,16 @@ export function parseOutputSections(raw) {
     .replace(/^\s*\*?\*?AEO Summary Block\*?\*?:?[\s\S]*?(?=\n#|\n\n|$)/im, '')
     .trim();
 
+  // Cleanup helper for the captured meta strings. The headline regex
+  // tolerates `**Meta Title:**` shapes (closing ** AFTER the colon),
+  // which means the captured group can begin with a leading `** ` —
+  // strip that, plus any surrounding whitespace, in one place.
+  const cleanInline = (s) => s.replace(/^\s*\*+\s*/, '').replace(/\*+\s*$/, '').trim();
+
   return {
     body,
-    metaTitle:  metaTitleMatch ? metaTitleMatch[1].trim().replace(/\*+/g, '') : null,
-    metaDesc:   metaDescMatch  ? metaDescMatch[1].trim().replace(/\*+/g, '')  : null,
+    metaTitle:  metaTitleMatch ? cleanInline(metaTitleMatch[1]) : null,
+    metaDesc:   metaDescMatch  ? cleanInline(metaDescMatch[1])  : null,
     aeoSummary: aeoMatch ? aeoMatch[1].trim() : null,
     faqSchema:  faqBlock,
     qaBlock
