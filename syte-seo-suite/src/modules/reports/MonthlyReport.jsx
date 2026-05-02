@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useClients } from '../../store/useClients.js';
 import { claudeComplete, extractJSON } from '../../lib/anthropic.js';
-import { listAeoSnapshots, logReportSent, getCachedReportData, setCachedReportData } from '../../lib/supabase.js';
+import { listAeoSnapshots, logReportSent, logReportGenerated, getCachedReportData, setCachedReportData } from '../../lib/supabase.js';
 import {
   ALICE_SYSTEM, MICROSITE_SYSTEM, QA_SYSTEM,
   ALICE_AEO_SYSTEM, MICROSITE_AEO_SYSTEM, QA_AEO_SYSTEM,
@@ -302,6 +302,14 @@ export default function MonthlyReport() {
       const qaObj = extractJSON(qaText);
       if (qaObj) setQa(qaObj);
 
+      logReportGenerated({
+        client_id: client.id,
+        month,
+        report_type: 'aeo',
+        qa_score: qaObj?.overallScore || null,
+        email_subject: parseAliceOutput(aliceText).subject || ''
+      }).catch(() => {});
+
       setPhase('review');
     } catch (e) {
       setErr(e.message);
@@ -396,6 +404,14 @@ export default function MonthlyReport() {
       });
       const qaObj = extractJSON(qaText);
       if (qaObj) setQa(qaObj);
+
+      logReportGenerated({
+        client_id: client.id,
+        month,
+        report_type: 'full',
+        qa_score: qaObj?.overallScore || null,
+        email_subject: parsed.subject || ''
+      }).catch(() => {});
 
       setPhase('review');
     } catch (e) {
