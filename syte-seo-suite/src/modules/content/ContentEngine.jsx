@@ -9,6 +9,7 @@ import AutoWrite from './AutoWrite.jsx';
 import GenerateImageButton from '../../components/GenerateImageButton.jsx';
 import MarkImplementedButton from '../../components/MarkImplementedButton.jsx';
 import { saveBlogResult, listBlogResults, deleteBlogResult, loadContentHistory } from '../../lib/supabase.js';
+import { copyArticleFormatted, markdownToHtml as renderMarkdown } from './articleFormat.js';
 
 const ACCENT = '#c8ff00';
 const HISTORY_KEY = 'syte-suite-content-history';
@@ -97,20 +98,22 @@ const SCORE_KEYS = [
 ];
 
 // Parse the raw Claude output into labeled sections so each piece can be
-// copied individually. The model outputs in a predictable order:
-//   1. HTML article body
-//   2. **Meta Title:** ...
-//   3. **Meta Description:** ...
-//   4. **AEO Summary Block:** ...
-//   5. **FAQ Schema (JSON-LD):** ```json ... ```
-//   6. QA JSON block ```json { "keyword_integration": ... } ```
+// copied individually. Claude varies the order — sometimes Meta Title leads,
+// sometimes the article body does — so this strips known sections out and
+// treats whatever's left as the body.
 
 function parseOutputSections(raw) {
   if (!raw) return null;
 
-  const metaTitleMatch = raw.match(/\*?\*?Meta Title\*?\*?:?\s*(.+)/i);
-  const metaDescMatch  = raw.match(/\*?\*?Meta Description\*?\*?:?\s*(.+)/i);
-  const aeoMatch       = raw.match(/\*?\*?AEO Summary Block\*?\*?:?\s*([\s\S]*?)(?=\n\*?\*?(?:FAQ|Meta|```)|$)/i);
+  // Single-line fields. Stop at end of line so we don't swallow the whole rest.
+  const metaTitleMatch = raw.match(/\*{0,2}Meta Title\*{0,2}:?\s*([^\n]+)/i);
+  const metaDescMatch  = raw.match(/\*{0,2}Meta Description\*{0,2}:?\s*([^\n]+)/i);
+
+  // AEO summary is one paragraph — stop at the next blank line, the next
+  // markdown heading, the next labelled section, or a fenced code block.
+  const aeoMatch = raw.match(
+    /\*{0,2}AEO Summary Block\*{0,2}:?\s*([\s\S]*?)(?=\n\s*\n|\n\s*#{1,6}\s|\n\s*\*{0,2}(?:Meta Title|Meta Description|FAQ|QA)|\n\s*```|$)/i
+  );
 
   // Extract all JSON code blocks. The last one is the QA block, the second-to-last is FAQ schema.
   const jsonBlocks = [];
@@ -121,9 +124,15 @@ function parseOutputSections(raw) {
   const qaBlock = jsonBlocks.length > 0 ? jsonBlocks[jsonBlocks.length - 1] : null;
   const faqBlock = jsonBlocks.length > 1 ? jsonBlocks[jsonBlocks.length - 2] : null;
 
-  // The article body is everything before the first **Meta Title or **AEO or ```json.
-  const bodyEnd = raw.search(/\*?\*?Meta Title\*?\*?:|```json/i);
-  const body = bodyEnd > 0 ? raw.slice(0, bodyEnd).trim() : raw;
+  // Body = raw output minus the labelled meta lines, AEO block, and any
+  // fenced JSON. Whatever remains is the article itself.
+  let body = raw;
+  if (metaTitleMatch) body = body.replace(metaTitleMatch[0], '');
+  if (metaDescMatch)  body = body.replace(metaDescMatch[0], '');
+  if (aeoMatch)       body = body.replace(aeoMatch[0], '');
+  body = body.replace(/```json[\s\S]*?```/gi, '').trim();
+  // Collapse the empty lines left behind by the removals.
+  body = body.replace(/\n{3,}/g, '\n\n').trim();
 
   return {
     body,
@@ -142,6 +151,25 @@ function CopyButton({ text, label = 'Copy' }) {
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     }).catch(() => {});
+  }
+  return (
+    <button onClick={copy} style={{ fontSize: 11, padding: '3px 10px' }}>
+      {copied ? 'Copied ✓' : label}
+    </button>
+  );
+}
+
+// Copy formatted (rich-text) so paste into Google Docs/Word/CMS preserves
+// headings, bold, lists, tables. Falls back to plain text if clipboard.write
+// is unavailable.
+function CopyRichButton({ markdown, label = 'Copy formatted' }) {
+  const [copied, setCopied] = React.useState(false);
+  async function copy() {
+    const ok = await copyArticleFormatted(markdown);
+    if (ok) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    }
   }
   return (
     <button onClick={copy} style={{ fontSize: 11, padding: '3px 10px' }}>
@@ -251,17 +279,24 @@ function ParsedOutput({ output, topic, pushItem, exportTxt, exportDocx, systemPr
               borderLeft: '3px solid var(--mod-content)',
               borderRadius: 'var(--radius)'
             }}>
-              <div className="row" style={{ justifyContent: 'space-between', marginBottom: 6 }}>
+              <div className="row" style={{ justifyContent: 'space-between', marginBottom: 6, gap: 6, flexWrap: 'wrap' }}>
                 <strong style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '.05em', color: 'var(--mod-content)' }}>
                   Article Body
                 </strong>
-                <CopyButton text={sections.body} />
+                <div className="row" style={{ gap: 6 }}>
+                  <CopyRichButton markdown={sections.body} />
+                  <CopyButton text={sections.body} label="Copy markdown" />
+                </div>
               </div>
-              <details>
+              <details open>
                 <summary className="muted" style={{ fontSize: 11, cursor: 'pointer' }}>
                   Show article ({Math.round(sections.body.length / 5)} words approx.)
                 </summary>
-                <div className="stream-output" style={{ marginTop: 8, maxHeight: 500 }}>{sections.body}</div>
+                <div
+                  className="article-rendered"
+                  style={{ marginTop: 8, maxHeight: 500, overflowY: 'auto', padding: 12, background: 'var(--bg)', borderRadius: 6, lineHeight: 1.6 }}
+                  dangerouslySetInnerHTML={{ __html: renderMarkdown(sections.body) }}
+                />
               </details>
 
               {/* Hero image generator — opt-in, only renders if an image API key is configured */}

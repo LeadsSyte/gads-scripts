@@ -13,7 +13,8 @@ import MarkImplementedButton from '../../components/MarkImplementedButton.jsx';
 import PipelineView from '../../components/PipelineView.jsx';
 import LogExternalWork from '../../components/LogExternalWork.jsx';
 import { contentPipelineStatus } from '../../lib/pipelineStatus.js';
-import { listAllImplementations, saveBlogResult, loadContentHistory } from '../../lib/supabase.js';
+import { listAllImplementations, saveBlogResult, loadContentHistory, listBlogResults } from '../../lib/supabase.js';
+import { markdownToHtml, parseOutputSections, copyArticleFormatted } from './articleFormat.js';
 
 const ACCENT = '#c8ff00';
 
@@ -30,6 +31,144 @@ const OPP_COLORS = {
   'meta-rewrite':      'var(--purple)',
   'long-tail':         'var(--text-muted)'
 };
+
+// Renders one client's "Articles Written" list with full article view +
+// copy-formatted-text buttons. Lazy-loads the full output column for
+// articles that came in via the lightweight history feed.
+function ArticlesExpanded({ client, articles, pushedUrls, setPushedUrls, refreshContentImpls }) {
+  const [openIdx, setOpenIdx] = useState(null);
+  const [fullOutputs, setFullOutputs] = useState({}); // articleId -> output
+  const [loadingId, setLoadingId] = useState(null);
+  const [copiedId, setCopiedId] = useState(null);
+
+  if (articles.length === 0) {
+    return <div className="muted" style={{ padding: 12, fontSize: 12 }}>No articles found for this month.</div>;
+  }
+  const hasWp = client.cms_type === 'WordPress' && client.wp_url && client.wp_username && client.wp_app_password;
+
+  async function ensureOutput(article) {
+    if (article.output || fullOutputs[article.id]) return article.output || fullOutputs[article.id];
+    setLoadingId(article.id);
+    try {
+      const all = await listBlogResults(client.id);
+      const match = all.find(r => r.id === article.id);
+      if (match?.output) {
+        setFullOutputs(prev => ({ ...prev, [article.id]: match.output }));
+        return match.output;
+      }
+    } catch {}
+    finally { setLoadingId(null); }
+    return '';
+  }
+
+  async function handleToggle(idx, article) {
+    if (openIdx === idx) { setOpenIdx(null); return; }
+    await ensureOutput(article);
+    setOpenIdx(idx);
+  }
+
+  async function handleCopyFormatted(article) {
+    const output = article.output || fullOutputs[article.id] || await ensureOutput(article);
+    const sections = parseOutputSections(output);
+    const ok = await copyArticleFormatted(sections?.body || output);
+    if (ok) {
+      setCopiedId(article.id);
+      setTimeout(() => setCopiedId(null), 1500);
+    }
+  }
+
+  return (
+    <div>
+      {articles.map((a, i) => {
+        const isOpen = openIdx === i;
+        const output = a.output || fullOutputs[a.id] || '';
+        const sections = output ? parseOutputSections(output) : null;
+        return (
+          <div key={a.id || i} style={{ padding: '10px 14px', borderBottom: '1px solid var(--border)' }}>
+            <div className="row" style={{ justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontWeight: 600, fontSize: 13 }}>{a.topic || a.keyword || 'Untitled'}</div>
+                <div className="muted" style={{ fontSize: 10 }}>
+                  {a.tab || 'Auto Write'} · {new Date(a.generated_at || a.created_at).toLocaleDateString('en-ZA')}
+                  {a.opportunity_type && <span className="badge" style={{ marginLeft: 6, fontSize: 8 }}>{a.opportunity_type}</span>}
+                </div>
+              </div>
+              <div className="row" style={{ gap: 6, flexShrink: 0, flexWrap: 'wrap' }}>
+                <button onClick={() => handleToggle(i, a)} style={{ fontSize: 10, padding: '4px 8px', borderColor: ACCENT, color: ACCENT }}>
+                  {isOpen ? 'Hide' : (loadingId === a.id ? 'Loading…' : 'View')}
+                </button>
+                <button onClick={() => handleCopyFormatted(a)} style={{ fontSize: 10, padding: '4px 8px' }}>
+                  {copiedId === a.id ? 'Copied ✓' : 'Copy formatted'}
+                </button>
+                {hasWp && (
+                  <PushToCmsButton
+                    item={{
+                      module: 'content',
+                      page_url: client.url || '',
+                      page_title: a.topic || a.keyword || 'Article',
+                      change_type: 'article',
+                      payload: { html: output, meta_title: a.topic, primary_keyword: a.keyword }
+                    }}
+                    label="Push to WP"
+                    onSuccess={r => { if (r?.live_url) setPushedUrls(prev => ({ ...prev, [a.id || i]: r.live_url })); }}
+                  />
+                )}
+                <MarkImplementedButton
+                  module="content"
+                  changeType="article"
+                  pageUrl={pushedUrls[a.id || i] || client.url || ''}
+                  title={a.topic || a.keyword || 'Article'}
+                  description={`Article: ${a.topic || ''}`}
+                  onVerified={refreshContentImpls}
+                />
+                <button onClick={async () => {
+                  const out = output || await ensureOutput(a);
+                  const blob = new Blob([out || ''], { type: 'text/plain' });
+                  const url = URL.createObjectURL(blob);
+                  const el = document.createElement('a');
+                  el.href = url; el.download = (a.topic || 'article') + '.txt';
+                  el.click(); URL.revokeObjectURL(url);
+                }} style={{ fontSize: 10, padding: '4px 8px' }}>.txt</button>
+              </div>
+            </div>
+            {isOpen && (
+              <div style={{ marginTop: 10, padding: 12, background: 'var(--bg)', borderRadius: 6, border: '1px solid var(--border)' }}>
+                {!output && <div className="muted" style={{ fontSize: 11 }}>Loading article…</div>}
+                {sections && (
+                  <>
+                    {sections.metaTitle && (
+                      <div style={{ marginBottom: 8, fontSize: 12 }}>
+                        <strong className="muted" style={{ fontSize: 10, textTransform: 'uppercase' }}>Meta Title</strong>
+                        <div>{sections.metaTitle}</div>
+                      </div>
+                    )}
+                    {sections.metaDesc && (
+                      <div style={{ marginBottom: 8, fontSize: 12 }}>
+                        <strong className="muted" style={{ fontSize: 10, textTransform: 'uppercase' }}>Meta Description</strong>
+                        <div>{sections.metaDesc}</div>
+                      </div>
+                    )}
+                    {sections.aeoSummary && (
+                      <div style={{ marginBottom: 10, padding: 8, background: 'var(--surface-2)', borderLeft: '3px solid var(--teal, #4dd0e1)', fontSize: 12 }}>
+                        <strong className="muted" style={{ fontSize: 10, textTransform: 'uppercase', display: 'block', marginBottom: 4 }}>AEO Summary</strong>
+                        {sections.aeoSummary}
+                      </div>
+                    )}
+                    <div
+                      className="article-rendered"
+                      style={{ lineHeight: 1.6, fontSize: 13, maxHeight: 500, overflowY: 'auto' }}
+                      dangerouslySetInnerHTML={{ __html: markdownToHtml(sections.body || output) }}
+                    />
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 
 export default function AutoWrite() {
   const allClients = useClients(s => s.clients);
@@ -259,68 +398,15 @@ export default function AutoWrite() {
         onExpandClient={(client) => {
           setExpandedPipelineClient(prev => prev === client.id ? null : client.id);
         }}
-        renderExpanded={(client) => {
-          const articles = getClientArticles(client.id);
-          if (articles.length === 0) {
-            return <div className="muted" style={{ padding: 12, fontSize: 12 }}>No articles found for this month.</div>;
-          }
-          const hasWp = client.cms_type === 'WordPress' && client.wp_url && client.wp_username && client.wp_app_password;
-          return (
-            <div>
-              {articles.map((a, i) => (
-                <div key={a.id || i} style={{ padding: '10px 14px', borderBottom: '1px solid var(--border)' }}>
-                  <div className="row" style={{ justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontWeight: 600, fontSize: 13 }}>{a.topic || a.keyword || 'Untitled'}</div>
-                      <div className="muted" style={{ fontSize: 10 }}>
-                        {a.tab || 'Auto Write'} · {new Date(a.created_at).toLocaleDateString('en-ZA')}
-                        {a.opportunity_type && <span className="badge" style={{ marginLeft: 6, fontSize: 8 }}>{a.opportunity_type}</span>}
-                      </div>
-                    </div>
-                    <div className="row" style={{ gap: 6, flexShrink: 0, flexWrap: 'wrap' }}>
-                      {hasWp && (
-                        <PushToCmsButton
-                          item={{
-                            module: 'content',
-                            page_url: client.url || '',
-                            page_title: a.topic || a.keyword || 'Article',
-                            change_type: 'article',
-                            payload: { html: a.output, meta_title: a.topic, primary_keyword: a.keyword }
-                          }}
-                          label="Push to WP"
-                          onSuccess={r => { if (r?.live_url) setPushedUrls(prev => ({ ...prev, [a.id || i]: r.live_url })); }}
-                        />
-                      )}
-                      <MarkImplementedButton
-                        module="content"
-                        changeType="article"
-                        pageUrl={pushedUrls[a.id || i] || client.url || ''}
-                        title={a.topic || a.keyword || 'Article'}
-                        description={`Article: ${a.topic || ''}`}
-                        onVerified={refreshContentImpls}
-                      />
-                      <button onClick={() => {
-                        const blob = new Blob([a.output || ''], { type: 'text/plain' });
-                        const url = URL.createObjectURL(blob);
-                        const el = document.createElement('a');
-                        el.href = url; el.download = (a.topic || 'article') + '.txt';
-                        el.click(); URL.revokeObjectURL(url);
-                      }} style={{ fontSize: 10, padding: '4px 8px' }}>.txt</button>
-                    </div>
-                  </div>
-                  {a.output && (
-                    <details style={{ marginTop: 6 }}>
-                      <summary className="muted" style={{ fontSize: 10, cursor: 'pointer' }}>Preview</summary>
-                      <pre style={{ marginTop: 4, padding: 8, background: 'var(--bg)', fontSize: 10, whiteSpace: 'pre-wrap', maxHeight: 200, overflowY: 'auto', borderRadius: 4 }}>
-                        {a.output.slice(0, 1500)}{a.output.length > 1500 ? '…' : ''}
-                      </pre>
-                    </details>
-                  )}
-                </div>
-              ))}
-            </div>
-          );
-        }}
+        renderExpanded={(client) => (
+          <ArticlesExpanded
+            client={client}
+            articles={getClientArticles(client.id)}
+            pushedUrls={pushedUrls}
+            setPushedUrls={setPushedUrls}
+            refreshContentImpls={refreshContentImpls}
+          />
+        )}
       />
 
       {/* Log External Work — for manually-done articles outside the tool */}
