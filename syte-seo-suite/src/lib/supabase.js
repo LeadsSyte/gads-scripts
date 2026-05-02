@@ -732,7 +732,7 @@ export async function loadContentHistory() {
   if (supabase) {
     const { data, error } = await supabase
       .from('syte_suite_content_blogs')
-      .select('id,client_id,client_name,topic,keyword,tab,opportunity_type,output,generated_at,created_at')
+      .select('id,client_id,client_name,topic,keyword,length,tab,opportunity_type,output,generated_at,created_at')
       .order('generated_at', { ascending: false })
       .limit(500);
     if (!error && data) {

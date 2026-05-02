@@ -79,6 +79,27 @@ const SCORE_KEYS = [
   ['internal_linking',    'Internal Linking']
 ];
 
+// Copy markdown to the clipboard as both rich HTML and plain text so a
+// paste into Google Docs / Word / WordPress visual editor preserves
+// formatting (headings, bold, lists, tables).
+async function copyArticleFormatted(markdown) {
+  const html = markdownToHtml(markdown);
+  try {
+    if (typeof ClipboardItem !== 'undefined' && navigator.clipboard?.write) {
+      const item = new ClipboardItem({
+        'text/html':  new Blob([html], { type: 'text/html' }),
+        'text/plain': new Blob([markdown], { type: 'text/plain' })
+      });
+      await navigator.clipboard.write([item]);
+      return true;
+    }
+    await navigator.clipboard.writeText(markdown);
+    return true;
+  } catch {
+    try { await navigator.clipboard.writeText(markdown); return true; } catch { return false; }
+  }
+}
+
 function CopyButton({ text, label = 'Copy' }) {
   const [copied, setCopied] = React.useState(false);
   function copy() {
@@ -86,6 +107,25 @@ function CopyButton({ text, label = 'Copy' }) {
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     }).catch(() => {});
+  }
+  return (
+    <button onClick={copy} style={{ fontSize: 11, padding: '3px 10px' }}>
+      {copied ? 'Copied ✓' : label}
+    </button>
+  );
+}
+
+// Copy formatted (rich-text) so paste into Google Docs/Word/CMS preserves
+// headings, bold, lists, tables. Falls back to plain text if clipboard.write
+// is unavailable.
+function CopyRichButton({ markdown, label = 'Copy formatted' }) {
+  const [copied, setCopied] = React.useState(false);
+  async function copy() {
+    const ok = await copyArticleFormatted(markdown);
+    if (ok) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    }
   }
   return (
     <button onClick={copy} style={{ fontSize: 11, padding: '3px 10px' }}>
@@ -200,15 +240,20 @@ function ParsedOutput({ output, topic, pushItem, exportTxt, exportDocx, systemPr
                   Article Body
                 </strong>
                 <div className="row" style={{ gap: 6 }}>
+                  <CopyRichButton markdown={sections.body} />
                   <CopyButton text={sections.body} label="Copy markdown" />
                   <CopyButton text={markdownToHtml(sections.body)} label="Copy HTML" />
                 </div>
               </div>
-              <details>
+              <details open>
                 <summary className="muted" style={{ fontSize: 11, cursor: 'pointer' }}>
                   Show article ({Math.round(sections.body.length / 5)} words approx.)
                 </summary>
-                <div className="stream-output" style={{ marginTop: 8, maxHeight: 500 }}>{sections.body}</div>
+                <div
+                  className="article-rendered"
+                  style={{ marginTop: 8, maxHeight: 500, overflowY: 'auto', padding: 12, background: 'var(--bg)', borderRadius: 6, lineHeight: 1.6 }}
+                  dangerouslySetInnerHTML={{ __html: markdownToHtml(sections.body) }}
+                />
               </details>
 
               {/* Hero image generator — opt-in, only renders if an image API key is configured */}

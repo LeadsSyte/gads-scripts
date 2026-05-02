@@ -16,6 +16,27 @@ import { contentPipelineStatus } from '../../lib/pipelineStatus.js';
 import { listAllImplementations, saveBlogResult, loadContentHistory, deleteBlogResult } from '../../lib/supabase.js';
 import { parseOutputSections, markdownToHtml } from './articleParser.js';
 
+// Copy markdown to the clipboard as both rich HTML and plain text so a
+// paste into Google Docs / Word / WordPress visual editor preserves
+// formatting (headings, bold, lists, tables).
+async function copyArticleFormatted(markdown) {
+  const html = markdownToHtml(markdown);
+  try {
+    if (typeof ClipboardItem !== 'undefined' && navigator.clipboard?.write) {
+      const item = new ClipboardItem({
+        'text/html':  new Blob([html], { type: 'text/html' }),
+        'text/plain': new Blob([markdown], { type: 'text/plain' })
+      });
+      await navigator.clipboard.write([item]);
+      return true;
+    }
+    await navigator.clipboard.writeText(markdown);
+    return true;
+  } catch {
+    try { await navigator.clipboard.writeText(markdown); return true; } catch { return false; }
+  }
+}
+
 // Lightweight, self-contained copy/section UI for the pipeline preview —
 // keeps AutoWrite independent of ContentEngine's internal components but
 // gives users the same parsed Meta Title / Meta Description / Body / FAQ
@@ -77,6 +98,25 @@ const OPP_COLORS = {
   'meta-rewrite':      'var(--purple)',
   'long-tail':         'var(--text-muted)'
 };
+
+// Pasteable rich-text copy button — sets both text/html and text/plain on
+// the clipboard so a paste into Google Docs / Word / WordPress visual
+// editor preserves headings, lists, and tables.
+function CopyFormattedBtn({ markdown, label = 'Copy formatted' }) {
+  const [copied, setCopied] = React.useState(false);
+  if (!markdown) return null;
+  return (
+    <button
+      onClick={async () => {
+        const ok = await copyArticleFormatted(markdown);
+        if (ok) { setCopied(true); setTimeout(() => setCopied(false), 1500); }
+      }}
+      style={{ fontSize: 10, padding: '3px 8px' }}
+    >
+      {copied ? 'Copied ✓' : label}
+    </button>
+  );
+}
 
 export default function AutoWrite() {
   const allClients = useClients(s => s.clients);
@@ -431,6 +471,7 @@ export default function AutoWrite() {
                         <div style={{ marginTop: 8 }}>
                           <div className="row" style={{ gap: 6, marginBottom: 8, flexWrap: 'wrap' }}>
                             <CopyBtn text={a.output} label="Copy full output" />
+                            <CopyFormattedBtn markdown={parsed?.body} label="Copy formatted" />
                             <CopyBtn text={parsed?.body} label="Copy body (markdown)" />
                             <CopyBtn text={bodyHtml} label="Copy body (HTML)" />
                           </div>
