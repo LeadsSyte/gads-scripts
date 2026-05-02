@@ -12,6 +12,22 @@ export const supabase = hasSupabase
 // localStorage fallback wrappers so every module keeps working offline
 const LS_PREFIX = 'syte-suite-';
 
+// Guard against writing rows with a null/undefined client_id. We saw
+// orphaned rows with client_id=null in syte_suite_aeo_history and the
+// report cache — almost always caused by a flow firing before
+// useClients had selected a client, or by an old record passed to a
+// save fn after the client was deleted from local state. Throwing here
+// surfaces the problem at the call site instead of silently polluting
+// the database.
+function assertClientId(clientId, context) {
+  if (clientId == null || clientId === '') {
+    throw new Error(
+      `${context}: missing client_id (got ${clientId === null ? 'null' : typeof clientId}). ` +
+      'Pick a client first or pass a valid client.id.'
+    );
+  }
+}
+
 export async function listClients() {
   if (supabase) {
     const { data, error } = await supabase
@@ -69,6 +85,7 @@ export async function deleteClient(id) {
 }
 
 export async function queueCmsChange(item) {
+  assertClientId(item?.client_id, 'queueCmsChange');
   if (supabase) {
     const { data, error } = await supabase
       .from('syte_suite_cms_queue')
@@ -179,6 +196,7 @@ export async function diagnoseSupabase() {
 // ---------------------------------------------------------------------------
 
 export async function saveAeoSnapshot(row) {
+  assertClientId(row?.client_id, 'saveAeoSnapshot');
   if (supabase) {
     const { data, error } = await supabase
       .from('syte_suite_aeo_history')
@@ -222,6 +240,7 @@ export async function deleteAeoSnapshot(id) {
 }
 
 export async function logReportSent(row) {
+  assertClientId(row?.client_id, 'logReportSent');
   if (supabase) {
     const { data, error } = await supabase
       .from('syte_suite_report_log')
@@ -322,6 +341,7 @@ export async function listGeneratedReports(clientId) {
 // ---------------------------------------------------------------------------
 
 export async function logImplementation(row) {
+  assertClientId(row?.client_id, 'logImplementation');
   if (supabase) {
     const { data, error } = await supabase
       .from('syte_suite_implementations')
@@ -702,6 +722,7 @@ export async function getCachedReportData(clientId, month) {
 }
 
 export async function setCachedReportData(clientId, month, reportData) {
+  assertClientId(clientId, 'setCachedReportData');
   if (supabase) {
     const { data: existing } = await supabase
       .from('syte_suite_report_cache')
