@@ -653,13 +653,51 @@ export async function saveBlogResult(blog) {
     opportunity_type: blog.opportunity_type || null,
     generated_at: blog.generated_at || new Date().toISOString()
   };
+  // Natural key: (client_id, topic, generated_at month). Re-running Auto
+  // Write for the same opportunity — whether by accidental double-click,
+  // a re-research that surfaces the same topic, or a regeneration after
+  // edits — must NOT produce duplicate rows in the Articles Written list.
+  // Update the existing row instead.
+  const monthKey = (row.generated_at || '').slice(0, 7);
   if (supabase) {
+    if (row.client_id && row.topic) {
+      const { data: existing } = await supabase
+        .from('syte_suite_content_blogs')
+        .select('id, generated_at')
+        .eq('client_id', row.client_id)
+        .eq('topic', row.topic)
+        .order('generated_at', { ascending: false })
+        .limit(50);
+      const sameMonth = (existing || []).find(
+        e => (e.generated_at || '').slice(0, 7) === monthKey
+      );
+      if (sameMonth) {
+        const { data, error } = await supabase
+          .from('syte_suite_content_blogs')
+          .update(row)
+          .eq('id', sameMonth.id)
+          .select()
+          .single();
+        if (error) throw error;
+        return data;
+      }
+    }
     const { data, error } = await supabase
       .from('syte_suite_content_blogs').insert(row).select().single();
     if (error) throw error;
     return data;
   }
   const list = JSON.parse(localStorage.getItem(BLOGS_KEY) || '[]');
+  const idx = list.findIndex(
+    e => e.client_id === row.client_id &&
+         e.topic === row.topic &&
+         (e.generated_at || '').slice(0, 7) === monthKey
+  );
+  if (idx >= 0) {
+    list[idx] = { ...list[idx], ...row };
+    localStorage.setItem(BLOGS_KEY, JSON.stringify(list));
+    return list[idx];
+  }
   const saved = { id: crypto.randomUUID(), ...row, created_at: new Date().toISOString() };
   list.unshift(saved);
   localStorage.setItem(BLOGS_KEY, JSON.stringify(list));

@@ -13,7 +13,7 @@ import MarkImplementedButton from '../../components/MarkImplementedButton.jsx';
 import PipelineView from '../../components/PipelineView.jsx';
 import LogExternalWork from '../../components/LogExternalWork.jsx';
 import { contentPipelineStatus } from '../../lib/pipelineStatus.js';
-import { listAllImplementations, saveBlogResult, loadContentHistory } from '../../lib/supabase.js';
+import { listAllImplementations, saveBlogResult, loadContentHistory, deleteBlogResult } from '../../lib/supabase.js';
 import { parseOutputSections, markdownToHtml } from './articleParser.js';
 
 // Lightweight, self-contained copy/section UI for the pipeline preview —
@@ -353,6 +353,20 @@ export default function AutoWrite() {
                         el.href = url; el.download = (a.topic || 'article') + '.txt';
                         el.click(); URL.revokeObjectURL(url);
                       }} style={{ fontSize: 10, padding: '4px 8px' }}>.txt</button>
+                      <button
+                        onClick={async () => {
+                          if (!a.id) return;
+                          if (!confirm('Delete this article? This cannot be undone.')) return;
+                          try {
+                            await deleteBlogResult(a.id);
+                            const fresh = await loadContentHistory();
+                            setSharedHistory(fresh);
+                          } catch (e) { alert('Delete failed: ' + e.message); }
+                        }}
+                        style={{ fontSize: 10, padding: '4px 8px', borderColor: 'var(--red)', color: 'var(--red)' }}
+                      >
+                        Delete
+                      </button>
                     </div>
                   </div>
                   {a.output && (() => {
@@ -360,11 +374,11 @@ export default function AutoWrite() {
                     const bodyHtml = markdownToHtml(parsed?.body || '');
                     return (
                       <details style={{ marginTop: 6 }}>
-                        <summary className="muted" style={{ fontSize: 10, cursor: 'pointer' }}>
-                          Preview &amp; copy parts
+                        <summary className="muted" style={{ fontSize: 11, cursor: 'pointer', padding: '4px 0' }}>
+                          ▸ View article &amp; copy parts ({Math.round((parsed?.body?.length || 0) / 5)} words)
                         </summary>
-                        <div style={{ marginTop: 6 }}>
-                          <div className="row" style={{ gap: 6, marginBottom: 6, flexWrap: 'wrap' }}>
+                        <div style={{ marginTop: 8 }}>
+                          <div className="row" style={{ gap: 6, marginBottom: 8, flexWrap: 'wrap' }}>
                             <CopyBtn text={a.output} label="Copy full output" />
                             <CopyBtn text={parsed?.body} label="Copy body (markdown)" />
                             <CopyBtn text={bodyHtml} label="Copy body (HTML)" />
