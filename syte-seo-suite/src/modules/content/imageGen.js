@@ -114,36 +114,36 @@ export async function generateWithDalle(prompt) {
 // Unified caller — tries the preferred provider, falls back to the other.
 // ---------------------------------------------------------------------------
 
-export async function generateHeroImage(articleTitle, keyword, client, { preferredProvider = 'dalle' } = {}) {
+// allowFallback: when the caller picked a provider explicitly via the UI,
+// we want a useful error from THAT provider — not a misleading message
+// from the other one tried as a silent fallback. Auto-selected callers
+// (e.g. CMS auto-generate-on-push) can opt back into fallback.
+export async function generateHeroImage(articleTitle, keyword, client, { preferredProvider = 'dalle', allowFallback = false } = {}) {
   const prompt = buildImagePrompt(articleTitle, keyword, client);
-  const { openaiKey } = loadSettings();
-  const { googleAiKey } = loadSettings();
+  const { openaiKey, googleAiKey } = loadSettings();
 
-  const providers = preferredProvider === 'imagen'
-    ? [
-        { name: 'imagen', fn: () => generateWithImagen(prompt), available: !!googleAiKey },
-        { name: 'dalle',  fn: () => generateWithDalle(prompt),  available: !!openaiKey }
-      ]
-    : [
-        { name: 'dalle',  fn: () => generateWithDalle(prompt),  available: !!openaiKey },
-        { name: 'imagen', fn: () => generateWithImagen(prompt), available: !!googleAiKey }
-      ];
+  const dalle  = { name: 'dalle',  fn: () => generateWithDalle(prompt),  available: !!openaiKey };
+  const imagen = { name: 'imagen', fn: () => generateWithImagen(prompt), available: !!googleAiKey };
+  const chosen = preferredProvider === 'imagen' ? imagen : dalle;
+  const other  = preferredProvider === 'imagen' ? dalle  : imagen;
 
-  const available = providers.filter(p => p.available);
-  if (available.length === 0) {
+  if (!chosen.available && !other.available) {
     throw new Error('No image generation API key configured. Set OpenAI or Google AI key in Suite Settings.');
   }
-
-  let lastErr;
-  for (const p of available) {
-    try {
-      return await p.fn();
-    } catch (e) {
-      lastErr = e;
-      console.warn(`[ImageGen] ${p.name} failed:`, e.message);
-    }
+  if (!chosen.available) {
+    throw new Error(
+      (preferredProvider === 'imagen' ? 'Imagen 3' : 'DALL-E 3') +
+      ' selected but no API key is set for it. Add the key in Suite Settings, or pick the other provider.'
+    );
   }
-  throw lastErr;
+
+  try {
+    return await chosen.fn();
+  } catch (e) {
+    if (!allowFallback || !other.available) throw e;
+    console.warn(`[ImageGen] ${chosen.name} failed, falling back to ${other.name}:`, e.message);
+    return await other.fn();
+  }
 }
 
 // Download a data URL as a file.

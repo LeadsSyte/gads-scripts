@@ -9,6 +9,7 @@ import AutoWrite from './AutoWrite.jsx';
 import GenerateImageButton from '../../components/GenerateImageButton.jsx';
 import MarkImplementedButton from '../../components/MarkImplementedButton.jsx';
 import { saveBlogResult, listBlogResults, deleteBlogResult, loadContentHistory } from '../../lib/supabase.js';
+import { parseOutputSections } from './articleParser.js';
 
 const ACCENT = '#c8ff00';
 const HISTORY_KEY = 'syte-suite-content-history';
@@ -95,45 +96,6 @@ const SCORE_KEYS = [
   ['visual_aids_tables',  'Visual Aids & Tables'],
   ['internal_linking',    'Internal Linking']
 ];
-
-// Parse the raw Claude output into labeled sections so each piece can be
-// copied individually. The model outputs in a predictable order:
-//   1. HTML article body
-//   2. **Meta Title:** ...
-//   3. **Meta Description:** ...
-//   4. **AEO Summary Block:** ...
-//   5. **FAQ Schema (JSON-LD):** ```json ... ```
-//   6. QA JSON block ```json { "keyword_integration": ... } ```
-
-function parseOutputSections(raw) {
-  if (!raw) return null;
-
-  const metaTitleMatch = raw.match(/\*?\*?Meta Title\*?\*?:?\s*(.+)/i);
-  const metaDescMatch  = raw.match(/\*?\*?Meta Description\*?\*?:?\s*(.+)/i);
-  const aeoMatch       = raw.match(/\*?\*?AEO Summary Block\*?\*?:?\s*([\s\S]*?)(?=\n\*?\*?(?:FAQ|Meta|```)|$)/i);
-
-  // Extract all JSON code blocks. The last one is the QA block, the second-to-last is FAQ schema.
-  const jsonBlocks = [];
-  const jsonRe = /```json\s*([\s\S]*?)```/gi;
-  let m;
-  while ((m = jsonRe.exec(raw)) !== null) jsonBlocks.push(m[1].trim());
-
-  const qaBlock = jsonBlocks.length > 0 ? jsonBlocks[jsonBlocks.length - 1] : null;
-  const faqBlock = jsonBlocks.length > 1 ? jsonBlocks[jsonBlocks.length - 2] : null;
-
-  // The article body is everything before the first **Meta Title or **AEO or ```json.
-  const bodyEnd = raw.search(/\*?\*?Meta Title\*?\*?:|```json/i);
-  const body = bodyEnd > 0 ? raw.slice(0, bodyEnd).trim() : raw;
-
-  return {
-    body,
-    metaTitle: metaTitleMatch ? metaTitleMatch[1].trim().replace(/\*+/g, '') : null,
-    metaDesc:  metaDescMatch  ? metaDescMatch[1].trim().replace(/\*+/g, '') : null,
-    aeoSummary: aeoMatch ? aeoMatch[1].trim() : null,
-    faqSchema: faqBlock,
-    qaBlock
-  };
-}
 
 function CopyButton({ text, label = 'Copy' }) {
   const [copied, setCopied] = React.useState(false);

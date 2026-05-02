@@ -14,6 +14,53 @@ import PipelineView from '../../components/PipelineView.jsx';
 import LogExternalWork from '../../components/LogExternalWork.jsx';
 import { contentPipelineStatus } from '../../lib/pipelineStatus.js';
 import { listAllImplementations, saveBlogResult, loadContentHistory } from '../../lib/supabase.js';
+import { parseOutputSections } from './articleParser.js';
+
+// Lightweight, self-contained copy/section UI for the pipeline preview —
+// keeps AutoWrite independent of ContentEngine's internal components but
+// gives users the same parsed Meta Title / Meta Description / Body / FAQ
+// breakdown with one-click copy.
+function CopyBtn({ text, label = 'Copy' }) {
+  const [copied, setCopied] = React.useState(false);
+  if (!text) return null;
+  return (
+    <button
+      onClick={() => {
+        navigator.clipboard.writeText(text).then(() => {
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1500);
+        }).catch(() => {});
+      }}
+      style={{ fontSize: 10, padding: '3px 8px' }}
+    >
+      {copied ? 'Copied ✓' : label}
+    </button>
+  );
+}
+
+function ParsedSection({ title, content, accent, mono = false }) {
+  if (!content) return null;
+  return (
+    <div style={{
+      marginTop: 8, padding: 10,
+      background: 'var(--bg)', border: '1px solid var(--border)',
+      borderLeft: '3px solid ' + (accent || 'var(--border)'),
+      borderRadius: 4
+    }}>
+      <div className="row" style={{ justifyContent: 'space-between', marginBottom: 6 }}>
+        <strong style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '.05em', color: accent || 'var(--text-muted)' }}>
+          {title}
+        </strong>
+        <CopyBtn text={content} />
+      </div>
+      <pre style={{
+        fontSize: mono ? 10 : 12, whiteSpace: 'pre-wrap', margin: 0,
+        color: 'var(--text)', maxHeight: mono ? 200 : 320,
+        overflowY: 'auto', fontFamily: mono ? 'monospace' : 'inherit'
+      }}>{content}</pre>
+    </div>
+  );
+}
 
 const ACCENT = '#c8ff00';
 
@@ -308,14 +355,28 @@ export default function AutoWrite() {
                       }} style={{ fontSize: 10, padding: '4px 8px' }}>.txt</button>
                     </div>
                   </div>
-                  {a.output && (
-                    <details style={{ marginTop: 6 }}>
-                      <summary className="muted" style={{ fontSize: 10, cursor: 'pointer' }}>Preview</summary>
-                      <pre style={{ marginTop: 4, padding: 8, background: 'var(--bg)', fontSize: 10, whiteSpace: 'pre-wrap', maxHeight: 200, overflowY: 'auto', borderRadius: 4 }}>
-                        {a.output.slice(0, 1500)}{a.output.length > 1500 ? '…' : ''}
-                      </pre>
-                    </details>
-                  )}
+                  {a.output && (() => {
+                    const parsed = parseOutputSections(a.output);
+                    return (
+                      <details style={{ marginTop: 6 }}>
+                        <summary className="muted" style={{ fontSize: 10, cursor: 'pointer' }}>
+                          Preview &amp; copy parts
+                        </summary>
+                        <div style={{ marginTop: 6 }}>
+                          <div className="row" style={{ gap: 6, marginBottom: 6, flexWrap: 'wrap' }}>
+                            <CopyBtn text={a.output} label="Copy full output" />
+                            <CopyBtn text={parsed?.body} label="Copy article body" />
+                          </div>
+                          <ParsedSection title="Meta Title" content={parsed?.metaTitle} accent="var(--blue)" />
+                          <ParsedSection title="Meta Description" content={parsed?.metaDesc} accent="var(--blue)" />
+                          <ParsedSection title="AEO Summary Block" content={parsed?.aeoSummary} accent="var(--teal)" />
+                          <ParsedSection title="Article Body (paste into CMS)" content={parsed?.body} accent="var(--mod-content)" />
+                          <ParsedSection title="FAQ Schema (JSON-LD)" content={parsed?.faqSchema} accent="var(--purple)" mono />
+                          <ParsedSection title="QA Score" content={parsed?.qaBlock} accent="var(--text-muted)" mono />
+                        </div>
+                      </details>
+                    );
+                  })()}
                 </div>
               ))}
             </div>

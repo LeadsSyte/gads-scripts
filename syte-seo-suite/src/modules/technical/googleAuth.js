@@ -6,6 +6,21 @@ export const GOOGLE_CLIENT_ID = '377465514344-ve8jabk68rl333p7p2n9ieo0pj0ruivt.a
 
 const TOKEN_KEY = 'syte-suite-google-token';
 
+// Custom event name fired when the saved token changes (set, refreshed,
+// cleared). UI components listen for this so they can react to a silent
+// refresh that completes after they've already mounted, instead of
+// reading getToken() once and being stuck in the wrong state.
+export const TOKEN_EVENT = 'syte-google-token-changed';
+
+function notifyTokenChange() {
+  try { window.dispatchEvent(new Event(TOKEN_EVENT)); } catch {}
+}
+
+function persistToken(token) {
+  localStorage.setItem(TOKEN_KEY, JSON.stringify(token));
+  notifyTokenChange();
+}
+
 export const SCOPES = {
   gsc:  'https://www.googleapis.com/auth/webmasters.readonly',
   ga4:  'https://www.googleapis.com/auth/analytics.readonly'
@@ -27,6 +42,7 @@ export function getToken() {
 
 export function clearToken() {
   localStorage.removeItem(TOKEN_KEY);
+  notifyTokenChange();
 }
 
 // Revoke + clear so the next sign-in forces a full account picker.
@@ -96,7 +112,7 @@ export async function requestToken(scopes, { forcePicker = false } = {}) {
           expires_at: Date.now() + (resp.expires_in || 3600) * 1000,
           scope: resp.scope
         };
-        localStorage.setItem(TOKEN_KEY, JSON.stringify(token));
+        persistToken(token);
         resolve(token);
       }
     });
@@ -148,7 +164,7 @@ export async function silentRefresh(scopes, { timeoutMs = 4000 } = {}) {
             expires_at: Date.now() + (resp.expires_in || 3600) * 1000,
             scope: resp.scope
           };
-          localStorage.setItem(TOKEN_KEY, JSON.stringify(token));
+          persistToken(token);
           finish(token);
         },
         error_callback: () => finish(null)

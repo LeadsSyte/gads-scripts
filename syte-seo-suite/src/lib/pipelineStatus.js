@@ -90,8 +90,12 @@ export function contentPipelineStatus(client, implementations, month, contentHis
 export function technicalPipelineStatus(client, implementations, tasks, month) {
   const m = month || thisMonth();
 
-  if (!client.wceo_project_id && !client.gsc_property) {
-    return { section: 'credentials-missing', detail: 'No WebCEO project or GSC property' };
+  // Crawler-first scan path needs only a website URL or sitemap URL —
+  // GSC is optional enrichment, WebCEO is fully deprecated. Bucket as
+  // "credentials-missing" only when the crawler has nothing to work with.
+  const hasCrawlTarget = !!(client.url || client.sitemap_url);
+  if (!hasCrawlTarget && !client.gsc_property) {
+    return { section: 'credentials-missing', detail: 'No website URL, sitemap URL, or GSC property' };
   }
 
   const monthImpls = (implementations || []).filter(
