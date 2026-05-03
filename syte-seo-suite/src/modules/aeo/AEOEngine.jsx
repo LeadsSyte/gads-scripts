@@ -75,7 +75,7 @@ async function generateForPage(pageUrl, client) {
   let pageHtml = '';
   let pageTitle = '';
   try {
-    pageHtml = (await corsFetchText(pageUrl)).slice(0, 30000);
+    pageHtml = (await corsFetchText(pageUrl)).slice(0, 60000);
     // Extract the <title> tag for context.
     const titleMatch = pageHtml.match(/<title[^>]*>([^<]+)<\/title>/i);
     if (titleMatch) pageTitle = titleMatch[1].trim();
@@ -103,7 +103,7 @@ Organization: ${client?.org_name || client?.name || ''}
 Author: ${client?.author || ''} ${client?.author_creds ? '(' + client.author_creds + ')' : ''}
 ${client?.context ? 'Business context: ' + client.context : ''}
 
-${pageHtml ? 'Page HTML (truncated — analyze what content optimizations are MISSING):\n' + pageHtml : 'Page HTML not available (CORS blocked) — generate optimizations based on the URL, topic, and client context. Focus on content that would make this page citable by AI engines.'}`
+${pageHtml ? 'Page HTML (truncated — TWO uses: (1) analyse what content optimizations are MISSING; (2) READ the CSS classes, heading patterns, container structure, and component conventions so your output matches this page\'s design system. The optimization will be pasted into THIS page — make it look native, not bolted-on. Reuse the page\'s class names verbatim wherever they fit. See DESIGN-MATCHING in the system prompt.):\n' + pageHtml : 'Page HTML not available (CORS blocked) — generate optimizations based on the URL, topic, and client context. Focus on content that would make this page citable by AI engines. Use simple semantic HTML without inline styles since we cannot match the page\'s design system.'}`
     }],
     max_tokens: 6000,
     temperature: 0.4
@@ -167,11 +167,9 @@ function buildCombinedAeoHtml(opts) {
 <!--
   AEO ${i + 1}/${visible.length} · ${label} · ${name}${desc ? '\n  ' + desc : ''}${where ? '\n  Placement: ' + where : ''}
 -->
-<details${openAttr} class="aeo-opt aeo-opt-${o.type || 'content'}" style="margin:0 0 12px;border:1px solid #e5e7eb;border-radius:8px;background:#fff;">
-  <summary style="padding:12px 16px;font-weight:600;font-size:15px;cursor:pointer;list-style:none;color:#0f172a;">
-    ${summaryLabel}
-  </summary>
-  <div style="padding:0 16px 16px;">
+<details${openAttr} class="aeo-opt aeo-opt-${o.type || 'content'}">
+  <summary><strong>${summaryLabel}</strong></summary>
+  <div class="aeo-opt-body">
     ${o._code}
   </div>
 </details>
@@ -286,6 +284,31 @@ function OptPageCard({ result: r, onDelete, onVerified, optClient }) {
           {opts.length > 0 && (
             <span onClick={(e) => e.stopPropagation()}>
               <PushToCmsButton item={combinedPushItem} label="Push all to CMS" />
+            </span>
+          )}
+          {opts.length > 0 && (
+            <span onClick={(e) => e.stopPropagation()}>
+              {/* One verify call for the whole page. Description is a
+                  combined summary of every opt's name + a snippet of
+                  its implementation, so Claude checks the page against
+                  all opts at once and uses the lenient AEO 60%-themes-
+                  present rule (already in verification.js prompt). */}
+              <MarkImplementedButton
+                module="aeo"
+                changeType="aeo_optimization"
+                pageUrl={r.url}
+                title={'AEO bundle: ' + opts.length + ' optimizations'}
+                description={
+                  'Combined AEO push for ' + (r.url || 'this page') + '. Verify the page contains content matching these themes:\n\n' +
+                  opts.map((o, i) =>
+                    (i + 1) + '. ' + (o.name || o.title || 'Opt') +
+                    ' — ' + (o.description || '').slice(0, 200) + '\n' +
+                    'Implementation excerpt: ' + (o.implementation || o.code || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').slice(0, 300)
+                  ).join('\n\n')
+                }
+                client={optClient}
+                onVerified={onVerified}
+              />
             </span>
           )}
           {onDelete && (
