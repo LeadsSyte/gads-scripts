@@ -31,6 +31,37 @@ function loadTasks() {
   try { return JSON.parse(localStorage.getItem(TASKS_KEY) || '[]'); } catch { return []; }
 }
 function saveTasks(t) { localStorage.setItem(TASKS_KEY, JSON.stringify(t)); }
+
+// Dedupe tasks by (client_id, url, action_summary). Keeps the most
+// recent (highest created_at) row per logical issue and caps OPEN
+// tasks per client to 25. Done/verified tasks are preserved in full
+// because they're the work-history record.
+function dedupeTasks(list) {
+  if (!Array.isArray(list)) return [];
+  // Bucket by status — done/verified pass through untouched.
+  const history = list.filter(t => t.status === 'done' || t.status === 'verified');
+  const open = list.filter(t => t.status === 'open' || t.status === 'failed');
+  // Keep newest per dedup key.
+  const seen = new Map();
+  for (const t of open.sort((a, b) =>
+    String(b.created_at || '').localeCompare(String(a.created_at || ''))
+  )) {
+    const key = (t.client_id || '') + '|' + (t.url || '') + '|' + (t.action_summary || t.title || '');
+    if (!seen.has(key)) seen.set(key, t);
+  }
+  // Cap per client.
+  const PER_CLIENT_MAX = 25;
+  const byClient = new Map();
+  const capped = [];
+  for (const t of seen.values()) {
+    const c = byClient.get(t.client_id) || 0;
+    if (c < PER_CLIENT_MAX) {
+      capped.push(t);
+      byClient.set(t.client_id, c + 1);
+    }
+  }
+  return [...capped, ...history];
+}
 function loadTeam() { try { return JSON.parse(localStorage.getItem(TEAM_KEY) || '[]'); } catch { return []; } }
 function saveTeam(t) { localStorage.setItem(TEAM_KEY, JSON.stringify(t)); }
 
@@ -268,9 +299,14 @@ export default function TechnicalSEO({ sub }) {
   const [syncResult, setSyncResult] = useState(null);
   const [customMethod, setCustomMethod] = useState('');
 
-  // Load tasks from Supabase on mount (falls back to localStorage).
+  // Load tasks from Supabase on mount (falls back to localStorage), then
+  // auto-dedupe so existing accumulated junk from previous scans (the
+  // "100 open tasks for one client" problem) gets cleaned up on the
+  // next visit. Keeps newest task per (client_id, url, action_summary).
   useEffect(() => {
-    loadTseoTasks().then(t => setTasks(t)).catch(() => setTasks(loadTasks()));
+    loadTseoTasks()
+      .then(t => setTasks(dedupeTasks(t)))
+      .catch(() => setTasks(dedupeTasks(loadTasks())));
   }, []);
 
   // Persist tasks to both Supabase + localStorage on every change.
@@ -358,11 +394,24 @@ export default function TechnicalSEO({ sub }) {
         created_at: new Date().toISOString(),
         ...t
       }));
-      setTasks(prev => [...newTasks, ...prev]);
+      // Re-scanning the same client must REPLACE the open tasks for that
+      // client — not append. Otherwise tasks accumulate every run and
+      // the user ends up with 100+ stale duplicates after a few scans
+      // (which is exactly what was happening). Keep done/verified tasks
+      // as work history. Also cap new tasks at MAX_TASKS_PER_CLIENT to
+      // stop a noisy scan flooding the board.
+      const MAX_TASKS_PER_CLIENT = 25;
+      const cappedNew = newTasks.slice(0, MAX_TASKS_PER_CLIENT);
+      setTasks(prev => {
+        const kept = prev.filter(t =>
+          t.client_id !== c.id || (t.status === 'done' || t.status === 'verified')
+        );
+        return [...cappedNew, ...kept];
+      });
 
-      const critical = newTasks.filter(t => t.priority === 'critical').length;
-      const high = newTasks.filter(t => t.priority === 'high').length;
-      const quickWins = newTasks.filter(t => t.effort === 'quick').length;
+      const critical = cappedNew.filter(t => t.priority === 'critical').length;
+      const high = cappedNew.filter(t => t.priority === 'high').length;
+      const quickWins = cappedNew.filter(t => t.effort === 'quick').length;
       setMsg(
         `Added ${newTasks.length} tasks for ${c.name} from ${dataSource}` +
         (critical ? ` · ${critical} critical` : '') +
@@ -400,12 +449,23 @@ export default function TechnicalSEO({ sub }) {
         created_at: new Date().toISOString(),
         ...t
       }));
-      setTasks(prev => [...newTasks, ...prev]);
-      saveTseoTasks([...newTasks, ...tasks]).catch(() => {});
+      // Replace open tasks for this client (keep done/verified for history)
+      // and cap at 25 per scan — same logic as the live-scan path. Prevents
+      // task accumulation across re-scans of the same client.
+      const MAX_TASKS_PER_CLIENT = 25;
+      const cappedNew = newTasks.slice(0, MAX_TASKS_PER_CLIENT);
+      const nextTasks = (() => {
+        const kept = tasks.filter(t =>
+          t.client_id !== c.id || (t.status === 'done' || t.status === 'verified')
+        );
+        return [...cappedNew, ...kept];
+      })();
+      setTasks(nextTasks);
+      saveTseoTasks(nextTasks).catch(() => {});
 
-      const critical = newTasks.filter(t => t.priority === 'critical').length;
-      const high = newTasks.filter(t => t.priority === 'high').length;
-      setMsg(`Added ${newTasks.length} tasks for ${c.name} from pasted data` +
+      const critical = cappedNew.filter(t => t.priority === 'critical').length;
+      const high = cappedNew.filter(t => t.priority === 'high').length;
+      setMsg(`Added ${cappedNew.length} tasks for ${c.name} from pasted data` +
         (critical ? ` · ${critical} critical` : '') +
         (high ? ` · ${high} high priority` : ''));
     } catch (e) { setErr(e.message); }
