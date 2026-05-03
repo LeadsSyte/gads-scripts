@@ -61,6 +61,18 @@ async function stubContentBlogs(page, rows) {
   });
 }
 
+// Seed BOTH the client (with pages_per_month: 1 so a single article meets
+// quota and the client lands in the open "Articles Written" section) and
+// the article. The fixture's addInitScript already sets the original test
+// client; this overrides it with our quota-of-1 variant.
+async function seedClientAndArticle(page, article) {
+  await page.addInitScript(({ client, art }) => {
+    localStorage.setItem('syte-suite-clients', JSON.stringify([client]));
+    localStorage.setItem('syte-suite-selected-client', client.id);
+    localStorage.setItem('syte-suite-content_blogs', JSON.stringify([art]));
+  }, { client: { ...TEST_CLIENT, pages_per_month: 1 }, art: article });
+}
+
 // =============================================================================
 // REGRESSION: AutoWrite "Articles Written" expanded view shows the article body
 // as a Rendered Preview (formatted HTML), not raw markdown text.
@@ -71,22 +83,18 @@ async function stubContentBlogs(page, rows) {
 // =============================================================================
 test('regression: Articles Written expanded view renders body as formatted HTML', async ({ page }) => {
   const article = seedArticle(TEST_CLIENT.id);
-  // Both paths must return our seed: localStorage (for offline fallback)
-  // AND the Supabase stub (for the live query path) — otherwise
-  // loadContentHistory's Supabase response would overwrite localStorage.
   await stubContentBlogs(page, [article]);
-  await page.addInitScript((seed) => {
-    localStorage.setItem('syte-suite-content_blogs', JSON.stringify([seed]));
-  }, article);
+  await seedClientAndArticle(page, article);
 
   await page.goto('/');
   await page.getByRole('button', { name: 'Content Engine' }).first().click();
   await page.getByRole('button', { name: 'Auto Write' }).first().click();
 
-  // Find the seeded client card in the pipeline — it sits in either
-  // "Articles Written" or "No Articles Yet" depending on quota — both
-  // sections are clickable.
-  const clientCard = page.locator('.content-area').getByText(TEST_CLIENT.name).first();
+  // The "Articles Written" section is open by default. With pages_per_month=1
+  // the seeded client meets quota and renders as a clickable card there.
+  // Scope the click to the .card element so we don't accidentally hit the
+  // section's collapsed-text fallback or the topbar select option.
+  const clientCard = page.locator('.content-area .card').filter({ hasText: TEST_CLIENT.name }).first();
   await clientCard.click();
 
   // Open the per-article view.
@@ -161,6 +169,7 @@ test('regression: AutoWrite re-fetches history on window focus', async ({ page }
       body: JSON.stringify(stubRows)
     });
   });
+  await seedClientAndArticle(page, stubRows[0]);
 
   await page.goto('/');
   await page.getByRole('button', { name: 'Content Engine' }).first().click();
@@ -169,6 +178,10 @@ test('regression: AutoWrite re-fetches history on window focus', async ({ page }
   // Step 2: simulate "an article was written elsewhere" by swapping
   // the stubbed response, then fire focus. The focus listener should
   // re-call loadContentHistory which now returns the new row.
+  // Click the client card to expand so the new article shows in the list.
+  const clientCard = page.locator('.content-area .card').filter({ hasText: TEST_CLIENT.name }).first();
+  await clientCard.click();
+
   stubRows = [
     seedArticle(TEST_CLIENT.id),
     seedArticle(TEST_CLIENT.id, SAMPLE_ARTICLE, { id: 'seeded-article-2', topic: 'Refreshed Article Title' })

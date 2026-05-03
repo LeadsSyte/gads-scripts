@@ -43,14 +43,30 @@ jobs:
           cache: 'npm'
           cache-dependency-path: syte-seo-suite/package-lock.json
 
+      - name: Skip if ANTHROPIC_API_KEY not configured
+        id: secret_check
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "ANTHROPIC_API_KEY repo secret is not set — skipping AI-QA walkthrough."
+            echo "To enable: Settings → Secrets and variables → Actions → New repository secret."
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Install dependencies
+        if: steps.secret_check.outputs.skip != 'true'
         run: npm ci
 
       - name: Install Playwright browsers
+        if: steps.secret_check.outputs.skip != 'true'
         run: npx playwright install --with-deps chromium
 
       - name: Wait for Netlify deploy preview
         id: deploy
+        if: steps.secret_check.outputs.skip != 'true'
         # The Netlify GitHub Action emits a deploy-preview check; we read
         # its target URL from the PR commit's deploy status. Fall back to
         # the conventional URL pattern if the API call fails.
@@ -78,6 +94,7 @@ jobs:
 
       - name: Run AI-QA walkthrough
         id: walkthrough
+        if: steps.secret_check.outputs.skip != 'true'
         env:
           BASE_URL: ${{ steps.deploy.outputs.url }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -90,7 +107,7 @@ jobs:
           cat ai-qa-findings.jsonl
 
       - name: Upload screenshots
-        if: always()
+        if: always() && steps.secret_check.outputs.skip != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: ai-qa-screenshots
@@ -98,7 +115,7 @@ jobs:
           retention-days: 7
 
       - name: Comment findings on PR
-        if: always()
+        if: always() && steps.secret_check.outputs.skip != 'true'
         uses: actions/github-script@v7
         with:
           script: |
@@ -137,7 +154,7 @@ jobs:
             }
 
       - name: Fail the job if any step was flagged
-        if: steps.walkthrough.outputs.exit_code != '0'
+        if: steps.secret_check.outputs.skip != 'true' && steps.walkthrough.outputs.exit_code != '0'
         run: |
           echo "AI-QA flagged at least one step — see the PR comment + screenshots."
           exit 1
