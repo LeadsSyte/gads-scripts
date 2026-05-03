@@ -554,16 +554,87 @@ export default function TechnicalSEO({ sub }) {
       verified: tasks.filter(t => t.status === 'verified').length,
       failed:   tasks.filter(t => t.status === 'failed').length
     };
+    // Find clients that haven't been scanned this month — offer a one-click
+    // bulk scan + auto-prompt during the first 7 days of the month so users
+    // don't have to remember to click each card individually.
+    const unscannedThisMonth = techClients.filter(c => {
+      const cTasks = tasks.filter(t =>
+        t.client_id === c.id &&
+        (t.created_at || '').slice(0, 7) === currentMonth
+      );
+      return cTasks.length === 0;
+    });
+    const dayOfMonth = new Date().getDate();
+    const isMonthStart = dayOfMonth <= 7;
+
+    async function scanAllUnscanned() {
+      if (busy) return;
+      const list = unscannedThisMonth;
+      if (!list.length) return;
+      const ok = window.confirm(
+        'Run Technical SEO scan for ' + list.length + ' unscanned client' +
+        (list.length === 1 ? '' : 's') + '?\nThis can take a few minutes per client.'
+      );
+      if (!ok) return;
+      for (let i = 0; i < list.length; i++) {
+        setMsg('Bulk scan ' + (i + 1) + '/' + list.length + ': ' + list[i].name);
+        try { await runScanForClient(list[i]); } catch {}
+      }
+      setMsg('Bulk scan complete — ' + list.length + ' clients scanned.');
+    }
+
     return (
       <div className="content-area">
-        {/* Status bar — shows progress when a scan is running from a pipeline card */}
+        {/* STICKY status banner — sticks to the top of the scroll area so a
+            scan triggered from a pipeline card lower down the page can't be
+            invisible behind the topbar. Includes scroll-into-view on mount
+            via auto-scrolling when busy starts (handled below). */}
         {(busy || msg || err) && (
-          <div className="card" style={{ marginBottom: 12, padding: '10px 16px', borderColor: busy ? ACCENT : err ? 'var(--red)' : 'var(--green)' }}>
+          <div className="card" style={{
+            marginBottom: 12, padding: '10px 16px',
+            borderColor: busy ? ACCENT : err ? 'var(--red)' : 'var(--green)',
+            position: 'sticky', top: 0, zIndex: 6,
+            background: 'var(--surface)'
+          }}>
             <div className="row" style={{ gap: 10 }}>
               {busy && <span className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} />}
               <span style={{ fontSize: 13, color: err ? 'var(--red)' : busy ? 'var(--text)' : 'var(--green)' }}>
                 {err || msg || 'Scanning…'}
               </span>
+            </div>
+          </div>
+        )}
+
+        {/* Month-start prompt: when there are unscanned clients in the first
+            week of the month, surface a single "Scan all" CTA at the top
+            so users don't have to chase individual cards. */}
+        {unscannedThisMonth.length > 0 && (
+          <div className="card" style={{
+            marginBottom: 12, padding: '12px 16px',
+            borderColor: isMonthStart ? ACCENT : 'var(--border)',
+            borderLeftWidth: 3,
+            borderLeftStyle: 'solid'
+          }}>
+            <div className="row" style={{ justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 600 }}>
+                  {isMonthStart
+                    ? 'It\'s the start of ' + monthLabel + ' — ' + unscannedThisMonth.length + ' client' + (unscannedThisMonth.length === 1 ? ' hasn\'t' : 's haven\'t') + ' been scanned yet'
+                    : unscannedThisMonth.length + ' client' + (unscannedThisMonth.length === 1 ? '' : 's') + ' not yet scanned this month'}
+                </div>
+                <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
+                  {unscannedThisMonth.slice(0, 5).map(c => c.name).join(', ')}
+                  {unscannedThisMonth.length > 5 && ` +${unscannedThisMonth.length - 5} more`}
+                </div>
+              </div>
+              <button
+                onClick={scanAllUnscanned}
+                disabled={busy}
+                className="primary"
+                style={{ background: ACCENT, borderColor: ACCENT, color: '#0a0a0c', fontSize: 12 }}
+              >
+                {busy ? 'Scanning…' : 'Scan all ' + unscannedThisMonth.length + ' now'}
+              </button>
             </div>
           </div>
         )}
