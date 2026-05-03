@@ -17,8 +17,8 @@ HARD RULES:
 - Include at least one comparison table OR step-by-step guide where the topic allows.
 - Never state hard statistics without citing the source inline (e.g. "(Source: NHS, 2024)").
 - Include E-E-A-T signals: author expertise, first-hand experience, credentials, citations.
-- Use <h2>/<h3> hierarchy. Never skip heading levels.
-- Output clean HTML (no markdown fences) unless another format is explicitly requested.
+- Use ##/### markdown heading hierarchy (the H1 is # at the top). Never skip heading levels.
+- Output clean GitHub-flavoured Markdown for the article body (#, ##, **, *, -, GFM tables). Do NOT mix raw HTML tags into the markdown — the suite converts to HTML for paste/CMS push automatically.
 - MANDATORY: Include at least 2 internal links from the brand's link pool below. Use descriptive anchor text, NEVER "click here" or "read more". If no link pool is provided, state "(No internal links available)" in a comment.
 - MANDATORY: Attribute the article to the brand's default author with their credentials in the opening or closing paragraph. If no author is set, skip this rule.
 - MANDATORY: When the topic allows, include at least one step-by-step guide OR numbered how-to section. This is a core differentiator vs AI-generated fluff.
