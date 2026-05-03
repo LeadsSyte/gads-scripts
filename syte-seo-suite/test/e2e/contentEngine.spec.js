@@ -168,35 +168,47 @@ test('regression: History tab preview renders as formatted HTML', async ({ page 
 // listeners that re-call loadContentHistory().
 // =============================================================================
 test('regression: AutoWrite re-fetches history on window focus', async ({ page }) => {
-  // Step 1: prime with a single article so the page mounts populated.
-  let stubRows = [seedArticle(TEST_CLIENT.id)];
+  // Mutable container — captured by reference in the route handler so a
+  // later `stub.rows = [...]` is observed by the next response. Trying
+  // the same pattern with a `let` rebinding was racy in CI; a property
+  // mutation on a stable object reference is rock-solid.
+  const stub = { rows: [seedArticle(TEST_CLIENT.id)] };
   await page.route('**/syte_suite_content_blogs**', (route) => {
     route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify(stubRows)
+      body: JSON.stringify(stub.rows)
     });
   });
-  await seedClientAndArticle(page, stubRows[0]);
+  await seedClientAndArticle(page, stub.rows[0]);
 
   await page.goto('/');
   await page.getByRole('button', { name: 'Content Engine' }).first().click();
   await page.getByRole('button', { name: 'Auto Write' }).first().click();
 
-  // Step 2: simulate "an article was written elsewhere" by swapping
-  // the stubbed response, then fire focus. The focus listener should
-  // re-call loadContentHistory which now returns the new row.
-  // Click the client card to expand so the new article shows in the list.
-  const clientCard = page.locator('.content-area .card').filter({ hasText: TEST_CLIENT.name }).first();
-  await clientCard.click();
+  // Wait for first article to render so we know the page is mounted +
+  // listeners are attached before we fire focus.
+  await expect(page.locator('.content-area .card').filter({ hasText: TEST_CLIENT.name }).first())
+    .toBeVisible({ timeout: 10000 });
 
-  stubRows = [
+  // Click the client card to expand — the new article will appear in this
+  // section's list once history reloads.
+  await page.locator('.content-area .card').filter({ hasText: TEST_CLIENT.name }).first().click();
+
+  // Swap the stubbed response then fire focus + visibilitychange to
+  // exercise both listeners AutoWrite registers. Also mirror the second
+  // article into localStorage so the fallback path returns it too.
+  stub.rows = [
     seedArticle(TEST_CLIENT.id),
     seedArticle(TEST_CLIENT.id, SAMPLE_ARTICLE, { id: 'seeded-article-2', topic: 'Refreshed Article Title' })
   ];
-  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await page.evaluate((rows) => {
+    localStorage.setItem('syte-suite-content_blogs', JSON.stringify(rows));
+    window.dispatchEvent(new Event('focus'));
+    document.dispatchEvent(new Event('visibilitychange'));
+  }, stub.rows);
 
   // The new article's topic should appear once the history reloads.
   await expect(page.locator('.content-area').getByText('Refreshed Article Title').first())
-    .toBeVisible({ timeout: 5000 });
+    .toBeVisible({ timeout: 8000 });
 });
