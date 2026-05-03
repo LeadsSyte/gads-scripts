@@ -59,18 +59,26 @@ export function contentPipelineStatus(client, implementations, month, contentHis
 
   // "Articles Written" = ALL required articles are written, but not all verified yet.
   if (quotaMet) {
+    // Both summary and detail use the SAME denominator (written, the
+    // actual count of articles in the list) so users don't see a
+    // contradiction like "1/2 verified" + "1 of 7 verified" simultaneously.
+    // The "need N to advance to Verified on Site" line is what tells them
+    // the quota; before this fix users couldn't tell whether the bucket
+    // moved on quota (required) or completion (written).
     const parts = [written + ' written'];
-    if (verifiedCount > 0) parts.push(verifiedCount + '/' + required + ' verified');
-    else parts.push('0 verified');
-    // Use `written` (the actual count) in the detail message — using
-    // `required` (pages_per_month) led to "3 written · All 2 articles
-    // written…" mismatches when more than the quota had been generated.
+    parts.push(verifiedCount + ' verified');
+    // We only reach here if allVerified was false above, so verifiedCount
+    // < required. remainingForQuota is always >= 1 in this branch.
+    const remainingForQuota = required - verifiedCount;
+    const detail = verifiedCount === 0
+      ? 'All ' + written + ' articles written, awaiting verification. ' +
+        'Verify any ' + required + ' to move to Verified on Site.'
+      : verifiedCount + ' of ' + written + ' verified — verify ' +
+        remainingForQuota + ' more to move to Verified on Site (quota: ' + required + ').';
     return {
       section: 'articles-written',
       summary: parts.join(' · '),
-      detail: verifiedCount > 0
-        ? verifiedCount + ' of ' + written + ' verified — ' + (written - verifiedCount) + ' awaiting verification'
-        : 'All ' + written + ' articles written, awaiting upload & verification'
+      detail
     };
   }
 
