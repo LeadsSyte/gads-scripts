@@ -288,6 +288,31 @@ function OptPageCard({ result: r, onDelete, onVerified, optClient }) {
               <PushToCmsButton item={combinedPushItem} label="Push all to CMS" />
             </span>
           )}
+          {opts.length > 0 && (
+            <span onClick={(e) => e.stopPropagation()}>
+              {/* One verify call for the whole page. Description is a
+                  combined summary of every opt's name + a snippet of
+                  its implementation, so Claude checks the page against
+                  all opts at once and uses the lenient AEO 60%-themes-
+                  present rule (already in verification.js prompt). */}
+              <MarkImplementedButton
+                module="aeo"
+                changeType="aeo_optimization"
+                pageUrl={r.url}
+                title={'AEO bundle: ' + opts.length + ' optimizations'}
+                description={
+                  'Combined AEO push for ' + (r.url || 'this page') + '. Verify the page contains content matching these themes:\n\n' +
+                  opts.map((o, i) =>
+                    (i + 1) + '. ' + (o.name || o.title || 'Opt') +
+                    ' — ' + (o.description || '').slice(0, 200) + '\n' +
+                    'Implementation excerpt: ' + (o.implementation || o.code || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').slice(0, 300)
+                  ).join('\n\n')
+                }
+                client={optClient}
+                onVerified={onVerified}
+              />
+            </span>
+          )}
           {onDelete && (
             <button onClick={(e) => { e.stopPropagation(); onDelete(); }} style={{ fontSize: 10, padding: '2px 8px', color: 'var(--red)', borderColor: 'rgba(255,77,77,.3)' }}>Delete</button>
           )}
