@@ -246,8 +246,19 @@ export async function verifyOffPageTask(impl, client) {
 async function fetchPageContent(impl, client) {
   const slug = (impl.page_url || '').split('/').filter(Boolean).pop() || '';
 
-  // 1. WordPress REST API (preferred — reliable, authenticated, WAF-proof).
-  if (client?.wp_url && client?.wp_username && client?.wp_app_password) {
+  // For HEAD-tag tasks (robots meta, canonical, schema, og tags) we
+  // MUST fetch the full HTML — not the WordPress REST API which only
+  // returns the post body content (no <head> markup at all). Skip the
+  // wp-api branch entirely for these and go straight to page-proxy
+  // with raw=true. Articles + AEO content optimizations still benefit
+  // from wp-api (drafts, WAF bypass).
+  const ct = normalizeType(impl?.change_type);
+  const headTask = ct !== 'article' && ct !== 'aeo_optimization';
+
+  // 1. WordPress REST API (preferred — reliable, authenticated, WAF-proof)
+  //    BUT only when the change lives in the post body. For head-tag
+  //    changes, skip straight to page-proxy.
+  if (!headTask && client?.wp_url && client?.wp_username && client?.wp_app_password) {
     const wpBase = client.wp_url.replace(/\/+$/, '');
 
     // Strategy A: find by slug (most reliable when URL is correct).
@@ -313,9 +324,8 @@ async function fetchPageContent(impl, client) {
   // verification of "removed noindex" / "added schema" / "fixed
   // canonical" tasks fail even when the user had correctly applied the
   // fix on the live page. Articles use Jina-rendered HTML because
-  // we want the body text after JS rendering.
-  const ct = normalizeType(impl?.change_type);
-  const headTask = ct !== 'article' && ct !== 'aeo_optimization';
+  // we want the body text after JS rendering. (ct + headTask declared
+  // at the top of this function.)
   try {
     const res = await fetch('/.netlify/functions/page-proxy', {
       method: 'POST',
