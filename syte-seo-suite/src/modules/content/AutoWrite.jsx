@@ -162,6 +162,25 @@ export default function AutoWrite() {
     loadContentHistory().then(setSharedHistory).catch(() => {});
   }, []);
 
+  // Re-fetch whenever the user comes back to the tab — articles written in
+  // ContentEngine's "New Article" tab (or another browser/window) won't be
+  // in this component's state, and a stale view made users think their
+  // article had vanished. Refresh on focus + when visibility changes back
+  // to visible.
+  useEffect(() => {
+    function refresh() {
+      loadContentHistory().then(setSharedHistory).catch(() => {});
+      refreshContentImpls();
+    }
+    function onVis() { if (document.visibilityState === 'visible') refresh(); }
+    window.addEventListener('focus', refresh);
+    document.addEventListener('visibilitychange', onVis);
+    return () => {
+      window.removeEventListener('focus', refresh);
+      document.removeEventListener('visibilitychange', onVis);
+    };
+  }, []);
+
   // Warn before navigating away during active writing.
   useEffect(() => {
     if (writingIdx === null && !researchBusy) return;
@@ -475,6 +494,27 @@ export default function AutoWrite() {
                             <CopyBtn text={parsed?.body} label="Copy body (markdown)" />
                             <CopyBtn text={bodyHtml} label="Copy body (HTML)" />
                           </div>
+                          {/* Rendered preview — what the formatted article actually
+                              looks like (headings, lists, tables). Sits above the
+                              raw-text copy panels so users can verify formatting
+                              at a glance without leaving the page. */}
+                          {parsed?.body && (
+                            <div style={{
+                              marginTop: 8, marginBottom: 8, padding: 14,
+                              background: 'var(--bg)', border: '1px solid var(--border)',
+                              borderLeft: '3px solid var(--mod-content)',
+                              borderRadius: 4, maxHeight: 500, overflowY: 'auto'
+                            }}>
+                              <div className="muted" style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 8 }}>
+                                Rendered preview
+                              </div>
+                              <div
+                                className="article-rendered"
+                                style={{ lineHeight: 1.6, fontSize: 13 }}
+                                dangerouslySetInnerHTML={{ __html: bodyHtml }}
+                              />
+                            </div>
+                          )}
                           <ParsedSection title="Meta Title" content={parsed?.metaTitle} accent="var(--blue)" />
                           <ParsedSection title="Meta Description" content={parsed?.metaDesc} accent="var(--blue)" />
                           <ParsedSection title="AEO Summary Block" content={parsed?.aeoSummary} accent="var(--teal)" />
