@@ -16,11 +16,19 @@ import { verifyImplementation, verifyImplementationFromHtml, verifyImplementatio
 //   pageUrl:     the URL where the change should appear
 //   title:       short description of what was implemented
 //   description: longer detail (the actual change content)
+//   client?:     OPTIONAL — explicit client object to verify against. Use
+//                this when the button lives on a per-task / per-article
+//                row whose client is NOT the topbar selection (e.g. a
+//                pipeline view shows tasks from many clients). Without
+//                this, the button verified against the topbar client and
+//                produced the "checked bamdiy.com/robots.txt for a Syte
+//                task" bug.
 //   disabled?:   boolean
 export default function MarkImplementedButton({
-  module, changeType, pageUrl, title, description, disabled, onVerified
+  module, changeType, pageUrl, title, description, disabled, onVerified, client: clientProp
 }) {
-  const client = useClients(s => s.current());
+  const topbarClient = useClients(s => s.current());
+  const client = clientProp || topbarClient;
   const [phase, setPhase] = useState('idle'); // idle | logging | verifying | done
   const [result, setResult] = useState(null); // { status, detail, impl }
   const [err, setErr] = useState('');

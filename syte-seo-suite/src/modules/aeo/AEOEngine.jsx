@@ -121,7 +121,7 @@ const OPT_TYPE_COLORS = {
   structure: { bg: 'rgba(255,159,67,.12)', color: 'var(--orange)', border: 'rgba(255,159,67,.2)' }
 };
 
-function OptPageCard({ result: r, onDelete, onVerified }) {
+function OptPageCard({ result: r, onDelete, onVerified, optClient }) {
   const [open, setOpen] = React.useState(false);
   const opts = Array.isArray(r.optimizations) ? r.optimizations : [];
   const copyAll = () => {
@@ -210,6 +210,7 @@ function OptPageCard({ result: r, onDelete, onVerified }) {
                 pageUrl={r.url}
                 title={o.name || o.title || 'AEO Optimization'}
                 description={code.slice(0, 500)}
+                client={optClient}
                 onVerified={onVerified}
               />
             </div>
@@ -909,7 +910,7 @@ export default function AEOEngine({ sub }) {
                       Quick-Win Optimizations · {totalOpts} across {cResults.length} page{cResults.length > 1 ? 's' : ''}
                     </div>
                     {cResults.slice(0, 5).map(r => (
-                      <OptPageCard key={r.url} result={r} onDelete={() => deleteResult(r.url, c.id)} onVerified={refreshImplementations} />
+                      <OptPageCard key={r.url} result={r} onDelete={() => deleteResult(r.url, c.id)} onVerified={refreshImplementations} optClient={c} />
                     ))}
                     {cResults.length > 5 && (
                       <div className="muted" style={{ padding: '8px 14px', fontSize: 11 }}>
@@ -1151,7 +1152,13 @@ export default function AEOEngine({ sub }) {
                 </div>
               </div>
               {isOpen && g.results.map(r => (
-                <OptPageCard key={r.url} result={r} onDelete={() => deleteResult(r.url, r.client_id)} onVerified={refreshImplementations} />
+                <OptPageCard
+                  key={r.url}
+                  result={r}
+                  onDelete={() => deleteResult(r.url, r.client_id)}
+                  onVerified={refreshImplementations}
+                  optClient={clients.find(cc => cc.id === r.client_id)}
+                />
               ))}
             </div>
           );
