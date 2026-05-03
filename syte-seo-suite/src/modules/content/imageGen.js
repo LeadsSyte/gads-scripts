@@ -77,25 +77,29 @@ export async function generateWithDalle(prompt) {
   const { openaiKey } = loadSettings();
   if (!openaiKey) throw new Error('OpenAI API key not set. Open Suite Settings.');
 
-  const res = await fetch('https://api.openai.com/v1/images/generations', {
+  // OpenAI doesn't allow browser-direct CORS, so route through our
+  // Netlify proxy. The proxy adds the Authorization header server-side
+  // and returns the upstream response verbatim.
+  const res = await fetch('/.netlify/functions/openai-proxy', {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: 'Bearer ' + openaiKey
-    },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      model: 'dall-e-3',
-      prompt,
-      n: 1,
-      size: '1792x1024', // closest to 16:9
-      quality: 'standard',
-      response_format: 'b64_json'
+      apiKey: openaiKey,
+      endpoint: 'images/generations',
+      body: {
+        model: 'dall-e-3',
+        prompt,
+        n: 1,
+        size: '1792x1024', // closest to 16:9
+        quality: 'standard',
+        response_format: 'b64_json'
+      }
     })
   });
 
   if (!res.ok) {
     const txt = await res.text().catch(() => '');
-    throw new Error('DALL-E error ' + res.status + ': ' + txt.slice(0, 200));
+    throw new Error('DALL-E error ' + res.status + ': ' + txt.slice(0, 300));
   }
 
   const data = await res.json();

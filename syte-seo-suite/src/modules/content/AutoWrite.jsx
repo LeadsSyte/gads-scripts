@@ -296,7 +296,12 @@ export default function AutoWrite() {
       });
       updateArticle(idx, { status: 'done', output: buf, words: Math.round(buf.length / 5) });
 
-      // Persist to Supabase (shared across all browsers/users).
+      // Persist (saveBlogResult ALWAYS writes to localStorage first, then
+      // tries Supabase). Even if the Supabase write fails, the article
+      // is durable in local cache and loadContentHistory's merge path
+      // will surface it. Annotate the article state with a save warning
+      // so the user can see if cloud sync didn't land.
+      let saveWarning = null;
       try {
         await saveBlogResult({
           client_id: activeClient.id,
@@ -309,11 +314,14 @@ export default function AutoWrite() {
           opportunity_type: opp.opportunity_type,
           generated_at: new Date().toISOString()
         });
-        // Refresh shared history so pipeline updates immediately.
-        loadContentHistory().then(setSharedHistory).catch(() => {});
       } catch (saveErr) {
-        console.warn('[AutoWrite] save to Supabase failed:', saveErr.message);
+        saveWarning = 'Cloud sync failed (article saved locally): ' + saveErr.message;
+        console.warn('[AutoWrite]', saveWarning);
       }
+      // Always refresh — even on Supabase failure the local copy is now
+      // in sharedHistory via the merge.
+      try { setSharedHistory(await loadContentHistory()); } catch {}
+      if (saveWarning) updateArticle(idx, { saveWarning });
     } catch (e) {
       updateArticle(idx, { status: 'error', error: e.message });
     } finally {
@@ -765,20 +773,45 @@ export default function AutoWrite() {
                 {isError && state.error && (
                   <div style={{ marginTop: 6, fontSize: 11, color: 'var(--red)' }}>{state.error}</div>
                 )}
-
-                {isDone && state.output && (
-                  <details style={{ marginTop: 8 }}>
-                    <summary className="muted" style={{ fontSize: 11, cursor: 'pointer' }}>
-                      View generated article ({state.words} words)
-                    </summary>
-                    <pre style={{
-                      marginTop: 6, padding: 12, background: 'var(--bg)',
-                      fontSize: 11, overflowX: 'auto', whiteSpace: 'pre-wrap',
-                      maxHeight: 400, borderRadius: 6
-                    }}>{state.output}</pre>
-                    <GenerateImageButton title={opp.topic_title} keyword={opp.primary_keyword} />
-                  </details>
+                {state.saveWarning && (
+                  <div style={{
+                    marginTop: 6, padding: '6px 10px', fontSize: 11,
+                    color: 'var(--orange)',
+                    background: 'color-mix(in srgb, var(--orange) 10%, transparent)',
+                    border: '1px solid color-mix(in srgb, var(--orange) 30%, var(--border))',
+                    borderRadius: 6
+                  }}>
+                    ⚠ {state.saveWarning}
+                  </div>
                 )}
+
+                {isDone && state.output && (() => {
+                  const parsed = parseOutputSections(state.output);
+                  const bodyHtml = markdownToHtml(parsed?.body || state.output);
+                  return (
+                    <details style={{ marginTop: 8 }} open>
+                      <summary className="muted" style={{ fontSize: 11, cursor: 'pointer' }}>
+                        View generated article ({state.words} words)
+                      </summary>
+                      <div className="row" style={{ gap: 6, marginTop: 8, marginBottom: 6, flexWrap: 'wrap' }}>
+                        <CopyFormattedBtn markdown={parsed?.body || state.output} label="Copy formatted" />
+                        <CopyBtn text={parsed?.body || state.output} label="Copy markdown" />
+                        <CopyBtn text={bodyHtml} label="Copy HTML" />
+                      </div>
+                      <div
+                        className="article-rendered"
+                        style={{
+                          marginTop: 6, padding: 14, background: 'var(--bg)',
+                          fontSize: 13, lineHeight: 1.6, maxHeight: 500,
+                          overflowY: 'auto', borderRadius: 6,
+                          border: '1px solid var(--border)'
+                        }}
+                        dangerouslySetInnerHTML={{ __html: bodyHtml }}
+                      />
+                      <GenerateImageButton title={opp.topic_title} keyword={opp.primary_keyword} />
+                    </details>
+                  );
+                })()}
               </div>
             );
           })}

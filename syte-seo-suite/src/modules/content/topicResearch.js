@@ -149,7 +149,12 @@ Rules:
 - Use REAL numbers from the provided data — don't invent positions or impressions.
 - Consider the brand's industry, location, and audience when framing angles.
 - Return THE EXACT NUMBER of opportunities requested by the user (see TARGET_ARTICLES below). Quality over quantity — but hit the target count. If there aren't enough strong GSC signals, use your SEO expertise to suggest topical gaps based on the brand's industry.
-- Priority field: 1 = highest urgency, N = lowest.`;
+- Priority field: 1 = highest urgency, N = lowest.
+
+YEAR-AWARENESS (HARD RULE — never violate):
+- If a topic title includes a year (e.g. "2024 Pricing Guide", "Best X 2025"), the year MUST be the CURRENT_YEAR provided in the user message. Never propose a topic with a year in the past — that's an SEO own-goal.
+- ACTIVELY SCAN the GSC data for queries / pages that contain past-year markers ("2024", "2023", "last year", etc.). These are PRIME refresh candidates: an article that ranked well in its year is now decaying; rewriting it for the current year typically reclaims position quickly. Surface these as "ranking-defend" or "low-hanging-fruit" opportunities with opportunity_type set accordingly and a rationale explaining "Updating last year's piece to CURRENT_YEAR".
+- For evergreen titles (no year), still write them as if the publication date is the current year — pricing, statistics, examples should be current.`;
 
 export async function generateTopicRecommendations(client, research, { targetArticles } = {}) {
   const target = targetArticles || client.pages_per_month || 4;
@@ -191,8 +196,10 @@ export async function generateTopicRecommendations(client, research, { targetArt
     ? `\n\nMANUAL DIRECTION FROM ACCOUNT MANAGER (takes priority over pure data-driven ranking):\n"""\n${manualDirection}\n"""\n\nWhen this direction is present, you MUST:\n- Prioritize opportunities that align with it, even if their heuristic score is lower.\n- Explicitly reference the direction in the "summary" field.\n- Use it to shape the "suggested_angle" for every opportunity.\nIf the direction conflicts with a high-score opportunity, bias toward the direction unless that would ignore a major quick-win (pos 5-15, >1000 impressions).`
     : '';
 
+  const currentYear = new Date().getFullYear();
   const userMessage = `TARGET_ARTICLES: ${target}
-Return exactly ${target} content opportunities.
+CURRENT_YEAR: ${currentYear}
+Return exactly ${target} content opportunities. Any topic with a year MUST use ${currentYear}, not an older year. Look for past-year markers in the GSC data and prioritize those as refresh opportunities.
 
 BRAND CONTEXT:
 ${JSON.stringify(summary, null, 2)}
@@ -213,6 +220,27 @@ Analyze the data and return the JSON structure described in the system prompt. R
   if (!parsed?.opportunities) {
     throw new Error('Claude returned unexpected output. Try again.');
   }
+
+  // Belt-and-braces year scrub: if Claude still suggested a past-year
+  // article title (e.g. "Best X 2024" while it's 2026), rewrite it to
+  // the current year client-side so we never publish a stale-dated
+  // suggestion. Touches topic_title and suggested_angle only.
+  const yearRe = /\b(19|20)\d{2}\b/g;
+  for (const opp of parsed.opportunities) {
+    if (opp.topic_title && yearRe.test(opp.topic_title)) {
+      opp.topic_title = opp.topic_title.replace(yearRe, (y) =>
+        Number(y) < currentYear ? String(currentYear) : y
+      );
+    }
+    yearRe.lastIndex = 0;
+    if (opp.suggested_angle && yearRe.test(opp.suggested_angle)) {
+      opp.suggested_angle = opp.suggested_angle.replace(yearRe, (y) =>
+        Number(y) < currentYear ? String(currentYear) : y
+      );
+    }
+    yearRe.lastIndex = 0;
+  }
+
   return parsed;
 }
 
