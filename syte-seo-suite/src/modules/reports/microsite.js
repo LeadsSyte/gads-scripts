@@ -459,6 +459,16 @@ export function buildMicrositeHtml({ micro, client, monthLabel, previousMonthLab
         Probed ${probe.engines_used?.length || 0} AI engine${(probe.engines_used?.length || 0) > 1 ? 's' : ''}
         (${(probe.engines_used || []).join(', ')}) across ${probe.queries_count || new Set(probe.per_query.map(r => r.query)).size} queries × ${probe.iterations || 1} iterations = ${probe.total_runs || probe.per_query.length} total responses.
       </p>
+      ${(probe.mentions || 0) === 0 && (probe.citations || 0) === 0 && !cmp?.has_previous ? `
+      <!-- No signal yet → reframe as "Establishing baseline" rather than blasting six big "0%" panels at the client (which reads as a doom report even though it's a brand-new measurement). The detail table below still shows every query that was probed. -->
+      <div style="padding:24px;background:var(--surface);border:1px solid var(--border);border-radius:12px;margin-bottom:20px;border-left:4px solid var(--accent);">
+        <div style="font-family:'DM Serif Display',serif;font-size:24px;line-height:1.2;color:var(--text);margin-bottom:8px;">
+          Establishing the AI-visibility baseline
+        </div>
+        <p style="color:var(--muted);font-size:13px;margin:0;line-height:1.55;">
+          This is the first month of AEO measurement. We probed ${probe.queries_count || new Set(probe.per_query.map(r => r.query)).size} category-demand queries across ${probe.engines_used?.length || 0} engines and the brand isn't yet surfacing in answers — that's normal at month one and tells us exactly which queries are open opportunities. Next month's report will compare against this baseline so you can see momentum.
+        </p>
+      </div>` : `
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-bottom:20px;">
         ${[
           { label: 'Visibility Score', value: (probe.visibility_score ?? 0) + '%', delta: cmp?.deltas?.visibility, deltaSuffix: 'pp' },
@@ -475,7 +485,7 @@ export function buildMicrositeHtml({ micro, client, monthLabel, previousMonthLab
           </div>
         `).join('')}
       </div>
-      ${cmp?.has_previous ? `<p style="color:var(--muted);font-size:12px;font-style:italic;">Deltas vs ${esc(previousMonthLabel || cmp.previous_month || 'last month')}</p>` : '<p style="color:var(--muted);font-size:12px;font-style:italic;">First snapshot — this is the baseline. MoM deltas appear from next month.</p>'}
+      ${cmp?.has_previous ? `<p style="color:var(--muted);font-size:12px;font-style:italic;">Deltas vs ${esc(previousMonthLabel || cmp.previous_month || 'last month')}</p>` : '<p style="color:var(--muted);font-size:12px;font-style:italic;">First snapshot — this is the baseline. MoM deltas appear from next month.</p>'}`}
       ${micro?.aeoMomNarrative ? `<p class="narrative" style="margin-top:14px;">${esc(micro.aeoMomNarrative)}</p>` : ''}
       ${rankscaleBtn}
     </section>` : ''}
@@ -752,4 +762,58 @@ export function downloadMicrosite(html, filename) {
   a.href = url; a.download = filename;
   a.click();
   URL.revokeObjectURL(url);
+}
+
+// Open the microsite in a new window with print-friendly CSS injected
+// and trigger window.print(). The browser presents the standard "Save
+// as PDF" destination so the user gets a clean PDF without needing a
+// server-side renderer (puppeteer / wkhtmltopdf). Prints with the same
+// styled microsite as the HTML view.
+export function downloadMicrositePdf(html, filename) {
+  // Inject @page + print rules so the PDF gets sensible margins, no
+  // dark-mode background bleeding off the page, and the suggested
+  // filename is set when the user picks "Save as PDF".
+  const PRINT_CSS = `
+    @page { size: A4; margin: 14mm 12mm; }
+    @media print {
+      html, body { background: #ffffff !important; color: #111 !important; }
+      body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      section, .card, footer { break-inside: avoid; page-break-inside: avoid; }
+      h1, h2, h3 { break-after: avoid-page; }
+      table { break-inside: auto; }
+      tr { break-inside: avoid; break-after: auto; }
+      thead { display: table-header-group; }
+    }
+  `;
+  const titleTag = '<title>' + (filename || 'Report').replace(/\.pdf$/i, '') + '</title>';
+  // Inject the print CSS just before </head>. If there's no </head>
+  // (defensive), prepend it to the body.
+  let prepared;
+  if (html.includes('</head>')) {
+    prepared = html.replace('</head>', '<style>' + PRINT_CSS + '</style>\n' + titleTag + '</head>');
+  } else {
+    prepared = '<style>' + PRINT_CSS + '</style>' + titleTag + html;
+  }
+
+  const win = window.open('', '_blank');
+  if (!win) {
+    // Pop-up blocked — fall back to downloading the HTML so the user can
+    // open it in a new tab and Cmd/Ctrl+P themselves.
+    downloadMicrosite(html, (filename || 'report').replace(/\.pdf$/i, '') + '.html');
+    alert('Pop-up blocked. Saved the HTML version instead — open it and use the browser\'s Print → Save as PDF.');
+    return;
+  }
+  win.document.open();
+  win.document.write(prepared);
+  win.document.close();
+
+  // Wait for fonts + images to settle before triggering print.
+  const triggerPrint = () => {
+    try { win.focus(); win.print(); } catch {}
+  };
+  if (win.document.readyState === 'complete') {
+    setTimeout(triggerPrint, 400);
+  } else {
+    win.addEventListener('load', () => setTimeout(triggerPrint, 400));
+  }
 }

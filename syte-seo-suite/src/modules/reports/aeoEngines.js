@@ -19,20 +19,26 @@ export const chatgpt = {
   isConfigured: () => !!loadSettings().openaiKey,
   async ask(query) {
     const { openaiKey } = loadSettings();
+    // Route through our openai-proxy Netlify function — api.openai.com
+    // does not return CORS headers for browser-origin requests, so a
+    // direct fetch fails with "Failed to fetch" before we ever see a
+    // response. This was silently zeroing out ChatGPT's contribution
+    // to AEO probes (only Claude rows showed up in the report).
     try {
-      const res = await fetch('https://api.openai.com/v1/chat/completions', {
+      const res = await fetch('/.netlify/functions/openai-proxy', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: 'Bearer ' + openaiKey
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          model: 'gpt-4o',
-          max_tokens: MAX_TOKENS,
-          messages: [
-            { role: 'system', content: 'You are a helpful assistant. Answer naturally.' },
-            { role: 'user', content: query }
-          ]
+          apiKey: openaiKey,
+          endpoint: 'chat/completions',
+          body: {
+            model: 'gpt-4o',
+            max_tokens: MAX_TOKENS,
+            messages: [
+              { role: 'system', content: 'You are a helpful assistant. Answer naturally.' },
+              { role: 'user', content: query }
+            ]
+          }
         })
       });
       if (!res.ok) {

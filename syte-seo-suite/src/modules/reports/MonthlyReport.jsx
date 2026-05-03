@@ -7,7 +7,7 @@ import {
   ALICE_AEO_SYSTEM, MICROSITE_AEO_SYSTEM, QA_AEO_SYSTEM,
   buildAlicePayload, getWorkSummary, buildAeoPayload
 } from './reportPrompts.js';
-import { buildMicrositeHtml, downloadMicrosite } from './microsite.js';
+import { buildMicrositeHtml, downloadMicrosite, downloadMicrositePdf } from './microsite.js';
 import { runSnapshot, snapshotPreflight } from './aeoRunner.js';
 import { compareSnapshots, rankBrandWithCompetitors, normalizeSnapshot } from './aeoCompare.js';
 import { ensureToken, SCOPES, getToken, switchAccount, silentRefresh } from '../technical/googleAuth.js';
@@ -457,6 +457,16 @@ export default function MonthlyReport() {
     downloadMicrosite(micrositeHtml, `${safeName}-${month}-Report.html`);
   }
 
+  // Print to PDF — opens the microsite in a new window with print-
+  // friendly CSS injected, then triggers window.print() so the user
+  // gets the browser's "Save as PDF" dialog. No server-side renderer
+  // needed; works in every modern browser.
+  function downloadPdf() {
+    if (!micrositeHtml) return;
+    const safeName = (client.name || 'client').replace(/[^a-z0-9]+/gi, '-');
+    downloadMicrositePdf(micrositeHtml, `${safeName}-${month}-Report.pdf`);
+  }
+
   if (!client) return <div className="muted">Select a client first.</div>;
 
   const hasSnapshot = !!aeoSnap;
@@ -802,6 +812,7 @@ export default function MonthlyReport() {
                 <strong>Microsite Preview</strong>
                 <div className="row" style={{ gap: 8 }}>
                   <button onClick={downloadHtml}>Download .html</button>
+                  <button onClick={downloadPdf} className="primary">Download PDF</button>
                   <button onClick={() => setShowMicroFull(v => !v)}>{showMicroFull ? 'Collapse' : 'Open full screen'}</button>
                 </div>
               </div>

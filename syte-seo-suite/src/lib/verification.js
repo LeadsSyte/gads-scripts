@@ -22,10 +22,18 @@ import { listSites } from '../modules/technical/gsc.js';
 
 // Task types whose evidence does NOT live in the page HTML or screenshot.
 // For these we run a targeted external check (or fall back to manual).
+//
+// IMPORTANT: 'robots' is intentionally NOT in this set because it's
+// ambiguous. A task can mean either:
+//   - meta robots <meta name="robots" content="noindex">    → ON-page
+//   - the robots.txt file                                    → OFF-page
+// Only 'robots_txt' is unambiguously off-page. For tasks tagged plain
+// 'robots', we look at the title/description to decide; see
+// isOffPageTask below.
 const OFF_PAGE_TYPES = new Set([
   'gsc_setup', 'gsc', 'search_console', 'domain_ownership', 'ownership_verification',
   'sitemap', 'sitemap_submission', 'xml_sitemap',
-  'robots', 'robots_txt',
+  'robots_txt',
   'analytics_setup', 'ga_setup', 'gtm_setup', 'tracking_install',
   'indexing_request', 'index_now', 'page_speed', 'core_web_vitals',
   'redirect', 'dns', 'ssl', 'https_setup'
@@ -38,9 +46,21 @@ function normalizeType(t) {
 export function isOffPageTask(impl) {
   const ct = normalizeType(impl?.change_type);
   if (OFF_PAGE_TYPES.has(ct)) return true;
-  // Heuristic: look at title/description for off-page keywords. Catches
-  // tasks the AI labeled "other" but described GSC/sitemap/analytics work.
   const blob = ((impl?.title || '') + ' ' + (impl?.description || '')).toLowerCase();
+
+  // change_type 'robots' is ambiguous (meta robots vs robots.txt). Only
+  // route to off-page if the title/description specifically mentions
+  // robots.txt OR the page_url is itself /robots.txt. A task to remove
+  // noindex from a page or add an indexable meta robots tag is an
+  // ON-page task — it lives in the page's HTML <head>, not in
+  // robots.txt — and was previously misrouted to the off-page robots.txt
+  // check, which then failed because the file was never the issue.
+  if (ct === 'robots') {
+    return /robots\.txt/.test(blob) || /\/robots\.txt(?:\?|$)/.test(impl?.page_url || '');
+  }
+
+  // Heuristic for unlabeled tasks ('other'/'fix'): only flag as off-page
+  // if specific off-page keywords are present.
   return /\bsearch console\b|\bgsc\b|\bdomain ownership\b|\bxml sitemap\b|submit\s+(?:the\s+)?sitemap|google analytics|gtag|gtm|tag manager|robots\.txt/i.test(blob);
 }
 
@@ -188,7 +208,12 @@ export async function checkOffPageTask(impl, client) {
   let result;
   if (ct === 'sitemap' || ct === 'sitemap_submission' || ct === 'xml_sitemap' || /\bxml sitemap\b|submit.*sitemap/.test(blob)) {
     result = await verifySitemap(impl.page_url, client?.url);
-  } else if (ct === 'robots' || ct === 'robots_txt' || /robots\.txt/.test(blob)) {
+  } else if (
+    ct === 'robots_txt' ||
+    (ct === 'robots' && (/robots\.txt/.test(blob) || /\/robots\.txt(?:\?|$)/.test(impl?.page_url || ''))) ||
+    /robots\.txt/.test(blob) ||
+    /\/robots\.txt(?:\?|$)/.test(impl?.page_url || '')
+  ) {
     result = await verifyRobots(impl.page_url, client?.url);
   } else if (ct === 'gsc_setup' || ct === 'gsc' || ct === 'search_console' || ct === 'domain_ownership' || ct === 'ownership_verification' || /search console|domain ownership/.test(blob)) {
     result = await verifyGscOwnership(client);

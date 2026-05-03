@@ -200,7 +200,13 @@ function statusClass(s) {
 
 // Expandable task card for the pipeline view — shows priority, description,
 // copy-paste fix in a code block, and action buttons.
-function TaskCard({ task: t, onUpdate, onVerify, busy, buildPushItem, onVerified }) {
+//
+// taskClient: the client this task ACTUALLY belongs to (resolved from
+// task.client_id). Passed down so the verify button checks the right
+// domain — without this, the verifier used the topbar-selected client,
+// which led to "robots.txt is not reachable at https://bamdiy.com/..."
+// when the user was working on a Syte task with bamdiy.com selected.
+function TaskCard({ task: t, onUpdate, onVerify, busy, buildPushItem, onVerified, taskClient }) {
   const [open, setOpen] = React.useState(false);
   const copyFix = () => navigator.clipboard.writeText(t.copy_paste_fix || '').catch(() => {});
 
@@ -276,6 +282,7 @@ function TaskCard({ task: t, onUpdate, onVerify, busy, buildPushItem, onVerified
               pageUrl={t.page_url}
               title={t.title}
               description={t.copy_paste_fix || t.description || ''}
+              client={taskClient}
               onVerified={onVerified}
             />
           </div>
@@ -482,7 +489,13 @@ export default function TechnicalSEO({ sub }) {
   async function handleVerify(task) {
     setBusy(true); setErr(''); setMsg('');
     try {
-      const r = await verifyFix(task, client);
+      // Resolve the task's actual client. Verifying against the topbar's
+      // current client produced cross-domain probes ("checking
+      // bamdiy.com/robots.txt for a Syte task") when users had a
+      // different client selected. Fall back to the topbar selection
+      // only if we can't find the task's client in the list.
+      const taskClient = clients.find(c => c.id === task.client_id) || client;
+      const r = await verifyFix(task, taskClient);
       // 'manual_required' = off-page check couldn't be automated. Don't
       // overwrite the task status as failed — surface a message instead so
       // the user knows to confirm manually.
@@ -671,7 +684,15 @@ export default function TechnicalSEO({ sub }) {
                   Showing top {topTasks.length} of {cTasks.length} tasks (highest priority first)
                 </div>
                 {topTasks.map(t => (
-                  <TaskCard key={t.id} task={t} onUpdate={updateTask} onVerify={handleVerify} busy={busy} buildPushItem={buildPushItem} onVerified={refreshTechImpls} />
+                  <TaskCard
+                    key={t.id} task={t}
+                    onUpdate={updateTask}
+                    onVerify={handleVerify}
+                    busy={busy}
+                    buildPushItem={buildPushItem}
+                    onVerified={refreshTechImpls}
+                    taskClient={c}
+                  />
                 ))}
               </div>
             );
