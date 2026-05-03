@@ -680,14 +680,25 @@ export default function ContentEngine({ sub, setSub }) {
                       <button onClick={(e) => { e.stopPropagation(); exportDocx(h.output, h.topic || 'article'); }} style={{ fontSize: 11, padding: '3px 8px' }}>.docx</button>
                     </div>
                   </div>
-                  {h.output && (
-                    <details style={{ marginTop: 6 }}>
-                      <summary className="muted" style={{ fontSize: 10, cursor: 'pointer' }}>Preview</summary>
-                      <pre style={{ marginTop: 6, padding: 10, background: 'var(--bg)', fontSize: 11, overflowX: 'auto', whiteSpace: 'pre-wrap', maxHeight: 300, borderRadius: 6 }}>
-                        {h.output.slice(0, 2000)}{h.output.length > 2000 ? '…' : ''}
-                      </pre>
-                    </details>
-                  )}
+                  {h.output && (() => {
+                    const parsed = parseOutputSections(h.output);
+                    const bodyHtml = markdownToHtml(parsed?.body || h.output);
+                    return (
+                      <details style={{ marginTop: 6 }}>
+                        <summary className="muted" style={{ fontSize: 10, cursor: 'pointer' }}>Preview</summary>
+                        <div
+                          className="article-rendered"
+                          style={{
+                            marginTop: 6, padding: 12, background: 'var(--bg)',
+                            fontSize: 13, lineHeight: 1.6, maxHeight: 500,
+                            overflowY: 'auto', borderRadius: 6,
+                            border: '1px solid var(--border)'
+                          }}
+                          dangerouslySetInnerHTML={{ __html: bodyHtml }}
+                        />
+                      </details>
+                    );
+                  })()}
                 </div>
               ))}
             </div>
