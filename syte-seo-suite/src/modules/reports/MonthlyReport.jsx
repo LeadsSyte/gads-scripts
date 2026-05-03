@@ -282,11 +282,18 @@ export default function MonthlyReport() {
         system: MICROSITE_AEO_SYSTEM,
         messages: [{ role: 'user', content: aeoPayload }],
         model: 'claude-sonnet-4-20250514',
-        max_tokens: 1200,
+        // Was 1200 — the AEO microsite JSON has narratives, priorities,
+        // highlights, work items etc. that easily blow past that and
+        // truncate mid-JSON, which then fails extractJSON. 4000 leaves
+        // headroom while still being well under the model limit.
+        max_tokens: 4000,
         temperature: 0.5
       });
       const microObj = extractJSON(micrositeText);
-      if (!microObj) throw new Error('Microsite JSON could not be parsed.');
+      if (!microObj) {
+        console.error('[Report] Microsite (AEO) raw output:', micrositeText);
+        throw new Error('Microsite JSON could not be parsed. Raw output logged to console — usually means truncated output (raise max_tokens) or model wrapped JSON in stray prose.');
+      }
       if (!microObj.clientName) microObj.clientName = client.name;
       setMicroJson(microObj);
 
@@ -385,11 +392,15 @@ export default function MonthlyReport() {
         system: MICROSITE_SYSTEM,
         messages: [{ role: 'user', content: payload }],
         model: 'claude-sonnet-4-20250514',
-        max_tokens: 1000,
+        // Was 1000 — same truncation issue as the AEO path. Bumped to 4000.
+        max_tokens: 4000,
         temperature: 0.5
       });
       const microObj = extractJSON(micrositeText);
-      if (!microObj) throw new Error('Microsite JSON could not be parsed from model output.');
+      if (!microObj) {
+        console.error('[Report] Microsite raw output:', micrositeText);
+        throw new Error('Microsite JSON could not be parsed from model output. Raw output logged to console — usually means truncated output (raise max_tokens) or model wrapped JSON in stray prose.');
+      }
       if (!microObj.clientName) microObj.clientName = client.name;
       setMicroJson(microObj);
 
