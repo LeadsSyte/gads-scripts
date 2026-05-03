@@ -75,7 +75,7 @@ async function generateForPage(pageUrl, client) {
   let pageHtml = '';
   let pageTitle = '';
   try {
-    pageHtml = (await corsFetchText(pageUrl)).slice(0, 30000);
+    pageHtml = (await corsFetchText(pageUrl)).slice(0, 60000);
     // Extract the <title> tag for context.
     const titleMatch = pageHtml.match(/<title[^>]*>([^<]+)<\/title>/i);
     if (titleMatch) pageTitle = titleMatch[1].trim();

@@ -86,20 +86,58 @@ RULES:
 - If the page HTML is provided, analyze what's MISSING and only generate what would add value.
 
 DESIGN-MATCHING (when page HTML is provided — non-negotiable):
-- The optimization will be PASTED into this exact page. It must look NATIVE, not bolted-on. Read the provided page HTML carefully and identify:
-  • The CSS framework / class naming convention (Tailwind utilities, BEM blocks, custom theme classes, WordPress block classes like wp-block-*, Elementor classes like elementor-*, Shopify section classes, etc.)
-  • The brand's heading hierarchy (does the page use <h2 class="section-title"> or just <h2>? Same heading wrapper pattern.)
-  • The container / section wrapper pattern (e.g. <section class="container">, <div class="row">, <article class="prose">). Match it.
-  • Any design-token classes (e.g. text-primary, bg-accent, btn-primary, badge-info). Reuse them.
-  • Common component patterns visible in the page — accordion / card / pill / button / table styles.
-- REUSE the page's class names verbatim wherever they fit. Do not invent new class names that don't exist in the source.
-- If the page uses a CSS framework (Tailwind, Bootstrap, Foundation), output content using THAT framework's utility classes.
-- If the page is unstyled or uses minimal CSS, use simple semantic HTML (<h2>, <p>, <ul>, <table>) without inline styles — let the host page's CSS take over.
-- Only fall back to inline styles if the page HTML contains NO visible class hooks at all.
-- Match the tone of class naming: a page using kebab-case-classes should NOT receive PascalCaseClasses output, and vice-versa.
-- Do not include <style> tags unless the page itself uses scoped <style> blocks in similar locations.
+The optimization will be PASTED into this exact page. It must look NATIVE, not bolted-on. Output that's clearly "AI-generated content sitting on top of someone else's site" is a failure. The bar: visually indistinguishable from content the brand's design team would have produced.
 
-Goal: when the AM pastes the optimization, it should be visually indistinguishable from content the brand's design team would have produced.
+STEP 1 — Detect the rendering layer (in priority order):
+  a. WordPress + page builder shortcodes — if you see [vc_row], [vc_column], [ld_fancy_heading], [et_pb_section], etc. → OUTPUT IN THE SAME SHORTCODE LANGUAGE. The page is rendered through a builder (WPBakery / LoftLoader / Divi). Bare HTML will look out of place; shortcodes will render with the theme's existing styles.
+  b. Gutenberg block markup — <!-- wp:heading -->, <!-- wp:paragraph --> wrappers → output in the same block format.
+  c. Elementor — class="elementor-*" → output using the same elementor classes (.elementor-section, .elementor-widget, etc.).
+  d. CSS framework — Tailwind utility chains, Bootstrap rows/cols, Foundation grid → output using THAT framework's classes verbatim.
+  e. Custom theme — heavy use of inline styles or theme-specific classes → MATCH EXACTLY: copy the same inline-style patterns, the same class names, the same wrapper structure.
+  f. Unstyled / minimal CSS — use bare semantic HTML (<h2>, <p>, <ul>, <table>) and let host CSS take over.
+
+STEP 2 — Extract the brand's design tokens by READING THE PAGE'S INLINE STYLES + CSS:
+  - Primary brand colors (look for repeated hex values in style="color:#xxxxxx" or style="background:..." — usually 2-3 hexes dominate)
+  - Heading colors (the hex used inside <h1> / <h2> style attributes)
+  - Border radius (look for repeated border-radius:Xpx values — common: 8px, 12px, 16px)
+  - Box shadows (copy the exact shadow value — e.g. "0 1px 70px rgba(0,0,0,.07)")
+  - Padding/margin patterns (24px, 28px, 32px, etc.)
+  - Font sizes for h2/h3/p inside the page's existing sections
+  - Any "accent" elements: pill labels, divider lines, button styles
+USE THESE EXACT VALUES in your output. Don't approximate. If the page's H2 is "color:#251d53;font-size:34px", your H2 must use those same values.
+
+STEP 3 — Output in matching format:
+  - For shortcode pages: wrap content in [vc_row]/[vc_column]/[vc_column_text] etc. as the page does. Add a small "AEO label" pill above each section using the same fancy heading shortcode pattern (e.g. [ld_fancy_heading tag="h6" fs="13px" ls="0.12em" color="<accent hex>" fw="600"]LABEL[/ld_fancy_heading]) — copy the color/sizing the existing labels use.
+  - For framework pages: utility-class chains in the framework's vocabulary.
+  - For inline-style pages: produce inline styles using the exact brand values you extracted in step 2. Match border-radius, shadow, padding, color verbatim.
+  - For tables: copy the exact cell padding, border style, header background, and link color the page already uses on its tables (if any).
+  - For FAQs: match the EXISTING FAQ pattern on the page if one exists. If not, use card-style blocks (rounded corners, subtle shadow, brand-colored question heading) with values matching the page's design tokens.
+
+EXAMPLE OF "WELL-MATCHED" OUTPUT (for a WPBakery page using LoftLoader theme, brand colors #251d53/#386aa9, border-radius 12px, shadow rgba(0,0,0,.07)):
+
+  [vc_row][vc_column align="text-center"]
+  [ld_fancy_heading tag="h6" use_custom_fonts_title="true" fs="13px" ls="0.12em" color="rgb(60, 148, 207)" fw="600"]
+  PRICING SUMMARY
+  [/ld_fancy_heading]
+  [ld_fancy_heading use_custom_fonts_title="true" fs="34px" lh="1.2em" color="rgb(37, 29, 83)"]
+  <h2 style="text-align:center;"><span style="color: #251d53;">Our Service Fees at a Glance</span></h2>
+  [/ld_fancy_heading]
+  [vc_column_text]
+  <table style="...border:1px solid #e5e7eb;border-radius:12px;background:#fff;...">
+    <tr style="background:#f7f8fb;"><th style="padding:16px 20px;color:#251d53;...">Service</th>...</tr>
+    ...
+  </table>
+  [/vc_column_text]
+  [/vc_column][/vc_row]
+
+That output reuses the page's exact shortcodes, exact brand hexes, exact radius (12px), exact shadow, exact padding (16px 20px). When pasted, it looks like the brand designed it. THIS is the bar.
+
+WHAT NOT TO DO:
+- ❌ Generic <section style="background:#fff;border:1px solid #e5e7eb;..."> with values you invented — if the page uses 12px radius and #251d53 navy, don't output 8px radius and #0f172a slate.
+- ❌ Bare HTML on a WPBakery page — paste-into-builder will reject it.
+- ❌ Tailwind classes on a non-Tailwind page.
+- ❌ <style> tags unless the page uses scoped <style> blocks in similar locations.
+- ❌ Inventing new class names. If you need a class, only use one that already appears in the page HTML.
 `.trim();
 
 // ---------------------------------------------------------------------------
