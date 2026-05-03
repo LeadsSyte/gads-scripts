@@ -84,6 +84,22 @@ RULES:
 - JSON-LD must be valid and wrapped in <script type="application/ld+json">...</script>.
 - Use the actual page content/topic — no generic boilerplate.
 - If the page HTML is provided, analyze what's MISSING and only generate what would add value.
+
+DESIGN-MATCHING (when page HTML is provided — non-negotiable):
+- The optimization will be PASTED into this exact page. It must look NATIVE, not bolted-on. Read the provided page HTML carefully and identify:
+  • The CSS framework / class naming convention (Tailwind utilities, BEM blocks, custom theme classes, WordPress block classes like wp-block-*, Elementor classes like elementor-*, Shopify section classes, etc.)
+  • The brand's heading hierarchy (does the page use <h2 class="section-title"> or just <h2>? Same heading wrapper pattern.)
+  • The container / section wrapper pattern (e.g. <section class="container">, <div class="row">, <article class="prose">). Match it.
+  • Any design-token classes (e.g. text-primary, bg-accent, btn-primary, badge-info). Reuse them.
+  • Common component patterns visible in the page — accordion / card / pill / button / table styles.
+- REUSE the page's class names verbatim wherever they fit. Do not invent new class names that don't exist in the source.
+- If the page uses a CSS framework (Tailwind, Bootstrap, Foundation), output content using THAT framework's utility classes.
+- If the page is unstyled or uses minimal CSS, use simple semantic HTML (<h2>, <p>, <ul>, <table>) without inline styles — let the host page's CSS take over.
+- Only fall back to inline styles if the page HTML contains NO visible class hooks at all.
+- Match the tone of class naming: a page using kebab-case-classes should NOT receive PascalCaseClasses output, and vice-versa.
+- Do not include <style> tags unless the page itself uses scoped <style> blocks in similar locations.
+
+Goal: when the AM pastes the optimization, it should be visually indistinguishable from content the brand's design team would have produced.
 `.trim();
 
 // ---------------------------------------------------------------------------

@@ -103,7 +103,7 @@ Organization: ${client?.org_name || client?.name || ''}
 Author: ${client?.author || ''} ${client?.author_creds ? '(' + client.author_creds + ')' : ''}
 ${client?.context ? 'Business context: ' + client.context : ''}
 
-${pageHtml ? 'Page HTML (truncated — analyze what content optimizations are MISSING):\n' + pageHtml : 'Page HTML not available (CORS blocked) — generate optimizations based on the URL, topic, and client context. Focus on content that would make this page citable by AI engines.'}`
+${pageHtml ? 'Page HTML (truncated — TWO uses: (1) analyse what content optimizations are MISSING; (2) READ the CSS classes, heading patterns, container structure, and component conventions so your output matches this page\'s design system. The optimization will be pasted into THIS page — make it look native, not bolted-on. Reuse the page\'s class names verbatim wherever they fit. See DESIGN-MATCHING in the system prompt.):\n' + pageHtml : 'Page HTML not available (CORS blocked) — generate optimizations based on the URL, topic, and client context. Focus on content that would make this page citable by AI engines. Use simple semantic HTML without inline styles since we cannot match the page\'s design system.'}`
     }],
     max_tokens: 6000,
     temperature: 0.4
@@ -167,11 +167,9 @@ function buildCombinedAeoHtml(opts) {
 <!--
   AEO ${i + 1}/${visible.length} · ${label} · ${name}${desc ? '\n  ' + desc : ''}${where ? '\n  Placement: ' + where : ''}
 -->
-<details${openAttr} class="aeo-opt aeo-opt-${o.type || 'content'}" style="margin:0 0 12px;border:1px solid #e5e7eb;border-radius:8px;background:#fff;">
-  <summary style="padding:12px 16px;font-weight:600;font-size:15px;cursor:pointer;list-style:none;color:#0f172a;">
-    ${summaryLabel}
-  </summary>
-  <div style="padding:0 16px 16px;">
+<details${openAttr} class="aeo-opt aeo-opt-${o.type || 'content'}">
+  <summary><strong>${summaryLabel}</strong></summary>
+  <div class="aeo-opt-body">
     ${o._code}
   </div>
 </details>
