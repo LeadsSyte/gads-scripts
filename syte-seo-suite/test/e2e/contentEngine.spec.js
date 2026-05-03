@@ -88,9 +88,13 @@ test('regression: Articles Written expanded view renders body as formatted HTML'
 
   await page.goto('/');
   await page.getByRole('button', { name: 'Content Engine' }).first().click();
-  // Auto Write is the default sub on Content Engine, but click anyway to be
-  // explicit and absorb timing variance from sub-state.
-  await page.getByRole('button', { name: 'Auto Write' }).first().click();
+  // Auto Write is the default sub on Content Engine. The sub-nav button
+  // for "Auto Write" appears in the sidebar after the module switch.
+  // Wait for it to be visible before clicking — the click was racing
+  // the sidebar re-render in CI under load.
+  const autoWriteBtn = page.getByRole('button', { name: 'Auto Write' }).first();
+  await expect(autoWriteBtn).toBeVisible({ timeout: 10000 });
+  await autoWriteBtn.click();
 
   // Wait for the pipeline to render. loadContentHistory is async, then
   // pipelineSections recomputes, then PipelineView re-renders.
