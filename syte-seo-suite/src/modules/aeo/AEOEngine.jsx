@@ -265,16 +265,31 @@ function OptPageCard({ result: r, onDelete, onVerified, optClient }) {
   return (
     <div style={{ borderBottom: '1px solid var(--border)' }}>
       <div
-        style={{ padding: '10px 14px', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}
+        style={{ padding: '10px 14px', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' }}
         onClick={() => setOpen(v => !v)}
       >
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontWeight: 600, fontSize: 13 }}>
+        <div style={{ flex: '1 1 220px', minWidth: 0, maxWidth: '100%' }}>
+          <div style={{
+            fontWeight: 600, fontSize: 13,
+            // Truncate long URLs (e.g. /product/ives-dressing-table-dunblane-grey/)
+            // so the right-side button row always has room. Title wraps at most
+            // two lines with ellipsis on overflow.
+            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'
+          }}>
             {pagePath === '/' ? domain + ' (homepage)' : pagePath}
           </div>
-          <div className="muted" style={{ fontSize: 10, marginTop: 1 }}>{displayUrl}</div>
+          <div className="muted" style={{
+            fontSize: 10, marginTop: 1,
+            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'
+          }}>{displayUrl}</div>
         </div>
-        <div className="row" style={{ gap: 6, flexShrink: 0 }}>
+        <div className="row" style={{
+          gap: 6,
+          flex: '0 1 auto',
+          flexWrap: 'wrap',
+          justifyContent: 'flex-end',
+          alignItems: 'center'
+        }}>
           <span style={{ fontSize: 11, color: 'var(--teal)', background: 'rgba(0,212,170,.08)', padding: '2px 8px', borderRadius: 12 }}>
             {opts.length} opts
           </span>
