@@ -769,312 +769,46 @@ export function downloadMicrosite(html, filename) {
 // as PDF" destination so the user gets a clean PDF without needing a
 // server-side renderer (puppeteer / wkhtmltopdf).
 //
-// The PDF is re-skinned to a Syte-branded light theme on the way out:
-// the on-screen microsite is dark-mode + lime accent (designed for the
-// in-browser preview) which prints poorly. For the PDF we override
-// every surface/border/text token so the document reads as a polished
-// agency deliverable on white paper, and inject a Syte cover page and
-// @page running header / footer with the logo.
+// The PDF is meant to look exactly like the on-screen HTML — we only
+// add @page sizing, force colour preservation (Chrome strips background
+// colours by default in print), and tighten page-break behaviour so
+// cards / table rows don't split awkwardly across pages.
 export function downloadMicrositePdf(html, filename) {
-  // Syte palette — pulled from the agency brand (navy ground, vivid blue
-  // accent, white wordmark). Applied to PDF only.
-  const SYTE_NAVY    = '#0E2547';
-  const SYTE_BLUE    = '#1FA9F0';
-  const SYTE_BLUE_DK = '#1786C2';
-  const INK          = '#142133';
-  const INK_MUTED    = '#5b6678';
-  const RULE         = '#dde3ec';
-  const SURFACE      = '#f5f8fc';
-  const SURFACE_2    = '#eaf1f9';
-  const POS          = '#1a8754';
-  const NEG          = '#c0392b';
-  const WARN         = '#b8740b';
-
-  // Inline SVG of the Syte mark — three stacked chevrons in the brand
-  // blue. Embedded so the PDF needs no network and prints reliably even
-  // with images disabled.
-  const SYTE_LOGO_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 64" aria-label="Syte">
-    <g fill="${SYTE_BLUE}">
-      <path d="M8 28 L24 12 L40 28 L32 36 L24 28 L16 36 Z"/>
-      <path d="M8 44 L24 28 L40 44 L32 52 L24 44 L16 52 Z" opacity="0.75"/>
-    </g>
-    <text x="56" y="44" font-family="Syne, system-ui, sans-serif" font-size="36" font-weight="800" fill="${SYTE_NAVY}" letter-spacing="-1">syte</text>
-  </svg>`;
-
   const PRINT_CSS = `
-    /* ------- Page setup ------- */
-    @page {
-      size: A4;
-      margin: 22mm 14mm 18mm;
-      @top-left {
-        content: element(syteRunningHeader);
-      }
-      @bottom-left {
-        content: "syte.co.za  ·  hello@syte.co.za";
-        font-family: 'Syne', system-ui, sans-serif;
-        font-size: 9pt;
-        color: ${INK_MUTED};
-      }
-      @bottom-right {
-        content: "Page " counter(page) " of " counter(pages);
-        font-family: 'Syne', system-ui, sans-serif;
-        font-size: 9pt;
-        color: ${INK_MUTED};
-      }
-    }
-    @page :first {
-      margin: 0;
-      @top-left { content: none; }
-      @bottom-left { content: none; }
-      @bottom-right { content: none; }
-    }
-
+    @page { size: A4; margin: 0; }
     @media print {
-      /* ------- Token overrides — re-skin dark theme to Syte light ------- */
-      :root {
-        --bg: #ffffff !important;
-        --surface: ${SURFACE} !important;
-        --surface-2: ${SURFACE_2} !important;
-        --border: ${RULE} !important;
-        --text: ${INK} !important;
-        --muted: ${INK_MUTED} !important;
-        --faint: #95a0b1 !important;
-        --accent: ${SYTE_BLUE} !important;
-        --accent-blue: ${SYTE_BLUE} !important;
-        --green: ${POS} !important;
-        --red: ${NEG} !important;
-        --orange: ${WARN} !important;
-      }
-
-      html, body {
-        background: #ffffff !important;
-        color: ${INK} !important;
+      /* Force every coloured surface to print — without this, Chrome
+         drops the dark background and the report comes out white. */
+      *, *::before, *::after {
         -webkit-print-color-adjust: exact !important;
         print-color-adjust: exact !important;
-        font-size: 10.5pt;
-        line-height: 1.45;
       }
+      html, body {
+        background: var(--bg) !important;
+        color: var(--text) !important;
+      }
+      /* The microsite already has its own padding via .wrap — we just
+         need to make sure the dark background extends to the page edges
+         since we set @page margin to 0. */
+      .wrap { padding: 18mm 14mm !important; }
 
-      /* The wrapper is a full-bleed deck on screen; on paper let @page own
-         the margins so the running header/footer have room. */
-      .wrap { max-width: none !important; padding: 0 !important; margin: 0 !important; }
-
-      /* Headings — Syte navy, tight. */
-      h1, h2, h3 { color: ${SYTE_NAVY} !important; }
-      h1 { font-size: 28pt !important; line-height: 1.05 !important; }
-      h2 { font-size: 18pt !important; margin: 0 0 10px !important; }
-      h3 { font-size: 13pt !important; }
-
-      /* Hero — drop the dark wrap, stack with a thicker rule. */
-      .hero {
-        padding: 0 0 18px !important;
-        border-bottom: 3px solid ${SYTE_BLUE} !important;
-        margin-bottom: 18px !important;
-      }
-      .hero .logo, footer .logo { display: none !important; }
-      .hero .subhead { color: ${INK_MUTED} !important; font-size: 12pt !important; }
-      .hero .prepared {
-        background: ${SURFACE} !important; border: 1px solid ${RULE} !important;
-        color: ${INK_MUTED} !important;
-      }
-      .pill {
-        background: ${SURFACE_2} !important; border: 1px solid ${RULE} !important;
-        color: ${SYTE_NAVY} !important; font-weight: 600;
-      }
-
-      /* Sections — lighter dividers, no full-width background bleed. */
-      section {
-        padding: 14px 0 !important;
-        border-bottom: 1px solid ${RULE} !important;
-        background: transparent !important;
-      }
-      section.aeo { background: ${SURFACE} !important; padding: 14px 16px !important; border-radius: 8px !important; border: 1px solid ${RULE} !important; }
-
-      /* Cards / metrics — flatten gradients, use brand surface. */
-      .metric, .work-card, .engine-tile, .next, .ppc-card,
-      [style*="background:var(--surface)"], [style*="background: var(--surface)"] {
-        background: ${SURFACE} !important;
-        border: 1px solid ${RULE} !important;
-        color: ${INK} !important;
-      }
-      .work-card { border-left: 3px solid ${SYTE_BLUE} !important; }
-      .next { border-left: 4px solid ${SYTE_BLUE} !important; }
-      .metric-val, .ppc-value, .aeo-score, .engine-score {
-        color: ${SYTE_NAVY} !important;
-      }
-      .metric-label, .work-cat, .page-users, .aeo-score-delta, .ppc-label, .ppc-detail, .engine-name {
-        color: ${INK_MUTED} !important;
-      }
-      .work-cat { color: ${SYTE_BLUE_DK} !important; font-weight: 700; }
-      .metric-delta.pos, .page-delta { color: ${POS} !important; }
-      .metric-delta.neg { color: ${NEG} !important; }
-
-      /* Buttons / Rankscale CTA — strip interactive treatment in print. */
-      .btn {
-        background: ${SYTE_BLUE} !important; color: #ffffff !important;
-        border: none !important;
-      }
-
-      /* Tables — readable on paper. */
-      table {
-        width: 100% !important;
-        border-collapse: collapse !important;
-        font-size: 9.5pt !important;
-        background: #ffffff !important;
-      }
-      thead { display: table-header-group !important; }
-      th {
-        background: ${SYTE_NAVY} !important;
-        color: #ffffff !important;
-        font-weight: 600 !important;
-        text-transform: uppercase !important;
-        letter-spacing: .05em !important;
-        font-size: 8.5pt !important;
-        padding: 7px 9px !important;
-        border-bottom: none !important;
-      }
-      td {
-        padding: 6px 9px !important;
-        border-bottom: 1px solid ${RULE} !important;
-        color: ${INK} !important;
-      }
-      tbody tr:nth-child(even) td { background: ${SURFACE} !important; }
-      tbody tr:nth-child(even) { background: ${SURFACE} !important; }
-
-      /* Engine bars / comp bars — paint the fill so it survives print. */
-      .engine-bar, .comp-bar {
-        background: ${SURFACE_2} !important;
-        border: 1px solid ${RULE} !important;
-      }
-      .comp-bar > div { background: ${SYTE_BLUE} !important; }
-
-      /* Sentiment / status pills */
-      .sentiment-badge {
-        background: ${SURFACE} !important;
-        color: ${POS} !important;
-        border: 1px solid ${POS} !important;
-      }
-
-      /* AEO score figure — make sure the colored score stays visible
-         instead of getting the inline scoreColor() lime against white. */
-      .aeo-score { font-size: 56pt !important; }
-      .aeo-score[style*="color:#34d399"], .aeo-score[style*="color: #34d399"] { color: ${POS} !important; }
-      .aeo-score[style*="color:#ff9f43"], .aeo-score[style*="color: #ff9f43"] { color: ${WARN} !important; }
-      .aeo-score[style*="color:#ff4d4d"], .aeo-score[style*="color: #ff4d4d"] { color: ${NEG} !important; }
-
-      /* Page-break behaviour — keep cards / table rows together. */
-      section, .card, .metric, .work-card, .ppc-card, .next { break-inside: avoid; page-break-inside: avoid; }
+      /* Page-break behaviour — keep cards / table rows together where
+         possible so the document reads cleanly. */
+      section, .card, .metric, .work-card, .ppc-card, .next, .engine-tile,
+      .comp-row, footer { break-inside: avoid; page-break-inside: avoid; }
       h1, h2, h3 { break-after: avoid-page; page-break-after: avoid; }
       table { break-inside: auto; }
       tr { break-inside: avoid; break-after: auto; }
-
-      /* Hide on-page footer (we render the brand footer via @page bottom). */
-      footer { display: none !important; }
-
-      /* Running header — Syte logo strip on every page after the cover. */
-      #syte-running-header {
-        position: running(syteRunningHeader);
-        display: flex; align-items: center; justify-content: space-between;
-        gap: 12px;
-        font-family: 'Syne', system-ui, sans-serif;
-        font-size: 9pt; color: ${INK_MUTED};
-        padding-bottom: 6px;
-        border-bottom: 1px solid ${RULE};
-        width: 100%;
-      }
-      #syte-running-header svg { height: 16px; }
-
-      /* Cover page — appears before everything else on its own first page. */
-      #syte-cover {
-        page-break-after: always;
-        background: ${SYTE_NAVY};
-        color: #ffffff;
-        padding: 28mm 22mm;
-        min-height: 100vh;
-        display: flex; flex-direction: column; justify-content: space-between;
-      }
-      #syte-cover svg text { fill: #ffffff !important; }
-      #syte-cover .cover-tag {
-        font-family: 'Syne', sans-serif;
-        font-size: 9pt; letter-spacing: .35em;
-        text-transform: uppercase; color: ${SYTE_BLUE};
-        margin-top: 8mm;
-      }
-      #syte-cover .cover-title {
-        font-family: 'DM Serif Display', Georgia, serif;
-        font-size: 42pt; line-height: 1.05;
-        margin-top: 60mm; max-width: 150mm;
-      }
-      #syte-cover .cover-client {
-        font-family: 'Syne', sans-serif;
-        font-size: 16pt; font-weight: 600;
-        margin-top: 14mm; color: ${SYTE_BLUE};
-      }
-      #syte-cover .cover-meta {
-        margin-top: 6mm;
-        font-family: 'Syne', sans-serif;
-        font-size: 11pt; color: rgba(255,255,255,.75);
-      }
-      #syte-cover .cover-foot {
-        margin-top: auto;
-        display: flex; justify-content: space-between; align-items: end;
-        font-size: 9pt; color: rgba(255,255,255,.6);
-        letter-spacing: .04em;
-      }
+      thead { display: table-header-group; }
     }
-    /* Hide the cover + running header in the on-screen preview window —
-       they're only meant for the print pipeline. */
-    @media screen {
-      #syte-cover, #syte-running-header { display: none; }
-    }
-  `;
-
-  // Build the cover + running-header HTML to inject at the top of <body>.
-  // Pull title / client / month out of the existing document by parsing
-  // <title> — keeps this function decoupled from the microsite builder.
-  const titleMatch = html.match(/<title>([^<]*)<\/title>/i);
-  const docTitle = titleMatch ? titleMatch[1] : (filename || 'Report').replace(/\.pdf$/i, '');
-  // Title is shaped like "ClientName — Month Year Report" — split on em
-  // dash so we can render the client + month separately on the cover.
-  const [coverClient, coverMeta = ''] = docTitle.split(/\s+—\s+|\s+-\s+/);
-
-  const COVER_HTML = `
-    <div id="syte-cover">
-      <div>
-        ${SYTE_LOGO_SVG}
-        <div class="cover-tag">The Performance Marketing Agency</div>
-        <div class="cover-title">Monthly performance report.</div>
-        <div class="cover-client">${esc(coverClient || '')}</div>
-        <div class="cover-meta">${esc(coverMeta || '')}</div>
-      </div>
-      <div class="cover-foot">
-        <span>Confidential — prepared by Syte</span>
-        <span>syte.co.za</span>
-      </div>
-    </div>
-    <div id="syte-running-header">
-      ${SYTE_LOGO_SVG}
-      <span>${esc(coverClient || '')} · ${esc(coverMeta || '')}</span>
-    </div>
   `;
 
   const titleTag = '<title>' + (filename || 'Report').replace(/\.pdf$/i, '') + '</title>';
-
-  // Inject the print CSS just before </head>, then inject the cover +
-  // running header at the very top of <body>. If there's no </head> or
-  // <body> (defensive), prepend everything to the document.
   let prepared;
   if (html.includes('</head>')) {
     prepared = html.replace('</head>', '<style>' + PRINT_CSS + '</style>\n' + titleTag + '</head>');
   } else {
     prepared = '<style>' + PRINT_CSS + '</style>' + titleTag + html;
-  }
-  if (prepared.includes('<body>')) {
-    prepared = prepared.replace('<body>', '<body>' + COVER_HTML);
-  } else if (prepared.includes('<body ')) {
-    prepared = prepared.replace(/<body\b([^>]*)>/, '<body$1>' + COVER_HTML);
-  } else {
-    prepared = COVER_HTML + prepared;
   }
 
   const win = window.open('', '_blank');

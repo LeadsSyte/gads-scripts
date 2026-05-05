@@ -122,3 +122,14 @@ create unique index if not exists syte_suite_report_cache_uniq
   on syte_suite_report_cache(client_id, month);
 
 alter table syte_suite_report_cache disable row level security;
+
+-- 7. Generated report content — the actual artefacts produced by a
+-- generation run (Alice email, microsite JSON, QA, AEO probe, frozen
+-- reportData snapshot). Persisted so reopening the tool can re-render
+-- the report without re-running Claude / re-querying GA4+GSC.
+-- One row per client per month; updated on regeneration.
+alter table syte_suite_report_generated_log add column if not exists email_body text;
+alter table syte_suite_report_generated_log add column if not exists microsite_json jsonb;
+alter table syte_suite_report_generated_log add column if not exists qa jsonb;
+alter table syte_suite_report_generated_log add column if not exists aeo_probe jsonb;
+alter table syte_suite_report_generated_log add column if not exists report_data jsonb;

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useClients } from '../../store/useClients.js';
 import { claudeComplete, extractJSON } from '../../lib/anthropic.js';
-import { listAeoSnapshots, logReportSent, logReportGenerated, getCachedReportData, setCachedReportData } from '../../lib/supabase.js';
+import { listAeoSnapshots, logReportSent, logReportGenerated, getGeneratedReport, getCachedReportData, setCachedReportData } from '../../lib/supabase.js';
 import {
   ALICE_SYSTEM, MICROSITE_SYSTEM, QA_SYSTEM,
   ALICE_AEO_SYSTEM, MICROSITE_AEO_SYSTEM, QA_AEO_SYSTEM,
@@ -63,18 +63,51 @@ export default function MonthlyReport() {
   const [previousAeoSnap, setPreviousAeoSnap] = useState(null);
   const [aeoOnly, setAeoOnly] = useState(false);
 
-  // Auto-fetch GA4 + GSC data when client or month changes.
+  const [savedReportLoaded, setSavedReportLoaded] = useState(false);
+
+  // When client / month changes: rehydrate any previously-generated report
+  // (so review mode shows up without regenerating), then fetch fresh GA4 +
+  // GSC data only if there's nothing saved to render.
   useEffect(() => {
     setEmail({ subject: '', body: '' });
     setMicroJson(null); setQa(null); setSent(false); setPhase('idle'); setErr('');
     setAeoOnly(false);
+    setSavedReportLoaded(false);
+    setLiveAeoProbe(null);
     const hasSeo = client?.does_content !== false || client?.does_technical !== false;
     const hasAeo = client?.does_aeo !== false;
     setForm({ hasSeo, hasAeo, industry: client?.industry || '' });
-    if (client?.id) {
-      setWorkSummary(getWorkSummary(client.id, month));
-      autoFetchMetrics(client, month);
-    }
+    if (!client?.id) return;
+    setWorkSummary(getWorkSummary(client.id, month));
+
+    let cancelled = false;
+    (async () => {
+      const saved = await getGeneratedReport(client.id, month).catch(() => null);
+      if (cancelled) return;
+      // Microsite JSON is required to render the iframe preview, so review
+      // mode only kicks in if at least that survived the save.
+      if (saved?.microsite_json) {
+        setMicroJson(saved.microsite_json);
+        setEmail({ subject: saved.email_subject || '', body: saved.email_body || '' });
+        if (saved.qa) setQa(saved.qa);
+        if (saved.aeo_probe) setLiveAeoProbe(saved.aeo_probe);
+        if (saved.report_type === 'aeo') setAeoOnly(true);
+        // Saved snapshot of report_data wins over a live fetch — the
+        // generated copy was written against this data and the numbers
+        // would mismatch otherwise.
+        if (saved.report_data) {
+          setReportData(saved.report_data);
+          setFetchStatus('Loaded saved report from ' + new Date(saved.generated_at || saved.created_at || Date.now()).toLocaleDateString());
+        } else {
+          autoFetchMetrics(client, month);
+        }
+        setPhase('review');
+        setSavedReportLoaded(true);
+      } else {
+        autoFetchMetrics(client, month);
+      }
+    })();
+    return () => { cancelled = true; };
   }, [client?.id, month]);
 
   useEffect(() => {
@@ -330,7 +363,14 @@ export default function MonthlyReport() {
         month,
         report_type: 'aeo',
         qa_score: qaObj?.overallScore || null,
-        email_subject: parseAliceOutput(aliceText).subject || ''
+        email_subject: parseAliceOutput(aliceText).subject || '',
+        // Full content snapshot so the report can be re-rendered on a
+        // future visit without regenerating.
+        email_body: parseAliceOutput(aliceText).body || aliceText,
+        microsite_json: microObj,
+        qa: qaObj || null,
+        aeo_probe: probeResult,
+        report_data: null
       }).catch(() => {});
 
       setPhase('review');
@@ -437,7 +477,14 @@ export default function MonthlyReport() {
         month,
         report_type: 'full',
         qa_score: qaObj?.overallScore || null,
-        email_subject: parsed.subject || ''
+        email_subject: parsed.subject || '',
+        // Full content snapshot so the report can be re-rendered on a
+        // future visit without regenerating.
+        email_body: parsed.body || aliceText,
+        microsite_json: microObj,
+        qa: qaObj || null,
+        aeo_probe: liveAeoProbe,
+        report_data: reportData
       }).catch(() => {});
 
       setPhase('review');
@@ -772,6 +819,16 @@ export default function MonthlyReport() {
       {/* Review section */}
       {phase === 'review' && (
         <>
+          {savedReportLoaded && (
+            <div className="card" style={{ marginBottom: 14, padding: '10px 16px', borderColor: 'rgba(167,139,250,.4)', background: 'rgba(167,139,250,.06)' }}>
+              <div className="row" style={{ gap: 10, alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 13 }}>
+                  <strong style={{ color: ACCENT }}>Saved report loaded.</strong>{' '}
+                  <span className="muted">Showing the report generated for {monthLabel(month)}. Regenerate to overwrite with fresh data.</span>
+                </span>
+              </div>
+            </div>
+          )}
           {qa && (
             <div className="card" style={{ marginBottom: 14 }}>
               <div className="row" style={{ justifyContent: 'space-between', marginBottom: 10 }}>
