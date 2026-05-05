@@ -162,3 +162,7 @@ alter table syte_suite_report_generated_log add column if not exists microsite_j
 alter table syte_suite_report_generated_log add column if not exists qa jsonb;
 alter table syte_suite_report_generated_log add column if not exists aeo_probe jsonb;
 alter table syte_suite_report_generated_log add column if not exists report_data jsonb;
+-- Operator-edited microsite HTML. When set, the report viewer renders this
+-- verbatim instead of re-building from microsite_json + report_data — so
+-- in-place visual edits made before sending survive the round-trip.
+alter table syte_suite_report_generated_log add column if not exists microsite_html_override text;

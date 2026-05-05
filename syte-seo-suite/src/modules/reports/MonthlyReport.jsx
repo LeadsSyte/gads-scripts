@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useClients } from '../../store/useClients.js';
 import { claudeComplete, extractJSON } from '../../lib/anthropic.js';
 import { listAeoSnapshots, logReportSent, logReportGenerated, getGeneratedReport, getCachedReportData, setCachedReportData } from '../../lib/supabase.js';
@@ -63,6 +63,12 @@ export default function MonthlyReport() {
   const [liveAeoProbe, setLiveAeoProbe] = useState(null);
   const [previousAeoSnap, setPreviousAeoSnap] = useState(null);
   const [aeoOnly, setAeoOnly] = useState(false);
+  // In-place visual editing state. When set, renders verbatim instead of
+  // rebuilding from microJson — that's how operator edits to copy/figures
+  // survive download / PDF / saved-report reload.
+  const [htmlOverride, setHtmlOverride] = useState(null);
+  const [editingMicro, setEditingMicro] = useState(false);
+  const microIframeRef = useRef(null);
 
   const [savedReportLoaded, setSavedReportLoaded] = useState(false);
 
@@ -75,6 +81,7 @@ export default function MonthlyReport() {
     setAeoOnly(false);
     setSavedReportLoaded(false);
     setLiveAeoProbe(null);
+    setHtmlOverride(null); setEditingMicro(false);
     const hasSeo = client?.does_content !== false || client?.does_technical !== false;
     const hasAeo = client?.does_aeo !== false;
     setForm({ hasSeo, hasAeo, industry: client?.industry || '' });
@@ -93,6 +100,7 @@ export default function MonthlyReport() {
         if (saved.qa) setQa(saved.qa);
         if (saved.aeo_probe) setLiveAeoProbe(saved.aeo_probe);
         if (saved.report_type === 'aeo') setAeoOnly(true);
+        if (saved.microsite_html_override) setHtmlOverride(saved.microsite_html_override);
         // Saved snapshot of report_data wins over a live fetch — the
         // generated copy was written against this data and the numbers
         // would mismatch otherwise.
@@ -346,6 +354,11 @@ export default function MonthlyReport() {
     });
   }, [microJson, client, month, reportData, liveAeoProbe, aeoSnap, previousAeoSnap, aeoOnly]);
 
+  // What we actually render / download / print: the operator's visual
+  // edits if any, otherwise the freshly built microsite. Override is
+  // cleared when client/month change.
+  const displayHtml = htmlOverride || micrositeHtml;
+
   // Generate AEO-only report — skips SEO data, focuses on AI visibility.
   async function generateAeoOnly() {
     if (!client) return;
@@ -579,9 +592,9 @@ export default function MonthlyReport() {
   }
 
   function downloadHtml() {
-    if (!micrositeHtml) return;
+    if (!displayHtml) return;
     const safeName = (client.name || 'client').replace(/[^a-z0-9]+/gi, '-');
-    downloadMicrosite(micrositeHtml, `${safeName}-${month}-Report.html`);
+    downloadMicrosite(displayHtml, `${safeName}-${month}-Report.html`);
   }
 
   // Print to PDF — opens the microsite in a new window with print-
@@ -589,9 +602,70 @@ export default function MonthlyReport() {
   // gets the browser's "Save as PDF" dialog. No server-side renderer
   // needed; works in every modern browser.
   function downloadPdf() {
-    if (!micrositeHtml) return;
+    if (!displayHtml) return;
     const safeName = (client.name || 'client').replace(/[^a-z0-9]+/gi, '-');
-    downloadMicrositePdf(micrositeHtml, `${safeName}-${month}-Report.pdf`);
+    downloadMicrositePdf(displayHtml, `${safeName}-${month}-Report.pdf`);
+  }
+
+  // Toggle in-place visual editing on the microsite preview iframe. Sets
+  // body.contentEditable so the operator can click into any rendered
+  // text and tweak it. Click Apply Edits to capture the resulting HTML
+  // as the override; from then on download / PDF / saved-report reload
+  // all reflect the edits.
+  function toggleMicroEdit() {
+    const iframe = microIframeRef.current;
+    const doc = iframe?.contentDocument;
+    if (!doc?.body) return;
+    if (editingMicro) {
+      doc.body.contentEditable = 'false';
+      doc.designMode = 'off';
+      setEditingMicro(false);
+    } else {
+      doc.body.contentEditable = 'true';
+      // designMode = 'on' makes the whole document editable (richer
+      // selection / paste behaviour than per-element contentEditable).
+      try { doc.designMode = 'on'; } catch {}
+      setEditingMicro(true);
+      try { iframe.contentWindow?.focus(); } catch {}
+    }
+  }
+
+  async function applyMicroEdits() {
+    const iframe = microIframeRef.current;
+    const doc = iframe?.contentDocument;
+    if (!doc) return;
+    // Capture the full document including <head> / <style> so the saved
+    // HTML re-renders identically — the microsite's CSS lives in the
+    // iframe's <style> block.
+    const html = '<!DOCTYPE html>\n' + doc.documentElement.outerHTML;
+    setHtmlOverride(html);
+    // Persist immediately so a tab close or refresh keeps the edits.
+    try {
+      await logReportGenerated({
+        client_id: client.id,
+        month,
+        report_type: aeoOnly ? 'aeo' : 'full',
+        qa_score: qa?.overallScore || null,
+        email_subject: email.subject || '',
+        email_body: email.body || '',
+        microsite_json: microJson,
+        microsite_html_override: html,
+        qa: qa || null,
+        aeo_probe: liveAeoProbe,
+        report_data: aeoOnly ? null : reportData
+      });
+    } catch {}
+    // Exit edit mode — the iframe will reload from the new srcDoc.
+    if (doc.body) {
+      doc.body.contentEditable = 'false';
+      try { doc.designMode = 'off'; } catch {}
+    }
+    setEditingMicro(false);
+  }
+
+  function discardMicroEdits() {
+    setHtmlOverride(null);
+    setEditingMicro(false);
   }
 
   if (!client) return <div className="muted">Select a client first.</div>;
@@ -955,23 +1029,46 @@ export default function MonthlyReport() {
             <textarea value={email.body} onChange={e => setEmail(prev => ({ ...prev, body: e.target.value }))} rows={12} style={{ fontFamily: 'DM Sans, sans-serif', fontSize: 14 }} />
           </div>
 
-          {micrositeHtml && (
+          {displayHtml && (
             <div className="card" style={{ marginBottom: 14 }}>
-              <div className="row" style={{ justifyContent: 'space-between', marginBottom: 10 }}>
-                <strong>Microsite Preview</strong>
-                <div className="row" style={{ gap: 8 }}>
-                  <button onClick={downloadHtml}>Download .html</button>
-                  <button onClick={downloadPdf} className="primary">Download PDF</button>
+              <div className="row" style={{ justifyContent: 'space-between', marginBottom: 10, flexWrap: 'wrap', gap: 8 }}>
+                <div className="row" style={{ gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <strong>Microsite Preview</strong>
+                  {htmlOverride && !editingMicro && (
+                    <span className="badge" style={{ fontSize: 9, background: 'rgba(167,139,250,.15)', color: ACCENT, borderColor: ACCENT }}>EDITED</span>
+                  )}
+                  {editingMicro && (
+                    <span className="badge" style={{ fontSize: 9, background: 'rgba(255,159,67,.15)', color: 'var(--orange)', borderColor: 'var(--orange)' }}>EDITING — click into the preview to change text</span>
+                  )}
+                </div>
+                <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+                  {!editingMicro && (
+                    <button onClick={toggleMicroEdit} style={{ borderColor: ACCENT, color: ACCENT }}>
+                      {htmlOverride ? 'Edit again' : 'Edit visually'}
+                    </button>
+                  )}
+                  {editingMicro && (
+                    <>
+                      <button onClick={applyMicroEdits} className="primary" style={{ background: ACCENT, borderColor: ACCENT, color: '#0a0a0c' }}>Apply edits</button>
+                      <button onClick={toggleMicroEdit}>Cancel</button>
+                    </>
+                  )}
+                  {htmlOverride && !editingMicro && (
+                    <button onClick={discardMicroEdits} style={{ color: 'var(--red)' }}>Discard edits</button>
+                  )}
+                  <button onClick={downloadHtml} disabled={editingMicro}>Download .html</button>
+                  <button onClick={downloadPdf} className="primary" disabled={editingMicro}>Download PDF</button>
                   <button onClick={() => setShowMicroFull(v => !v)}>{showMicroFull ? 'Collapse' : 'Open full screen'}</button>
                 </div>
               </div>
               <iframe
+                ref={microIframeRef}
                 title="microsite"
-                srcDoc={micrositeHtml}
+                srcDoc={displayHtml}
                 style={{
                   width: '100%',
                   height: showMicroFull ? '80vh' : 520,
-                  border: '1px solid var(--border)',
+                  border: editingMicro ? '2px solid ' + ACCENT : '1px solid var(--border)',
                   borderRadius: 'var(--radius)',
                   background: 'var(--bg)'
                 }}
