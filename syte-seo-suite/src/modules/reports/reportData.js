@@ -30,8 +30,11 @@ function getReportPeriods(year, month) {
 }
 
 // ─── GA4 Organic Traffic + Conversions ───────────────────────
-async function fetchGA4Period(propertyId, dateRange, clientType) {
-  const token = await ensureToken([SCOPES.ga4]);
+// `expectedEmail` pins which cached Google-account token gets used —
+// supports the per-API binding where GA4 lives under a different Google
+// account than GSC for the same client.
+async function fetchGA4Period(propertyId, dateRange, clientType, expectedEmail = null) {
+  const token = await ensureToken([SCOPES.ga4], { expectedEmail });
 
   // Base metrics always needed.
   const metrics = [
@@ -102,7 +105,7 @@ async function fetchGA4Period(propertyId, dateRange, clientType) {
 const MAX_KEYWORD_ROWS = 10000;
 const PAGE_SIZE = 2500;
 
-async function fetchKeywordRankings(gscProperty, dateRange) {
+async function fetchKeywordRankings(gscProperty, dateRange, expectedEmail = null) {
   const all = [];
   for (let startRow = 0; startRow < MAX_KEYWORD_ROWS; startRow += PAGE_SIZE) {
     const page = await querySearchAnalytics(gscProperty, {
@@ -110,7 +113,8 @@ async function fetchKeywordRankings(gscProperty, dateRange) {
       endDate: dateRange.endDate,
       dimensions: ['query'],
       rowLimit: PAGE_SIZE,
-      startRow
+      startRow,
+      expectedEmail
     });
     const rows = page.rows || [];
     all.push(...rows);
@@ -119,12 +123,13 @@ async function fetchKeywordRankings(gscProperty, dateRange) {
   return { rows: all };
 }
 
-async function fetchTopPages(gscProperty, dateRange) {
+async function fetchTopPages(gscProperty, dateRange, expectedEmail = null) {
   return querySearchAnalytics(gscProperty, {
     startDate: dateRange.startDate,
     endDate: dateRange.endDate,
     dimensions: ['page'],
-    rowLimit: 20
+    rowLimit: 20,
+    expectedEmail
   });
 }
 
@@ -136,14 +141,22 @@ export async function fetchReportData(client, year, month1Based) {
   const clientType = client.client_type || 'lead_gen';
   const errors = [];
 
+  // Per-API account binding. The agency has clients where GA4 lives in
+  // one Google account and Search Console lives in another (e.g. brand
+  // owns GSC, agency hosts GA4). Each fetcher uses its own binding,
+  // falling back to the legacy single google_account_email for clients
+  // set up before the per-API fields existed.
+  const ga4Email = client.ga4_account_email || client.google_account_email || null;
+  const gscEmail = client.gsc_account_email || client.google_account_email || null;
+
   // 1. GA4 traffic + conversions (3 periods in parallel)
   let traffic = { current: null, previous: null, yoy: null };
   if (client.ga4_property_id) {
     try {
       const [cur, prev, yoy] = await Promise.all([
-        fetchGA4Period(client.ga4_property_id, periods.current, clientType),
-        fetchGA4Period(client.ga4_property_id, periods.prev, clientType),
-        fetchGA4Period(client.ga4_property_id, periods.yoy, clientType)
+        fetchGA4Period(client.ga4_property_id, periods.current, clientType, ga4Email),
+        fetchGA4Period(client.ga4_property_id, periods.prev, clientType, ga4Email),
+        fetchGA4Period(client.ga4_property_id, periods.yoy, clientType, ga4Email)
       ]);
       traffic = { current: cur, previous: prev, yoy };
     } catch (e) {
@@ -158,11 +171,11 @@ export async function fetchReportData(client, year, month1Based) {
   let topPages = [];
   if (client.gsc_property) {
     try {
-      await ensureToken([SCOPES.gsc]);
+      await ensureToken([SCOPES.gsc], { expectedEmail: gscEmail });
       const [curKw, prevKw, pages] = await Promise.all([
-        fetchKeywordRankings(client.gsc_property, periods.current),
-        fetchKeywordRankings(client.gsc_property, periods.prev),
-        fetchTopPages(client.gsc_property, periods.current)
+        fetchKeywordRankings(client.gsc_property, periods.current, gscEmail),
+        fetchKeywordRankings(client.gsc_property, periods.prev, gscEmail),
+        fetchTopPages(client.gsc_property, periods.current, gscEmail)
       ]);
 
       // Build keyword comparison table.

@@ -10,7 +10,7 @@ import {
 import { buildMicrositeHtml, downloadMicrosite, downloadMicrositePdf } from './microsite.js';
 import { runSnapshot, snapshotPreflight } from './aeoRunner.js';
 import { compareSnapshots, rankBrandWithCompetitors, normalizeSnapshot } from './aeoCompare.js';
-import { ensureToken, SCOPES, getToken, switchAccount, silentRefresh, getCurrentEmail, TOKEN_EVENT } from '../technical/googleAuth.js';
+import { ensureToken, SCOPES, getToken, switchAccount, silentRefresh, getCurrentEmail, getTokenForEmail, TOKEN_EVENT } from '../technical/googleAuth.js';
 import { fetchReportData } from './reportData.js';
 import ReportDashboard from './ReportDashboard.jsx';
 
@@ -187,59 +187,80 @@ export default function MonthlyReport() {
     }
 
     // ── Auth handling ──
-    // Don't auto-pop the Google sign-in modal on mount/month change. First
-    // try a silent refresh — works without a popup if the user is still
-    // signed into Google in this browser. Only if that fails AND the user
-    // explicitly asked (forceRefresh) do we surface the interactive picker.
-    // The client's saved google_account_email is used as a login hint so
-    // the right account is preselected, and as an expected-email check so
-    // a wrong-account session is flagged instead of silently 403-ing.
-    const needsGoogle = c.ga4_property_id || c.gsc_property;
-    const expectedEmail = c.google_account_email || null;
-    let token = getToken();
+    // Per-API bindings: a client can have GA4 in one Google account and
+    // GSC in another. Each API uses its own binding; both fall back to
+    // the legacy single google_account_email if the per-API field isn't
+    // set yet (clients created before this split).
+    const ga4Email = c.ga4_account_email || c.google_account_email || null;
+    const gscEmail = c.gsc_account_email || c.google_account_email || null;
+    const needsGa4 = !!c.ga4_property_id;
+    const needsGsc = !!c.gsc_property;
+    const needsGoogle = needsGa4 || needsGsc;
 
-    if (!token?.access_token && needsGoogle && !forceRefresh) {
-      setFetchStatus('Reconnecting to Google in the background…');
-      token = await silentRefresh([SCOPES.ga4, SCOPES.gsc], { loginHint: expectedEmail });
-      if (!token?.access_token) {
-        setFetchStatus('Not connected to Google — click Connect Google to fetch fresh SEO data (cached AEO and saved client data still available)');
-        return;
-      }
-    }
+    // If both APIs already have a valid cached token under the right
+    // account, we can fetch silently with zero round-trips. Otherwise we
+    // try a silent refresh per missing API; if that fails, defer to an
+    // explicit Connect Google CTA (don't auto-pop on mount).
+    if (needsGoogle) {
+      const ga4Cached = needsGa4 && ga4Email ? !!getTokenForEmail(ga4Email, [SCOPES.ga4]) : !needsGa4;
+      const gscCached = needsGsc && gscEmail ? !!getTokenForEmail(gscEmail, [SCOPES.gsc]) : !needsGsc;
+      const allCached = ga4Cached && gscCached;
 
-    if (needsGoogle && (!token?.access_token || expectedEmail) && forceRefresh) {
-      setFetchStatus('Connecting to Google — please sign in if prompted…');
-      try {
-        await ensureToken([SCOPES.ga4, SCOPES.gsc], { expectedEmail });
-      } catch (e) {
-        if (e?.accountMismatch) {
-          setFetchStatus(`Wrong Google account: signed in as ${e.currentEmail}, but ${c.name} is connected to ${e.expectedEmail}. Click Switch Google Account.`);
-        } else if (e?.requiresInteraction || /popup|denied|interaction/i.test(e?.message || '')) {
-          setFetchStatus('Google sign-in needed — click Switch Google Account to continue.');
-        } else {
-          setFetchStatus('Google auth failed: ' + (e?.message || 'unknown'));
+      if (!allCached && !forceRefresh) {
+        setFetchStatus('Reconnecting to Google in the background…');
+        // Silent refresh whichever API is missing, hinting at its bound
+        // account. If both succeed silently we proceed; if either still
+        // fails, fall back to the Connect Google CTA.
+        const tasks = [];
+        if (needsGa4 && !ga4Cached) tasks.push(silentRefresh([SCOPES.ga4], { loginHint: ga4Email }));
+        if (needsGsc && !gscCached) tasks.push(silentRefresh([SCOPES.gsc], { loginHint: gscEmail }));
+        const results = await Promise.all(tasks);
+        const stillMissing =
+          (needsGa4 && ga4Email && !getTokenForEmail(ga4Email, [SCOPES.ga4])) ||
+          (needsGsc && gscEmail && !getTokenForEmail(gscEmail, [SCOPES.gsc])) ||
+          (!ga4Email && !gscEmail && !results.some(t => t?.access_token));
+        if (stillMissing) {
+          setFetchStatus('Not connected to Google — click Connect Google to fetch fresh SEO data (cached AEO and saved client data still available)');
+          return;
         }
-        return;
       }
-      // Auto-bind: if this client doesn't have a saved Google email yet,
-      // remember whichever account the operator just signed in with so
-      // future visits can silently refresh against it. Without this, every
-      // tab visit re-prompts because GIS can't decide which account to
-      // re-issue a token for when the user has multiple Google sessions.
-      if (!expectedEmail) {
+
+      if (!allCached && forceRefresh) {
+        setFetchStatus('Connecting to Google — please sign in if prompted…');
         try {
-          const email = await getCurrentEmail();
-          if (email && !c.google_account_email) {
-            await saveClient({ ...c, google_account_email: email });
+          // Pop the picker for whichever account the user needs to add.
+          // GA4 binding takes priority; if GA4 is already cached we'll
+          // pop GSC's binding instead.
+          if (needsGa4 && ga4Email && !getTokenForEmail(ga4Email, [SCOPES.ga4])) {
+            await ensureToken([SCOPES.ga4], { expectedEmail: ga4Email });
+          } else if (needsGsc && gscEmail && !getTokenForEmail(gscEmail, [SCOPES.gsc])) {
+            await ensureToken([SCOPES.gsc], { expectedEmail: gscEmail });
+          } else {
+            // No per-API binding saved yet — first-time setup. Pop the
+            // combined picker and capture whatever the operator chose.
+            await ensureToken([SCOPES.ga4, SCOPES.gsc]);
+            try {
+              const email = await getCurrentEmail();
+              if (email) {
+                const patch = { ...c };
+                if (!c.google_account_email) patch.google_account_email = email;
+                if (needsGa4 && !c.ga4_account_email) patch.ga4_account_email = email;
+                if (needsGsc && !c.gsc_account_email) patch.gsc_account_email = email;
+                await saveClient(patch);
+              }
+            } catch {}
           }
-        } catch {}
+        } catch (e) {
+          if (e?.accountMismatch) {
+            setFetchStatus(`Wrong Google account: signed in as ${e.currentEmail}, but ${c.name} expected ${e.expectedEmail}. Click Switch Google Account.`);
+          } else if (e?.requiresInteraction || /popup|denied|interaction/i.test(e?.message || '')) {
+            setFetchStatus('Google sign-in needed — click Switch Google Account to continue.');
+          } else {
+            setFetchStatus('Google auth failed: ' + (e?.message || 'unknown'));
+          }
+          return;
+        }
       }
-    } else if (needsGoogle && expectedEmail && token?.access_token && token.email && token.email.toLowerCase() !== expectedEmail.toLowerCase()) {
-      // Have a token but it's bound to a different account than this client
-      // expects. Don't auto-switch; surface the mismatch and let the operator
-      // click Switch Google Account.
-      setFetchStatus(`Wrong Google account: signed in as ${token.email}, but ${c.name} is connected to ${expectedEmail}. Click Switch Google Account.`);
-      return;
     }
 
     const [year, mo] = m.split('-').map(Number);

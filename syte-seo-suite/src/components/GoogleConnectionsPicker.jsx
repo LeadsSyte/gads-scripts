@@ -18,15 +18,27 @@ import {
 
 // Combined GA4 + GSC picker for the client edit modal.
 // Props:
-//   ga4Value / onChangeGa4  — current GA4 Property ID string
-//   gscValue / onChangeGsc  — current GSC Property string
-//   savedEmail              — google_account_email saved on the client record
-//   onChangeEmail           — called with the email of whichever Google
-//                             account is currently signed in, so the parent
-//                             can persist it onto the client record. This is
-//                             how we remember "this client's data lives in
-//                             ops@example.com" across visits.
-export default function GoogleConnectionsPicker({ ga4Value, onChangeGa4, gscValue, onChangeGsc, savedEmail, onChangeEmail }) {
+//   ga4Value / onChangeGa4  — current GA4 Property ID string. onChangeGa4
+//                             takes (propertyId, accountEmail) — the
+//                             email is set when the operator picks from
+//                             the dropdown so the parent can bind that
+//                             API to the picked-from account.
+//   gscValue / onChangeGsc  — same shape, for Search Console.
+//   savedEmail / onChangeEmail
+//                           — legacy single google_account_email binding;
+//                             still used as a fallback hint when the
+//                             per-API ga4/gsc binding is unset.
+//   savedGa4Email / savedGscEmail
+//                           — per-API account binding shown as a small
+//                             badge under each property dropdown so the
+//                             operator can see which account this
+//                             client's GA4 vs GSC live in.
+export default function GoogleConnectionsPicker({
+  ga4Value, onChangeGa4,
+  gscValue, onChangeGsc,
+  savedEmail, onChangeEmail,
+  savedGa4Email, savedGscEmail
+}) {
   const [signedIn, setSignedIn] = useState(!!getToken());
   const [email, setEmail] = useState(null);
 
@@ -302,7 +314,7 @@ export default function GoogleConnectionsPicker({ ga4Value, onChangeGa4, gscValu
         </div>
         {signedIn && !manualGa4 && ga4Props.length > 0 ? (
           <>
-            <select value={ga4Value || ''} onChange={e => onChangeGa4(e.target.value)}>
+            <select value={ga4Value || ''} onChange={e => onChangeGa4(e.target.value, e.target.value ? email : null)}>
               <option value="">— pick a property —</option>
               {ga4SavedMissing && (
                 <option value={ga4Value}>Saved · {ga4Value} (not visible to {email || 'this account'})</option>
@@ -320,6 +332,11 @@ export default function GoogleConnectionsPicker({ ga4Value, onChangeGa4, gscValu
             {ga4SavedMissing && (
               <div style={{ color: 'var(--orange)', fontSize: 11, marginTop: 4 }}>
                 The saved property <span className="mono">{ga4Value}</span> isn't in this Google account's list. It's still preserved — Switch account if you need to repick.
+              </div>
+            )}
+            {savedGa4Email && (
+              <div className="muted" style={{ fontSize: 10, marginTop: 4 }}>
+                GA4 fetches use <span className="mono">{savedGa4Email}</span>
               </div>
             )}
           </>
@@ -368,7 +385,7 @@ export default function GoogleConnectionsPicker({ ga4Value, onChangeGa4, gscValu
           </button>
         </div>
         {signedIn && !manualGsc && gscSites.length > 0 ? (
-          <select value={gscValue || ''} onChange={e => onChangeGsc(e.target.value)}>
+          <select value={gscValue || ''} onChange={e => onChangeGsc(e.target.value, e.target.value ? email : null)}>
             <option value="">— pick a property —</option>
             {gscSavedMissing && (
               <option value={gscValue}>Saved · {gscValue} (not visible to {email || 'this account'})</option>
@@ -383,6 +400,11 @@ export default function GoogleConnectionsPicker({ ga4Value, onChangeGa4, gscValu
         {signedIn && !manualGsc && gscSites.length > 0 && gscSavedMissing && (
           <div style={{ color: 'var(--orange)', fontSize: 11, marginTop: 4 }}>
             The saved property <span className="mono">{gscValue}</span> isn't in this Google account's list. It's still preserved — Switch account if you need to repick.
+          </div>
+        )}
+        {savedGscEmail && (
+          <div className="muted" style={{ fontSize: 10, marginTop: 4 }}>
+            Search Console fetches use <span className="mono">{savedGscEmail}</span>
           </div>
         )}
         {!(signedIn && !manualGsc && gscSites.length > 0) && (
