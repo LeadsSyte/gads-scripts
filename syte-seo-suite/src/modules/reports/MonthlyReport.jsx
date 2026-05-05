@@ -10,7 +10,7 @@ import {
 import { buildMicrositeHtml, downloadMicrosite, downloadMicrositePdf } from './microsite.js';
 import { runSnapshot, snapshotPreflight } from './aeoRunner.js';
 import { compareSnapshots, rankBrandWithCompetitors, normalizeSnapshot } from './aeoCompare.js';
-import { ensureToken, SCOPES, getToken, switchAccount, silentRefresh, getCurrentEmail } from '../technical/googleAuth.js';
+import { ensureToken, SCOPES, getToken, switchAccount, silentRefresh, getCurrentEmail, TOKEN_EVENT } from '../technical/googleAuth.js';
 import { fetchReportData } from './reportData.js';
 import ReportDashboard from './ReportDashboard.jsx';
 
@@ -122,6 +122,35 @@ export default function MonthlyReport() {
       setPreviousAeoSnap(prev);
     }).catch(() => {});
   }, [client?.id, month]);
+
+  // Re-trigger the data fetch whenever a Google token lands — covers the
+  // case where the operator signs in elsewhere (the client modal's picker,
+  // a background refresh resolving late, switching accounts) while the
+  // Monthly Report is already on screen. Without this they had to navigate
+  // away and back, or "reset it in the client part", to see data load.
+  // The fetchStatus guard avoids a redundant pull when autoFetchMetrics
+  // itself just persisted the token mid-cycle.
+  useEffect(() => {
+    if (!client?.id) return;
+    const onTokenChange = () => {
+      if (!getToken()?.access_token) return;
+      // Only react when we're currently in an unconnected / mismatched
+      // state. If a fetch is already in progress or data is already
+      // loaded, the in-flight cycle will handle it.
+      if (
+        fetchStatus.includes('Not connected') ||
+        fetchStatus.includes('Wrong Google') ||
+        fetchStatus.includes('sign-in needed') ||
+        fetchStatus.includes('Reconnecting') ||
+        fetchStatus === ''
+      ) {
+        autoFetchMetrics(client, month, true);
+      }
+    };
+    window.addEventListener(TOKEN_EVENT, onTokenChange);
+    return () => window.removeEventListener(TOKEN_EVENT, onTokenChange);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [client?.id, month, fetchStatus]);
 
   // Bump this whenever the report data shape changes in a way that
   // makes old cache entries stale (e.g. keyword pull went 50 → 500,
