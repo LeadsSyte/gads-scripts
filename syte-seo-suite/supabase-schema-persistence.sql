@@ -53,6 +53,14 @@ alter table syte_suite_clients add column if not exists client_type text;  -- 'e
 -- Connections picker. Used as login_hint on subsequent visits so the right
 -- account is selected automatically (and to warn if the wrong one is in use).
 alter table syte_suite_clients add column if not exists google_account_email text;
+-- Per-API bindings — for the (common) case where a single client has GA4
+-- under one Google account and Search Console under a different one (e.g.
+-- the brand owns GSC but the agency hosts GA4). When set, these win over
+-- google_account_email for their respective API; when unset they fall
+-- back to it. Captured automatically when the operator picks a property
+-- in the picker — whichever account was active gets bound to that API.
+alter table syte_suite_clients add column if not exists ga4_account_email text;
+alter table syte_suite_clients add column if not exists gsc_account_email text;
 
 -- 4. AEO Deep Optimizations — full-page rewrites with FAQ + changes log.
 -- Distinct from syte_suite_aeo_results (which holds the 5-snippet quick-wins).
