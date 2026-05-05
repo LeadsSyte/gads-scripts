@@ -246,7 +246,13 @@ export async function silentRefresh(scopes, { timeoutMs = 4000, loginHint = null
       const clientCfg = {
         client_id: GOOGLE_CLIENT_ID,
         scope: scopeStr,
-        prompt: '',          // empty → silent attempt
+        // 'none' guarantees Google never pops UI — if a silent re-issue
+        // isn't possible (no session, multi-account without hint, blocked
+        // third-party cookies, etc.) GIS rejects with `interaction_required`
+        // and we resolve null. The previous '' prompt was Google's "default
+        // mode", which pops a chooser when it can't decide silently — that
+        // looked exactly like the tool was demanding sign-in on every visit.
+        prompt: 'none',
         callback: (resp) => {
           if (resp.error) { finish(null); return; }
           const token = {
@@ -264,7 +270,7 @@ export async function silentRefresh(scopes, { timeoutMs = 4000, loginHint = null
       };
       if (hint) clientCfg.hint = hint;
       const client = window.google.accounts.oauth2.initTokenClient(clientCfg);
-      const opts = { prompt: '' };
+      const opts = { prompt: 'none' };
       if (hint) opts.hint = hint;
       client.requestAccessToken(opts);
     } catch {
