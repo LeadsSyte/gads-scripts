@@ -336,6 +336,30 @@ export async function listGeneratedReports(clientId) {
   return clientId ? list.filter(r => r.client_id === clientId) : list;
 }
 
+// Fetch the full saved content (email body + microsite JSON + QA + probe +
+// reportData snapshot) for a single client/month so the report can be
+// re-rendered without regenerating it. Returns null when nothing is saved.
+export async function getGeneratedReport(clientId, month) {
+  assertClientId(clientId, 'getGeneratedReport');
+  if (supabase) {
+    try {
+      const { data, error } = await supabase
+        .from('syte_suite_report_generated_log')
+        .select('*')
+        .eq('client_id', clientId)
+        .eq('month', month)
+        .limit(1)
+        .maybeSingle();
+      if (error) throw error;
+      return data || null;
+    } catch (e) {
+      console.warn('[reports] getGeneratedReport DB read failed, using localStorage:', e.message);
+    }
+  }
+  const list = JSON.parse(localStorage.getItem(LS_PREFIX + 'report_generated_log') || '[]');
+  return list.find(r => r.client_id === clientId && r.month === month) || null;
+}
+
 // ---------------------------------------------------------------------------
 // Implementation tracking — cross-module change verification.
 // ---------------------------------------------------------------------------

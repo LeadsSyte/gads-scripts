@@ -767,27 +767,43 @@ export function downloadMicrosite(html, filename) {
 // Open the microsite in a new window with print-friendly CSS injected
 // and trigger window.print(). The browser presents the standard "Save
 // as PDF" destination so the user gets a clean PDF without needing a
-// server-side renderer (puppeteer / wkhtmltopdf). Prints with the same
-// styled microsite as the HTML view.
+// server-side renderer (puppeteer / wkhtmltopdf).
+//
+// The PDF is meant to look exactly like the on-screen HTML — we only
+// add @page sizing, force colour preservation (Chrome strips background
+// colours by default in print), and tighten page-break behaviour so
+// cards / table rows don't split awkwardly across pages.
 export function downloadMicrositePdf(html, filename) {
-  // Inject @page + print rules so the PDF gets sensible margins, no
-  // dark-mode background bleeding off the page, and the suggested
-  // filename is set when the user picks "Save as PDF".
   const PRINT_CSS = `
-    @page { size: A4; margin: 14mm 12mm; }
+    @page { size: A4; margin: 0; }
     @media print {
-      html, body { background: #ffffff !important; color: #111 !important; }
-      body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-      section, .card, footer { break-inside: avoid; page-break-inside: avoid; }
-      h1, h2, h3 { break-after: avoid-page; }
+      /* Force every coloured surface to print — without this, Chrome
+         drops the dark background and the report comes out white. */
+      *, *::before, *::after {
+        -webkit-print-color-adjust: exact !important;
+        print-color-adjust: exact !important;
+      }
+      html, body {
+        background: var(--bg) !important;
+        color: var(--text) !important;
+      }
+      /* The microsite already has its own padding via .wrap — we just
+         need to make sure the dark background extends to the page edges
+         since we set @page margin to 0. */
+      .wrap { padding: 18mm 14mm !important; }
+
+      /* Page-break behaviour — keep cards / table rows together where
+         possible so the document reads cleanly. */
+      section, .card, .metric, .work-card, .ppc-card, .next, .engine-tile,
+      .comp-row, footer { break-inside: avoid; page-break-inside: avoid; }
+      h1, h2, h3 { break-after: avoid-page; page-break-after: avoid; }
       table { break-inside: auto; }
       tr { break-inside: avoid; break-after: auto; }
       thead { display: table-header-group; }
     }
   `;
+
   const titleTag = '<title>' + (filename || 'Report').replace(/\.pdf$/i, '') + '</title>';
-  // Inject the print CSS just before </head>. If there's no </head>
-  // (defensive), prepend it to the body.
   let prepared;
   if (html.includes('</head>')) {
     prepared = html.replace('</head>', '<style>' + PRINT_CSS + '</style>\n' + titleTag + '</head>');
@@ -812,8 +828,8 @@ export function downloadMicrositePdf(html, filename) {
     try { win.focus(); win.print(); } catch {}
   };
   if (win.document.readyState === 'complete') {
-    setTimeout(triggerPrint, 400);
+    setTimeout(triggerPrint, 600);
   } else {
-    win.addEventListener('load', () => setTimeout(triggerPrint, 400));
+    win.addEventListener('load', () => setTimeout(triggerPrint, 600));
   }
 }
