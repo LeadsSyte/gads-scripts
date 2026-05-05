@@ -128,6 +128,27 @@ alter table syte_suite_report_cache disable row level security;
 -- reportData snapshot). Persisted so reopening the tool can re-render
 -- the report without re-running Claude / re-querying GA4+GSC.
 -- One row per client per month; updated on regeneration.
+--
+-- The base table normally lives in supabase-schema-reports.sql, but we
+-- recreate it here with `if not exists` so this file works as a single
+-- self-contained patch even if reports.sql hasn't been run.
+create table if not exists syte_suite_report_generated_log (
+  id uuid primary key default gen_random_uuid(),
+  client_id uuid references syte_suite_clients(id) on delete cascade,
+  month text not null,
+  generated_at timestamptz default now(),
+  qa_score int,
+  email_subject text,
+  report_type text,                     -- 'full' | 'aeo'
+  created_at timestamptz default now(),
+  unique (client_id, month)
+);
+
+create index if not exists syte_suite_report_generated_log_client_month_idx
+  on syte_suite_report_generated_log(client_id, month desc);
+
+alter table syte_suite_report_generated_log disable row level security;
+
 alter table syte_suite_report_generated_log add column if not exists email_body text;
 alter table syte_suite_report_generated_log add column if not exists microsite_json jsonb;
 alter table syte_suite_report_generated_log add column if not exists qa jsonb;
