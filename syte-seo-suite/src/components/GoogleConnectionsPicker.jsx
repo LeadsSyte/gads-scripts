@@ -175,6 +175,14 @@ export default function GoogleConnectionsPicker({ ga4Value, onChangeGa4, gscValu
     return g;
   }, [ga4Props]);
 
+  // True when the client has a saved GA4 / GSC value that isn't visible in
+  // the currently signed-in account's property list. Without surfacing this
+  // the dropdown silently shows "— pick a property —" and a careless Save
+  // would wipe the stored ID. We render the saved value as a synthetic
+  // option (and a warning) so it stays preserved + obvious.
+  const ga4SavedMissing = !!ga4Value && !ga4Props.some(p => p.id === ga4Value);
+  const gscSavedMissing = !!gscValue && !gscSites.some(s => s.siteUrl === gscValue);
+
   return (
     <div className="card" style={{ marginTop: 14 }}>
       <div className="row" style={{ justifyContent: 'space-between', marginBottom: 10, flexWrap: 'wrap', gap: 8 }}>
@@ -293,18 +301,28 @@ export default function GoogleConnectionsPicker({ ga4Value, onChangeGa4, gscValu
           </button>
         </div>
         {signedIn && !manualGa4 && ga4Props.length > 0 ? (
-          <select value={ga4Value || ''} onChange={e => onChangeGa4(e.target.value)}>
-            <option value="">— pick a property —</option>
-            {Object.entries(ga4Groups).map(([account, props]) => (
-              <optgroup key={account} label={account}>
-                {props.map(p => (
-                  <option key={p.id} value={p.id}>
-                    {p.name} · {p.id}
-                  </option>
-                ))}
-              </optgroup>
-            ))}
-          </select>
+          <>
+            <select value={ga4Value || ''} onChange={e => onChangeGa4(e.target.value)}>
+              <option value="">— pick a property —</option>
+              {ga4SavedMissing && (
+                <option value={ga4Value}>Saved · {ga4Value} (not visible to {email || 'this account'})</option>
+              )}
+              {Object.entries(ga4Groups).map(([account, props]) => (
+                <optgroup key={account} label={account}>
+                  {props.map(p => (
+                    <option key={p.id} value={p.id}>
+                      {p.name} · {p.id}
+                    </option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
+            {ga4SavedMissing && (
+              <div style={{ color: 'var(--orange)', fontSize: 11, marginTop: 4 }}>
+                The saved property <span className="mono">{ga4Value}</span> isn't in this Google account's list. It's still preserved — Switch account if you need to repick.
+              </div>
+            )}
+          </>
         ) : (
           <>
             <input
@@ -352,13 +370,22 @@ export default function GoogleConnectionsPicker({ ga4Value, onChangeGa4, gscValu
         {signedIn && !manualGsc && gscSites.length > 0 ? (
           <select value={gscValue || ''} onChange={e => onChangeGsc(e.target.value)}>
             <option value="">— pick a property —</option>
+            {gscSavedMissing && (
+              <option value={gscValue}>Saved · {gscValue} (not visible to {email || 'this account'})</option>
+            )}
             {gscSites.map(s => (
               <option key={s.siteUrl} value={s.siteUrl}>
                 {s.siteUrl} ({s.permissionLevel})
               </option>
             ))}
           </select>
-        ) : (
+        ) : null}
+        {signedIn && !manualGsc && gscSites.length > 0 && gscSavedMissing && (
+          <div style={{ color: 'var(--orange)', fontSize: 11, marginTop: 4 }}>
+            The saved property <span className="mono">{gscValue}</span> isn't in this Google account's list. It's still preserved — Switch account if you need to repick.
+          </div>
+        )}
+        {!(signedIn && !manualGsc && gscSites.length > 0) && (
           <>
             <input
               value={gscLocal}
