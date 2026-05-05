@@ -5,7 +5,7 @@ import { listAeoSnapshots, logReportSent, getCachedReportData, setCachedReportDa
 import { ALICE_SYSTEM, MICROSITE_SYSTEM, QA_SYSTEM, buildAlicePayload, getWorkSummary } from './reportPrompts.js';
 import { buildMicrositeHtml, downloadMicrosite } from './microsite.js';
 import { runSnapshot, snapshotPreflight } from './aeoRunner.js';
-import { ensureToken, SCOPES, getToken, switchAccount } from '../technical/googleAuth.js';
+import { ensureToken, SCOPES, switchAccount } from '../technical/googleAuth.js';
 import { fetchReportData } from './reportData.js';
 import ReportDashboard from './ReportDashboard.jsx';
 
@@ -87,7 +87,7 @@ export default function MonthlyReport() {
         const cached = await getCachedReportData(c.id, m);
         if (cached?.data) {
           setReportData(cached.data);
-          setFetchStatus('Loaded from cache (fetched ' + new Date(cached.fetched_at).toLocaleDateString() + ') · Click Switch Google Account to re-fetch');
+          setFetchStatus('Loaded from cache (fetched ' + new Date(cached.fetched_at).toLocaleDateString() + ') · Click Refresh Data to re-fetch');
           return;
         }
       } catch {}
@@ -96,13 +96,24 @@ export default function MonthlyReport() {
     setFetchStatus('Checking Google connection…');
     setReportData(null);
 
-    let token = getToken();
-    if (!token?.access_token && (c.ga4_property_id || c.gsc_property)) {
-      setFetchStatus('Connecting to Google — please sign in if prompted…');
+    if (c.ga4_property_id || c.gsc_property) {
+      // ensureToken() now does silent refresh first (no UI when the user is
+      // still signed into Google) and only falls back to the picker when
+      // Google says interaction is required. We pass the client's saved
+      // google_account_email both as a login hint AND as an expected email —
+      // a mismatch throws so we can surface a clear "wrong account" warning
+      // instead of letting the API return 403s.
+      const expectedEmail = c.google_account_email || null;
       try {
-        token = await ensureToken([SCOPES.ga4, SCOPES.gsc]);
-      } catch {
-        setFetchStatus('Google auth failed — try again');
+        await ensureToken([SCOPES.ga4, SCOPES.gsc], { expectedEmail });
+      } catch (e) {
+        if (e?.accountMismatch) {
+          setFetchStatus(`Wrong Google account: signed in as ${e.currentEmail}, but ${c.name} is connected to ${e.expectedEmail}. Click Switch Google Account.`);
+        } else if (e?.requiresInteraction || /popup|denied|interaction/i.test(e?.message || '')) {
+          setFetchStatus('Google sign-in needed — click Switch Google Account to continue.');
+        } else {
+          setFetchStatus('Google auth failed: ' + (e?.message || 'unknown'));
+        }
         return;
       }
     }
@@ -425,12 +436,14 @@ Write an AEO performance email covering: what AI engines are saying about this b
                 Refresh Data
               </button>
             )}
-            {(fetchStatus.includes('403') || fetchStatus.includes('permission') || fetchStatus.includes('failed')) && (
+            {(fetchStatus.includes('403') || fetchStatus.includes('permission') || fetchStatus.includes('failed') || fetchStatus.includes('Wrong Google account') || fetchStatus.includes('sign-in needed')) && (
               <button
                 onClick={async () => {
                   try {
                     setFetchStatus('Switching Google account…');
-                    await switchAccount([SCOPES.ga4, SCOPES.gsc]);
+                    // If the client has a saved Google email, use it as the
+                    // login hint so the chooser pre-selects the right one.
+                    await switchAccount([SCOPES.ga4, SCOPES.gsc], { loginHint: client.google_account_email || null });
                     autoFetchMetrics(client, month, true);
                   } catch (e) {
                     setFetchStatus('Re-auth failed: ' + e.message);
@@ -438,7 +451,7 @@ Write an AEO performance email covering: what AI engines are saying about this b
                 }}
                 style={{ fontSize: 11, padding: '4px 12px', borderColor: 'var(--blue)', color: 'var(--blue)', whiteSpace: 'nowrap' }}
               >
-                Switch Google Account
+                {client.google_account_email ? `Sign in as ${client.google_account_email}` : 'Switch Google Account'}
               </button>
             )}
           </div>

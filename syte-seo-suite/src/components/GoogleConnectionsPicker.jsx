@@ -19,7 +19,13 @@ import {
 // Props:
 //   ga4Value / onChangeGa4  — current GA4 Property ID string
 //   gscValue / onChangeGsc  — current GSC Property string
-export default function GoogleConnectionsPicker({ ga4Value, onChangeGa4, gscValue, onChangeGsc }) {
+//   savedEmail              — google_account_email saved on the client record
+//   onChangeEmail           — called with the email of whichever Google
+//                             account is currently signed in, so the parent
+//                             can persist it onto the client record. This is
+//                             how we remember "this client's data lives in
+//                             ops@example.com" across visits.
+export default function GoogleConnectionsPicker({ ga4Value, onChangeGa4, gscValue, onChangeGsc, savedEmail, onChangeEmail }) {
   const [signedIn, setSignedIn] = useState(!!getToken());
   const [email, setEmail] = useState(null);
   const [ga4Props, setGa4Props] = useState([]);
@@ -69,12 +75,19 @@ export default function GoogleConnectionsPicker({ ga4Value, onChangeGa4, gscValu
     setApiErrors(errors);
     if (genericErr) setErr(genericErr);
     setLoading(false);
+    // First-time auto-bind only — if the client has no saved email yet,
+    // remember whichever account is currently signed in. Subsequent re-binding
+    // happens via doSwitch or the explicit "Use this account" button so we
+    // never silently overwrite a known-good email.
+    if (e && onChangeEmail && !savedEmail) onChangeEmail(e);
   }
 
   async function doSignIn() {
     setErr('');
     try {
-      await requestToken(ALL_READ_SCOPES);
+      // Hint with the saved email so Google pre-selects it when the user
+      // already has multiple accounts in the chooser.
+      await requestToken(ALL_READ_SCOPES, { loginHint: savedEmail || null });
       setSignedIn(true);
     } catch (e) { setErr(e.message); }
   }
@@ -85,7 +98,21 @@ export default function GoogleConnectionsPicker({ ga4Value, onChangeGa4, gscValu
     try {
       await switchAccount(ALL_READ_SCOPES);
       setSignedIn(true);
+      // After a deliberate switch, capture the new email — even when there
+      // was already a saved one. The whole point of switching is to re-bind.
+      const newEmail = await getCurrentEmail();
+      if (newEmail && onChangeEmail) onChangeEmail(newEmail);
+      // signedIn was already true, so the useEffect won't re-fire — reload
+      // properties explicitly to populate the dropdowns from the new account.
+      loadProperties({ bypassCache: true });
     } catch (e) { setErr(e.message); }
+  }
+
+  // Explicit "Use this account for this client" button. Shown when the
+  // signed-in email differs from the saved one — gives the operator a clear
+  // way to re-bind without having to go through Switch account.
+  function bindCurrentEmail() {
+    if (email && onChangeEmail) onChangeEmail(email);
   }
 
   async function doSignOut() {
@@ -165,6 +192,27 @@ export default function GoogleConnectionsPicker({ ga4Value, onChangeGa4, gscValu
         or enter them manually below. Your clients are spread across 6 accounts — use Switch account
         to sign into each one when setting up clients.
       </div>
+
+      {savedEmail && (
+        <div style={{
+          marginBottom: 10,
+          padding: 10,
+          background: 'var(--surface-2)',
+          border: '1px solid var(--border)',
+          borderRadius: 'var(--radius)',
+          fontSize: 12
+        }}>
+          <strong>Saved Google account for this client:</strong>{' '}
+          <span className="mono">{savedEmail}</span>
+          {signedIn && email && email.toLowerCase() !== savedEmail.toLowerCase() && (
+            <div style={{ marginTop: 8, color: 'var(--orange)', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              You're signed in as <span className="mono">{email}</span> — properties below will be from that account, not the saved one.
+              <button onClick={doSwitch} style={{ fontSize: 11, padding: '4px 10px' }}>Switch to {savedEmail}</button>
+              <button onClick={bindCurrentEmail} style={{ fontSize: 11, padding: '4px 10px' }}>Use {email} instead</button>
+            </div>
+          )}
+        </div>
+      )}
 
       {apiErrors.map((ae, i) => (
         <div key={i} style={{
