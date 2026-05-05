@@ -124,30 +124,46 @@ export default function MonthlyReport() {
     }
 
     // ── Auth handling ──
-    // Don't auto-pop the Google sign-in modal on mount/month change.
-    // First try a silent refresh — works without a popup if the user is
-    // still signed into Google in this browser. Only if that fails do
-    // we surface the Connect Google control.
-    let token = getToken();
+    // Don't auto-pop the Google sign-in modal on mount/month change. First
+    // try a silent refresh — works without a popup if the user is still
+    // signed into Google in this browser. Only if that fails AND the user
+    // explicitly asked (forceRefresh) do we surface the interactive picker.
+    // The client's saved google_account_email is used as a login hint so
+    // the right account is preselected, and as an expected-email check so
+    // a wrong-account session is flagged instead of silently 403-ing.
     const needsGoogle = c.ga4_property_id || c.gsc_property;
+    const expectedEmail = c.google_account_email || null;
+    let token = getToken();
+
     if (!token?.access_token && needsGoogle && !forceRefresh) {
       setFetchStatus('Reconnecting to Google in the background…');
-      token = await silentRefresh([SCOPES.ga4, SCOPES.gsc]);
+      token = await silentRefresh([SCOPES.ga4, SCOPES.gsc], { loginHint: expectedEmail });
       if (!token?.access_token) {
         setFetchStatus('Not connected to Google — click Connect Google to fetch fresh SEO data (cached AEO and saved client data still available)');
         return;
       }
     }
 
-    if (!token?.access_token && needsGoogle && forceRefresh) {
-      // forceRefresh = user explicitly clicked a button, OK to pop auth.
+    if (needsGoogle && (!token?.access_token || expectedEmail) && forceRefresh) {
       setFetchStatus('Connecting to Google — please sign in if prompted…');
       try {
-        token = await ensureToken([SCOPES.ga4, SCOPES.gsc]);
-      } catch {
-        setFetchStatus('Google auth failed — try again');
+        await ensureToken([SCOPES.ga4, SCOPES.gsc], { expectedEmail });
+      } catch (e) {
+        if (e?.accountMismatch) {
+          setFetchStatus(`Wrong Google account: signed in as ${e.currentEmail}, but ${c.name} is connected to ${e.expectedEmail}. Click Switch Google Account.`);
+        } else if (e?.requiresInteraction || /popup|denied|interaction/i.test(e?.message || '')) {
+          setFetchStatus('Google sign-in needed — click Switch Google Account to continue.');
+        } else {
+          setFetchStatus('Google auth failed: ' + (e?.message || 'unknown'));
+        }
         return;
       }
+    } else if (needsGoogle && expectedEmail && token?.access_token && token.email && token.email.toLowerCase() !== expectedEmail.toLowerCase()) {
+      // Have a token but it's bound to a different account than this client
+      // expects. Don't auto-switch; surface the mismatch and let the operator
+      // click Switch Google Account.
+      setFetchStatus(`Wrong Google account: signed in as ${token.email}, but ${c.name} is connected to ${expectedEmail}. Click Switch Google Account.`);
+      return;
     }
 
     const [year, mo] = m.split('-').map(Number);
@@ -523,12 +539,14 @@ export default function MonthlyReport() {
                 {fetchStatus.includes('Not connected') ? 'Connect Google' : 'Refresh Data'}
               </button>
             )}
-            {(fetchStatus.includes('403') || fetchStatus.includes('permission') || fetchStatus.includes('failed')) && (
+            {(fetchStatus.includes('403') || fetchStatus.includes('permission') || fetchStatus.includes('failed') || fetchStatus.includes('Wrong Google account') || fetchStatus.includes('sign-in needed')) && (
               <button
                 onClick={async () => {
                   try {
                     setFetchStatus('Switching Google account…');
-                    await switchAccount([SCOPES.ga4, SCOPES.gsc]);
+                    // If the client has a saved Google email, use it as the
+                    // login hint so the chooser pre-selects the right one.
+                    await switchAccount([SCOPES.ga4, SCOPES.gsc], { loginHint: client.google_account_email || null });
                     autoFetchMetrics(client, month, true);
                   } catch (e) {
                     setFetchStatus('Re-auth failed: ' + e.message);
@@ -536,7 +554,7 @@ export default function MonthlyReport() {
                 }}
                 style={{ fontSize: 11, padding: '4px 12px', borderColor: 'var(--blue)', color: 'var(--blue)', whiteSpace: 'nowrap' }}
               >
-                Switch Google Account
+                {client.google_account_email ? `Sign in as ${client.google_account_email}` : 'Switch Google Account'}
               </button>
             )}
           </div>

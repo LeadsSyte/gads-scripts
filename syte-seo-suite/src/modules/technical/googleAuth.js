@@ -40,6 +40,16 @@ export function getToken() {
   } catch { return null; }
 }
 
+// Read the token even if expired — used to recover the last known email
+// so we can pass login_hint when silently refreshing.
+function getTokenAllowExpired() {
+  try {
+    const raw = localStorage.getItem(TOKEN_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch { return null; }
+}
+
 export function clearToken() {
   localStorage.removeItem(TOKEN_KEY);
   notifyTokenChange();
@@ -78,6 +88,14 @@ export async function getCurrentEmail() {
   return null;
 }
 
+// Last-known email even when the token has expired. Used as login_hint when
+// silently refreshing so Google picks the right account out of the user's
+// signed-in set without showing the picker.
+export function getLastKnownEmail() {
+  const t = getTokenAllowExpired();
+  return t?.email || null;
+}
+
 // Load the Google Identity Services script on demand.
 let gisLoaded;
 function loadGis() {
@@ -97,38 +115,109 @@ function loadGis() {
 // Request an access token. Options:
 //   scopes: string or array of scope URLs
 //   forcePicker: if true, show the account chooser so the user can pick a
-//     different Google account (needed for the 6-account use case).
-export async function requestToken(scopes, { forcePicker = false } = {}) {
+//     different Google account (needed for the multi-account use case).
+//   loginHint: email to pre-select when the picker is shown OR for silent
+//     re-auth — Google will use the matching session if available.
+//   silent: if true, request with prompt:'none' — no UI. Resolves with the
+//     token if Google can issue one without interaction, otherwise rejects
+//     with an error tagged `requiresInteraction = true`.
+export async function requestToken(scopes, { forcePicker = false, loginHint = null, silent = false } = {}) {
   await loadGis();
   return new Promise((resolve, reject) => {
-    const client = window.google.accounts.oauth2.initTokenClient({
+    const clientConfig = {
       client_id: GOOGLE_CLIENT_ID,
       scope: Array.isArray(scopes) ? scopes.join(' ') : scopes,
-      prompt: forcePicker ? 'select_account' : '',
+      prompt: forcePicker ? 'select_account' : (silent ? 'none' : ''),
       callback: (resp) => {
-        if (resp.error) { reject(new Error(resp.error)); return; }
+        if (resp.error) {
+          const err = new Error(resp.error);
+          // GIS reports these when it can't silently refresh.
+          if (silent || ['interaction_required', 'login_required', 'consent_required', 'access_denied'].includes(resp.error)) {
+            err.requiresInteraction = true;
+          }
+          reject(err);
+          return;
+        }
         const token = {
           access_token: resp.access_token,
           expires_at: Date.now() + (resp.expires_in || 3600) * 1000,
-          scope: resp.scope
+          scope: resp.scope,
+          // Carry forward the previously known email so callers can match it
+          // to a client's expected account before the tokeninfo round-trip.
+          email: loginHint || getLastKnownEmail() || undefined
         };
         persistToken(token);
         resolve(token);
+      },
+      error_callback: (err) => {
+        const e = new Error(err?.type || err?.message || 'oauth_error');
+        if (silent) e.requiresInteraction = true;
+        reject(e);
       }
-    });
-    client.requestAccessToken(forcePicker ? { prompt: 'select_account' } : {});
+    };
+    if (loginHint) clientConfig.hint = loginHint;
+    const client = window.google.accounts.oauth2.initTokenClient(clientConfig);
+
+    const requestOpts = {};
+    if (forcePicker) requestOpts.prompt = 'select_account';
+    if (silent) requestOpts.prompt = 'none';
+    if (loginHint) requestOpts.hint = loginHint;
+    client.requestAccessToken(requestOpts);
   });
 }
 
-export async function ensureToken(scopes) {
+// Try to obtain a valid token without showing UI. Falls back to interactive
+// only when Google says interaction is required. The optional expectedEmail
+// is passed as login_hint so when the picker DOES show up (or when GIS is
+// silently re-issuing) Google selects the right account.
+export async function ensureToken(scopes, { expectedEmail = null } = {}) {
   const t = getToken();
   const needed = Array.isArray(scopes) ? scopes : [scopes];
-  if (t && needed.every(s => (t.scope || '').includes(s))) return t;
-  // Try a silent refresh first — if the user is still signed into
-  // Google in this browser they won't see any popup.
-  const silent = await silentRefresh(needed);
-  if (silent) return silent;
-  return requestToken(needed);
+  if (t && needed.every(s => (t.scope || '').includes(s))) {
+    if (expectedEmail) await assertEmailMatches(t, expectedEmail);
+    return t;
+  }
+  // Try a silent refresh first using the last-known email (or expected) as
+  // the hint — when the user is still signed into Google they won't see any
+  // popup. Falls back to interactive only when GIS says it's required.
+  const hint = expectedEmail || getLastKnownEmail();
+  const silent = await silentRefresh(needed, { loginHint: hint });
+  let fresh;
+  if (silent) {
+    fresh = silent;
+  } else {
+    fresh = await requestToken(needed, { loginHint: hint });
+  }
+  if (expectedEmail) await assertEmailMatches(fresh, expectedEmail);
+  return fresh;
+}
+
+// Resolve the actual email Google issued the token for (round-trips to
+// tokeninfo on first call, then cached) and throw a structured mismatch
+// error if it doesn't match the expected one. The error carries both
+// emails so the UI can render a useful "Switch to X" prompt.
+async function assertEmailMatches(token, expectedEmail) {
+  let actual = token.email;
+  if (!actual) {
+    try {
+      const res = await fetch('https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=' + encodeURIComponent(token.access_token));
+      if (res.ok) {
+        const data = await res.json();
+        actual = data.email;
+        if (actual) {
+          const merged = { ...token, email: actual };
+          persistToken(merged);
+        }
+      }
+    } catch {}
+  }
+  if (actual && actual.toLowerCase() !== expectedEmail.toLowerCase()) {
+    const err = new Error('account_mismatch');
+    err.accountMismatch = true;
+    err.currentEmail = actual;
+    err.expectedEmail = expectedEmail;
+    throw err;
+  }
 }
 
 // Attempt to renew the access token without showing any popup.
@@ -136,12 +225,13 @@ export async function ensureToken(scopes) {
 // AND has previously granted these scopes — which is the normal case
 // after the initial consent. Returns null on failure (caller decides
 // whether to fall back to a popup-based flow).
-export async function silentRefresh(scopes, { timeoutMs = 4000 } = {}) {
+export async function silentRefresh(scopes, { timeoutMs = 4000, loginHint = null } = {}) {
   try {
     await loadGis();
   } catch { return null; }
 
   const scopeStr = Array.isArray(scopes) ? scopes.join(' ') : scopes;
+  const hint = loginHint || getLastKnownEmail();
   return new Promise((resolve) => {
     let settled = false;
     const finish = (result) => {
@@ -153,7 +243,7 @@ export async function silentRefresh(scopes, { timeoutMs = 4000 } = {}) {
     const timer = setTimeout(() => finish(null), timeoutMs);
 
     try {
-      const client = window.google.accounts.oauth2.initTokenClient({
+      const clientCfg = {
         client_id: GOOGLE_CLIENT_ID,
         scope: scopeStr,
         prompt: '',          // empty → silent attempt
@@ -162,14 +252,21 @@ export async function silentRefresh(scopes, { timeoutMs = 4000 } = {}) {
           const token = {
             access_token: resp.access_token,
             expires_at: Date.now() + (resp.expires_in || 3600) * 1000,
-            scope: resp.scope
+            scope: resp.scope,
+            // Carry forward the hinted email so callers don't have to round
+            // trip to tokeninfo before checking it against expectedEmail.
+            email: hint || undefined
           };
           persistToken(token);
           finish(token);
         },
         error_callback: () => finish(null)
-      });
-      client.requestAccessToken({ prompt: '' });
+      };
+      if (hint) clientCfg.hint = hint;
+      const client = window.google.accounts.oauth2.initTokenClient(clientCfg);
+      const opts = { prompt: '' };
+      if (hint) opts.hint = hint;
+      client.requestAccessToken(opts);
     } catch {
       finish(null);
     }
@@ -186,7 +283,7 @@ export function backgroundSilentRefresh(scopes = ALL_READ_SCOPES) {
 }
 
 // Force the account picker to show (used by the "Switch account" button).
-export async function switchAccount(scopes) {
+export async function switchAccount(scopes, { loginHint = null } = {}) {
   await signOut();
-  return requestToken(scopes, { forcePicker: true });
+  return requestToken(scopes, { forcePicker: true, loginHint });
 }
