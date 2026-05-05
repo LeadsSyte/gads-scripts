@@ -131,12 +131,11 @@ test('regression: Articles Written expanded view renders body as formatted HTML'
 // raw markdown until the follow-up.
 // =============================================================================
 test('regression: History tab preview renders as formatted HTML', async ({ page }) => {
-  // Seed the localStorage cache that loadContentHistory() falls back to
-  // when Supabase returns nothing (which is the case under the e2e fixture
-  // — Supabase is route-stubbed to []). The key is `syte-suite-content_blogs`
-  // (BLOGS_KEY in src/lib/supabase.js); the legacy `…-content-history` key
-  // hasn't been read since the article history migrated to a shared table
-  // in 87549f4.
+  // The History tab inside ContentEngine.jsx reads from its own legacy
+  // `syte-suite-content-history` localStorage key (via the local
+  // `loadHistory()` function), NOT the shared `syte-suite-content_blogs`
+  // key that AutoWrite + supabase.loadContentHistory use. We seed both
+  // anyway so any future merge of those code paths still finds data.
   await page.addInitScript((sample) => {
     const h = [{
       id: 'hist-1', client_id: 'test-client-1', client_name: 'Test Client',
@@ -145,6 +144,7 @@ test('regression: History tab preview renders as formatted HTML', async ({ page 
       generated_at: new Date().toISOString(),
       created_at: new Date().toISOString()
     }];
+    localStorage.setItem('syte-suite-content-history', JSON.stringify(h));
     localStorage.setItem('syte-suite-content_blogs', JSON.stringify(h));
   }, SAMPLE_ARTICLE);
 
