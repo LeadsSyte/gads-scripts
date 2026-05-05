@@ -10,7 +10,7 @@ import {
 import { buildMicrositeHtml, downloadMicrosite, downloadMicrositePdf } from './microsite.js';
 import { runSnapshot, snapshotPreflight } from './aeoRunner.js';
 import { compareSnapshots, rankBrandWithCompetitors, normalizeSnapshot } from './aeoCompare.js';
-import { ensureToken, SCOPES, getToken, switchAccount, silentRefresh } from '../technical/googleAuth.js';
+import { ensureToken, SCOPES, getToken, switchAccount, silentRefresh, getCurrentEmail } from '../technical/googleAuth.js';
 import { fetchReportData } from './reportData.js';
 import ReportDashboard from './ReportDashboard.jsx';
 
@@ -45,6 +45,7 @@ function parseAliceOutput(text) {
 
 export default function MonthlyReport() {
   const client = useClients(s => s.current());
+  const saveClient = useClients(s => s.save);
   const [month, setMonth] = useState(previousMonth());
   const [form, setForm] = useState({});
   const [algContext, setAlgContext] = useState('');
@@ -190,6 +191,19 @@ export default function MonthlyReport() {
           setFetchStatus('Google auth failed: ' + (e?.message || 'unknown'));
         }
         return;
+      }
+      // Auto-bind: if this client doesn't have a saved Google email yet,
+      // remember whichever account the operator just signed in with so
+      // future visits can silently refresh against it. Without this, every
+      // tab visit re-prompts because GIS can't decide which account to
+      // re-issue a token for when the user has multiple Google sessions.
+      if (!expectedEmail) {
+        try {
+          const email = await getCurrentEmail();
+          if (email && !c.google_account_email) {
+            await saveClient({ ...c, google_account_email: email });
+          }
+        } catch {}
       }
     } else if (needsGoogle && expectedEmail && token?.access_token && token.email && token.email.toLowerCase() !== expectedEmail.toLowerCase()) {
       // Have a token but it's bound to a different account than this client
@@ -594,6 +608,16 @@ export default function MonthlyReport() {
                     // If the client has a saved Google email, use it as the
                     // login hint so the chooser pre-selects the right one.
                     await switchAccount([SCOPES.ga4, SCOPES.gsc], { loginHint: client.google_account_email || null });
+                    // Same auto-bind as the forceRefresh path: if this is
+                    // the first time the operator has signed in for this
+                    // client, save the chosen email so subsequent visits
+                    // can silently refresh.
+                    if (!client.google_account_email) {
+                      try {
+                        const email = await getCurrentEmail();
+                        if (email) await saveClient({ ...client, google_account_email: email });
+                      } catch {}
+                    }
                     autoFetchMetrics(client, month, true);
                   } catch (e) {
                     setFetchStatus('Re-auth failed: ' + e.message);
