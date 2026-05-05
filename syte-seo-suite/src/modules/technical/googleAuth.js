@@ -4,7 +4,20 @@
 
 export const GOOGLE_CLIENT_ID = '377465514344-ve8jabk68rl333p7p2n9ieo0pj0ruivt.apps.googleusercontent.com';
 
+// We keep TWO storage slots for Google tokens:
+//
+// 1) TOKEN_KEY  — the "current" token. Most consumers read this without
+//    knowing or caring which Google account it's bound to. Backwards
+//    compatible with all the call sites that pre-date multi-account.
+// 2) TOKENS_KEY — a map of { [email]: token } so we can keep a live
+//    token for every account the operator has signed into. When a client
+//    has a saved google_account_email and the cached token for that
+//    address is still valid, we use it directly — no chooser, no switch.
+//
+// The agency runs ~6 client Google accounts; with the map we sign into
+// each one ONCE, then every client open uses the right token transparently.
 const TOKEN_KEY = 'syte-suite-google-token';
+const TOKENS_KEY = 'syte-suite-google-tokens';
 
 // Custom event name fired when the saved token changes (set, refreshed,
 // cleared). UI components listen for this so they can react to a silent
@@ -16,7 +29,50 @@ function notifyTokenChange() {
   try { window.dispatchEvent(new Event(TOKEN_EVENT)); } catch {}
 }
 
+function readTokensMap() {
+  try {
+    const raw = localStorage.getItem(TOKENS_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch { return {}; }
+}
+
+function writeTokensMap(map) {
+  try { localStorage.setItem(TOKENS_KEY, JSON.stringify(map)); } catch {}
+}
+
 function persistToken(token) {
+  localStorage.setItem(TOKEN_KEY, JSON.stringify(token));
+  // Also stash under the email-keyed map when we know which account this
+  // is for. Tokens land in two places — silentRefresh / requestToken — so
+  // funnelling both through persistToken keeps both slots consistent.
+  if (token?.email) {
+    const map = readTokensMap();
+    map[token.email.toLowerCase()] = token;
+    writeTokensMap(map);
+  }
+  notifyTokenChange();
+}
+
+// Look up a stored token for a specific Google account, regardless of
+// which one is "current". Returns null when the stored token is missing,
+// expired, or under-scoped for the requested API surface.
+export function getTokenForEmail(email, requiredScopes = []) {
+  if (!email) return null;
+  const map = readTokensMap();
+  const t = map[email.toLowerCase()];
+  if (!t?.access_token) return null;
+  if (t.expires_at && Date.now() > t.expires_at) return null;
+  if (requiredScopes.length && !requiredScopes.every(s => (t.scope || '').includes(s))) return null;
+  return t;
+}
+
+// Promote a stored token to the "current" slot so getToken() etc. see it
+// without re-issuing through Google. Used when switching between clients
+// bound to different accounts — picks the right cached token instantly.
+function setCurrentToken(token) {
+  if (!token) return;
   localStorage.setItem(TOKEN_KEY, JSON.stringify(token));
   notifyTokenChange();
 }
@@ -69,7 +125,11 @@ export async function signOut() {
 }
 
 // Fetch the current token's email + scope via Google's tokeninfo endpoint.
-// Cached on the token itself so repeated calls don't hammer Google.
+// Cached on the token itself so repeated calls don't hammer Google. Routes
+// through persistToken so the per-email map gets seeded whenever we
+// resolve an address — without that, a first-time sign-in (no client
+// google_account_email yet, so no expectedEmail trigger) would never end
+// up in the map and we'd lose the multi-account fast path.
 export async function getCurrentEmail() {
   const t = getToken();
   if (!t?.access_token) return null;
@@ -79,9 +139,7 @@ export async function getCurrentEmail() {
     if (!res.ok) return null;
     const data = await res.json();
     if (data.email) {
-      // Persist email back onto the stored token so we don't re-fetch every time.
-      const merged = { ...t, email: data.email };
-      localStorage.setItem(TOKEN_KEY, JSON.stringify(merged));
+      persistToken({ ...t, email: data.email });
       return data.email;
     }
   } catch {}
@@ -170,22 +228,57 @@ export async function requestToken(scopes, { forcePicker = false, loginHint = nu
 // only when Google says interaction is required. The optional expectedEmail
 // is passed as login_hint so when the picker DOES show up (or when GIS is
 // silently re-issuing) Google selects the right account.
+//
+// Resolution order:
+//  1. Cached token for expectedEmail in the per-account map → promote it to
+//     the current slot and return. Fully silent, no Google round-trip.
+//  2. Current single-slot token, when its scopes match (and email matches
+//     expectedEmail if one was supplied).
+//  3. Silent refresh (prompt:'none') with login_hint = expectedEmail.
+//  4. Interactive picker with the same hint.
+//
+// Step 1 is the multi-account win: once the operator has signed into all
+// six client accounts, switching between clients is instant — the map
+// holds a live token per email and we just hand back the right one.
 export async function ensureToken(scopes, { expectedEmail = null } = {}) {
-  const t = getToken();
   const needed = Array.isArray(scopes) ? scopes : [scopes];
-  if (t && needed.every(s => (t.scope || '').includes(s))) {
-    if (expectedEmail) await assertEmailMatches(t, expectedEmail);
-    return t;
+
+  // (1) Per-email cache — only consulted when the caller knows which
+  //     account this client should use.
+  if (expectedEmail) {
+    const cached = getTokenForEmail(expectedEmail, needed);
+    if (cached) {
+      setCurrentToken(cached);
+      return cached;
+    }
   }
-  // Try a silent refresh first using the last-known email (or expected) as
-  // the hint — when the user is still signed into Google they won't see any
-  // popup. Falls back to interactive only when GIS says it's required.
+
+  // (2) Current single-slot token, if it satisfies scope + (when given)
+  //     the expected email.
+  const t = getToken();
+  if (t && needed.every(s => (t.scope || '').includes(s))) {
+    if (expectedEmail) {
+      try {
+        await assertEmailMatches(t, expectedEmail);
+        return t;
+      } catch (e) {
+        if (!e?.accountMismatch) throw e;
+        // Mismatch — fall through to silent / interactive with the hint
+        // so we can issue (or pick) a token bound to expectedEmail.
+      }
+    } else {
+      return t;
+    }
+  }
+
+  // (3) Silent refresh with login_hint.
   const hint = expectedEmail || getLastKnownEmail();
   const silent = await silentRefresh(needed, { loginHint: hint });
   let fresh;
   if (silent) {
     fresh = silent;
   } else {
+    // (4) Interactive — last resort.
     fresh = await requestToken(needed, { loginHint: hint });
   }
   if (expectedEmail) await assertEmailMatches(fresh, expectedEmail);
@@ -193,20 +286,38 @@ export async function ensureToken(scopes, { expectedEmail = null } = {}) {
 }
 
 // Resolve the actual email Google issued the token for (round-trips to
-// tokeninfo on first call, then cached) and throw a structured mismatch
-// error if it doesn't match the expected one. The error carries both
-// emails so the UI can render a useful "Switch to X" prompt.
+// tokeninfo) and throw a structured mismatch error if it doesn't match
+// the expected one. The error carries both emails so the UI can render
+// a useful "Switch to X" prompt.
+//
+// We always verify against tokeninfo when a token's email field
+// disagrees with expectedEmail — silentRefresh / requestToken
+// optimistically pre-fill email from the loginHint, which is wrong if
+// the user picked a different account in the interactive picker. Without
+// re-verifying, the per-email token map gets keyed under the wrong
+// address and subsequent client opens silently grab the wrong token.
 async function assertEmailMatches(token, expectedEmail) {
   let actual = token.email;
-  if (!actual) {
+  // Force a verification round-trip when the cached email doesn't match
+  // what we expect — covers the "user picked a different account than
+  // the hint" case where the token was optimistically labelled wrong.
+  const needsVerify = !actual || actual.toLowerCase() !== expectedEmail.toLowerCase();
+  if (needsVerify) {
     try {
       const res = await fetch('https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=' + encodeURIComponent(token.access_token));
       if (res.ok) {
         const data = await res.json();
-        actual = data.email;
-        if (actual) {
-          const merged = { ...token, email: actual };
-          persistToken(merged);
+        if (data.email) {
+          actual = data.email;
+          // Re-persist with the verified email so the per-account map
+          // gets keyed correctly. If the optimistic email was wrong,
+          // also drop the wrong key from the map so we don't leak it.
+          if (token.email && token.email.toLowerCase() !== actual.toLowerCase()) {
+            const map = readTokensMap();
+            delete map[token.email.toLowerCase()];
+            writeTokensMap(map);
+          }
+          persistToken({ ...token, email: actual });
         }
       }
     } catch {}
@@ -289,7 +400,23 @@ export function backgroundSilentRefresh(scopes = ALL_READ_SCOPES) {
 }
 
 // Force the account picker to show (used by the "Switch account" button).
+// Notably does NOT revoke or wipe the per-email token map — switching to a
+// different account shouldn't blow away cached tokens for accounts the
+// operator might still need (the agency runs ~6 client Google accounts;
+// keeping their cached tokens alive is the whole point of the map).
+// Just drops the "current" pointer so requestToken's fresh issue lands as
+// the new current.
 export async function switchAccount(scopes, { loginHint = null } = {}) {
-  await signOut();
+  localStorage.removeItem(TOKEN_KEY);
+  notifyTokenChange();
   return requestToken(scopes, { forcePicker: true, loginHint });
+}
+
+// Wipe everything — the current single-slot token AND every cached
+// per-account token. Used when the operator wants to truly sign out of
+// the suite (vs just switching between accounts).
+export function clearAllTokens() {
+  localStorage.removeItem(TOKEN_KEY);
+  localStorage.removeItem(TOKENS_KEY);
+  notifyTokenChange();
 }
