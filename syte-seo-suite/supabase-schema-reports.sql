@@ -42,8 +42,27 @@ create table if not exists syte_suite_report_log (
   created_at timestamptz default now()
 );
 
-alter table syte_suite_aeo_history disable row level security;
-alter table syte_suite_report_log  disable row level security;
+-- 3b. Generated reports log — records when a report microsite was built
+-- (independent of sent state). One row per client per month, updated on
+-- regeneration. Lets the Reports view surface "Generated but not sent" cards.
+create table if not exists syte_suite_report_generated_log (
+  id uuid primary key default gen_random_uuid(),
+  client_id uuid references syte_suite_clients(id) on delete cascade,
+  month text not null,
+  generated_at timestamptz default now(),
+  qa_score int,
+  email_subject text,
+  report_type text,                     -- 'full' | 'aeo'
+  created_at timestamptz default now(),
+  unique (client_id, month)
+);
+
+create index if not exists syte_suite_report_generated_log_client_month_idx
+  on syte_suite_report_generated_log(client_id, month desc);
+
+alter table syte_suite_aeo_history             disable row level security;
+alter table syte_suite_report_log              disable row level security;
+alter table syte_suite_report_generated_log    disable row level security;
 
 -- Content rules: always-enforced restrictions per client (e.g. gambling
 -- compliance for play.co.za, factual constraints for Kruger Gate).

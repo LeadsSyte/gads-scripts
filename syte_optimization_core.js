@@ -1,5 +1,5 @@
 /**
- * SYTE OPTIMIZATION CORE v4.4.0
+ * SYTE OPTIMIZATION CORE v4.5.0
  * ============================
  * This file is the CORE engine — hosted centrally and fetched by each client's loader script.
  * DO NOT paste this into Google Ads Scripts directly.
@@ -13,7 +13,33 @@
  * When you improve this core, ALL client accounts get the update on their next scheduled run.
  *
  * Author: Syte Digital Agency (syte.co.za)
- * Version: 4.4.0
+ * Version: 4.5.0
+ *
+ * CHANGELOG v4.5.0 — SHOPPING/PMAX IN AI SMART REVIEW + INTERACTIVE FLAGGED REVIEW:
+ * - _smartSearchTermReview() candidate collection expanded to SEARCH, SHOPPING, and PERFORMANCE_MAX.
+ *   Previously the unified AI review only saw Search campaigns; Shopping/PMax relied on blunt
+ *   spend+ROAS thresholds and a small regex list. Now borderline terms (clicks but no conversions
+ *   in the last 7 days) and low-ROAS terms on every channel get routed through Claude Haiku with
+ *   full client context, active-keyword safety, and the same "when in doubt, review" rules.
+ * - Candidates now track channelType. At apply time, PMax negations are written as campaign-level
+ *   negative keywords on the specific PMax campaign (shared neg lists are not supported on PMax);
+ *   Search and Shopping negations continue to use the routed shared negative lists.
+ * - PMax results still flow into results.pmaxSearchTermsNegated so the email report, approvals,
+ *   and digest rollups keep working with no format change.
+ * - _analyzeShoppingSearchTerms() and _analyzePMaxSearchTerms() now early-return when
+ *   SMART_NEGATION is on and an ANTHROPIC_API_KEY is present, avoiding double negation. They
+ *   remain as fallbacks for accounts running without the AI path.
+ * - NEW: Flagged review terms are now stored in PendingChanges JSON (flagged_review category)
+ * - NEW: "Review & Negate Flagged Terms" button in approval email links to interactive webapp page
+ * - NEW: Interactive flagged review page with per-term checkboxes for negate/keep selection
+ * - NEW: "Talk to the Optimization" — natural language instruction box on flagged review page.
+ *   Users can type instructions like "negate all competitor names but keep facebook" and Claude
+ *   interprets them against the flagged terms list to determine which to negate/keep.
+ * - NEW: AI instructions can also remove N-gram negatives (e.g., "don't negative facebook")
+ * - NEW: flagged_review_negations approval category — selected flagged terms are applied as
+ *   negatives on the next script run after approval
+ * - NEW: _findPendingRow() helper in webapp for shared row lookup logic
+ * - NEW: _getApiKey() helper in webapp reads ANTHROPIC_API_KEY from Config tab
  *
  * CHANGELOG v4.4.0 — EVAL STEP + APPROVAL SYSTEM + CLIENT CONTEXT:
  * - NEW: Collect-only mode — all optimization functions now collect proposed changes WITHOUT
@@ -552,7 +578,7 @@ function _smartSearchTermReview(results) {
       while (s1.hasNext()) {
         var r1 = s1.next();
         var st1 = r1.searchTermView.searchTerm.toLowerCase().trim();
-        if (!candidates[st1]) candidates[st1] = { term: st1, cost: 0, clicks: 0, campaign: r1.campaign.name, sources: [] };
+        if (!candidates[st1]) candidates[st1] = { term: st1, cost: 0, clicks: 0, campaign: r1.campaign.name, channelType: 'SEARCH', sources: [] };
         candidates[st1].cost += Number(r1.metrics.costMicros) / 1000000;
         candidates[st1].clicks += Number(r1.metrics.clicks) || 0;
         if (candidates[st1].sources.indexOf('HIGH_SPEND_LEAD_GEN') === -1) candidates[st1].sources.push('HIGH_SPEND_LEAD_GEN');
@@ -561,12 +587,13 @@ function _smartSearchTermReview(results) {
   }
 
   // SOURCE 2: High spend, low ROAS (last 30 days) — ecommerce
+  // v4.5.0: expanded to cover SEARCH, SHOPPING, and PERFORMANCE_MAX campaigns
   if (_isEcommerceMode()) {
     var ecomThreshold = CONFIG.ECOM_SEARCH_TERM_SPEND_THRESHOLD || 800;
     try {
       var q2 = 'SELECT search_term_view.search_term, campaign.name, metrics.cost_micros, metrics.conversions_value, metrics.clicks, campaign.status, campaign.advertising_channel_type ' +
         'FROM search_term_view WHERE metrics.cost_micros > ' + (ecomThreshold * 1000000) +
-        ' AND campaign.status = "ENABLED" AND campaign.advertising_channel_type = "SEARCH" ' +
+        ' AND campaign.status = "ENABLED" AND campaign.advertising_channel_type IN ("SEARCH", "SHOPPING", "PERFORMANCE_MAX") ' +
         'AND segments.date DURING LAST_30_DAYS';
       var s2 = AdsApp.search(q2);
       while (s2.hasNext()) {
@@ -576,7 +603,8 @@ function _smartSearchTermReview(results) {
         var revenue2 = Number(r2.metrics.conversionsValue) || 0;
         var roas2 = cost2 > 0 ? revenue2 / cost2 : 0;
         if (roas2 >= (CONFIG.MIN_ROAS_TO_KEEP || 1.5)) continue;
-        if (!candidates[st2]) candidates[st2] = { term: st2, cost: 0, clicks: 0, campaign: r2.campaign.name, sources: [], revenue: 0 };
+        var ch2 = r2.campaign.advertisingChannelType || 'SEARCH';
+        if (!candidates[st2]) candidates[st2] = { term: st2, cost: 0, clicks: 0, campaign: r2.campaign.name, channelType: ch2, sources: [], revenue: 0 };
         candidates[st2].cost += cost2;
         candidates[st2].clicks += Number(r2.metrics.clicks) || 0;
         candidates[st2].revenue = (candidates[st2].revenue || 0) + revenue2;
@@ -586,18 +614,21 @@ function _smartSearchTermReview(results) {
   }
 
   // SOURCE 3: Early detection — clicks but no conversions, last 7 days
+  // v4.5.0: expanded to cover SEARCH, SHOPPING, and PERFORMANCE_MAX (borderline borderline terms on every channel)
   var minClicks = CONFIG.SMART_NEGATION_MIN_CLICKS || 1;
   try {
     var q3 = 'SELECT search_term_view.search_term, search_term_view.status, campaign.name, ' +
-      'metrics.cost_micros, metrics.clicks, metrics.conversions, campaign.status ' +
+      'metrics.cost_micros, metrics.clicks, metrics.conversions, campaign.status, campaign.advertising_channel_type ' +
       'FROM search_term_view WHERE campaign.status = "ENABLED" ' +
       'AND metrics.clicks >= ' + minClicks + ' AND metrics.conversions = 0 ' +
+      'AND campaign.advertising_channel_type IN ("SEARCH", "SHOPPING", "PERFORMANCE_MAX") ' +
       'AND search_term_view.status = "NONE" AND segments.date DURING LAST_7_DAYS';
     var s3 = AdsApp.search(q3);
     while (s3.hasNext()) {
       var r3 = s3.next();
       var st3 = r3.searchTermView.searchTerm.toLowerCase().trim();
-      if (!candidates[st3]) candidates[st3] = { term: st3, cost: 0, clicks: 0, campaign: r3.campaign.name, sources: [] };
+      var ch3 = r3.campaign.advertisingChannelType || 'SEARCH';
+      if (!candidates[st3]) candidates[st3] = { term: st3, cost: 0, clicks: 0, campaign: r3.campaign.name, channelType: ch3, sources: [] };
       candidates[st3].cost += Number(r3.metrics.costMicros) / 1000000;
       candidates[st3].clicks += Number(r3.metrics.clicks) || 0;
       if (candidates[st3].sources.indexOf('EARLY_DETECTION') === -1) candidates[st3].sources.push('EARLY_DETECTION');
@@ -794,50 +825,75 @@ function _smartSearchTermReview(results) {
 
       // If spend is above max threshold, flag for manual review
       if (data.cost > maxSpendForAuto) {
-        results.smartReviewTerms.push({ term: termKey, cost: data.cost, clicks: data.clicks, reason: v.reason + ' (high spend — needs manual review)', verdict: 'review' });
+        results.smartReviewTerms.push({ term: termKey, cost: data.cost, clicks: data.clicks, reason: v.reason + ' (high spend — needs manual review)', verdict: 'review', channelType: data.channelType || 'SEARCH', campaign: data.campaign });
         continue;
       }
 
       // Cap auto-negations per run
       if (negateCount >= smartNegationCap || negateCount >= CONFIG.MAX_CHANGES_PER_RUN) {
-        results.smartReviewTerms.push({ term: termKey, cost: data.cost, clicks: data.clicks, reason: v.reason + ' (cap reached)', verdict: 'review' });
+        results.smartReviewTerms.push({ term: termKey, cost: data.cost, clicks: data.clicks, reason: v.reason + ' (cap reached)', verdict: 'review', channelType: data.channelType || 'SEARCH', campaign: data.campaign });
         continue;
       }
 
-      _log('INFO', 'AI NEGATE: "' + termKey + '" | ' + (CONFIG.CURRENCY_SYMBOL || 'R') + data.cost.toFixed(0) + ' | Reason: ' + v.reason);
-      results.smartNegated.push({ term: termKey, cost: data.cost, clicks: data.clicks, reason: v.reason });
+      var channelType = data.channelType || 'SEARCH';
+      _log('INFO', 'AI NEGATE [' + channelType + ']: "' + termKey + '" | ' + (CONFIG.CURRENCY_SYMBOL || 'R') + data.cost.toFixed(0) + ' | Reason: ' + v.reason);
+      results.smartNegated.push({ term: termKey, cost: data.cost, clicks: data.clicks, reason: v.reason, channelType: channelType, campaign: data.campaign });
 
-      // Also populate searchTermsNegated for backwards compat
-      results.searchTermsNegated.push({ searchTerm: termKey, campaign: data.campaign, spend: data.cost });
+      // Also populate backwards-compat buckets so the email report still surfaces Shopping/PMax
+      if (channelType === 'PERFORMANCE_MAX') {
+        results.pmaxSearchTermsNegated.push({ searchTerm: termKey, campaign: data.campaign, spend: data.cost });
+      } else {
+        results.searchTermsNegated.push({ searchTerm: termKey, campaign: data.campaign, spend: data.cost });
+      }
 
       _logChange({
         functionName: '_smartSearchTermReview',
         entity: termKey,
         entityType: 'SEARCH_TERM_NEGATIVE',
-        campaign: data.campaign,
+        campaign: data.campaign + ' [' + channelType + ']',
         reason: 'AI Negate: ' + v.reason,
         spend: data.cost,
         conversions: 0
       });
 
-      // Route to appropriate negative list based on AI reasoning
+      // Route negation to the correct place for this channel type.
+      //   SEARCH: shared negative keyword list (applied account-wide).
+      //   SHOPPING: shared negative keyword list still works for Shopping campaigns.
+      //   PERFORMANCE_MAX: PMax cannot use shared neg lists — add as campaign-level negative.
       if (!CONFIG.PREVIEW_MODE) {
-        var reason = (v.reason || '').toLowerCase();
-        var targetList = negativeListSpend;  // default
-        if (reason.indexOf('wrong industry') !== -1 || reason.indexOf('irrelevant') !== -1) {
-          targetList = negativeListIrr;
-        } else if (reason.indexOf('job') !== -1 || reason.indexOf('career') !== -1 ||
-                   reason.indexOf('academic') !== -1 || reason.indexOf('educational') !== -1 ||
-                   reason.indexOf('informational') !== -1 || reason.indexOf('diy') !== -1 ||
-                   reason.indexOf('tutorial') !== -1 || reason.indexOf('how to') !== -1) {
-          targetList = negativeListInfo;
+        try {
+          if (channelType === 'PERFORMANCE_MAX') {
+            // Campaign-level negative keyword on the specific PMax campaign
+            var pmaxIter = AdsApp.performanceMaxCampaigns()
+              .withCondition('campaign.name = "' + data.campaign.replace(/"/g, '\\"') + '"').get();
+            if (pmaxIter.hasNext()) {
+              pmaxIter.next().createNegativeKeyword('[' + termKey + ']');
+            } else {
+              _log('WARN', 'AI negate: PMax campaign "' + data.campaign + '" not found — falling back to shared list');
+              if (negativeListSpend) negativeListSpend.addNegativeKeyword('[' + termKey + ']');
+            }
+          } else {
+            // SEARCH + SHOPPING: route to appropriate shared negative list by AI reason
+            var reason = (v.reason || '').toLowerCase();
+            var targetList = negativeListSpend;  // default
+            if (reason.indexOf('wrong industry') !== -1 || reason.indexOf('irrelevant') !== -1) {
+              targetList = negativeListIrr;
+            } else if (reason.indexOf('job') !== -1 || reason.indexOf('career') !== -1 ||
+                       reason.indexOf('academic') !== -1 || reason.indexOf('educational') !== -1 ||
+                       reason.indexOf('informational') !== -1 || reason.indexOf('diy') !== -1 ||
+                       reason.indexOf('tutorial') !== -1 || reason.indexOf('how to') !== -1) {
+              targetList = negativeListInfo;
+            }
+            if (targetList) targetList.addNegativeKeyword('[' + termKey + ']');
+          }
+        } catch (negErr) {
+          _log('WARN', 'AI negate: failed to add "' + termKey + '" for ' + channelType + ' — ' + negErr.message);
         }
-        if (targetList) targetList.addNegativeKeyword('[' + termKey + ']');
       }
 
       negateCount++;
     } else if (v.verdict === 'review') {
-      results.smartReviewTerms.push({ term: termKey, cost: data.cost, clicks: data.clicks, reason: v.reason, verdict: 'review' });
+      results.smartReviewTerms.push({ term: termKey, cost: data.cost, clicks: data.clicks, reason: v.reason, verdict: 'review', channelType: data.channelType || 'SEARCH', campaign: data.campaign });
     }
     // 'keep' verdicts are simply ignored — term stays active
   }
@@ -991,7 +1047,7 @@ function _logChange(change) {
       CONFIG.PREVIEW_MODE ? 'PREVIEW' : 'PENDING',  // outcome — PREVIEW tagged, LIVE backfilled in 14 days
       '',                  // outcome_checked_date
       '',                  // outcome_notes
-      'v4.4.0'            // script_version
+      'v4.5.0'            // script_version
     ]);
   } catch (e) {
     var writeErr = 'Change log write failed: ' + e.message;
@@ -1170,9 +1226,9 @@ function _backfillOutcomes() {
 
 /**
  * Reads the last 90 days of change log data for this account,
- * sends the full script code + change history + outcomes to Claude,
- * receives a critique of the code logic + a full rewritten script,
- * and emails it to the Syte team.
+ * sends the change history + outcomes to Claude for analysis,
+ * receives a structured JSON review with health score, recommendations,
+ * and threshold suggestions, and emails a clean summary.
  */
 function _weeklyClaudeReview() {
   var today = new Date();
@@ -1201,26 +1257,11 @@ function _weeklyClaudeReview() {
     return;
   }
 
-  // === 2. Load the current script from GitHub ===
-  var currentScript = '';
-  try {
-    var scriptUrl = CONFIG.CORE_SCRIPT_URL || 'https://raw.githubusercontent.com/LeadsSyte/gads-scripts/refs/heads/main/syte_optimization_core.js';
-    var response = UrlFetchApp.fetch(scriptUrl, { muteHttpExceptions: true });
-    if (response.getResponseCode() === 200) {
-      currentScript = response.getContentText();
-      _log('INFO', 'Loaded current script (' + currentScript.length + ' chars)');
-    } else {
-      _log('WARN', 'Could not fetch script from GitHub — using summary only');
-    }
-  } catch (e) {
-    _log('WARN', 'Script fetch error: ' + e.message);
-  }
-
-  // === 3. Build the prompt for Claude ===
+  // === 2. Build the prompt for Claude ===
   var accountName = AdsApp.currentAccount().getName();
-  var prompt = _buildClaudeReviewPrompt(accountName, changeLogSummary, currentScript);
+  var prompt = _buildClaudeReviewPrompt(accountName, changeLogSummary);
 
-  // === 4. Call Claude API ===
+  // === 3. Call Claude API ===
   _log('INFO', 'Calling Claude API for weekly review...');
   var claudeResponse = _callClaudeAPI(prompt);
 
@@ -1344,71 +1385,62 @@ function _buildChangeLogSummary() {
 
 /**
  * Builds the prompt sent to Claude for the weekly review.
+ * v4.5.0: Asks for structured JSON output — concise recommendations, not a full rewritten script.
  */
-function _buildClaudeReviewPrompt(accountName, changeLogSummary, currentScript) {
-  var prompt = 'You are a senior Google Ads engineer reviewing an automated optimization script. ';
-  prompt += 'Your job is to analyze the script\'s real-world decision history, identify flaws in its logic, ';
-  prompt += 'and produce an improved version of the full script.\n\n';
+function _buildClaudeReviewPrompt(accountName, changeLogSummary) {
+  var prompt = 'You are a senior Google Ads strategist reviewing an automated optimization script\'s recent decisions.\n';
+  prompt += 'Your job is to analyze the decision history and provide concise, actionable insights.\n\n';
 
   prompt += '=== CONTEXT ===\n';
   prompt += 'Account: ' + accountName + '\n';
-  prompt += 'Script: Syte Optimization Core — a Google Ads Script that runs every 3 days to pause waste, ';
-  prompt += 'negative bad search terms, adjust bids, promote winning search terms to exact match, and send email reports.\n\n';
+  prompt += 'Script: Syte Optimization Core — runs every 3 days to pause waste keywords, ';
+  prompt += 'negative bad search terms, adjust device/schedule/geo bids, and promote winners.\n\n';
 
   if (CLIENT_CONTEXT) {
-    prompt += '=== BUSINESS CONTEXT (from account manager) ===\n';
+    prompt += '=== BUSINESS CONTEXT ===\n';
     prompt += CLIENT_CONTEXT + '\n\n';
   }
 
   prompt += changeLogSummary + '\n\n';
 
   prompt += '=== YOUR TASK ===\n';
-  prompt += 'Do the following in your response:\n\n';
+  prompt += 'Return ONLY a JSON object (no markdown, no code fences) with this structure:\n\n';
+  prompt += '{\n';
+  prompt += '  "health_score": 1-10 (overall optimization health),\n';
+  prompt += '  "health_label": "Healthy" | "Needs Attention" | "At Risk",\n';
+  prompt += '  "one_liner": "One sentence summary of how the script is performing",\n';
+  prompt += '  "incorrect_decisions": [\n';
+  prompt += '    { "term": "the keyword or search term", "what_happened": "brief description", "fix": "what should change" }\n';
+  prompt += '  ],\n';
+  prompt += '  "recommendations": [\n';
+  prompt += '    { "priority": "high" | "medium" | "low", "title": "Short title", "detail": "1-2 sentence explanation" }\n';
+  prompt += '  ],\n';
+  prompt += '  "threshold_suggestions": [\n';
+  prompt += '    { "setting": "CONFIG.SETTING_NAME", "current": "current value or description", "suggested": "new value", "reason": "why" }\n';
+  prompt += '  ],\n';
+  prompt += '  "patterns_noticed": "2-3 sentences about patterns in the data (e.g. most negations are informational, geo bids heavily favour one region, etc.)"\n';
+  prompt += '}\n\n';
 
-  prompt += '1. DECISION AUDIT\n';
-  prompt += 'For each INCORRECT decision found in the change log, explain:\n';
-  prompt += '- What the script\'s logic was doing\n';
-  prompt += '- Why that logic produced a wrong decision\n';
-  prompt += '- What the code change should be to prevent it happening again\n\n';
-
-  prompt += '2. LOGIC CRITIQUE\n';
-  prompt += 'Review the overall script logic and identify:\n';
-  prompt += '- Any thresholds that appear too aggressive or too conservative based on outcomes\n';
-  prompt += '- Any functions with low accuracy that need redesigning\n';
-  prompt += '- Any edge cases not being handled\n';
-  prompt += '- Any new optimizations worth adding based on patterns in the data\n\n';
-
-  prompt += '3. FULL REWRITTEN SCRIPT\n';
-  prompt += 'Provide the complete updated syte_optimization_core.js with all your fixes applied.\n';
-  prompt += 'Update the version number to v' + _getNextVersion() + '.\n';
-  prompt += 'Add a CHANGELOG entry at the top listing every change you made and why.\n';
-  prompt += 'Do not remove existing functionality. Only improve it.\n\n';
-
-  if (currentScript) {
-    prompt += '=== CURRENT SCRIPT CODE ===\n';
-    prompt += currentScript;
-  }
+  prompt += 'RULES:\n';
+  prompt += '- Keep it concise — this goes into a summary email for an agency owner, not a developer.\n';
+  prompt += '- Maximum 5 recommendations, ranked by impact.\n';
+  prompt += '- Maximum 3 threshold suggestions.\n';
+  prompt += '- If all changes are PENDING (no outcomes yet), say so and focus recommendations on data collection.\n';
+  prompt += '- Do NOT include a rewritten script. Only actionable recommendations.\n';
+  prompt += '- Return ONLY valid JSON.\n';
 
   return prompt;
 }
 
-function _getNextVersion() {
-  // Extract current version number and increment patch
-  var match = '4.1'.match(/(\d+)\.(\d+)/);
-  if (match) {
-    return match[1] + '.' + (parseInt(match[2]) + 1);
-  }
-  return '4.2';
-}
-
 /**
  * Calls the Anthropic Claude API and returns the text response.
+ * v4.5.0: Uses Haiku for weekly review (structured JSON output, no script rewrite).
  */
 function _callClaudeAPI(prompt) {
   try {
     var payload = {
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 8000,
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 2000,
       messages: [{ role: 'user', content: prompt }]
     };
 
@@ -1446,68 +1478,149 @@ function _callClaudeAPI(prompt) {
 }
 
 /**
- * Sends the weekly self-improvement report to the Syte team.
- * Includes the full decision audit, logic critique, and rewritten script.
+ * Sends the weekly self-improvement report.
+ * v4.5.0: Clean, simple summary — no raw data dumps or rewritten scripts.
  */
 function _sendWeeklyReviewEmail(accountName, claudeResponse, changeLogSummary) {
   var today = Utilities.formatDate(new Date(), AdsApp.currentAccount().getTimeZone(), 'yyyy-MM-dd');
   var recipients = CONFIG.EMAIL_ADDRESSES || [CONFIG.EMAIL_RECIPIENT || 'michaelh@syte.co.za'];
   if (typeof recipients === 'string') recipients = [recipients];
 
-  // Try to extract the rewritten script from Claude's response
-  var scriptMatch = claudeResponse.match(/```javascript([\s\S]*?)```/);
-  var rewrittenScript = scriptMatch ? scriptMatch[1].trim() : null;
+  // Parse Claude's structured JSON response
+  var review = {};
+  try {
+    var cleaned = claudeResponse.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
+    review = JSON.parse(cleaned);
+  } catch (e) {
+    _log('WARN', 'Could not parse weekly review JSON — sending raw fallback');
+    review = {
+      health_score: 0,
+      health_label: 'Unknown',
+      one_liner: 'Could not parse AI response. Raw response included below.',
+      recommendations: [],
+      incorrect_decisions: [],
+      threshold_suggestions: [],
+      patterns_noticed: claudeResponse.substring(0, 500)
+    };
+  }
+
+  var score = review.health_score || 0;
+  var label = review.health_label || 'Unknown';
+  var oneLiner = review.one_liner || '';
+  var recommendations = review.recommendations || [];
+  var incorrects = review.incorrect_decisions || [];
+  var thresholds = review.threshold_suggestions || [];
+  var patterns = review.patterns_noticed || '';
+
+  // Score-based colours
+  var scoreColor = score >= 7 ? '#2e7d32' : (score >= 4 ? '#e65100' : '#c62828');
+  var scoreBg = score >= 7 ? '#e8f5e9' : (score >= 4 ? '#fff3e0' : '#ffebee');
+
+  // === Extract stats from changeLogSummary for the compact banner ===
+  var totalMatch = changeLogSummary.match(/Total changes:\s*(\d+)/);
+  var correctMatch = changeLogSummary.match(/Correct:\s*(\d+)/);
+  var incorrectMatch = changeLogSummary.match(/Incorrect:\s*(\d+)/);
+  var pendingMatch = changeLogSummary.match(/Pending:\s*(\d+)/);
+  var totalChanges = totalMatch ? totalMatch[1] : '0';
+  var correctCount = correctMatch ? correctMatch[1] : '0';
+  var incorrectCount = incorrectMatch ? incorrectMatch[1] : '0';
+  var pendingCount = pendingMatch ? pendingMatch[1] : '0';
 
   // Build HTML email
-  var email = '<html><body style="font-family:Arial,sans-serif;max-width:900px;margin:0 auto;color:#333;">';
+  var email = '<html><body style="font-family:Arial,sans-serif;max-width:700px;margin:0 auto;color:#333;">';
 
   // Header
-  email += '<div style="background:linear-gradient(135deg,#1a1a2e,#16213e);color:white;padding:24px;border-radius:8px 8px 0 0;">';
-  email += '<h1 style="margin:0;font-size:22px;">🤖 Syte Script — Weekly Self-Improvement Report</h1>';
-  email += '<p style="margin:6px 0 0;opacity:0.8;">' + accountName + ' | ' + today + ' | Core v4.4.0</p>';
+  email += '<div style="background:linear-gradient(135deg,#1a1a2e,#16213e);color:white;padding:20px 24px;border-radius:8px 8px 0 0;">';
+  email += '<h1 style="margin:0;font-size:20px;">Weekly Optimization Review</h1>';
+  email += '<p style="margin:4px 0 0;opacity:0.7;font-size:13px;">' + accountName + ' | ' + today + ' | Core v4.5.0</p>';
   email += '</div>';
 
-  // Change log stats banner
-  email += '<div style="background:#e8f5e9;padding:14px 20px;border-left:4px solid #2e7d32;">';
-  email += '<pre style="margin:0;font-size:12px;white-space:pre-wrap;">' + changeLogSummary + '</pre>';
+  // Health score card
+  email += '<div style="background:' + scoreBg + ';padding:16px 24px;border-left:4px solid ' + scoreColor + ';">';
+  email += '<div style="display:inline-block;width:60px;height:60px;border-radius:50%;background:' + scoreColor + ';color:white;text-align:center;line-height:60px;font-size:24px;font-weight:bold;vertical-align:middle;">' + score + '</div>';
+  email += '<div style="display:inline-block;vertical-align:middle;margin-left:16px;">';
+  email += '<div style="font-size:18px;font-weight:bold;color:' + scoreColor + ';">' + label + '</div>';
+  email += '<div style="font-size:13px;color:#555;margin-top:2px;">' + oneLiner + '</div>';
+  email += '</div></div>';
+
+  // Stats row
+  email += '<div style="display:flex;padding:12px 24px;background:#f5f5f5;font-size:13px;">';
+  email += '<div style="flex:1;text-align:center;"><strong>' + totalChanges + '</strong><br><span style="color:#999;">Changes (90d)</span></div>';
+  email += '<div style="flex:1;text-align:center;"><strong style="color:#2e7d32;">' + correctCount + '</strong><br><span style="color:#999;">Correct</span></div>';
+  email += '<div style="flex:1;text-align:center;"><strong style="color:#c62828;">' + incorrectCount + '</strong><br><span style="color:#999;">Incorrect</span></div>';
+  email += '<div style="flex:1;text-align:center;"><strong style="color:#e65100;">' + pendingCount + '</strong><br><span style="color:#999;">Pending</span></div>';
   email += '</div>';
 
-  // Claude's analysis
-  email += '<div style="padding:20px;">';
-  email += '<h2 style="color:#1a1a2e;border-bottom:2px solid #eee;padding-bottom:8px;">Claude\'s Analysis & Recommendations</h2>';
-
-  // If there's a rewritten script, separate the narrative from it
-  var narrative = rewrittenScript
-    ? claudeResponse.replace(/```javascript[\s\S]*?```/, '[Full rewritten script — see below]')
-    : claudeResponse;
-
-  email += '<div style="white-space:pre-wrap;font-size:13px;line-height:1.7;background:#f9f9f9;padding:16px;border-radius:6px;">' +
-    narrative.replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</div>';
-  email += '</div>';
-
-  // Rewritten script section
-  if (rewrittenScript) {
-    email += '<div style="padding:20px;background:#1a1a2e;color:#e0e0e0;">';
-    email += '<h2 style="color:#90caf9;margin-top:0;">📋 Rewritten Script — Ready to Paste into GitHub</h2>';
-    email += '<p style="color:#aaa;font-size:13px;margin:0 0 12px;">Copy everything below and replace the contents of <code>syte_optimization_core.js</code> in GitHub.</p>';
-    email += '<pre style="font-size:11px;line-height:1.5;white-space:pre-wrap;overflow-x:auto;">' +
-      rewrittenScript.replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</pre>';
-    email += '</div>';
-  } else {
-    email += '<div style="padding:16px;background:#fff3e0;border-left:4px solid #f57c00;">';
-    email += '<p style="margin:0;font-size:13px;">⚠️ Claude\'s response did not contain a parseable script block. ';
-    email += 'See the analysis above for manual recommendations.</p>';
+  // Incorrect decisions (if any)
+  if (incorrects.length > 0) {
+    email += '<div style="padding:16px 24px;">';
+    email += '<h2 style="font-size:16px;margin:0 0 10px;color:#c62828;">Mistakes Found</h2>';
+    for (var i = 0; i < incorrects.length; i++) {
+      var inc = incorrects[i];
+      email += '<div style="background:#ffebee;padding:10px 14px;border-radius:6px;margin:6px 0;font-size:13px;">';
+      email += '<strong>"' + (inc.term || '') + '"</strong> — ' + (inc.what_happened || '');
+      email += '<br><span style="color:#2e7d32;">Fix: ' + (inc.fix || '') + '</span>';
+      email += '</div>';
+    }
     email += '</div>';
   }
 
+  // Recommendations
+  if (recommendations.length > 0) {
+    email += '<div style="padding:16px 24px;">';
+    email += '<h2 style="font-size:16px;margin:0 0 10px;color:#1565c0;">Recommendations</h2>';
+    var priorityColors = { high: '#c62828', medium: '#e65100', low: '#1565c0' };
+    for (var r = 0; r < recommendations.length; r++) {
+      var rec = recommendations[r];
+      var pColor = priorityColors[rec.priority] || '#666';
+      email += '<div style="padding:10px 14px;border-left:3px solid ' + pColor + ';background:#f8f9fa;margin:6px 0;border-radius:0 6px 6px 0;font-size:13px;">';
+      email += '<span style="display:inline-block;padding:1px 8px;border-radius:10px;background:' + pColor + ';color:white;font-size:10px;font-weight:600;text-transform:uppercase;vertical-align:middle;">' + (rec.priority || 'info') + '</span> ';
+      email += '<strong>' + (rec.title || '') + '</strong>';
+      email += '<br><span style="color:#555;">' + (rec.detail || '') + '</span>';
+      email += '</div>';
+    }
+    email += '</div>';
+  }
+
+  // Threshold suggestions
+  if (thresholds.length > 0) {
+    email += '<div style="padding:16px 24px;">';
+    email += '<h2 style="font-size:16px;margin:0 0 10px;color:#6a1b9a;">Suggested Setting Changes</h2>';
+    email += '<table style="width:100%;border-collapse:collapse;font-size:13px;">';
+    email += '<tr style="background:#f3e5f5;"><th style="padding:6px 8px;text-align:left;">Setting</th><th style="padding:6px 8px;">Current</th><th style="padding:6px 8px;">Suggested</th><th style="padding:6px 8px;text-align:left;">Why</th></tr>';
+    for (var t = 0; t < thresholds.length; t++) {
+      var th = thresholds[t];
+      email += '<tr style="border-bottom:1px solid #eee;">';
+      email += '<td style="padding:6px 8px;font-family:monospace;font-size:11px;">' + (th.setting || '') + '</td>';
+      email += '<td style="padding:6px 8px;text-align:center;">' + (th.current || '') + '</td>';
+      email += '<td style="padding:6px 8px;text-align:center;font-weight:bold;">' + (th.suggested || '') + '</td>';
+      email += '<td style="padding:6px 8px;color:#555;">' + (th.reason || '') + '</td>';
+      email += '</tr>';
+    }
+    email += '</table></div>';
+  }
+
+  // Patterns noticed
+  if (patterns) {
+    email += '<div style="padding:16px 24px;">';
+    email += '<h2 style="font-size:16px;margin:0 0 10px;color:#333;">Patterns Noticed</h2>';
+    email += '<div style="background:#f5f5f5;padding:12px 14px;border-radius:6px;font-size:13px;color:#555;line-height:1.6;">' + patterns + '</div>';
+    email += '</div>';
+  }
+
+  // Informational note — nothing to approve
+  email += '<div style="padding:12px 24px;background:#f5f5f5;margin-top:8px;">';
+  email += '<p style="margin:0;font-size:12px;color:#999;text-align:center;">This is an informational report — no action required. Recommendations will be reviewed by the Syte team.</p>';
+  email += '</div>';
+
   email += '<div style="padding:14px;color:#999;font-size:11px;text-align:center;">';
-  email += 'Syte Digital Agency | Automated weekly review | syte.co.za';
+  email += 'Syte Digital Agency | Weekly Review | syte.co.za';
   email += '</div>';
   email += '</body></html>';
 
   MailApp.sendEmail({
     to: recipients.join(','),
-    subject: '🤖 Syte Script Self-Improvement | ' + accountName + ' | ' + today,
+    subject: 'Weekly Optimization Review | ' + accountName + ' | ' + label + ' (' + score + '/10)',
     htmlBody: email
   });
 }
@@ -1789,6 +1902,13 @@ function _analyzeShoppingProducts(results) {
 }
 
 function _analyzeShoppingSearchTerms(results) {
+  // v4.5.0: When the AI-powered smart review is active and has an API key,
+  // it already covers Shopping search terms (irrelevant + borderline, last 7/30 days).
+  // Skip this legacy threshold-only fallback to avoid duplicate negation.
+  if (CONFIG.SMART_NEGATION !== false && CONFIG.ANTHROPIC_API_KEY) {
+    _log('INFO', 'Shopping search terms handled by AI smart review — skipping legacy analyzer');
+    return;
+  }
   var changeCount = 0;
   var existing = _getExistingNegatives(_getOrCreateNegativeList(CONFIG.NEGATIVE_LIST_NAME_SPEND));
   var query = 'SELECT search_term_view.search_term, campaign.name, metrics.cost_micros, metrics.conversions_value, campaign.status, campaign.advertising_channel_type FROM search_term_view WHERE campaign.status = "ENABLED" AND campaign.advertising_channel_type = "SHOPPING" AND metrics.cost_micros > ' + (CONFIG.ECOM_SEARCH_TERM_SPEND_THRESHOLD * 1000000) + ' AND segments.date DURING LAST_30_DAYS';
@@ -1840,6 +1960,13 @@ function _monitorPMaxCampaigns(results) {
 }
 
 function _analyzePMaxSearchTerms(results) {
+  // v4.5.0: When the AI-powered smart review is active and has an API key,
+  // it already covers PMax search terms (irrelevant + borderline, last 7/30 days)
+  // and routes negations as campaign-level PMax negatives. Skip the legacy fallback.
+  if (CONFIG.SMART_NEGATION !== false && CONFIG.ANTHROPIC_API_KEY) {
+    _log('INFO', 'PMax search terms handled by AI smart review — skipping legacy analyzer');
+    return;
+  }
   var changeCount = 0;
   var query = 'SELECT search_term_view.search_term, campaign.name, metrics.cost_micros, metrics.conversions_value, campaign.status, campaign.advertising_channel_type FROM search_term_view WHERE campaign.status = "ENABLED" AND campaign.advertising_channel_type = "PERFORMANCE_MAX" AND segments.date DURING LAST_30_DAYS';
   try {
@@ -2265,7 +2392,7 @@ function _checkConversionHealth(results) {
       if (CONFIG.SEND_EMAIL !== false) {
         var recipients = CONFIG.EMAIL_ADDRESSES || [CONFIG.EMAIL_RECIPIENT || 'michaelh@syte.co.za'];
         if (typeof recipients === 'string') recipients = [recipients];
-        MailApp.sendEmail({ to: recipients.join(','), subject: '🚨 URGENT: ' + CONFIG.CLIENT_NAME + ' — Conversions Dropped ' + dropPct + '%', body: alertMsg + '\n\nAction needed:\n1. Check conversion tags in GTM\n2. Test the conversion flow manually\n3. Check for landing page errors\n4. Review any recent website changes\n\n— Syte Optimization Script v4.4.0' });
+        MailApp.sendEmail({ to: recipients.join(','), subject: '🚨 URGENT: ' + CONFIG.CLIENT_NAME + ' — Conversions Dropped ' + dropPct + '%', body: alertMsg + '\n\nAction needed:\n1. Check conversion tags in GTM\n2. Test the conversion flow manually\n3. Check for landing page errors\n4. Review any recent website changes\n\n— Syte Optimization Script v4.5.0' });
       }
     }
 
@@ -2514,16 +2641,25 @@ function _writeDailyDigestRow(results, duration) {
     var sheet = ss.getSheetByName('DailyDigest');
     if (!sheet) {
       sheet = ss.insertSheet('DailyDigest');
-      sheet.getRange(1, 1, 1, 20).setValues([[
+      sheet.getRange(1, 1, 1, 24).setValues([[
         'date', 'time', 'account', 'mode', 'run_mode',
         'duration_s', 'keywords_paused', 'search_terms_negated',
         'ai_negated', 'ai_review', 'winners_promoted',
         'audit_findings', 'schedule_adjustments', 'device_adjustments',
         'geo_adjustments', 'ngram_negatives', 'low_qs_paused',
-        'conv_this_week', 'conv_last_week', 'errors'
+        'conv_this_week', 'conv_last_week', 'errors',
+        'cost_30d', 'conversions_30d', 'revenue_30d', 'clicks_30d'
       ]]);
-      sheet.getRange(1, 1, 1, 20).setFontWeight('bold');
+      sheet.getRange(1, 1, 1, 24).setFontWeight('bold');
       sheet.setFrozenRows(1);
+    } else {
+      // Auto-migrate: add performance columns if missing
+      var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+      if (headers.indexOf('cost_30d') === -1) {
+        var nextCol = sheet.getLastColumn() + 1;
+        sheet.getRange(1, nextCol, 1, 4).setValues([['cost_30d', 'conversions_30d', 'revenue_30d', 'clicks_30d']]);
+        sheet.getRange(1, nextCol, 1, 4).setFontWeight('bold');
+      }
     }
 
     var now = new Date();
@@ -2537,6 +2673,21 @@ function _writeDailyDigestRow(results, duration) {
     var stNegated = results.searchTermsNegated ? results.searchTermsNegated.length : 0;
     var convThis = results.conversionHealth ? results.conversionHealth.thisWeek : 0;
     var convLast = results.conversionHealth ? results.conversionHealth.lastWeek : 0;
+
+    // Pull 30-day account-level performance for MoM tracking
+    var cost30d = 0, conv30d = 0, rev30d = 0, clicks30d = 0;
+    try {
+      var perfQ = 'SELECT metrics.cost_micros, metrics.conversions, metrics.conversions_value, metrics.clicks ' +
+        'FROM customer WHERE segments.date DURING LAST_30_DAYS';
+      var perfRows = AdsApp.search(perfQ);
+      while (perfRows.hasNext()) {
+        var pr = perfRows.next();
+        cost30d += Number(pr.metrics.costMicros) / 1000000;
+        conv30d += Number(pr.metrics.conversions) || 0;
+        rev30d += Number(pr.metrics.conversionsValue) || 0;
+        clicks30d += Number(pr.metrics.clicks) || 0;
+      }
+    } catch (perfErr) { _log('WARN', 'DailyDigest perf query: ' + perfErr.message); }
 
     sheet.appendRow([
       dateStr, timeStr, accountName, CONFIG.ACCOUNT_MODE,
@@ -2554,7 +2705,8 @@ function _writeDailyDigestRow(results, duration) {
       results.ngramNegatives ? results.ngramNegatives.length : 0,
       results.lowQsPaused ? results.lowQsPaused.length : 0,
       convThis, convLast,
-      results.errors ? results.errors.length : 0
+      results.errors ? results.errors.length : 0,
+      cost30d.toFixed(2), conv30d.toFixed(1), rev30d.toFixed(2), clicks30d
     ]);
 
     // Persist individual error messages to "Errors" tab so the weekly
@@ -2603,17 +2755,19 @@ function _sendReport(results, duration, evalResult, pendingRunId) {
 
   var email = '<html><body style="font-family:Arial,sans-serif;max-width:800px;margin:0 auto;color:#333;">';
   email += '<div style="background:linear-gradient(135deg,#0d47a1,#1565c0);color:white;padding:20px;border-radius:8px 8px 0 0;">';
-  email += '<h1 style="margin:0;font-size:20px;">Syte Optimization Report v4.4.0</h1>';
+  email += '<h1 style="margin:0;font-size:20px;">Syte Optimization Report v4.5.0</h1>';
   email += '<p style="margin:5px 0 0;opacity:0.8;">' + accountName + ' | ' + today + ' | ' + mode + ' | ' + CONFIG.ACCOUNT_MODE + '</p></div>';
 
   // v4.4.0: Approval buttons bar
+  // v4.5.0: Fixed — encode & as &amp; in HTML href attributes so Gmail doesn't strip query params.
   if (pendingRunId && CONFIG.APPROVAL_WEBAPP_URL) {
     var webAppUrl = CONFIG.APPROVAL_WEBAPP_URL;
     var btnStyle = 'display:inline-block;padding:10px 18px;margin:4px;border-radius:6px;color:white;text-decoration:none;font-weight:bold;font-size:13px;';
+    var rejBtnStyle = 'display:inline-block;padding:6px 12px;margin:4px 2px;border-radius:6px;color:white;text-decoration:none;font-weight:bold;font-size:11px;background:#c62828;';
 
     email += '<div style="background:#e8f5e9;padding:16px 20px;border-left:4px solid #2e7d32;">';
     email += '<h3 style="margin:0 0 10px;color:#2e7d32;">Changes require your approval</h3>';
-    email += '<p style="margin:0 0 12px;font-size:13px;color:#333;">Review the proposed changes below, then click to approve by category or approve all at once.</p>';
+    email += '<p style="margin:0 0 12px;font-size:13px;color:#333;">Review the proposed changes below, then approve or reject by category.</p>';
 
     // Category buttons — only show if there are changes in that category
     var hasKwPauses = (results.keywordsPaused.length + results.ecomKeywordsPaused.length + results.lowQsPaused.length) > 0;
@@ -2621,25 +2775,43 @@ function _sendReport(results, duration, evalResult, pendingRunId) {
     var hasWinners = (results.winnersPromoted.length + results.ecomWinnersPromoted.length) > 0;
     var hasAutoOpt = (results.deviceAdjustments.length + results.scheduleAdjustments.length + results.geoAdjustments.length) > 0;
     var hasShoppingPmax = (results.shoppingProductsPaused.length + results.pmaxSearchTermsNegated.length) > 0;
+    var hasFlagged = results.smartReviewTerms.length > 0;
 
     if (hasKwPauses) {
-      email += '<a href="' + webAppUrl + '?runId=' + pendingRunId + '&category=keyword_pauses" target="_blank" style="' + btnStyle + 'background:#1565c0;">Approve Keyword Pauses (' + (results.keywordsPaused.length + results.ecomKeywordsPaused.length + results.lowQsPaused.length) + ')</a> ';
+      var kwCount = results.keywordsPaused.length + results.ecomKeywordsPaused.length + results.lowQsPaused.length;
+      email += '<a href="' + webAppUrl + '?runId=' + pendingRunId + '&amp;category=keyword_pauses" target="_blank" style="' + btnStyle + 'background:#1565c0;">Approve Keyword Pauses (' + kwCount + ')</a>';
+      email += '<a href="' + webAppUrl + '?action=reject_category&amp;runId=' + pendingRunId + '&amp;category=keyword_pauses" target="_blank" style="' + rejBtnStyle + '">Reject</a> ';
     }
     if (hasNegations) {
-      email += '<a href="' + webAppUrl + '?runId=' + pendingRunId + '&category=search_term_negations" target="_blank" style="' + btnStyle + 'background:#6a1b9a;">Approve Negations (' + (results.smartNegated.length + results.ngramNegatives.length) + ')</a> ';
+      var negCount = results.smartNegated.length + results.ngramNegatives.length;
+      email += '<a href="' + webAppUrl + '?runId=' + pendingRunId + '&amp;category=search_term_negations" target="_blank" style="' + btnStyle + 'background:#6a1b9a;">Approve Negations (' + negCount + ')</a>';
+      email += '<a href="' + webAppUrl + '?action=reject_category&amp;runId=' + pendingRunId + '&amp;category=search_term_negations" target="_blank" style="' + rejBtnStyle + '">Reject</a> ';
     }
     if (hasWinners) {
-      email += '<a href="' + webAppUrl + '?runId=' + pendingRunId + '&category=winner_promotions" target="_blank" style="' + btnStyle + 'background:#00695c;">Approve Winners (' + (results.winnersPromoted.length + results.ecomWinnersPromoted.length) + ')</a> ';
+      var winCount = results.winnersPromoted.length + results.ecomWinnersPromoted.length;
+      email += '<a href="' + webAppUrl + '?runId=' + pendingRunId + '&amp;category=winner_promotions" target="_blank" style="' + btnStyle + 'background:#00695c;">Approve Winners (' + winCount + ')</a>';
+      email += '<a href="' + webAppUrl + '?action=reject_category&amp;runId=' + pendingRunId + '&amp;category=winner_promotions" target="_blank" style="' + rejBtnStyle + '">Reject</a> ';
     }
     if (hasAutoOpt) {
-      email += '<a href="' + webAppUrl + '?runId=' + pendingRunId + '&category=auto_optimizations" target="_blank" style="' + btnStyle + 'background:#e65100;">Approve Auto-Opt (' + (results.deviceAdjustments.length + results.scheduleAdjustments.length + results.geoAdjustments.length) + ')</a> ';
+      var autoCount = results.deviceAdjustments.length + results.scheduleAdjustments.length + results.geoAdjustments.length;
+      email += '<a href="' + webAppUrl + '?runId=' + pendingRunId + '&amp;category=auto_optimizations" target="_blank" style="' + btnStyle + 'background:#e65100;">Approve Auto-Opt (' + autoCount + ')</a>';
+      email += '<a href="' + webAppUrl + '?action=reject_category&amp;runId=' + pendingRunId + '&amp;category=auto_optimizations" target="_blank" style="' + rejBtnStyle + '">Reject</a> ';
     }
     if (hasShoppingPmax) {
-      email += '<a href="' + webAppUrl + '?runId=' + pendingRunId + '&category=shopping_pmax" target="_blank" style="' + btnStyle + 'background:#4527a0;">Approve Shopping/PMax (' + (results.shoppingProductsPaused.length + results.pmaxSearchTermsNegated.length) + ')</a> ';
+      var spCount = results.shoppingProductsPaused.length + results.pmaxSearchTermsNegated.length;
+      email += '<a href="' + webAppUrl + '?runId=' + pendingRunId + '&amp;category=shopping_pmax" target="_blank" style="' + btnStyle + 'background:#4527a0;">Approve Shopping/PMax (' + spCount + ')</a>';
+      email += '<a href="' + webAppUrl + '?action=reject_category&amp;runId=' + pendingRunId + '&amp;category=shopping_pmax" target="_blank" style="' + rejBtnStyle + '">Reject</a> ';
+    }
+    if (hasFlagged) {
+      email += '<a href="' + webAppUrl + '?view=flagged_review&amp;runId=' + pendingRunId + '" target="_blank" style="' + btnStyle + 'background:#795548;">Review &amp; Negate Flagged Terms (' + results.smartReviewTerms.length + ')</a> ';
     }
 
-    // Approve All button
-    email += '<br><a href="' + webAppUrl + '?runId=' + pendingRunId + '&category=all" target="_blank" style="' + btnStyle + 'background:#2e7d32;font-size:15px;padding:12px 28px;margin-top:8px;">Approve All Changes</a>';
+    // Approve All / Reject All buttons
+    email += '<br><a href="' + webAppUrl + '?runId=' + pendingRunId + '&amp;category=all" target="_blank" style="' + btnStyle + 'background:#2e7d32;font-size:15px;padding:12px 28px;margin-top:8px;">Approve All Changes</a>';
+    email += ' <a href="' + webAppUrl + '?action=reject&amp;runId=' + pendingRunId + '" target="_blank" style="' + rejBtnStyle + 'font-size:13px;padding:10px 20px;margin-top:8px;">Reject All</a>';
+
+    // View status link
+    email += '<br><a href="' + webAppUrl + '?view=run_status&amp;runId=' + pendingRunId + '" target="_blank" style="color:#1565c0;font-size:12px;margin-top:8px;display:inline-block;">View approval status for this run</a>';
     email += '</div>';
   } else if (pendingRunId && !CONFIG.APPROVAL_WEBAPP_URL) {
     email += '<div style="background:#fff3e0;padding:14px 16px;border-left:4px solid #f57c00;">';
@@ -2842,6 +3014,14 @@ function _sendReport(results, duration, evalResult, pendingRunId) {
   if (results.smartReviewTerms.length > 0) {
     email += '<div style="padding:15px;background:#e3f2fd;"><h3 style="color:#1565c0;">AI Flagged for Review</h3>';
     email += '<p style="font-size:12px;color:#666;">These terms were flagged as ambiguous by the AI. Please review and manually negate or keep.</p>';
+
+    // v4.5.0: Interactive review button — links to webapp where user can select terms to negate or give natural language instructions
+    // (Uses &amp; so Gmail doesn't strip the query string)
+    if (pendingRunId && CONFIG.APPROVAL_WEBAPP_URL) {
+      email += '<a href="' + CONFIG.APPROVAL_WEBAPP_URL + '?view=flagged_review&amp;runId=' + pendingRunId + '" target="_blank" style="display:inline-block;padding:10px 18px;margin:8px 0;border-radius:6px;color:white;text-decoration:none;font-weight:bold;font-size:13px;background:#1565c0;">Review &amp; Negate Flagged Terms (' + results.smartReviewTerms.length + ')</a>';
+      email += '<p style="font-size:11px;color:#888;margin:4px 0 10px;">Click above to select which terms to negate, or type natural language instructions (e.g. "negate all competitor names but keep facebook").</p>';
+    }
+
     email += '<table style="width:100%;border-collapse:collapse;font-size:13px;">';
     email += '<tr style="background:#bbdefb;"><th style="padding:6px;text-align:left;">Search Term</th><th style="padding:6px;text-align:right;">Cost</th><th style="padding:6px;text-align:right;">Clicks</th><th style="padding:6px;text-align:left;">Reason</th></tr>';
     for (var sr = 0; sr < results.smartReviewTerms.length; sr++) {
@@ -2875,11 +3055,11 @@ function _sendReport(results, duration, evalResult, pendingRunId) {
     email += '</ul></div>';
   }
 
-  email += '<div style="padding:15px;color:#666;font-size:12px;"><p>Completed in ' + duration.toFixed(1) + 's | Core v4.4.0 | Syte Digital Agency</p></div></body></html>';
+  email += '<div style="padding:15px;color:#666;font-size:12px;"><p>Completed in ' + duration.toFixed(1) + 's | Core v4.5.0 | Syte Digital Agency</p></div></body></html>';
 
   var recipients = CONFIG.EMAIL_ADDRESSES || [CONFIG.EMAIL_RECIPIENT || 'michaelh@syte.co.za'];
   if (typeof recipients === 'string') recipients = [recipients];
-  MailApp.sendEmail({ to: recipients.join(','), subject: mode + ' Syte v4.4.0 | ' + accountName + ' | ' + CONFIG.ACCOUNT_MODE, htmlBody: email });
+  MailApp.sendEmail({ to: recipients.join(','), subject: mode + ' Syte v4.5.0 | ' + accountName + ' | ' + CONFIG.ACCOUNT_MODE, htmlBody: email });
 }
 
 
@@ -3145,9 +3325,15 @@ function _getPendingChangesSheet() {
       sheet.appendRow([
         'run_id', 'timestamp', 'account_name', 'status',
         'approved_categories', 'approved_by', 'approved_at',
-        'notes', 'changes_json', 'eval_summary'
+        'notes', 'changes_json', 'eval_summary', 'category_decisions'
       ]);
       sheet.setFrozenRows(1);
+    } else {
+      // Auto-migrate: add category_decisions column if missing
+      var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+      if (headers.indexOf('category_decisions') === -1) {
+        sheet.getRange(1, sheet.getLastColumn() + 1).setValue('category_decisions');
+      }
     }
     return sheet;
   } catch (e) {
@@ -3193,6 +3379,10 @@ function _writePendingChanges(results, evalResult) {
     shopping_pmax: {
       shoppingProductsPaused: results.shoppingProductsPaused || [],
       pmaxSearchTermsNegated: results.pmaxSearchTermsNegated || []
+    },
+    flagged_review: {
+      terms: results.smartReviewTerms || [],
+      selectedForNegation: []  // populated by webapp when user reviews
     }
   };
 
@@ -3207,7 +3397,8 @@ function _writePendingChanges(results, evalResult) {
       '',  // approved_at
       '',  // notes
       JSON.stringify(changesObj),
-      evalResult ? evalResult.summary : ''
+      evalResult ? evalResult.summary : '',
+      '{}'  // category_decisions — per-category approve/reject with reasons
     ]);
     _log('INFO', 'Pending changes written: run_id=' + runId);
   } catch (e) {
@@ -3276,7 +3467,7 @@ function _checkAndApplyPendingChanges(results) {
  */
 function _applyApprovedChanges(changesObj, approvedCategories, results) {
   var categories = approvedCategories === 'all'
-    ? ['keyword_pauses', 'search_term_negations', 'winner_promotions', 'auto_optimizations', 'shopping_pmax']
+    ? ['keyword_pauses', 'search_term_negations', 'winner_promotions', 'auto_optimizations', 'shopping_pmax', 'flagged_review_negations']
     : approvedCategories.split(',').map(function(c) { return c.trim(); });
 
   var appliedCount = 0;
@@ -3309,18 +3500,30 @@ function _applyApprovedChanges(changesObj, approvedCategories, results) {
 
     (stData.smartNegated || []).forEach(function(s) {
       try {
-        var reason = (s.reason || '').toLowerCase();
-        var targetList = negativeListSpend;
-        if (reason.indexOf('wrong industry') !== -1 || reason.indexOf('irrelevant') !== -1) {
-          targetList = negativeListIrr;
-        } else if (reason.indexOf('job') !== -1 || reason.indexOf('career') !== -1 ||
-                   reason.indexOf('academic') !== -1 || reason.indexOf('educational') !== -1 ||
-                   reason.indexOf('informational') !== -1 || reason.indexOf('diy') !== -1 ||
-                   reason.indexOf('tutorial') !== -1 || reason.indexOf('how to') !== -1) {
-          targetList = negativeListInfo;
+        // v4.5.0: Route PMax negatives to campaign-level, others to shared lists
+        if (s.channelType === 'PERFORMANCE_MAX' && s.campaign) {
+          var pmaxIter = AdsApp.performanceMaxCampaigns()
+            .withCondition('campaign.name = "' + s.campaign.replace(/"/g, '\\"') + '"').get();
+          if (pmaxIter.hasNext()) {
+            pmaxIter.next().createNegativeKeyword('[' + s.term + ']');
+          } else if (negativeListSpend) {
+            negativeListSpend.addNegativeKeyword('[' + s.term + ']');
+          }
+        } else {
+          var reason = (s.reason || '').toLowerCase();
+          var targetList = negativeListSpend;
+          if (reason.indexOf('wrong industry') !== -1 || reason.indexOf('irrelevant') !== -1) {
+            targetList = negativeListIrr;
+          } else if (reason.indexOf('job') !== -1 || reason.indexOf('career') !== -1 ||
+                     reason.indexOf('academic') !== -1 || reason.indexOf('educational') !== -1 ||
+                     reason.indexOf('informational') !== -1 || reason.indexOf('diy') !== -1 ||
+                     reason.indexOf('tutorial') !== -1 || reason.indexOf('how to') !== -1) {
+            targetList = negativeListInfo;
+          }
+          if (targetList) targetList.addNegativeKeyword('[' + s.term + ']');
         }
-        if (targetList) { targetList.addNegativeKeyword('[' + s.term + ']'); appliedCount++; }
-        _logChange({ functionName: 'approval_apply', entity: s.term, entityType: 'SEARCH_TERM_NEGATIVE', reason: 'Approved AI negate: ' + s.reason, spend: s.cost || 0, conversions: 0 });
+        appliedCount++;
+        _logChange({ functionName: 'approval_apply', entity: s.term, entityType: 'SEARCH_TERM_NEGATIVE', campaign: s.campaign || '', reason: 'Approved AI negate: ' + s.reason, spend: s.cost || 0, conversions: 0 });
       } catch (e) { _log('WARN', 'Apply negation failed: ' + s.term + ' — ' + e.message); }
     });
 
@@ -3404,6 +3607,34 @@ function _applyApprovedChanges(changesObj, approvedCategories, results) {
     _log('INFO', 'Applied auto-optimizations');
   }
 
+  // === FLAGGED REVIEW NEGATIONS (v4.5.0) ===
+  if (categories.indexOf('flagged_review_negations') !== -1 && changesObj.flagged_review) {
+    var frData = changesObj.flagged_review;
+    var selectedTerms = frData.selectedForNegation || [];
+    if (selectedTerms.length > 0) {
+      var negativeListSpendFR = _getOrCreateNegativeList(CONFIG.NEGATIVE_LIST_NAME_SPEND);
+      selectedTerms.forEach(function(s) {
+        try {
+          // v4.5.0: Route PMax flagged negatives to campaign-level; others to shared list
+          if (s.channelType === 'PERFORMANCE_MAX' && s.campaign) {
+            var pmaxIterFR = AdsApp.performanceMaxCampaigns()
+              .withCondition('campaign.name = "' + s.campaign.replace(/"/g, '\\"') + '"').get();
+            if (pmaxIterFR.hasNext()) {
+              pmaxIterFR.next().createNegativeKeyword('[' + s.term + ']');
+            } else if (negativeListSpendFR) {
+              negativeListSpendFR.addNegativeKeyword('[' + s.term + ']');
+            }
+          } else if (negativeListSpendFR) {
+            negativeListSpendFR.addNegativeKeyword('[' + s.term + ']');
+          }
+          appliedCount++;
+          _logChange({ functionName: 'approval_apply', entity: s.term, entityType: 'FLAGGED_REVIEW_NEGATIVE', campaign: s.campaign || '', reason: 'Approved flagged review negate: ' + (s.reason || ''), spend: s.cost || 0, conversions: 0 });
+        } catch (e) { _log('WARN', 'Apply flagged review negation failed: ' + s.term + ' — ' + e.message); }
+      });
+      _log('INFO', 'Applied ' + selectedTerms.length + ' flagged review negations');
+    }
+  }
+
   // === SHOPPING/PMAX ===
   if (categories.indexOf('shopping_pmax') !== -1 && changesObj.shopping_pmax) {
     var spData = changesObj.shopping_pmax;
@@ -3435,7 +3666,7 @@ function runOptimization() {
   CONFIG.REQUIRE_APPROVAL = CONFIG.REQUIRE_APPROVAL !== false;
 
   _log('INFO', '═══════════════════════════════════════════');
-  _log('INFO', 'SYTE OPTIMIZATION CORE v4.4.0');
+  _log('INFO', 'SYTE OPTIMIZATION CORE v4.5.0');
   _log('INFO', 'Client: ' + (CONFIG.CLIENT_NAME || AdsApp.currentAccount().getName()));
   _log('INFO', 'Mode: ' + CONFIG.ACCOUNT_MODE);
   _log('INFO', 'Run: ' + (CONFIG.PREVIEW_MODE ? 'PREVIEW (no changes)' : 'LIVE'));
