@@ -12,6 +12,12 @@ import { getStoredApiKey } from '../../lib/auth.js';
 const MAX_TOKENS = 500;
 
 // ------- ChatGPT / OpenAI --------------------------------------------------
+// Uses the Responses API (not Chat Completions) with the web_search_preview
+// tool enabled. Without web search, gpt-4o relies on stale training data
+// and reliably refuses to recommend specific brands or hallucinates ones
+// that don't exist — the result is "ChatGPT 0% on every query" because
+// no SA brand name ever appears. Web search makes ChatGPT actually look
+// at current pages, so brand mentions track real visibility.
 export const chatgpt = {
   id: 'chatgpt',
   label: 'ChatGPT',
@@ -19,25 +25,18 @@ export const chatgpt = {
   isConfigured: () => !!loadSettings().openaiKey,
   async ask(query) {
     const { openaiKey } = loadSettings();
-    // Route through our openai-proxy Netlify function — api.openai.com
-    // does not return CORS headers for browser-origin requests, so a
-    // direct fetch fails with "Failed to fetch" before we ever see a
-    // response. This was silently zeroing out ChatGPT's contribution
-    // to AEO probes (only Claude rows showed up in the report).
     try {
       const res = await fetch('/.netlify/functions/openai-proxy', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           apiKey: openaiKey,
-          endpoint: 'chat/completions',
+          endpoint: 'responses',
           body: {
             model: 'gpt-4o',
-            max_tokens: MAX_TOKENS,
-            messages: [
-              { role: 'system', content: 'You are a helpful assistant. Answer naturally.' },
-              { role: 'user', content: query }
-            ]
+            input: query,
+            tools: [{ type: 'web_search_preview' }],
+            max_output_tokens: MAX_TOKENS
           }
         })
       });
@@ -46,7 +45,21 @@ export const chatgpt = {
         return { error: 'OpenAI ' + res.status + ' ' + txt.slice(0, 200) };
       }
       const data = await res.json();
-      const text = data.choices?.[0]?.message?.content || '';
+      // Responses API returns output[].content[].text + structured URL
+      // citations in annotations. We collapse text parts into one string
+      // for the brand detector — the citations get appended so the
+      // detector also picks up domain mentions that only appear in the
+      // citation list (the gold-tier signal).
+      const parts = [];
+      for (const item of data.output || []) {
+        for (const c of item.content || []) {
+          if (typeof c.text === 'string') parts.push(c.text);
+          for (const a of c.annotations || []) {
+            if (a.type === 'url_citation' && a.url) parts.push(a.url);
+          }
+        }
+      }
+      const text = parts.join('\n').trim();
       return { text };
     } catch (e) { return { error: e.message }; }
   }
