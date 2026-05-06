@@ -631,6 +631,34 @@ export default function AEOSnapshot() {
             <div className="muted" style={{ marginTop: 12, fontSize: 12 }}>
               {snapshot.sentiment} · engines: {snapshot.engines_used.join(', ')} · {snapshot.total_runs || snapshot.per_query.length} total responses
             </div>
+            {snapshot.engine_health && Object.values(snapshot.engine_health).some(h => h.errors > 0) && (
+              <div style={{
+                marginTop: 12, padding: 10,
+                background: 'color-mix(in srgb, var(--orange) 8%, var(--surface-2))',
+                border: '1px solid color-mix(in srgb, var(--orange) 40%, var(--border))',
+                borderLeft: '3px solid var(--orange)',
+                borderRadius: 'var(--radius)',
+                fontSize: 12
+              }}>
+                <strong style={{ color: 'var(--orange)' }}>Engine failures during this probe:</strong>
+                <ul style={{ marginTop: 6, paddingLeft: 18 }}>
+                  {Object.entries(snapshot.engine_health)
+                    .filter(([, h]) => h.errors > 0)
+                    .map(([id, h]) => (
+                      <li key={id} style={{ marginBottom: 4 }}>
+                        <strong>{h.label}</strong> — {h.errors}/{h.runs} iterations failed
+                        {h.all_failed && <span style={{ color: 'var(--red)' }}> (every iteration)</span>}
+                        {h.sample_error && (
+                          <div className="muted mono" style={{ fontSize: 11, marginTop: 2 }}>{h.sample_error}</div>
+                        )}
+                      </li>
+                    ))}
+                </ul>
+                <div className="muted" style={{ fontSize: 11, marginTop: 6 }}>
+                  Check Suite Settings → engine API keys, or update the engine model if it's been retired.
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="card" style={{ marginBottom: 14 }}>
