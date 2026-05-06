@@ -31,6 +31,27 @@ export async function handler(event) {
     return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'Missing endpoint' }) };
   }
 
+  // HTTP header values are ByteStrings — every character must be 0-255.
+  // Pasted API keys frequently arrive with autocorrected punctuation
+  // (em dash `—` for `-`, smart quotes, NBSP) which throws a confusing
+  // "Cannot convert argument to a ByteString" deep in undici. Detect
+  // and return a precise, actionable error so the operator knows the
+  // key needs re-pasting from the original source rather than chasing
+  // a phantom 502.
+  const cleanKey = String(apiKey).trim();
+  const badIdx = [...cleanKey].findIndex(ch => ch.charCodeAt(0) > 255);
+  if (badIdx !== -1) {
+    return {
+      statusCode: 400,
+      headers: corsHeaders(),
+      body: JSON.stringify({
+        error: 'API key contains a non-ASCII character at position ' + badIdx +
+               ' (char code ' + cleanKey.charCodeAt(badIdx) + '). This is usually an autocorrected hyphen ' +
+               '(— instead of -) or a smart quote — re-copy the key from your OpenAI dashboard and re-paste.'
+      })
+    };
+  }
+
   const safeEndpoint = String(endpoint).replace(/^\/+/, '');
   const url = 'https://api.openai.com/v1/' + safeEndpoint;
 
@@ -39,7 +60,7 @@ export async function handler(event) {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: 'Bearer ' + apiKey
+        Authorization: 'Bearer ' + cleanKey
       },
       body: JSON.stringify(body || {})
     });
