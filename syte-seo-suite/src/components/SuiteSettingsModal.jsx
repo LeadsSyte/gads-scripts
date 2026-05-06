@@ -5,9 +5,27 @@ import { useClients } from '../store/useClients.js';
 // Global Suite Settings modal. Holds external API keys for the AEO Snapshot
 // module. Opened from the sidebar footer "Settings" button.
 export default function SuiteSettingsModal({ onClose }) {
-  const [form, setForm] = useState(loadSettings());
+  const initial = loadSettings();
+  const [form, setForm] = useState(initial);
   const [saved, setSaved] = useState(false);
+  // Per-field show/hide toggle. Keys stay password-masked by default
+  // for shoulder-surfing protection but the operator can flip the eye
+  // icon to verify what's actually saved (useful when debugging the
+  // "millions of stars and I can't tell what's in there" case).
+  const [shown, setShown] = useState({ openaiKey: false, perplexityKey: false, googleAiKey: false });
   const clients = useClients(s => s.clients);
+
+  // Track unsaved-edit state so a stray backdrop click doesn't blow
+  // away half-pasted keys. Click-away on a clean modal still closes.
+  const isDirty =
+    (form.openaiKey || '') !== (initial.openaiKey || '') ||
+    (form.perplexityKey || '') !== (initial.perplexityKey || '') ||
+    (form.googleAiKey || '') !== (initial.googleAiKey || '');
+
+  function tryClose() {
+    if (isDirty && !window.confirm('You have unsaved changes. Discard them?')) return;
+    onClose();
+  }
 
   function update(k, v) {
     setForm(prev => ({ ...prev, [k]: v }));
@@ -86,17 +104,38 @@ export default function SuiteSettingsModal({ onClose }) {
 
   const row = (label, key, placeholder) => {
     const issue = issues.find(i => i.field === key);
+    const value = form[key] || '';
+    const isShown = shown[key];
     return (
       <div className="form-group" style={{ marginBottom: 12 }}>
         <label>{label}</label>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
           <input
-            type="password"
-            value={form[key] || ''}
+            type={isShown ? 'text' : 'password'}
+            value={value}
             placeholder={placeholder}
             onChange={e => update(key, e.target.value)}
-            style={issue ? { borderColor: 'var(--orange)' } : undefined}
+            className={isShown ? 'mono' : undefined}
+            style={{ flex: 1, ...(issue ? { borderColor: 'var(--orange)' } : {}) }}
           />
+          <button
+            type="button"
+            onClick={() => setShown(prev => ({ ...prev, [key]: !prev[key] }))}
+            title={isShown ? 'Hide key' : 'Show key'}
+            style={{ padding: '6px 10px', fontSize: 11, whiteSpace: 'nowrap' }}
+          >
+            {isShown ? 'Hide' : 'Show'}
+          </button>
+          {value && (
+            <button
+              type="button"
+              onClick={() => update(key, '')}
+              title="Clear key"
+              style={{ padding: '6px 10px', fontSize: 11, color: 'var(--red)' }}
+            >
+              Clear
+            </button>
+          )}
         </div>
         {issue && (
           <div style={{ color: 'var(--orange)', fontSize: 11, marginTop: 4 }}>
@@ -112,11 +151,11 @@ export default function SuiteSettingsModal({ onClose }) {
   );
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <div className="modal-backdrop" onClick={tryClose}>
       <div className="modal" onClick={e => e.stopPropagation()}>
         <div className="row" style={{ justifyContent: 'space-between', marginBottom: 16 }}>
           <h2 style={{ margin: 0 }}>Suite Settings</h2>
-          <button onClick={onClose} className="ghost">Close</button>
+          <button onClick={tryClose} className="ghost">Close</button>
         </div>
 
         <div className="card" style={{ marginBottom: 14 }}>
@@ -155,7 +194,7 @@ export default function SuiteSettingsModal({ onClose }) {
             </span>
           )}
           {saved && <span style={{ color: 'var(--green)', fontSize: 12 }}>Saved ✓</span>}
-          <button onClick={onClose}>Cancel</button>
+          <button onClick={tryClose}>Cancel</button>
           <button className="primary" onClick={save}>Save Settings</button>
         </div>
       </div>
