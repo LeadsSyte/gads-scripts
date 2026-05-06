@@ -15,7 +15,19 @@ export default function SuiteSettingsModal({ onClose }) {
   }
 
   function save() {
-    saveSettings(form);
+    // Trim whitespace before persisting — pasted keys often arrive with
+    // a trailing newline or leading space that silently breaks the
+    // request. We don't strip non-ASCII (the issues panel already flags
+    // those visibly) so the operator sees the warning until they
+    // re-copy from a clean source.
+    const cleaned = {
+      ...form,
+      openaiKey:    (form.openaiKey || '').trim(),
+      perplexityKey:(form.perplexityKey || '').trim(),
+      googleAiKey:  (form.googleAiKey || '').trim(),
+    };
+    saveSettings(cleaned);
+    setForm(cleaned);
     setSaved(true);
     setTimeout(() => setSaved(false), 1500);
   }
@@ -33,8 +45,26 @@ export default function SuiteSettingsModal({ onClose }) {
   // key burns 45 iterations of 401s in the next AEO probe. Same for
   // Perplexity (pplx-…) and Google AI (AIza…). All checks tolerate
   // empty / whitespace input (no nag on a half-pasted key).
+  //
+  // We also flag non-ASCII characters — autocorrected hyphens (em dash
+  // U+2014), smart quotes, and NBSP all sneak in when copying from
+  // Word / Notion / Slack and crash the proxy with a ByteString error
+  // ("Cannot convert argument to a ByteString because the character at
+  // index N has a value of …").
   const issues = [];
   const k = (s) => (s || '').trim();
+  const nonAsciiIdx = (s) => [...s].findIndex(ch => ch.charCodeAt(0) > 255);
+  function checkAscii(field, label) {
+    const v = k(form[field]);
+    if (!v) return;
+    const idx = nonAsciiIdx(v);
+    if (idx !== -1) {
+      issues.push({
+        field,
+        message: `${label} contains a non-ASCII character at position ${idx} (char code ${v.charCodeAt(idx)}). This is usually an autocorrected hyphen (— instead of -) or a smart quote. Re-copy the key from the original source.`
+      });
+    }
+  }
   if (k(form.openaiKey).startsWith('sk-ant-')) {
     issues.push({ field: 'openaiKey', message: 'This looks like an Anthropic key (sk-ant-…). The OpenAI field needs a key starting with sk-proj-… or sk-…' });
   }
@@ -47,6 +77,9 @@ export default function SuiteSettingsModal({ onClose }) {
   if (k(form.googleAiKey) && !k(form.googleAiKey).startsWith('AIza')) {
     issues.push({ field: 'googleAiKey', message: 'Google AI Studio keys start with AIza…' });
   }
+  checkAscii('openaiKey', 'OpenAI key');
+  checkAscii('perplexityKey', 'Perplexity key');
+  checkAscii('googleAiKey', 'Google AI key');
 
   const aeoClients = clients.filter(c => c.does_aeo !== false).length;
   const { responses, activeEngines, cost } = estimateSweepCost(aeoClients, 6);
