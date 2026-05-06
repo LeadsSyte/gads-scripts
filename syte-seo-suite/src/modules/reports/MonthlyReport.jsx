@@ -716,9 +716,15 @@ export default function MonthlyReport() {
             <span style={{ color: fetchStatus.includes('✓') ? 'var(--green)' : fetchStatus.includes('failed') || fetchStatus.includes('403') ? 'var(--orange)' : 'var(--text-muted)', flex: 1 }}>
               {fetchStatus}
             </span>
-            {(fetchStatus.includes('cache') || fetchStatus.includes('Not connected')) && (
+            {(fetchStatus.includes('cache') || fetchStatus.includes('Not connected') || fetchStatus.includes('Loaded saved report')) && (
               <button
-                onClick={() => autoFetchMetrics(client, month, true)}
+                onClick={async () => {
+                  // Refresh-data path also clears the saved-report-loaded
+                  // state so the UI flow doesn't keep flagging stale data.
+                  setSavedReportLoaded(false);
+                  setReportData(null);
+                  await autoFetchMetrics(client, month, true);
+                }}
                 style={{ fontSize: 11, padding: '4px 12px', borderColor: 'var(--green)', color: 'var(--green)', whiteSpace: 'nowrap' }}
               >
                 {fetchStatus.includes('Not connected') ? 'Connect Google' : 'Refresh Data'}
