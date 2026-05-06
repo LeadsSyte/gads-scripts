@@ -972,8 +972,23 @@ export default function MonthlyReport() {
               <div className="row" style={{ gap: 10, alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap' }}>
                 <span style={{ fontSize: 13 }}>
                   <strong style={{ color: ACCENT }}>Saved report loaded.</strong>{' '}
-                  <span className="muted">Showing the report generated for {monthLabel(month)}. Regenerate to overwrite with fresh data.</span>
+                  <span className="muted">Showing the report generated for {monthLabel(month)}. Refresh data to pull live GA4 + GSC, or Regenerate to rewrite the email + microsite from scratch.</span>
                 </span>
+                <button
+                  onClick={async () => {
+                    // Discard the frozen reportData snapshot and pull live
+                    // GA4 + GSC. Useful when the saved report was generated
+                    // before the operator wired up the client's properties
+                    // (or when the operator just wants the latest numbers
+                    // without regenerating the email + microsite copy).
+                    setSavedReportLoaded(false);
+                    setReportData(null);
+                    await autoFetchMetrics(client, month, true);
+                  }}
+                  style={{ fontSize: 11, padding: '4px 12px', borderColor: 'var(--green)', color: 'var(--green)', whiteSpace: 'nowrap' }}
+                >
+                  Refresh data
+                </button>
               </div>
             </div>
           )}
