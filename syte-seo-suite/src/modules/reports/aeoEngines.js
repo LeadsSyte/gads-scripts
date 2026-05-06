@@ -88,15 +88,19 @@ export const perplexity = {
 };
 
 // ------- Gemini ------------------------------------------------------------
+// Model bumped to gemini-2.5-flash — the older gemini-1.5-flash was
+// retired earlier in 2025 and now returns 404 for new calls. That was
+// silently zeroing every Gemini row in AEO snapshots (no surfaced
+// error, just an empty row that got filtered out at render time).
 export const gemini = {
   id: 'gemini',
   label: 'Gemini',
-  model: 'gemini-1.5-flash',
+  model: 'gemini-2.5-flash',
   isConfigured: () => !!loadSettings().googleAiKey,
   async ask(query) {
     const { googleAiKey } = loadSettings();
     try {
-      const url = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key='
+      const url = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key='
         + encodeURIComponent(googleAiKey);
       const res = await fetch(url, {
         method: 'POST',
