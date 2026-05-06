@@ -27,22 +27,52 @@ export default function SuiteSettingsModal({ onClose }) {
     claude:     true
   };
 
+  // Sniff for the most common copy-paste mistake — pasting an Anthropic
+  // key into the OpenAI field. The two services use distinct prefixes
+  // (sk-ant-…  vs  sk-proj-… or sk-…), so we can catch this before the
+  // key burns 45 iterations of 401s in the next AEO probe. Same for
+  // Perplexity (pplx-…) and Google AI (AIza…). All checks tolerate
+  // empty / whitespace input (no nag on a half-pasted key).
+  const issues = [];
+  const k = (s) => (s || '').trim();
+  if (k(form.openaiKey).startsWith('sk-ant-')) {
+    issues.push({ field: 'openaiKey', message: 'This looks like an Anthropic key (sk-ant-…). The OpenAI field needs a key starting with sk-proj-… or sk-…' });
+  }
+  if (k(form.openaiKey) && !k(form.openaiKey).startsWith('sk-')) {
+    issues.push({ field: 'openaiKey', message: 'OpenAI keys start with sk-…' });
+  }
+  if (k(form.perplexityKey) && !k(form.perplexityKey).startsWith('pplx-')) {
+    issues.push({ field: 'perplexityKey', message: 'Perplexity keys start with pplx-…' });
+  }
+  if (k(form.googleAiKey) && !k(form.googleAiKey).startsWith('AIza')) {
+    issues.push({ field: 'googleAiKey', message: 'Google AI Studio keys start with AIza…' });
+  }
+
   const aeoClients = clients.filter(c => c.does_aeo !== false).length;
   const { responses, activeEngines, cost } = estimateSweepCost(aeoClients, 6);
 
-  const row = (label, key, placeholder) => (
-    <div className="form-group" style={{ marginBottom: 12 }}>
-      <label>{label}</label>
-      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-        <input
-          type="password"
-          value={form[key] || ''}
-          placeholder={placeholder}
-          onChange={e => update(key, e.target.value)}
-        />
+  const row = (label, key, placeholder) => {
+    const issue = issues.find(i => i.field === key);
+    return (
+      <div className="form-group" style={{ marginBottom: 12 }}>
+        <label>{label}</label>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <input
+            type="password"
+            value={form[key] || ''}
+            placeholder={placeholder}
+            onChange={e => update(key, e.target.value)}
+            style={issue ? { borderColor: 'var(--orange)' } : undefined}
+          />
+        </div>
+        {issue && (
+          <div style={{ color: 'var(--orange)', fontSize: 11, marginTop: 4 }}>
+            {issue.message}
+          </div>
+        )}
       </div>
-    </div>
-  );
+    );
+  };
 
   const statusDot = (ok) => (
     <span className="dot" style={{ background: ok ? 'var(--green)' : 'var(--red)', marginRight: 6 }} />
@@ -85,7 +115,12 @@ export default function SuiteSettingsModal({ onClose }) {
           </div>
         </div>
 
-        <div className="row" style={{ justifyContent: 'flex-end', gap: 10 }}>
+        <div className="row" style={{ justifyContent: 'flex-end', gap: 10, alignItems: 'center' }}>
+          {issues.length > 0 && (
+            <span style={{ color: 'var(--orange)', fontSize: 11, flex: 1 }}>
+              {issues.length} key{issues.length === 1 ? '' : 's'} look wrong — saving anyway will let you fix later, but probes will 401 until you correct.
+            </span>
+          )}
           {saved && <span style={{ color: 'var(--green)', fontSize: 12 }}>Saved ✓</span>}
           <button onClick={onClose}>Cancel</button>
           <button className="primary" onClick={save}>Save Settings</button>
