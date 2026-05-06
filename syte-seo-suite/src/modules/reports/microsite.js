@@ -487,6 +487,30 @@ export function buildMicrositeHtml({ micro, client, monthLabel, previousMonthLab
       </div>
       ${cmp?.has_previous ? `<p style="color:var(--muted);font-size:12px;font-style:italic;">Deltas vs ${esc(previousMonthLabel || cmp.previous_month || 'last month')}</p>` : '<p style="color:var(--muted);font-size:12px;font-style:italic;">First snapshot — this is the baseline. MoM deltas appear from next month.</p>'}`}
       ${micro?.aeoMomNarrative ? `<p class="narrative" style="margin-top:14px;">${esc(micro.aeoMomNarrative)}</p>` : ''}
+      ${(() => {
+        // Surface per-engine health when any engine errored across runs —
+        // otherwise the report quietly omits failed engines (engineScores
+        // = 0%) and the operator can't tell a real "no mentions" from a
+        // "ChatGPT 404'd on every iteration" until they cross-check the
+        // raw probe.
+        const eh = probe.engine_health || {};
+        const failing = Object.entries(eh).filter(([, h]) => h.errors > 0);
+        if (!failing.length) return '';
+        return `<div style="margin-top:14px;padding:12px 14px;border:1px solid color-mix(in srgb,var(--orange) 40%,var(--border));border-left:3px solid var(--orange);background:color-mix(in srgb,var(--orange) 8%,var(--surface-2));border-radius:8px;font-size:12px;">
+          <strong style="color:var(--orange);">Engine probe failures:</strong>
+          <ul style="margin:6px 0 0 18px;padding:0;">
+            ${failing.map(([id, h]) => `
+              <li style="margin-bottom:4px;">
+                <strong>${esc(h.label || id)}</strong> — ${h.errors}/${h.runs} iterations failed${h.all_failed ? ' <span style="color:var(--red);">(every iteration)</span>' : ''}
+                ${h.sample_error ? `<div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--muted);margin-top:2px;">${esc(h.sample_error)}</div>` : ''}
+              </li>
+            `).join('')}
+          </ul>
+          <div style="color:var(--muted);font-size:11px;margin-top:6px;">
+            Visibility for the failing engine(s) reads as 0% in the tables below — those rows reflect probe errors, not real "no mentions" results.
+          </div>
+        </div>`;
+      })()}
       ${rankscaleBtn}
     </section>` : ''}
 
