@@ -828,8 +828,15 @@ export default function AEOEngine({ sub }) {
       'credentials-missing': []
     };
     for (const c of aeoClients) {
-      const status = aeoPipelineStatus(c, aeoImpls, results, currentMonth, deepHistory);
-      buckets[status.section]?.push({ client: c, summary: status.summary, detail: status.detail });
+      let status;
+      try {
+        status = aeoPipelineStatus(c, aeoImpls, results, currentMonth, deepHistory);
+      } catch (e) {
+        console.warn('[AEO] pipeline status failed for', c?.name || c?.id, e);
+        status = { section: 'not-run', detail: 'Status check failed: ' + e.message };
+      }
+      const bucket = buckets[status?.section] || buckets['not-run'];
+      bucket.push({ client: c, summary: status?.summary, detail: status?.detail });
     }
     return [
       { key: 'verified-on-site',        label: 'Verified on Site',        color: 'var(--green)',      borderColor: 'var(--green)',      clients: buckets['verified-on-site'] },

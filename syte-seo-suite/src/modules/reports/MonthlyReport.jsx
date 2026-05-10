@@ -77,6 +77,26 @@ export default function MonthlyReport() {
     }).catch(() => {});
   }, [client?.id, month]);
 
+  // If the Google token appears AFTER this report mounted (e.g. user signed in
+  // via the Google Connections picker on the client modal), refetch metrics
+  // automatically — otherwise the report is stuck on the "auth failed" state.
+  // The storage event covers cross-tab; the custom event covers same-tab
+  // (localStorage writes don't fire 'storage' in the originating tab).
+  useEffect(() => {
+    function onTokenChange() {
+      if (client?.id) autoFetchMetrics(client, month, true);
+    }
+    function onStorage(e) {
+      if (e.key === 'syte-suite-google-token' && e.newValue) onTokenChange();
+    }
+    window.addEventListener('storage', onStorage);
+    window.addEventListener('syte-google-token-changed', onTokenChange);
+    return () => {
+      window.removeEventListener('storage', onStorage);
+      window.removeEventListener('syte-google-token-changed', onTokenChange);
+    };
+  }, [client?.id, month]);
+
   // Pull all report data (GA4 traffic + conversions + GSC keywords) via reportData.js.
   async function autoFetchMetrics(c, m, forceRefresh = false) {
     if (!c) return;
@@ -465,10 +485,20 @@ Write an AEO performance email covering: what AI engines are saying about this b
         </div>
         <ReportDashboard data={reportData} client={client} monthLabel={monthLabel(month)} />
         {!reportData && !fetchStatus.includes('Pulling') && (
-          <div className="muted" style={{ fontSize: 12 }}>
-            {!client.ga4_property_id && !client.gsc_property
-              ? 'No GA4 or GSC configured — set up in Edit Client → Google Connections.'
-              : 'Loading…'}
+          <div className="row" style={{ gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+            <span className="muted" style={{ fontSize: 12 }}>
+              {!client.ga4_property_id && !client.gsc_property
+                ? 'No GA4 or GSC configured — set up in Edit Client → Google Connections.'
+                : 'No data loaded yet.'}
+            </span>
+            {(client.ga4_property_id || client.gsc_property) && (
+              <button
+                onClick={() => autoFetchMetrics(client, month, true)}
+                style={{ fontSize: 11, padding: '5px 14px', borderColor: ACCENT, color: ACCENT }}
+              >
+                {getToken()?.access_token ? 'Fetch from GA4 + GSC' : 'Connect Google & Fetch'}
+              </button>
+            )}
           </div>
         )}
       </div>
