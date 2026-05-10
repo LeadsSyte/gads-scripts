@@ -97,6 +97,10 @@ export async function requestToken(scopes, { forcePicker = false } = {}) {
           scope: resp.scope
         };
         localStorage.setItem(TOKEN_KEY, JSON.stringify(token));
+        // localStorage doesn't fire 'storage' events in the same tab, so dispatch
+        // a custom event so other components (e.g. Monthly Report) can re-fetch
+        // immediately after the user connects via the Google picker.
+        window.dispatchEvent(new CustomEvent('syte-google-token-changed', { detail: token }));
         resolve(token);
       }
     });

@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import LockScreen from './components/LockScreen.jsx';
 import Sidebar from './components/Sidebar.jsx';
 import ClientSelector from './components/ClientSelector.jsx';
+import ErrorBoundary from './components/ErrorBoundary.jsx';
 import ContentEngine from './modules/content/ContentEngine.jsx';
 import TechnicalSEO from './modules/technical/TechnicalSEO.jsx';
 import AEOEngine from './modules/aeo/AEOEngine.jsx';
@@ -113,14 +114,16 @@ export default function App() {
             Supabase not configured — running on localStorage fallback. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in .env to enable sync.
           </div>
         )}
-        {module === 'clients' && sub === 'Implementation Progress' && <ImplementationProgress />}
-        {module === 'clients' && sub === 'Approvals' && <Approvals />}
-        {module === 'clients' && sub !== 'Implementation Progress' && sub !== 'Approvals' && <ClientsMaster />}
-        {module === 'content'   && <ContentEngine sub={sub} setSub={setSub} />}
-        {module === 'technical' && <TechnicalSEO sub={sub} />}
-        {module === 'aeo'       && <AEOEngine sub={sub} />}
-        {module === 'reports'   && <ReportsModule sub={sub} />}
-        {module === 'cms'       && <CMSPush sub={sub} />}
+        <ErrorBoundary key={module} label={module.charAt(0).toUpperCase() + module.slice(1) + ' module'}>
+          {module === 'clients' && sub === 'Implementation Progress' && <ImplementationProgress />}
+          {module === 'clients' && sub === 'Approvals' && <Approvals />}
+          {module === 'clients' && sub !== 'Implementation Progress' && sub !== 'Approvals' && <ClientsMaster />}
+          {module === 'content'   && <ContentEngine sub={sub} setSub={setSub} />}
+          {module === 'technical' && <TechnicalSEO sub={sub} />}
+          {module === 'aeo'       && <AEOEngine sub={sub} />}
+          {module === 'reports'   && <ReportsModule sub={sub} />}
+          {module === 'cms'       && <CMSPush sub={sub} />}
+        </ErrorBoundary>
       </main>
     </div>
   );
