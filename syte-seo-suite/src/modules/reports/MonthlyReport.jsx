@@ -730,24 +730,30 @@ export default function MonthlyReport() {
                 {fetchStatus.includes('Not connected') ? 'Connect Google' : 'Refresh Data'}
               </button>
             )}
-            {(fetchStatus.includes('403') || fetchStatus.includes('permission') || fetchStatus.includes('failed') || fetchStatus.includes('Wrong Google account') || fetchStatus.includes('sign-in needed')) && (
+            {(fetchStatus.includes('403') || fetchStatus.includes('permission') || fetchStatus.includes('failed') || fetchStatus.includes('Wrong Google account') || fetchStatus.includes('sign-in needed') || fetchStatus.includes('Not connected')) && (
               <button
                 onClick={async () => {
                   try {
                     setFetchStatus('Switching Google account…');
-                    // If the client has a saved Google email, use it as the
-                    // login hint so the chooser pre-selects the right one.
-                    await switchAccount([SCOPES.ga4, SCOPES.gsc], { loginHint: client.google_account_email || null });
-                    // Same auto-bind as the forceRefresh path: if this is
-                    // the first time the operator has signed in for this
-                    // client, save the chosen email so subsequent visits
-                    // can silently refresh.
-                    if (!client.google_account_email) {
-                      try {
-                        const email = await getCurrentEmail();
-                        if (email) await saveClient({ ...client, google_account_email: email });
-                      } catch {}
-                    }
+                    // No loginHint here: the operator is hitting Switch
+                    // because the bound account is wrong / unavailable.
+                    // forcePicker shows the chooser so they can pick any
+                    // signed-in account.
+                    await switchAccount([SCOPES.ga4, SCOPES.gsc]);
+                    // Re-bind to whatever the operator picked. Without this,
+                    // the next mount silentRefresh keeps trying the old
+                    // email and fails the same way.
+                    try {
+                      const email = await getCurrentEmail();
+                      if (email && email !== client.google_account_email) {
+                        await saveClient({
+                          ...client,
+                          google_account_email: email,
+                          ga4_account_email: email,
+                          gsc_account_email: email
+                        });
+                      }
+                    } catch {}
                     autoFetchMetrics(client, month, true);
                   } catch (e) {
                     setFetchStatus('Re-auth failed: ' + e.message);
@@ -755,7 +761,7 @@ export default function MonthlyReport() {
                 }}
                 style={{ fontSize: 11, padding: '4px 12px', borderColor: 'var(--blue)', color: 'var(--blue)', whiteSpace: 'nowrap' }}
               >
-                {client.google_account_email ? `Sign in as ${client.google_account_email}` : 'Switch Google Account'}
+                {client.google_account_email ? `Switch from ${client.google_account_email}` : 'Switch Google Account'}
               </button>
             )}
           </div>
