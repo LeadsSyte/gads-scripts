@@ -107,7 +107,7 @@ Rules:
 - aeoStrategy.zeroOpportunity: pick 2-3 zero-visibility queries from the payload that look like high-volume category terms ("pallet racking", "industrial shelving") and frame them as the next month's foundation play.
 - If no AEO data, omit aeoMomNarrative, aeoCompetitiveNarrative, aeoStrategy.
 - If no click data for PPC estimate, set ppcEquivalent.show = false.
-- workDone.show = false if no work data is provided.
+- workDone: ONLY populate items from the explicit "=== WHAT SYTE DID THIS MONTH ===" section in the user payload. If that section says "NO WORK DATA AVAILABLE" or contains no concrete numbers (articles, fixes, optimizations, verified changes), set workDone.show = false and workDone.items = []. NEVER invent generic strategy items like "Complete site assessment" or "SEO roadmap development". Each card must correspond to a specific line in the payload — no inferences from the brand or industry.
 - Highlights: 3-6 metrics, pick the MOST POSITIVE ones for this client. Prefer MoM delta-positive metrics first (visibility +X%, citations +Y%).
 - topPages: up to 5, mirror what's in the payload.`;
 
@@ -349,14 +349,24 @@ export function buildAlicePayload(form, aeo, workSummary) {
   }
 
   // --- What Syte did this month (auto-pulled from suite) ---
+  // An empty section header invites the model to invent generic items
+  // ("Complete site assessment", "SEO roadmap development") to fill the
+  // void. Build the list first; emit a hard "NO WORK DATA" sentinel when
+  // empty so the prompt enforces workDone.show = false.
+  const workLines = [];
   if (workSummary) {
-    lines.push('\n=== WHAT SYTE DID THIS MONTH ===');
-    if (workSummary.content.summary)         lines.push('Content: ' + workSummary.content.summary);
-    if (workSummary.content.topics?.length)   lines.push('  Topics: ' + workSummary.content.topics.join(', '));
-    if (workSummary.technical.summary)        lines.push('Technical: ' + workSummary.technical.summary);
-    if (workSummary.aeo.summary)             lines.push('AEO: ' + workSummary.aeo.summary);
-    if (workSummary.implementations.summary) lines.push('Verified: ' + workSummary.implementations.summary);
-    if (form.additionalWork)                 lines.push('Other work: ' + form.additionalWork);
+    if (workSummary.content.summary)         workLines.push('Content: ' + workSummary.content.summary);
+    if (workSummary.content.topics?.length)   workLines.push('  Topics: ' + workSummary.content.topics.join(', '));
+    if (workSummary.technical.summary)        workLines.push('Technical: ' + workSummary.technical.summary);
+    if (workSummary.aeo.summary)             workLines.push('AEO: ' + workSummary.aeo.summary);
+    if (workSummary.implementations.summary) workLines.push('Verified: ' + workSummary.implementations.summary);
+  }
+  if (form.additionalWork) workLines.push('Other work: ' + form.additionalWork);
+  lines.push('\n=== WHAT SYTE DID THIS MONTH ===');
+  if (workLines.length > 0) {
+    workLines.forEach(l => lines.push(l));
+  } else {
+    lines.push('NO WORK DATA AVAILABLE for this client/month. workDone.show MUST be false. DO NOT invent items. The microsite must omit this section entirely.');
   }
 
   // --- SEO metrics (from Looker paste) ---
