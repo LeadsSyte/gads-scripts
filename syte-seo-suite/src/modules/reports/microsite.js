@@ -159,6 +159,13 @@ export function buildMicrositeHtml({ micro, client, monthLabel, previousMonthLab
   const showPpc = !!ppc.show && !aeoOnly;
   const work = micro?.workDone || {};
   const showWork = !!work.show && (work.items || []).length > 0 && !aeoOnly;
+  // Forward-looking sections (whatNext, aeoStrategy) need real signal —
+  // either an AEO probe with emerging queries to attack, or actual work
+  // logged this month. Without those the model has nothing to base
+  // "next month optimizations" on, and any text it produces is invented.
+  const hasAeoSignal = !!(aeoProbe && (aeoProbe.per_query?.length || aeoProbe.overall_score));
+  const hasWorkSignal = (work.items || []).length > 0;
+  const hasForwardSignal = hasAeoSignal || hasWorkSignal;
   const rd = aeoOnly ? {} : (reportData || {});
   const traffic = rd.traffic || {};
   const isEcom = rd.clientType === 'ecommerce';
@@ -623,7 +630,7 @@ export function buildMicrositeHtml({ micro, client, monthLabel, previousMonthLab
       ` : ''}
     </section>` : ''}
 
-    ${micro?.aeoStrategy?.show && (micro.aeoStrategy?.priorities?.length || micro.aeoStrategy?.zeroOpportunity) ? `
+    ${micro?.aeoStrategy?.show && hasAeoSignal && (micro.aeoStrategy?.priorities?.length || micro.aeoStrategy?.zeroOpportunity) ? `
     <section>
       <h2>Next Month's Strategy</h2>
       <p style="color:var(--muted);font-size:13px;margin-bottom:14px;">Based on emerging wins and zero-visibility category terms — these are the queries we're attacking next.</p>
@@ -685,7 +692,7 @@ export function buildMicrositeHtml({ micro, client, monthLabel, previousMonthLab
       </table>
     </section>` : ''}
 
-    ${micro?.whatNext ? `
+    ${micro?.whatNext && hasForwardSignal ? `
     <section>
       <h2>What's Next</h2>
       <div class="next">${esc(micro.whatNext)}</div>

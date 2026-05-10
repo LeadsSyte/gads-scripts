@@ -103,9 +103,11 @@ Rules:
 - Use the real numbers from the user's payload, not made-up ones.
 - Only include sections for services the client actually has.
 - aeoMomNarrative + aeoCompetitiveNarrative are short stories the microsite renders alongside auto-built tables. The tables get built from raw probe data — you only write the prose.
-- aeoStrategy.priorities: 3-5 items based on the EMERGING WINS list in the payload (queries with 30-69% visibility) — these are the close-to-winning queries. Use Quick Win for the highest-visibility emerging items, Grow Share for mid-tier, Own the Category for zero-visibility terms with high search volume.
-- aeoStrategy.zeroOpportunity: pick 2-3 zero-visibility queries from the payload that look like high-volume category terms ("pallet racking", "industrial shelving") and frame them as the next month's foundation play.
+- aeoStrategy.priorities: 3-5 items based on the EMERGING WINS list in the payload (queries with 30-69% visibility) — these are the close-to-winning queries. Use Quick Win for the highest-visibility emerging items, Grow Share for mid-tier, Own the Category for zero-visibility terms with high search volume. If the payload has no EMERGING WINS list at all, set aeoStrategy.priorities = [].
+- aeoStrategy.zeroOpportunity: pick 2-3 zero-visibility queries from the payload that look like high-volume category terms ("pallet racking", "industrial shelving") and frame them as the next month's foundation play. If the payload has no zero-visibility queries listed, omit this field.
+- aeoStrategy.show: ONLY true if the payload contains EMERGING WINS or ZERO-VISIBILITY queries. If the AEO section is missing, says "no probe run", or has no queries, set aeoStrategy.show = false and omit priorities + zeroOpportunity entirely. NEVER invent next-month optimization plans from the brand/industry alone.
 - If no AEO data, omit aeoMomNarrative, aeoCompetitiveNarrative, aeoStrategy.
+- whatNext: ONLY include this field if there is concrete forward-looking signal in the payload — emerging AEO queries to attack, additionalWork notes from the operator, or specific gaps surfaced by the metrics. If no such signal exists (empty work month, no AEO probe, no emerging queries), OMIT the whatNext field entirely. NEVER invent next-month plans from brand/industry context.
 - If no click data for PPC estimate, set ppcEquivalent.show = false.
 - workDone: ONLY populate items from the explicit "=== WHAT SYTE DID THIS MONTH ===" section in the user payload. If that section says "NO WORK DATA AVAILABLE" or contains no concrete numbers (articles, fixes, optimizations, verified changes), set workDone.show = false and workDone.items = []. NEVER invent generic strategy items like "Complete site assessment" or "SEO roadmap development". Each card must correspond to a specific line in the payload — no inferences from the brand or industry.
 - Highlights: 3-6 metrics, pick the MOST POSITIVE ones for this client. Prefer MoM delta-positive metrics first (visibility +X%, citations +Y%).
@@ -225,7 +227,8 @@ Return ONLY valid JSON, no prose, no code fences:
 Rules:
 - DO NOT include workDone, topPages, ppcEquivalent — those are SEO. They will be ignored anyway.
 - highlights: 4-6 items, drawn ONLY from AEO metrics (visibility, mentions, citations, detection rate, top-3 rate, sentiment).
-- aeoStrategy.priorities: 3-5 items based on the EMERGING WINS in the payload (queries with 30-69% visibility — these are close to winning). Use Quick Win for highest-visibility emerging items, Grow Share for mid-tier, Own the Category for high-volume zero-visibility terms.
+- aeoStrategy.priorities: 3-5 items based on the EMERGING WINS in the payload (queries with 30-69% visibility — these are close to winning). Use Quick Win for highest-visibility emerging items, Grow Share for mid-tier, Own the Category for high-volume zero-visibility terms. If the payload has no EMERGING WINS, set priorities = [] and aeoStrategy.show = false.
+- whatNext: ONLY include if the payload has emerging queries to attack or operator-supplied next steps. If the AEO probe data is empty or there's nothing concrete to attack next, OMIT the whatNext field. NEVER invent next-month plans from brand/industry context.
 - Use real numbers from the payload, not made-up ones.`;
 
 export const QA_AEO_SYSTEM = `You are a senior copy reviewer at Syte Digital Agency reviewing an AEO-only monthly performance email. Return ONLY JSON in this shape (no prose, no code fences):
