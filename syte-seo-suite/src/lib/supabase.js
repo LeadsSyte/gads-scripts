@@ -536,7 +536,9 @@ export async function loadAeoResults() {
       for (const r of data) {
         obj[r.client_id + '::' + r.url] = r;
       }
-      localStorage.setItem(AEO_RESULTS_KEY, JSON.stringify(obj));
+      // Best-effort offline mirror — Supabase is the source of truth, so
+      // it's fine if the browser quota rejects this once it gets large.
+      try { localStorage.setItem(AEO_RESULTS_KEY, JSON.stringify(obj)); } catch {}
       return obj;
     }
   }

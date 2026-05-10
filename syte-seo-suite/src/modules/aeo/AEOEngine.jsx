@@ -21,9 +21,26 @@ const HISTORY_KEY = 'syte-suite-aeo-history';
 const BATCH_SIZE = 3;
 
 function loadResults() { try { return JSON.parse(localStorage.getItem(RESULTS_KEY) || '{}'); } catch { return {}; } }
-function saveResults(r) { localStorage.setItem(RESULTS_KEY, JSON.stringify(r)); }
+// Supabase is the source of truth for AEO results — localStorage is only a
+// best-effort offline cache. Once accounts accumulate enough optimizations
+// the JSON exceeds the ~5MB quota and setItem throws QuotaExceededError,
+// which (without a catch) propagates out of the useEffect and crashes the
+// whole module. Swallow quota errors and clear the stale cache so
+// subsequent saves don't keep failing on the same boundary.
+function saveResults(r) {
+  try { localStorage.setItem(RESULTS_KEY, JSON.stringify(r)); }
+  catch (e) {
+    if (e?.name === 'QuotaExceededError' || /quota/i.test(e?.message || '')) {
+      try { localStorage.removeItem(RESULTS_KEY); } catch {}
+      console.warn('[AEO] localStorage quota exceeded — using Supabase only.');
+    }
+  }
+}
 function loadHistory() { try { return JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]'); } catch { return []; } }
-function saveHistory(h) { localStorage.setItem(HISTORY_KEY, JSON.stringify(h.slice(0, 100))); }
+function saveHistory(h) {
+  try { localStorage.setItem(HISTORY_KEY, JSON.stringify(h.slice(0, 100))); }
+  catch {}
+}
 
 // Deep optimization — full page rewrite with FAQ + changes log.
 // Returns { description, faq, changesDescription, changesFaq, productSchema, faqSchema }.
