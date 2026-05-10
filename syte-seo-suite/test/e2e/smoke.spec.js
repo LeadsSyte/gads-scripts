@@ -75,6 +75,11 @@ test('regression: crawler-only client does NOT land in Credentials Missing', asy
   }, TEST_CLIENT);
   await page.goto('/');
   await page.getByRole('button', { name: 'Technical SEO' }).first().click();
+  // The pipeline view is async — wait for the seeded client to render in
+  // the content area before asserting on action buttons. Without this
+  // wait CI's slower runner races the load() → bucket → render cycle and
+  // the Run Scan button hasn't mounted yet when the 5s expect kicks in.
+  await expect(inContent(page).getByText(TEST_CLIENT.name).first()).toBeVisible({ timeout: 10000 });
   // The Credentials Missing section header may exist with 0 clients;
   // what we want is that the seeded client is NOT in that section.
   // Easiest check: a Run Scan button is reachable for this client.
