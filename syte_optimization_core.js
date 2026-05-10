@@ -1,5 +1,5 @@
 /**
- * SYTE OPTIMIZATION CORE v4.5.0
+ * SYTE OPTIMIZATION CORE v4.6.0
  * ============================
  * This file is the CORE engine — hosted centrally and fetched by each client's loader script.
  * DO NOT paste this into Google Ads Scripts directly.
@@ -15,7 +15,7 @@
  * Author: Syte Digital Agency (syte.co.za)
  * Version: 4.5.0
  *
- * CHANGELOG v4.5.0 — SHOPPING/PMAX IN AI SMART REVIEW + INTERACTIVE FLAGGED REVIEW:
+ * CHANGELOG v4.6.0 — SHOPPING/PMAX IN AI SMART REVIEW + INTERACTIVE FLAGGED REVIEW:
  * - _smartSearchTermReview() candidate collection expanded to SEARCH, SHOPPING, and PERFORMANCE_MAX.
  *   Previously the unified AI review only saw Search campaigns; Shopping/PMax relied on blunt
  *   spend+ROAS thresholds and a small regex list. Now borderline terms (clicks but no conversions
@@ -587,7 +587,7 @@ function _smartSearchTermReview(results) {
   }
 
   // SOURCE 2: High spend, low ROAS (last 30 days) — ecommerce
-  // v4.5.0: expanded to cover SEARCH, SHOPPING, and PERFORMANCE_MAX campaigns
+  // v4.6.0: expanded to cover SEARCH, SHOPPING, and PERFORMANCE_MAX campaigns
   if (_isEcommerceMode()) {
     var ecomThreshold = CONFIG.ECOM_SEARCH_TERM_SPEND_THRESHOLD || 800;
     try {
@@ -614,7 +614,7 @@ function _smartSearchTermReview(results) {
   }
 
   // SOURCE 3: Early detection — clicks but no conversions, last 7 days
-  // v4.5.0: expanded to cover SEARCH, SHOPPING, and PERFORMANCE_MAX (borderline borderline terms on every channel)
+  // v4.6.0: expanded to cover SEARCH, SHOPPING, and PERFORMANCE_MAX (borderline borderline terms on every channel)
   var minClicks = CONFIG.SMART_NEGATION_MIN_CLICKS || 1;
   try {
     var q3 = 'SELECT search_term_view.search_term, search_term_view.status, campaign.name, ' +
@@ -1047,7 +1047,7 @@ function _logChange(change) {
       CONFIG.PREVIEW_MODE ? 'PREVIEW' : 'PENDING',  // outcome — PREVIEW tagged, LIVE backfilled in 14 days
       '',                  // outcome_checked_date
       '',                  // outcome_notes
-      'v4.5.0'            // script_version
+      'v4.6.0'            // script_version
     ]);
   } catch (e) {
     var writeErr = 'Change log write failed: ' + e.message;
@@ -1385,7 +1385,7 @@ function _buildChangeLogSummary() {
 
 /**
  * Builds the prompt sent to Claude for the weekly review.
- * v4.5.0: Asks for structured JSON output — concise recommendations, not a full rewritten script.
+ * v4.6.0: Asks for structured JSON output — concise recommendations, not a full rewritten script.
  */
 function _buildClaudeReviewPrompt(accountName, changeLogSummary) {
   var prompt = 'You are a senior Google Ads strategist reviewing an automated optimization script\'s recent decisions.\n';
@@ -1434,7 +1434,7 @@ function _buildClaudeReviewPrompt(accountName, changeLogSummary) {
 
 /**
  * Calls the Anthropic Claude API and returns the text response.
- * v4.5.0: Uses Haiku for weekly review (structured JSON output, no script rewrite).
+ * v4.6.0: Uses Haiku for weekly review (structured JSON output, no script rewrite).
  */
 function _callClaudeAPI(prompt) {
   try {
@@ -1479,7 +1479,7 @@ function _callClaudeAPI(prompt) {
 
 /**
  * Sends the weekly self-improvement report.
- * v4.5.0: Clean, simple summary — no raw data dumps or rewritten scripts.
+ * v4.6.0: Clean, simple summary — no raw data dumps or rewritten scripts.
  */
 function _sendWeeklyReviewEmail(accountName, claudeResponse, changeLogSummary) {
   var today = Utilities.formatDate(new Date(), AdsApp.currentAccount().getTimeZone(), 'yyyy-MM-dd');
@@ -1532,7 +1532,7 @@ function _sendWeeklyReviewEmail(accountName, claudeResponse, changeLogSummary) {
   // Header
   email += '<div style="background:linear-gradient(135deg,#1a1a2e,#16213e);color:white;padding:20px 24px;border-radius:8px 8px 0 0;">';
   email += '<h1 style="margin:0;font-size:20px;">Weekly Optimization Review</h1>';
-  email += '<p style="margin:4px 0 0;opacity:0.7;font-size:13px;">' + accountName + ' | ' + today + ' | Core v4.5.0</p>';
+  email += '<p style="margin:4px 0 0;opacity:0.7;font-size:13px;">' + accountName + ' | ' + today + ' | Core v4.6.0</p>';
   email += '</div>';
 
   // Health score card
@@ -1902,7 +1902,7 @@ function _analyzeShoppingProducts(results) {
 }
 
 function _analyzeShoppingSearchTerms(results) {
-  // v4.5.0: When the AI-powered smart review is active and has an API key,
+  // v4.6.0: When the AI-powered smart review is active and has an API key,
   // it already covers Shopping search terms (irrelevant + borderline, last 7/30 days).
   // Skip this legacy threshold-only fallback to avoid duplicate negation.
   if (CONFIG.SMART_NEGATION !== false && CONFIG.ANTHROPIC_API_KEY) {
@@ -1960,7 +1960,7 @@ function _monitorPMaxCampaigns(results) {
 }
 
 function _analyzePMaxSearchTerms(results) {
-  // v4.5.0: When the AI-powered smart review is active and has an API key,
+  // v4.6.0: When the AI-powered smart review is active and has an API key,
   // it already covers PMax search terms (irrelevant + borderline, last 7/30 days)
   // and routes negations as campaign-level PMax negatives. Skip the legacy fallback.
   if (CONFIG.SMART_NEGATION !== false && CONFIG.ANTHROPIC_API_KEY) {
@@ -2392,7 +2392,7 @@ function _checkConversionHealth(results) {
       if (CONFIG.SEND_EMAIL !== false) {
         var recipients = CONFIG.EMAIL_ADDRESSES || [CONFIG.EMAIL_RECIPIENT || 'michaelh@syte.co.za'];
         if (typeof recipients === 'string') recipients = [recipients];
-        MailApp.sendEmail({ to: recipients.join(','), subject: '🚨 URGENT: ' + CONFIG.CLIENT_NAME + ' — Conversions Dropped ' + dropPct + '%', body: alertMsg + '\n\nAction needed:\n1. Check conversion tags in GTM\n2. Test the conversion flow manually\n3. Check for landing page errors\n4. Review any recent website changes\n\n— Syte Optimization Script v4.5.0' });
+        MailApp.sendEmail({ to: recipients.join(','), subject: '🚨 URGENT: ' + CONFIG.CLIENT_NAME + ' — Conversions Dropped ' + dropPct + '%', body: alertMsg + '\n\nAction needed:\n1. Check conversion tags in GTM\n2. Test the conversion flow manually\n3. Check for landing page errors\n4. Review any recent website changes\n\n— Syte Optimization Script v4.6.0' });
       }
     }
 
@@ -2641,24 +2641,30 @@ function _writeDailyDigestRow(results, duration) {
     var sheet = ss.getSheetByName('DailyDigest');
     if (!sheet) {
       sheet = ss.insertSheet('DailyDigest');
-      sheet.getRange(1, 1, 1, 24).setValues([[
+      sheet.getRange(1, 1, 1, 26).setValues([[
         'date', 'time', 'account', 'mode', 'run_mode',
         'duration_s', 'keywords_paused', 'search_terms_negated',
         'ai_negated', 'ai_review', 'winners_promoted',
         'audit_findings', 'schedule_adjustments', 'device_adjustments',
         'geo_adjustments', 'ngram_negatives', 'low_qs_paused',
         'conv_this_week', 'conv_last_week', 'errors',
-        'cost_30d', 'conversions_30d', 'revenue_30d', 'clicks_30d'
+        'cost_30d', 'conversions_30d', 'revenue_30d', 'clicks_30d',
+        'tier1_applied', 'automation_tier'
       ]]);
-      sheet.getRange(1, 1, 1, 24).setFontWeight('bold');
+      sheet.getRange(1, 1, 1, 26).setFontWeight('bold');
       sheet.setFrozenRows(1);
     } else {
       // Auto-migrate: add performance columns if missing
       var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
-      if (headers.indexOf('cost_30d') === -1) {
+  if (headers.indexOf('cost_30d') === -1) {
         var nextCol = sheet.getLastColumn() + 1;
         sheet.getRange(1, nextCol, 1, 4).setValues([['cost_30d', 'conversions_30d', 'revenue_30d', 'clicks_30d']]);
         sheet.getRange(1, nextCol, 1, 4).setFontWeight('bold');
+      }
+      if (headers.indexOf('tier1_applied') === -1) {
+        var nextCol2 = sheet.getLastColumn() + 1;
+        sheet.getRange(1, nextCol2, 1, 2).setValues([['tier1_applied', 'automation_tier']]);
+        sheet.getRange(1, nextCol2, 1, 2).setFontWeight('bold');
       }
     }
 
@@ -2706,7 +2712,9 @@ function _writeDailyDigestRow(results, duration) {
       results.lowQsPaused ? results.lowQsPaused.length : 0,
       convThis, convLast,
       results.errors ? results.errors.length : 0,
-      cost30d.toFixed(2), conv30d.toFixed(1), rev30d.toFixed(2), clicks30d
+      cost30d.toFixed(2), conv30d.toFixed(1), rev30d.toFixed(2), clicks30d,
+      results.tier1Applied || 0,
+      (typeof AUTOPILOT !== 'undefined' ? AUTOPILOT.clientTier : 'unknown')
     ]);
 
     // Persist individual error messages to "Errors" tab so the weekly
@@ -2749,17 +2757,28 @@ function _writeDailyDigestRow(results, duration) {
 // ============================================
 
 function _sendReport(results, duration, evalResult, pendingRunId) {
-  var mode = CONFIG.PREVIEW_MODE ? 'PREVIEW' : (CONFIG.REQUIRE_APPROVAL ? 'PENDING APPROVAL' : 'LIVE');
+  var mode;
+  if (CONFIG.PREVIEW_MODE) {
+    mode = 'PREVIEW';
+  } else if (typeof AUTOPILOT !== 'undefined' && AUTOPILOT.clientTier === 'full_autopilot') {
+    mode = 'AUTOPILOT (full)';
+  } else if (typeof AUTOPILOT !== 'undefined' && AUTOPILOT.clientTier === 'tier_1_only' && results.tier1Applied > 0) {
+    mode = 'TIER 1 + APPROVAL (' + results.tier1Applied + ' auto)';
+  } else if (CONFIG.REQUIRE_APPROVAL) {
+    mode = 'PENDING APPROVAL';
+  } else {
+    mode = 'LIVE';
+  }
   var accountName = AdsApp.currentAccount().getName();
   var today = Utilities.formatDate(new Date(), AdsApp.currentAccount().getTimeZone(), 'yyyy-MM-dd HH:mm');
 
   var email = '<html><body style="font-family:Arial,sans-serif;max-width:800px;margin:0 auto;color:#333;">';
   email += '<div style="background:linear-gradient(135deg,#0d47a1,#1565c0);color:white;padding:20px;border-radius:8px 8px 0 0;">';
-  email += '<h1 style="margin:0;font-size:20px;">Syte Optimization Report v4.5.0</h1>';
+  email += '<h1 style="margin:0;font-size:20px;">Syte Optimization Report v4.6.0</h1>';
   email += '<p style="margin:5px 0 0;opacity:0.8;">' + accountName + ' | ' + today + ' | ' + mode + ' | ' + CONFIG.ACCOUNT_MODE + '</p></div>';
 
   // v4.4.0: Approval buttons bar
-  // v4.5.0: Fixed — encode & as &amp; in HTML href attributes so Gmail doesn't strip query params.
+  // v4.6.0: Fixed — encode & as &amp; in HTML href attributes so Gmail doesn't strip query params.
   if (pendingRunId && CONFIG.APPROVAL_WEBAPP_URL) {
     var webAppUrl = CONFIG.APPROVAL_WEBAPP_URL;
     var btnStyle = 'display:inline-block;padding:10px 18px;margin:4px;border-radius:6px;color:white;text-decoration:none;font-weight:bold;font-size:13px;';
@@ -2839,7 +2858,16 @@ function _sendReport(results, duration, evalResult, pendingRunId) {
   if (results.conversionAlert) {
     email += '<div style="background:#c62828;color:white;padding:14px 16px;font-weight:bold;font-size:14px;">🚨 ' + results.conversionAlert + '</div>';
   }
-
+// Autopilot summary banner (v4.6.0)
+  if (typeof AUTOPILOT !== 'undefined' && results.tier1Applied !== undefined && results.tier1Applied > 0) {
+    email += '<div style="background:#e3f2fd;padding:14px 16px;border-left:4px solid #1565c0;">';
+    email += '<h3 style="margin:0 0 6px;color:#1565c0;">Autopilot applied ' + results.tier1Applied + ' changes silently</h3>';
+    email += '<p style="margin:0;font-size:13px;color:#333;">';
+    email += 'Tier ' + (AUTOPILOT.clientTier === 'full_autopilot' ? '(full autopilot)' : '1 (high-confidence only)');
+    email += ' — these changes were applied without approval as they meet safety thresholds. ';
+    email += 'See the cross-client weekly report for full breakdown.</p>';
+    email += '</div>';
+  }
   email += '<div style="background:#f8f9fa;padding:15px;"><h3>Summary</h3><table style="width:100%;border-collapse:collapse;">';
 
   if (_isLeadGenMode()) {
@@ -3015,7 +3043,7 @@ function _sendReport(results, duration, evalResult, pendingRunId) {
     email += '<div style="padding:15px;background:#e3f2fd;"><h3 style="color:#1565c0;">AI Flagged for Review</h3>';
     email += '<p style="font-size:12px;color:#666;">These terms were flagged as ambiguous by the AI. Please review and manually negate or keep.</p>';
 
-    // v4.5.0: Interactive review button — links to webapp where user can select terms to negate or give natural language instructions
+    // v4.6.0: Interactive review button — links to webapp where user can select terms to negate or give natural language instructions
     // (Uses &amp; so Gmail doesn't strip the query string)
     if (pendingRunId && CONFIG.APPROVAL_WEBAPP_URL) {
       email += '<a href="' + CONFIG.APPROVAL_WEBAPP_URL + '?view=flagged_review&amp;runId=' + pendingRunId + '" target="_blank" style="display:inline-block;padding:10px 18px;margin:8px 0;border-radius:6px;color:white;text-decoration:none;font-weight:bold;font-size:13px;background:#1565c0;">Review &amp; Negate Flagged Terms (' + results.smartReviewTerms.length + ')</a>';
@@ -3055,11 +3083,11 @@ function _sendReport(results, duration, evalResult, pendingRunId) {
     email += '</ul></div>';
   }
 
-  email += '<div style="padding:15px;color:#666;font-size:12px;"><p>Completed in ' + duration.toFixed(1) + 's | Core v4.5.0 | Syte Digital Agency</p></div></body></html>';
+  email += '<div style="padding:15px;color:#666;font-size:12px;"><p>Completed in ' + duration.toFixed(1) + 's | Core v4.6.0 | Syte Digital Agency</p></div></body></html>';
 
   var recipients = CONFIG.EMAIL_ADDRESSES || [CONFIG.EMAIL_RECIPIENT || 'michaelh@syte.co.za'];
   if (typeof recipients === 'string') recipients = [recipients];
-  MailApp.sendEmail({ to: recipients.join(','), subject: mode + ' Syte v4.5.0 | ' + accountName + ' | ' + CONFIG.ACCOUNT_MODE, htmlBody: email });
+  MailApp.sendEmail({ to: recipients.join(','), subject: mode + ' Syte v4.6.0 | ' + accountName + ' | ' + CONFIG.ACCOUNT_MODE, htmlBody: email });
 }
 
 
@@ -3500,7 +3528,7 @@ function _applyApprovedChanges(changesObj, approvedCategories, results) {
 
     (stData.smartNegated || []).forEach(function(s) {
       try {
-        // v4.5.0: Route PMax negatives to campaign-level, others to shared lists
+        // v4.6.0: Route PMax negatives to campaign-level, others to shared lists
         if (s.channelType === 'PERFORMANCE_MAX' && s.campaign) {
           var pmaxIter = AdsApp.performanceMaxCampaigns()
             .withCondition('campaign.name = "' + s.campaign.replace(/"/g, '\\"') + '"').get();
@@ -3607,7 +3635,7 @@ function _applyApprovedChanges(changesObj, approvedCategories, results) {
     _log('INFO', 'Applied auto-optimizations');
   }
 
-  // === FLAGGED REVIEW NEGATIONS (v4.5.0) ===
+  // === FLAGGED REVIEW NEGATIONS (v4.6.0) ===
   if (categories.indexOf('flagged_review_negations') !== -1 && changesObj.flagged_review) {
     var frData = changesObj.flagged_review;
     var selectedTerms = frData.selectedForNegation || [];
@@ -3615,7 +3643,7 @@ function _applyApprovedChanges(changesObj, approvedCategories, results) {
       var negativeListSpendFR = _getOrCreateNegativeList(CONFIG.NEGATIVE_LIST_NAME_SPEND);
       selectedTerms.forEach(function(s) {
         try {
-          // v4.5.0: Route PMax flagged negatives to campaign-level; others to shared list
+          // v4.6.0: Route PMax flagged negatives to campaign-level; others to shared list
           if (s.channelType === 'PERFORMANCE_MAX' && s.campaign) {
             var pmaxIterFR = AdsApp.performanceMaxCampaigns()
               .withCondition('campaign.name = "' + s.campaign.replace(/"/g, '\\"') + '"').get();
@@ -4312,7 +4340,7 @@ function runOptimization() {
   CONFIG.REQUIRE_APPROVAL = CONFIG.REQUIRE_APPROVAL !== false;
 
   _log('INFO', '═══════════════════════════════════════════');
-  _log('INFO', 'SYTE OPTIMIZATION CORE v4.5.0');
+  _log('INFO', 'SYTE OPTIMIZATION CORE v4.6.0');
   _log('INFO', 'Client: ' + (CONFIG.CLIENT_NAME || AdsApp.currentAccount().getName()));
   _log('INFO', 'Mode: ' + CONFIG.ACCOUNT_MODE);
   _log('INFO', 'Run: ' + (CONFIG.PREVIEW_MODE ? 'PREVIEW (no changes)' : 'LIVE'));
@@ -4351,6 +4379,28 @@ function runOptimization() {
 
   // === LOAD SHARED CONFIG FROM SHEET (v4.2.1) ===
   _loadSharedConfig();
+  // === LOAD AUTOPILOT CONFIG (v4.6.0) ===
+  _log('INFO', '\n=== LOADING AUTOPILOT CONFIG ===');
+  _loadAutopilotConfig();
+
+  // === CHECK GLOBAL KILL SWITCH AND DAILY CAP ===
+  if (_shouldHaltForSafety(results)) {
+    _log('ERROR', 'Halting run for safety: ' + results.haltReason);
+    if (CONFIG.SEND_EMAIL !== false) {
+      var haltRecipients = CONFIG.EMAIL_ADDRESSES || [CONFIG.EMAIL_RECIPIENT || 'michaelh@syte.co.za'];
+      if (typeof haltRecipients === 'string') haltRecipients = [haltRecipients];
+      MailApp.sendEmail({
+        to: haltRecipients.join(','),
+        subject: 'HALTED | ' + AdsApp.currentAccount().getName() + ' | ' + results.haltReason,
+        htmlBody: '<p style="font-family:Arial,sans-serif;font-size:14px;">' +
+                  '<strong>Run halted for safety.</strong></p>' +
+                  '<p>Reason: ' + results.haltReason + '</p>' +
+                  '<p>No changes were proposed or applied. Investigate before next scheduled run.</p>'
+      });
+    }
+    _writeDailyDigestRow(results, 0);
+    return;
+  }
 
   // Log if no API key available after all loading attempts
   if (!CONFIG.ANTHROPIC_API_KEY) {
@@ -4460,6 +4510,45 @@ function runOptimization() {
 
   // v4.4.0: Restore original preview mode
   CONFIG.PREVIEW_MODE = _originalPreviewMode;
+  // === AUTOPILOT: SPLIT PROPOSED CHANGES INTO TIER 1 (silent) vs APPROVAL ===
+  _log('INFO', '\n=== AUTOPILOT TIER ROUTING ===');
+  var split = _splitChangesByTier(results);
+  _log('INFO', 'Tier routing: ' + split.tier1Count + ' silent autopilot, ' +
+               split.approvalCount + ' need approval');
+
+  // === APPLY TIER 1 CHANGES SILENTLY (only if not in original preview mode) ===
+  var tier1Applied = 0;
+  if (!_originalPreviewMode && split.tier1Count > 0) {
+    _log('INFO', 'Applying ' + split.tier1Count + ' tier 1 changes silently...');
+    CONFIG.PREVIEW_MODE = false;
+    tier1Applied = _applyTier1Changes(split.tier1Changes, results);
+    CONFIG.PREVIEW_MODE = _originalPreviewMode === true;
+    _log('INFO', 'Tier 1 applied: ' + tier1Applied);
+    results.tier1Applied = tier1Applied;
+  } else if (_originalPreviewMode) {
+    _log('INFO', 'PREVIEW MODE — tier 1 not applied (would have applied ' + split.tier1Count + ')');
+    results.tier1Applied = 0;
+  }
+
+  // === REMOVE TIER 1 ITEMS FROM RESULTS BEFORE WRITING TO PENDING ===
+  if (AUTOPILOT.clientTier === 'tier_1_only') {
+    results.smartNegated = split.approvalChanges.smartNegated;
+    results.ngramNegatives = split.approvalChanges.ngramNegatives;
+    results.scheduleAdjustments = split.approvalChanges.scheduleAdjustments;
+  } else if (AUTOPILOT.clientTier === 'full_autopilot') {
+    results.keywordsPaused = [];
+    results.ecomKeywordsPaused = [];
+    results.lowQsPaused = [];
+    results.smartNegated = [];
+    results.ngramNegatives = [];
+    results.winnersPromoted = [];
+    results.ecomWinnersPromoted = [];
+    results.deviceAdjustments = [];
+    results.scheduleAdjustments = [];
+    results.geoAdjustments = [];
+    results.shoppingProductsPaused = [];
+    results.pmaxSearchTermsNegated = [];
+  }
 
   // Surface any sheet errors so they appear in the email report
   if (_sheetErrors.length > 0) {
