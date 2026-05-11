@@ -1,0 +1,13 @@
+[build]
+  base = "creative-brief-generator"
+  command = "npm run build"
+  publish = "dist"
+
+[[edge_functions]]
+  path = "/api/claude"
+  function = "claude"
+
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
