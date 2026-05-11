@@ -2995,7 +2995,6 @@ function _sendReport(results, duration, evalResult, pendingRunId, split) {
   if (_isEcommerceMode()) {
     email += '<tr><td colspan="2" style="padding:8px;background:#e3f2fd;font-weight:bold;">Ecommerce</td></tr>';
     email += '<tr><td style="padding:4px 8px;">Keywords Paused (ROAS)</td><td style="text-align:right;font-weight:bold;">' + results.ecomKeywordsPaused.length + '</td></tr>';
-    email += '<tr><td style="padding:4px 8px;">Search Terms Negated</td><td style="text-align:right;font-weight:bold;">' + results.ecomSearchTermsNegated.length + '</td></tr>';
     email += '<tr><td style="padding:4px 8px;">Ecom Winners</td><td style="text-align:right;font-weight:bold;">' + results.ecomWinnersPromoted.length + '</td></tr>';
     email += '<tr><td colspan="2" style="padding:8px;background:#e3f2fd;font-weight:bold;">Shopping</td></tr>';
     email += '<tr><td style="padding:4px 8px;">Zero Revenue Products</td><td style="text-align:right;font-weight:bold;color:#c62828;">' + results.shoppingProductsPaused.length + '</td></tr>';
@@ -3092,17 +3091,9 @@ function _sendReport(results, duration, evalResult, pendingRunId, split) {
     email += '</table></div>';
   }
 
-  // Ecommerce Search Terms Negated detail
-  if (results.ecomSearchTermsNegated.length > 0) {
-    email += '<div style="padding:15px;"><h3>Ecom Search Terms Negated</h3>';
-    email += '<table style="width:100%;border-collapse:collapse;font-size:13px;">';
-    email += '<tr style="background:#e3f2fd;"><th style="padding:6px;text-align:left;">Search Term</th><th style="padding:6px;text-align:left;">Campaign</th><th style="padding:6px;text-align:right;">Spend</th><th style="padding:6px;text-align:right;">ROAS</th></tr>';
-    for (var es = 0; es < results.ecomSearchTermsNegated.length; es++) {
-      var esItem = results.ecomSearchTermsNegated[es];
-      email += '<tr style="border-bottom:1px solid #eee;"><td style="padding:4px 6px;">' + esItem.searchTerm + '</td><td style="padding:4px 6px;">' + esItem.campaign + '</td><td style="padding:4px 6px;text-align:right;">' + cs + (esItem.spend || 0).toFixed(0) + '</td><td style="padding:4px 6px;text-align:right;">' + (esItem.roas || 0).toFixed(2) + 'x</td></tr>';
-    }
-    email += '</table></div>';
-  }
+  // (Ecommerce Search Terms Negated detail removed in v4.7.0 — all negation now routes
+  // through _smartSearchTermReview and surfaces under "Search Terms Negated" /
+  // "AI Auto-Negated". results.ecomSearchTermsNegated is no longer populated.)
 
   // v4.3.0: Informational Blocked section removed — handled by unified AI review
 
@@ -3783,12 +3774,25 @@ function _applyApprovedChanges(changesObj, approvedCategories, results) {
   if (categories.indexOf('shopping_pmax') !== -1 && changesObj.shopping_pmax) {
     var spData = changesObj.shopping_pmax;
 
-    // PMax search term negations
+    // PMax search term negations — must be campaign-level (PMax ignores shared lists)
     (spData.pmaxSearchTermsNegated || []).forEach(function(p) {
       try {
         var term = p.searchTerm || p.term;
-        var negList = _getOrCreateNegativeList(CONFIG.NEGATIVE_LIST_NAME_SPEND);
-        if (negList) { negList.addNegativeKeyword('[' + term + ']'); appliedCount++; }
+        if (!term) return;
+        var pmaxIter = AdsApp.performanceMaxCampaigns()
+          .withCondition('campaign.name = "' + (p.campaign || '').replace(/"/g, '\\"') + '"').get();
+        if (pmaxIter.hasNext()) {
+          pmaxIter.next().createNegativeKeyword('[' + term + ']');
+          appliedCount++;
+          _logChange({ functionName: 'approval_apply', entity: term, entityType: 'SEARCH_TERM_NEGATIVE', campaign: p.campaign || '', reason: 'Approved PMax campaign negation', spend: p.spend || 0, conversions: 0 });
+        } else {
+          var negList = _getOrCreateNegativeList(CONFIG.NEGATIVE_LIST_NAME_SPEND);
+          if (negList) {
+            _log('WARN', 'PMax campaign "' + p.campaign + '" not found — falling back to shared list (will not block on PMax)');
+            negList.addNegativeKeyword('[' + term + ']');
+            appliedCount++;
+          }
+        }
       } catch (e) { _log('WARN', 'Apply PMax negation failed: ' + e.message); }
     });
 
@@ -4432,8 +4436,107 @@ function _applyTier1Changes(tier1Changes, results) {
       }
     }
 
-    // Device, geo, shopping/pmax — keep your existing API call patterns from _applyApprovedChanges
-    // These would be added here following the same pattern. Omitted for brevity but pattern is identical.
+    // === Device bid adjustments ===
+    if (tier1Changes.deviceAdjustments) {
+      for (var dv = 0; dv < tier1Changes.deviceAdjustments.length; dv++) {
+        if (applied >= remainingCap) { capReached = true; break; }
+        var dItem = tier1Changes.deviceAdjustments[dv];
+        try {
+          var dCi = AdsApp.campaigns().withCondition('campaign.name = "' + dItem.campaign + '"').get();
+          if (dCi.hasNext()) {
+            var platforms = dCi.next().targeting().platforms().get();
+            var appliedThisDevice = false;
+            while (platforms.hasNext()) {
+              var platform = platforms.next();
+              if ((dItem.device === 'MOBILE' && platform.getName() === 'Mobile devices with full browsers') ||
+                  (dItem.device === 'TABLET' && platform.getName() === 'Tablets with full browsers')) {
+                platform.setBidModifier(1 + (dItem.adjustment / 100));
+                appliedThisDevice = true;
+              }
+            }
+            if (appliedThisDevice) {
+              applied++;
+              _logChange({
+                functionName: 'full_auto',
+                entity: dItem.campaign + '_' + dItem.device,
+                entityType: 'DEVICE_BID',
+                campaign: dItem.campaign,
+                reason: 'FULL_AUTOPILOT: device bid ' + (dItem.adjustment > 0 ? '+' : '') + dItem.adjustment + '%',
+                spend: 0,
+                conversions: 0
+              });
+            }
+          }
+        } catch (e) {
+          _log('WARN', 'Full auto device bid failed: ' + e.message);
+        }
+      }
+    }
+
+    // === Geographic bid adjustments ===
+    if (tier1Changes.geoAdjustments) {
+      for (var gi = 0; gi < tier1Changes.geoAdjustments.length; gi++) {
+        if (applied >= remainingCap) { capReached = true; break; }
+        var gItem = tier1Changes.geoAdjustments[gi];
+        try {
+          _setGeoBidModifier(gItem.campaign, gItem.location, 1 + (gItem.adjustment / 100));
+          applied++;
+          _logChange({
+            functionName: 'full_auto',
+            entity: gItem.campaign + '_LOC_' + gItem.location,
+            entityType: 'GEO_BID',
+            campaign: gItem.campaign,
+            reason: 'FULL_AUTOPILOT: geo bid ' + (gItem.adjustment > 0 ? '+' : '') + gItem.adjustment + '%',
+            spend: gItem.spend || 0,
+            conversions: gItem.conversions || 0
+          });
+        } catch (e) {
+          _log('WARN', 'Full auto geo bid failed: ' + e.message);
+        }
+      }
+    }
+
+    // === PMax search term negatives ===
+    // PMax does not honor shared negative keyword lists — these must be added as
+    // campaign-level negatives on the specific PMax campaign.
+    if (tier1Changes.pmaxSearchTermsNegated) {
+      var pmaxFallbackList = _getOrCreateNegativeList(CONFIG.NEGATIVE_LIST_NAME_SPEND);
+      for (var pm = 0; pm < tier1Changes.pmaxSearchTermsNegated.length; pm++) {
+        if (applied >= remainingCap) { capReached = true; break; }
+        var pmItem = tier1Changes.pmaxSearchTermsNegated[pm];
+        var pmTerm = pmItem.searchTerm || pmItem.term;
+        if (!pmTerm) continue;
+        try {
+          var pmaxIter = AdsApp.performanceMaxCampaigns()
+            .withCondition('campaign.name = "' + (pmItem.campaign || '').replace(/"/g, '\\"') + '"').get();
+          if (pmaxIter.hasNext()) {
+            pmaxIter.next().createNegativeKeyword('[' + pmTerm + ']');
+          } else if (pmaxFallbackList) {
+            _log('WARN', 'PMax campaign "' + pmItem.campaign + '" not found — falling back to shared list (will not block on PMax)');
+            pmaxFallbackList.addNegativeKeyword('[' + pmTerm + ']');
+          }
+          applied++;
+          _logChange({
+            functionName: 'full_auto',
+            entity: pmTerm,
+            entityType: 'SEARCH_TERM_NEGATIVE',
+            campaign: pmItem.campaign || '',
+            reason: 'FULL_AUTOPILOT: PMax search term negation',
+            spend: pmItem.spend || 0,
+            conversions: 0
+          });
+        } catch (e) {
+          _log('WARN', 'Full auto PMax negation failed: ' + pmTerm + ' — ' + e.message);
+        }
+      }
+    }
+
+    // Note: shoppingProductsPaused is informational-only (no exclusion API call exists
+    // in this codebase). Surfaced in reports for manual review.
+    if (tier1Changes.shoppingProductsPaused && tier1Changes.shoppingProductsPaused.length > 0) {
+      _log('INFO', 'Full autopilot: ' + tier1Changes.shoppingProductsPaused.length +
+                   ' shopping products flagged for exclusion (manual action required — no API call available)');
+    }
   }
 
   if (capReached) {
@@ -4637,7 +4740,7 @@ function runOptimization() {
     _log('INFO', 'Applying ' + split.tier1Count + ' tier 1 changes silently...');
     CONFIG.PREVIEW_MODE = false;
     tier1Applied = _applyTier1Changes(split.tier1Changes, results);
-    CONFIG.PREVIEW_MODE = _originalPreviewMode === true;
+    CONFIG.PREVIEW_MODE = !!_originalPreviewMode;
     _log('INFO', 'Tier 1 applied: ' + tier1Applied);
     results.tier1Applied = tier1Applied;
   } else if (_originalPreviewMode) {
