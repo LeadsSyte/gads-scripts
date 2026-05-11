@@ -12,8 +12,18 @@
  *
  * When you improve this core, ALL client accounts get the update on their next scheduled run.
  *
- * Author: Syte Digital Agency (syte.co.za)
- * Version: 4.5.0
+* Author: Syte Digital Agency (syte.co.za)
+ * Version: 4.7.0
+ *
+ * CHANGELOG v4.7.0 — STRICTER AUTOPILOT DEFAULTS + DETAILED EMAIL LISTINGS:
+ * - BREAKING: Default tier for unlisted clients changed from 'tier_1_only' to 'approval_required'.
+ *   Only clients explicitly listed in ClientConfig with 'tier_1_only' or 'full_autopilot'
+ *   will see silent autopilot changes. All other clients see the email approval workflow,
+ *   same as before Phase 2. This is opt-in autopilot.
+ * - NEW: Autopilot section in email report now lists every auto-applied change in detail
+ *   (search term, campaign, spend, AI verdict) instead of "applied X changes silently".
+ *   Detail breakdown by category: AI junk negations, n-gram negations, schedule adjustments,
+ *   plus keyword pauses and winners when on full_autopilot.
  *
  * CHANGELOG v4.6.0 — SHOPPING/PMAX IN AI SMART REVIEW + INTERACTIVE FLAGGED REVIEW:
  * - _smartSearchTermReview() candidate collection expanded to SEARCH, SHOPPING, and PERFORMANCE_MAX.
@@ -2756,7 +2766,7 @@ function _writeDailyDigestRow(results, duration) {
 // EMAIL REPORT
 // ============================================
 
-function _sendReport(results, duration, evalResult, pendingRunId) {
+function _sendReport(results, duration, evalResult, pendingRunId, split) {
   var mode;
   if (CONFIG.PREVIEW_MODE) {
     mode = 'PREVIEW';
@@ -2858,14 +2868,120 @@ function _sendReport(results, duration, evalResult, pendingRunId) {
   if (results.conversionAlert) {
     email += '<div style="background:#c62828;color:white;padding:14px 16px;font-weight:bold;font-size:14px;">🚨 ' + results.conversionAlert + '</div>';
   }
-// Autopilot summary banner (v4.6.0)
+// Autopilot summary banner with detail (v4.7.0)
   if (typeof AUTOPILOT !== 'undefined' && results.tier1Applied !== undefined && results.tier1Applied > 0) {
-    email += '<div style="background:#e3f2fd;padding:14px 16px;border-left:4px solid #1565c0;">';
-    email += '<h3 style="margin:0 0 6px;color:#1565c0;">Autopilot applied ' + results.tier1Applied + ' changes silently</h3>';
-    email += '<p style="margin:0;font-size:13px;color:#333;">';
-    email += 'Tier ' + (AUTOPILOT.clientTier === 'full_autopilot' ? '(full autopilot)' : '1 (high-confidence only)');
-    email += ' — these changes were applied without approval as they meet safety thresholds. ';
-    email += 'See the cross-client weekly report for full breakdown.</p>';
+    var cs2 = CONFIG.CURRENCY_SYMBOL || 'R';
+    var tierLabel = AUTOPILOT.clientTier === 'full_autopilot' ? 'Full Autopilot' : 'Tier 1 (high-confidence only)';
+
+    email += '<div style="background:#e3f2fd;padding:14px 20px;border-left:4px solid #1565c0;">';
+    email += '<h3 style="margin:0 0 6px;color:#1565c0;">Autopilot applied ' + results.tier1Applied + ' changes (' + tierLabel + ')</h3>';
+    email += '<p style="margin:0 0 12px;font-size:13px;color:#333;">These changes were applied without approval as they meet safety thresholds. Each change is also recorded in the ChangeLog tab of the master sheet for review.</p>';
+
+    // Get the tier1 split so we can show what was auto-applied
+    var splitInfo = (typeof _splitChangesByTier === 'function') ? null : null;
+    // Pull from the original split that was done before approval filtering
+    // We need to look at what was logged with function_name='tier1_auto' or 'full_auto' in this run.
+    // Simpler approach: re-derive from the original results buckets that were applied.
+
+    // === AI-flagged Junk Negations (auto-applied) ===
+    var aiAutoApplied = [];
+    if (typeof split !== 'undefined' && split && split.tier1Changes && split.tier1Changes.smartNegated) {
+      aiAutoApplied = split.tier1Changes.smartNegated;
+    }
+    if (aiAutoApplied.length > 0) {
+      email += '<h4 style="margin:8px 0 4px;color:#333;font-size:13px;">AI-flagged Junk Negations (' + aiAutoApplied.length + '):</h4>';
+      email += '<table style="width:100%;border-collapse:collapse;font-size:12px;background:#ffffff;margin:4px 0;">';
+      email += '<tr style="background:#bbdefb;"><th style="padding:6px;text-align:left;">Search Term</th><th style="padding:6px;text-align:left;">Campaign</th><th style="padding:6px;text-align:right;">Spend</th><th style="padding:6px;text-align:left;">AI Verdict</th></tr>';
+      for (var aaI = 0; aaI < aiAutoApplied.length; aaI++) {
+        var aaItem = aiAutoApplied[aaI];
+        email += '<tr style="border-bottom:1px solid #eee;">';
+        email += '<td style="padding:4px 6px;">"' + aaItem.term + '"</td>';
+        email += '<td style="padding:4px 6px;">' + (aaItem.campaign || '-') + '</td>';
+        email += '<td style="padding:4px 6px;text-align:right;">' + cs2 + (aaItem.cost || 0).toFixed(0) + '</td>';
+        email += '<td style="padding:4px 6px;color:#666;">' + (aaItem.reason || '') + '</td>';
+        email += '</tr>';
+      }
+      email += '</table>';
+    }
+
+    // === N-gram Negations (auto-applied) ===
+    var ngramAutoApplied = [];
+    if (typeof split !== 'undefined' && split && split.tier1Changes && split.tier1Changes.ngramNegatives) {
+      ngramAutoApplied = split.tier1Changes.ngramNegatives;
+    }
+    if (ngramAutoApplied.length > 0) {
+      email += '<h4 style="margin:8px 0 4px;color:#333;font-size:13px;">N-gram Negations (' + ngramAutoApplied.length + '):</h4>';
+      email += '<table style="width:100%;border-collapse:collapse;font-size:12px;background:#ffffff;margin:4px 0;">';
+      email += '<tr style="background:#bbdefb;"><th style="padding:6px;text-align:left;">Word</th><th style="padding:6px;text-align:right;">Wasted</th><th style="padding:6px;text-align:right;">Terms</th><th style="padding:6px;text-align:left;">Sample Search Terms</th></tr>';
+      for (var ngI = 0; ngI < ngramAutoApplied.length; ngI++) {
+        var ngI2 = ngramAutoApplied[ngI];
+        email += '<tr style="border-bottom:1px solid #eee;">';
+        email += '<td style="padding:4px 6px;">"' + ngI2.word + '"</td>';
+        email += '<td style="padding:4px 6px;text-align:right;">' + cs2 + (ngI2.totalCost || 0).toFixed(0) + '</td>';
+        email += '<td style="padding:4px 6px;text-align:right;">' + ngI2.termCount + '</td>';
+        email += '<td style="padding:4px 6px;color:#666;">' + (ngI2.sampleTerms || []).slice(0, 3).join(', ') + '</td>';
+        email += '</tr>';
+      }
+      email += '</table>';
+    }
+
+    // === Schedule Adjustments (auto-applied) ===
+    var schedAutoApplied = [];
+    if (typeof split !== 'undefined' && split && split.tier1Changes && split.tier1Changes.scheduleAdjustments) {
+      schedAutoApplied = split.tier1Changes.scheduleAdjustments;
+    }
+    if (schedAutoApplied.length > 0) {
+      email += '<h4 style="margin:8px 0 4px;color:#333;font-size:13px;">Schedule Bid Adjustments (' + schedAutoApplied.length + '):</h4>';
+      email += '<table style="width:100%;border-collapse:collapse;font-size:12px;background:#ffffff;margin:4px 0;">';
+      email += '<tr style="background:#bbdefb;"><th style="padding:6px;text-align:left;">Campaign</th><th style="padding:6px;text-align:left;">Hour</th><th style="padding:6px;text-align:right;">Adjustment</th></tr>';
+      for (var saI = 0; saI < schedAutoApplied.length; saI++) {
+        var saI2 = schedAutoApplied[saI];
+        email += '<tr style="border-bottom:1px solid #eee;">';
+        email += '<td style="padding:4px 6px;">' + saI2.campaign + '</td>';
+        email += '<td style="padding:4px 6px;">' + saI2.hourLabel + '</td>';
+        email += '<td style="padding:4px 6px;text-align:right;color:#c62828;">' + saI2.adjustment + '%</td>';
+        email += '</tr>';
+      }
+      email += '</table>';
+    }
+
+    // === Full autopilot extras: keyword pauses, winners, etc ===
+    if (AUTOPILOT.clientTier === 'full_autopilot' && typeof split !== 'undefined' && split && split.tier1Changes) {
+      var fullKw = (split.tier1Changes.keywordsPaused || []).concat(split.tier1Changes.ecomKeywordsPaused || [], split.tier1Changes.lowQsPaused || []);
+      if (fullKw.length > 0) {
+        email += '<h4 style="margin:8px 0 4px;color:#333;font-size:13px;">Keywords Paused (' + fullKw.length + '):</h4>';
+        email += '<table style="width:100%;border-collapse:collapse;font-size:12px;background:#ffffff;margin:4px 0;">';
+        email += '<tr style="background:#bbdefb;"><th style="padding:6px;text-align:left;">Keyword</th><th style="padding:6px;text-align:left;">Campaign</th><th style="padding:6px;text-align:right;">Spend</th></tr>';
+        for (var fkI = 0; fkI < fullKw.length; fkI++) {
+          var fk = fullKw[fkI];
+          email += '<tr style="border-bottom:1px solid #eee;">';
+          email += '<td style="padding:4px 6px;">' + fk.keyword + '</td>';
+          email += '<td style="padding:4px 6px;">' + fk.campaign + '</td>';
+          email += '<td style="padding:4px 6px;text-align:right;">' + cs2 + (fk.spend || 0).toFixed(0) + '</td>';
+          email += '</tr>';
+        }
+        email += '</table>';
+      }
+
+      var fullWinners = (split.tier1Changes.winnersPromoted || []).concat(split.tier1Changes.ecomWinnersPromoted || []);
+      if (fullWinners.length > 0) {
+        email += '<h4 style="margin:8px 0 4px;color:#333;font-size:13px;">Winners Promoted (' + fullWinners.length + '):</h4>';
+        email += '<table style="width:100%;border-collapse:collapse;font-size:12px;background:#ffffff;margin:4px 0;">';
+        email += '<tr style="background:#bbdefb;"><th style="padding:6px;text-align:left;">Search Term</th><th style="padding:6px;text-align:left;">Campaign</th><th style="padding:6px;text-align:right;">Conv / ROAS</th></tr>';
+        for (var fwI = 0; fwI < fullWinners.length; fwI++) {
+          var fw = fullWinners[fwI];
+          var winMetric = fw.roas !== undefined ? (fw.roas || 0).toFixed(2) + 'x' : (fw.conversions || 0) + ' conv';
+          email += '<tr style="border-bottom:1px solid #eee;">';
+          email += '<td style="padding:4px 6px;">[' + fw.searchTerm + ']</td>';
+          email += '<td style="padding:4px 6px;">' + fw.campaign + '</td>';
+          email += '<td style="padding:4px 6px;text-align:right;">' + winMetric + '</td>';
+          email += '</tr>';
+        }
+        email += '</table>';
+      }
+    }
+
+    email += '<p style="margin:10px 0 0;font-size:11px;color:#999;">To reverse any change: open the master sheet ChangeLog tab, find the row, and reverse manually in Google Ads. All changes can also be seen in the next weekly review email.</p>';
     email += '</div>';
   }
   email += '<div style="background:#f8f9fa;padding:15px;"><h3>Summary</h3><table style="width:100%;border-collapse:collapse;">';
@@ -3711,12 +3827,11 @@ function _applyApprovedChanges(changesObj, approvedCategories, results) {
 var AUTOPILOT = {
   globalEnabled: true,
   globalMuteReason: '',
-  clientTier: 'tier_1_only',  // default for unlisted clients
+  clientTier: 'approval_required',  // v4.7.0: default changed from tier_1_only — clients must explicitly opt in to autopilot
   dailyChangeCap: 50,
   changesAppliedToday: 0,
   changesProposedThisRun: 0
 };
-
 /**
  * Loads AUTOMATION_ENABLED and per-client automation tier from master sheet.
  * Called early in runOptimization() before anything else.
@@ -4580,7 +4695,7 @@ function runOptimization() {
   // Write summary row for daily digest
   _writeDailyDigestRow(results, duration);
 
-  if (CONFIG.SEND_EMAIL !== false) _sendReport(results, duration, evalResult, pendingRunId);
+ if (CONFIG.SEND_EMAIL !== false) _sendReport(results, duration, evalResult, pendingRunId, split);
 
   _log('INFO', '\n=== SUMMARY ===');
   if (_isLeadGenMode()) _log('INFO', 'KW Paused: ' + results.keywordsPaused.length + ' | Winners: ' + results.winnersPromoted.length);
