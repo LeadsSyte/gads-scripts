@@ -22,14 +22,8 @@ const PATCHED = SRC
     "import { createClient } from '@supabase/supabase-js';",
     "const createClient = () => null;"
   )
-  .replace(
-    "const url = import.meta.env.VITE_SUPABASE_URL;",
-    "const url = '';"
-  )
-  .replace(
-    "const key = import.meta.env.VITE_SUPABASE_ANON_KEY;",
-    "const key = '';"
-  );
+  // Strip every import.meta.env reference so the module works without Vite.
+  .replace(/import\.meta\.env\.[A-Z0-9_]+/g, "''");
 
 // Fake localStorage so the module can read/write.
 const store = new Map();

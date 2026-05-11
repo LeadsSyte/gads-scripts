@@ -476,7 +476,15 @@ export async function loadTseoTasks() {
       return data;
     }
   }
-  // Fallback to localStorage (also handles the old key migration)
+  // Read from the same key saveTseoTasks writes to (TSEO_KEY uses an
+  // underscore: 'syte-suite-tseo_tasks'). Then fall back to the legacy
+  // hyphen-keyed entry for old installs. Without this, the localStorage-
+  // only mode would silently lose every task — the save path wrote to
+  // TSEO_KEY but the load path only read the legacy key.
+  const current = localStorage.getItem(TSEO_KEY);
+  if (current) {
+    try { return JSON.parse(current); } catch {}
+  }
   const legacy = localStorage.getItem('syte-suite-tseo-tasks');
   if (legacy) {
     try { return JSON.parse(legacy); } catch { return []; }
@@ -497,19 +505,21 @@ export async function updateTseoTask(id, patch) {
 const AEO_RESULTS_KEY = LS_PREFIX + 'aeo_results';
 
 export async function saveAeoResult(result) {
+  // Build the row once, used for both Supabase upsert and the
+  // localStorage fallback. The fallback was missing entirely — without
+  // Supabase configured, AEO optimization runs persisted nothing and
+  // loadAeoResults returned {} on the next page load.
+  const row = {
+    client_id: result.client_id,
+    url: result.url,
+    path: result.path,
+    sessions: result.sessions || 0,
+    priority: result.priority,
+    optimizations: result.optimizations || [],
+    error: result.error,
+    generated_at: result.generated_at || new Date().toISOString()
+  };
   if (supabase) {
-    // Upsert by client_id + url
-    const row = {
-      client_id: result.client_id,
-      url: result.url,
-      path: result.path,
-      sessions: result.sessions || 0,
-      priority: result.priority,
-      optimizations: result.optimizations || [],
-      error: result.error,
-      generated_at: result.generated_at || new Date().toISOString()
-    };
-    // Try to find existing
     const { data: existing } = await supabase
       .from('syte_suite_aeo_results')
       .select('id')
@@ -522,6 +532,14 @@ export async function saveAeoResult(result) {
       await supabase.from('syte_suite_aeo_results').insert(row);
     }
   }
+  // Always mirror to localStorage so loadAeoResults works without
+  // Supabase AND so a refresh has something to render before the cloud
+  // round-trip completes.
+  try {
+    const obj = JSON.parse(localStorage.getItem(AEO_RESULTS_KEY) || '{}');
+    obj[result.client_id + '::' + result.url] = row;
+    localStorage.setItem(AEO_RESULTS_KEY, JSON.stringify(obj));
+  } catch {}
 }
 
 export async function loadAeoResults() {
