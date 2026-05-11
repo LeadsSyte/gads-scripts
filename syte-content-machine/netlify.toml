@@ -1,0 +1,18 @@
+[build]
+  publish = "src"
+  functions = "netlify/functions"
+
+[functions]
+  node_bundler = "esbuild"
+
+# Background function for generation
+[functions."generate"]
+  type = "background"
+
+# Scheduled function for auto-generation on 1st of each month at 6am UTC
+[functions."auto-generate"]
+  schedule = "0 6 1 * *"
+
+# Include shared lib files in all functions
+[functions."*"]
+  included_files = ["src/lib/**"]
