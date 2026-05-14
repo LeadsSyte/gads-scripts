@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import LockScreen from './components/LockScreen.jsx';
 import Sidebar from './components/Sidebar.jsx';
 import ClientSelector from './components/ClientSelector.jsx';
+import ErrorBoundary from './components/ErrorBoundary.jsx';
 import ContentEngine from './modules/content/ContentEngine.jsx';
 import TechnicalSEO from './modules/technical/TechnicalSEO.jsx';
 import AEOEngine from './modules/aeo/AEOEngine.jsx';
@@ -14,7 +15,7 @@ import { useClients } from './store/useClients.js';
 import { getStoredApiKey } from './lib/auth.js';
 import { needsMigration, countLegacyClients, runMigration } from './lib/migration.js';
 import { hasSupabase } from './lib/supabase.js';
-import { backgroundSilentRefresh, getToken, migrateLegacyTokenIfAny } from './modules/technical/googleAuth.js';
+import { backgroundSilentRefresh, getToken } from './modules/technical/googleAuth.js';
 
 const ACCENTS = {
   clients:   '#e8e8ed',
@@ -88,14 +89,13 @@ export default function App() {
       setMigration({ checked: true, needed, count: needed ? countLegacyClients() : 0 });
     })();
 
-    // On app start, fold any legacy single-slot token into the new
-    // per-email cache, then attempt a silent refresh for the active
-    // account if needed. The user is usually still signed into Google in
-    // this browser; this brings the token back without any popup so
-    // subsequent GA4/GSC calls just work after a page refresh.
-    migrateLegacyTokenIfAny().finally(() => {
-      if (!getToken()) backgroundSilentRefresh();
-    });
+    // On app start, attempt to silently renew the Google access token
+    // if it's missing or expired. The user is usually still signed into
+    // Google in this browser; this brings the token back without any
+    // popup, so subsequent GA4/GSC calls just work after a page refresh.
+    if (!getToken()) {
+      backgroundSilentRefresh();
+    }
 
     // Also kick a refresh every 50 minutes so a long session doesn't
     // catch a stale token mid-action. Tokens are 1-hour TTL.
@@ -130,14 +130,16 @@ export default function App() {
             Supabase not configured — running on localStorage fallback. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in .env to enable sync.
           </div>
         )}
-        {module === 'clients' && sub === 'Implementation Progress' && <ImplementationProgress />}
-        {module === 'clients' && sub === 'Approvals' && <Approvals />}
-        {module === 'clients' && sub !== 'Implementation Progress' && sub !== 'Approvals' && <ClientsMaster />}
-        {module === 'content'   && <ContentEngine sub={sub} setSub={setSub} />}
-        {module === 'technical' && <TechnicalSEO sub={sub} />}
-        {module === 'aeo'       && <AEOEngine sub={sub} />}
-        {module === 'reports'   && <ReportsModule sub={sub} />}
-        {module === 'cms'       && <CMSPush sub={sub} />}
+        <ErrorBoundary key={module} label={module.charAt(0).toUpperCase() + module.slice(1) + ' module'}>
+          {module === 'clients' && sub === 'Implementation Progress' && <ImplementationProgress />}
+          {module === 'clients' && sub === 'Approvals' && <Approvals />}
+          {module === 'clients' && sub !== 'Implementation Progress' && sub !== 'Approvals' && <ClientsMaster />}
+          {module === 'content'   && <ContentEngine sub={sub} setSub={setSub} />}
+          {module === 'technical' && <TechnicalSEO sub={sub} />}
+          {module === 'aeo'       && <AEOEngine sub={sub} />}
+          {module === 'reports'   && <ReportsModule sub={sub} />}
+          {module === 'cms'       && <CMSPush sub={sub} />}
+        </ErrorBoundary>
       </main>
     </div>
   );

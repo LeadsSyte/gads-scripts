@@ -336,6 +336,30 @@ export async function listGeneratedReports(clientId) {
   return clientId ? list.filter(r => r.client_id === clientId) : list;
 }
 
+// Fetch the full saved content (email body + microsite JSON + QA + probe +
+// reportData snapshot) for a single client/month so the report can be
+// re-rendered without regenerating it. Returns null when nothing is saved.
+export async function getGeneratedReport(clientId, month) {
+  assertClientId(clientId, 'getGeneratedReport');
+  if (supabase) {
+    try {
+      const { data, error } = await supabase
+        .from('syte_suite_report_generated_log')
+        .select('*')
+        .eq('client_id', clientId)
+        .eq('month', month)
+        .limit(1)
+        .maybeSingle();
+      if (error) throw error;
+      return data || null;
+    } catch (e) {
+      console.warn('[reports] getGeneratedReport DB read failed, using localStorage:', e.message);
+    }
+  }
+  const list = JSON.parse(localStorage.getItem(LS_PREFIX + 'report_generated_log') || '[]');
+  return list.find(r => r.client_id === clientId && r.month === month) || null;
+}
+
 // ---------------------------------------------------------------------------
 // Implementation tracking — cross-module change verification.
 // ---------------------------------------------------------------------------
@@ -512,7 +536,9 @@ export async function loadAeoResults() {
       for (const r of data) {
         obj[r.client_id + '::' + r.url] = r;
       }
-      localStorage.setItem(AEO_RESULTS_KEY, JSON.stringify(obj));
+      // Best-effort offline mirror — Supabase is the source of truth, so
+      // it's fine if the browser quota rejects this once it gets large.
+      try { localStorage.setItem(AEO_RESULTS_KEY, JSON.stringify(obj)); } catch {}
       return obj;
     }
   }
@@ -653,17 +679,77 @@ export async function saveBlogResult(blog) {
     opportunity_type: blog.opportunity_type || null,
     generated_at: blog.generated_at || new Date().toISOString()
   };
-  if (supabase) {
-    const { data, error } = await supabase
-      .from('syte_suite_content_blogs').insert(row).select().single();
-    if (error) throw error;
-    return data;
+  // Natural key: (client_id, topic, generated_at month). Re-running Auto
+  // Write for the same opportunity — whether by accidental double-click,
+  // a re-research that surfaces the same topic, or a regeneration after
+  // edits — must NOT produce duplicate rows in the Articles Written list.
+  // Update the existing row instead.
+  const monthKey = (row.generated_at || '').slice(0, 7);
+
+  // ALWAYS write to localStorage first as a durable backup. If the
+  // Supabase write below fails (RLS, schema mismatch, network), the
+  // article is still recoverable from local cache and loadContentHistory
+  // will surface it via the merge path. Previously a Supabase failure
+  // silently dropped the article — the user generated, saw the output
+  // in the plan view, navigated away, and the article was gone.
+  saveBlogToLocal(row, monthKey);
+
+  if (!supabase) return getLocalById(row, monthKey);
+
+  if (row.client_id && row.topic) {
+    const { data: existing } = await supabase
+      .from('syte_suite_content_blogs')
+      .select('id, generated_at')
+      .eq('client_id', row.client_id)
+      .eq('topic', row.topic)
+      .order('generated_at', { ascending: false })
+      .limit(50);
+    const sameMonth = (existing || []).find(
+      e => (e.generated_at || '').slice(0, 7) === monthKey
+    );
+    if (sameMonth) {
+      const { data, error } = await supabase
+        .from('syte_suite_content_blogs')
+        .update(row)
+        .eq('id', sameMonth.id)
+        .select()
+        .single();
+      if (error) throw error;
+      return data;
+    }
   }
-  const list = JSON.parse(localStorage.getItem(BLOGS_KEY) || '[]');
-  const saved = { id: crypto.randomUUID(), ...row, created_at: new Date().toISOString() };
-  list.unshift(saved);
-  localStorage.setItem(BLOGS_KEY, JSON.stringify(list));
-  return saved;
+  const { data, error } = await supabase
+    .from('syte_suite_content_blogs').insert(row).select().single();
+  if (error) throw error;
+  return data;
+}
+
+// Internal: upsert a blog row into the localStorage cache by natural key.
+function saveBlogToLocal(row, monthKey) {
+  try {
+    const list = JSON.parse(localStorage.getItem(BLOGS_KEY) || '[]');
+    const idx = list.findIndex(
+      e => e.client_id === row.client_id &&
+           e.topic === row.topic &&
+           (e.generated_at || '').slice(0, 7) === monthKey
+    );
+    if (idx >= 0) {
+      list[idx] = { ...list[idx], ...row };
+    } else {
+      list.unshift({ id: crypto.randomUUID(), ...row, created_at: new Date().toISOString() });
+    }
+    localStorage.setItem(BLOGS_KEY, JSON.stringify(list));
+  } catch {}
+}
+function getLocalById(row, monthKey) {
+  try {
+    const list = JSON.parse(localStorage.getItem(BLOGS_KEY) || '[]');
+    return list.find(
+      e => e.client_id === row.client_id &&
+           e.topic === row.topic &&
+           (e.generated_at || '').slice(0, 7) === monthKey
+    ) || row;
+  } catch { return row; }
 }
 
 export async function listBlogResults(clientId) {
@@ -682,21 +768,45 @@ export async function listBlogResults(clientId) {
 }
 
 // Shared content history — used by the pipeline status to count articles
-// written per client per month. Returns ALL content entries (Auto Write +
-// Quick Blog + New Article + Rewrite etc.). Cached in localStorage for
-// offline fallback.
+// written per client per month AND by the per-client expanded card to
+// render the inline preview / Copy buttons / Delete control. The output
+// column is included because AutoWrite needs the full body to:
+//   • Detect "stub" rows with no actual content (e.g. legacy duplicates
+//     or LogExternalWork rows where output was never populated).
+//   • Render the parsed-output preview (Meta Title / Description /
+//     Article Body / FAQ / QA) without an extra round trip.
+// Cached in localStorage for offline fallback.
 export async function loadContentHistory() {
+  // Merge Supabase + localStorage so any article that survived in local
+  // cache (e.g. because the Supabase write failed) still appears in
+  // Articles Written. Dedupe by (client_id, topic, month).
+  let supaRows = [];
   if (supabase) {
     const { data, error } = await supabase
-      .from('syte_suite_content_blogs').select('id,client_id,client_name,topic,keyword,tab,opportunity_type,generated_at,created_at')
+      .from('syte_suite_content_blogs')
+      .select('id,client_id,client_name,topic,keyword,length,tab,opportunity_type,output,generated_at,created_at')
       .order('generated_at', { ascending: false })
       .limit(500);
-    if (!error && data) {
-      localStorage.setItem(BLOGS_KEY, JSON.stringify(data));
-      return data;
-    }
+    if (!error && data) supaRows = data;
   }
-  return JSON.parse(localStorage.getItem(BLOGS_KEY) || '[]');
+  let localRows = [];
+  try { localRows = JSON.parse(localStorage.getItem(BLOGS_KEY) || '[]'); } catch {}
+
+  // Supabase wins on conflict (it's the source of truth) — only fall back
+  // to a local row if the same (client_id, topic, month) isn't in Supabase.
+  const key = (r) => (r.client_id || '') + '|' + (r.topic || '') + '|' +
+    ((r.generated_at || r.created_at || '').slice(0, 7));
+  const supaKeys = new Set(supaRows.map(key));
+  const merged = [
+    ...supaRows,
+    ...localRows.filter(r => !supaKeys.has(key(r)))
+  ].sort((a, b) =>
+    (b.generated_at || b.created_at || '').localeCompare(a.generated_at || a.created_at || '')
+  );
+
+  // Re-cache the merged view so subsequent offline reads see everything.
+  try { localStorage.setItem(BLOGS_KEY, JSON.stringify(merged.slice(0, 500))); } catch {}
+  return merged;
 }
 
 // ---------------------------------------------------------------------------

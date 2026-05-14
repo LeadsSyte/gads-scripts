@@ -1,6 +1,46 @@
 import React, { useState } from 'react';
 import SuiteSettingsModal from './SuiteSettingsModal.jsx';
 
+// Build-time info baked in by vite.config.js (defined as global). Shows
+// in the sidebar footer so users can verify at a glance which version
+// of the suite is running — no more "did Netlify actually deploy?"
+// guesswork.
+// eslint-disable-next-line no-undef
+const BUILD = typeof __BUILD_INFO__ !== 'undefined' ? __BUILD_INFO__ : { commit: 'dev', branch: 'dev', builtAt: '' };
+
+function BuildBadge() {
+  const [showFull, setShowFull] = useState(false);
+  const built = BUILD.builtAt ? new Date(BUILD.builtAt) : null;
+  const ago = built ? formatAgo(built) : '';
+  return (
+    <div
+      title={`Commit: ${BUILD.fullCommit || BUILD.commit}\nBranch: ${BUILD.branch}\nBuilt: ${BUILD.builtAt}`}
+      onClick={() => setShowFull(v => !v)}
+      style={{
+        marginTop: 10, fontSize: 10, color: 'var(--text-dim)',
+        fontFamily: 'JetBrains Mono, monospace',
+        cursor: 'pointer', lineHeight: 1.4, textAlign: 'center'
+      }}
+    >
+      <div>v {BUILD.commit} · {BUILD.branch}</div>
+      {ago && <div>built {ago}</div>}
+      {showFull && built && (
+        <div style={{ marginTop: 4, color: 'var(--text-muted)' }}>
+          {built.toLocaleString()}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function formatAgo(date) {
+  const s = Math.floor((Date.now() - date.getTime()) / 1000);
+  if (s < 60) return s + 's ago';
+  if (s < 3600) return Math.floor(s / 60) + 'm ago';
+  if (s < 86400) return Math.floor(s / 3600) + 'h ago';
+  return Math.floor(s / 86400) + 'd ago';
+}
+
 const MODULES = [
   { id: 'clients',   label: 'Clients',        color: '#e8e8ed' },
   { id: 'content',   label: 'Content Engine', color: 'var(--mod-content)' },
@@ -92,6 +132,7 @@ export default function Sidebar({ module, setModule, sub, setSub }) {
         >
           Suite Settings
         </button>
+        <BuildBadge />
       </div>
 
       {settingsOpen && <SuiteSettingsModal onClose={() => setSettingsOpen(false)} />}

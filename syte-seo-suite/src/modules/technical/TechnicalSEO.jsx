@@ -11,7 +11,7 @@ import { crawlSiteForIssues, summarizeCrawlForAI } from './crawler.js';
 import { upsertClient, listAllImplementations, saveTseoTasks, loadTseoTasks, updateTseoTask } from '../../lib/supabase.js';
 import { checkOffPageTask, isOffPageTask } from '../../lib/verification.js';
 import { querySearchAnalytics } from './gsc.js';
-import { ensureToken, SCOPES, getToken, clearToken, setActiveEmail } from './googleAuth.js';
+import { ensureToken, SCOPES, getToken, clearToken } from './googleAuth.js';
 
 const ACCENT = '#ff6b35';
 const TASKS_KEY = 'syte-suite-tseo-tasks';
@@ -31,6 +31,37 @@ function loadTasks() {
   try { return JSON.parse(localStorage.getItem(TASKS_KEY) || '[]'); } catch { return []; }
 }
 function saveTasks(t) { localStorage.setItem(TASKS_KEY, JSON.stringify(t)); }
+
+// Dedupe tasks by (client_id, url, action_summary). Keeps the most
+// recent (highest created_at) row per logical issue and caps OPEN
+// tasks per client to 25. Done/verified tasks are preserved in full
+// because they're the work-history record.
+function dedupeTasks(list) {
+  if (!Array.isArray(list)) return [];
+  // Bucket by status — done/verified pass through untouched.
+  const history = list.filter(t => t.status === 'done' || t.status === 'verified');
+  const open = list.filter(t => t.status === 'open' || t.status === 'failed');
+  // Keep newest per dedup key.
+  const seen = new Map();
+  for (const t of open.sort((a, b) =>
+    String(b.created_at || '').localeCompare(String(a.created_at || ''))
+  )) {
+    const key = (t.client_id || '') + '|' + (t.url || '') + '|' + (t.action_summary || t.title || '');
+    if (!seen.has(key)) seen.set(key, t);
+  }
+  // Cap per client.
+  const PER_CLIENT_MAX = 25;
+  const byClient = new Map();
+  const capped = [];
+  for (const t of seen.values()) {
+    const c = byClient.get(t.client_id) || 0;
+    if (c < PER_CLIENT_MAX) {
+      capped.push(t);
+      byClient.set(t.client_id, c + 1);
+    }
+  }
+  return [...capped, ...history];
+}
 function loadTeam() { try { return JSON.parse(localStorage.getItem(TEAM_KEY) || '[]'); } catch { return []; } }
 function saveTeam(t) { localStorage.setItem(TEAM_KEY, JSON.stringify(t)); }
 
@@ -169,7 +200,13 @@ function statusClass(s) {
 
 // Expandable task card for the pipeline view — shows priority, description,
 // copy-paste fix in a code block, and action buttons.
-function TaskCard({ task: t, onUpdate, onVerify, busy, buildPushItem, onVerified }) {
+//
+// taskClient: the client this task ACTUALLY belongs to (resolved from
+// task.client_id). Passed down so the verify button checks the right
+// domain — without this, the verifier used the topbar-selected client,
+// which led to "robots.txt is not reachable at https://bamdiy.com/..."
+// when the user was working on a Syte task with bamdiy.com selected.
+function TaskCard({ task: t, onUpdate, onVerify, busy, buildPushItem, onVerified, taskClient }) {
   const [open, setOpen] = React.useState(false);
   const copyFix = () => navigator.clipboard.writeText(t.copy_paste_fix || '').catch(() => {});
 
@@ -245,6 +282,7 @@ function TaskCard({ task: t, onUpdate, onVerify, busy, buildPushItem, onVerified
               pageUrl={t.page_url}
               title={t.title}
               description={t.copy_paste_fix || t.description || ''}
+              client={taskClient}
               onVerified={onVerified}
             />
           </div>
@@ -268,9 +306,14 @@ export default function TechnicalSEO({ sub }) {
   const [syncResult, setSyncResult] = useState(null);
   const [customMethod, setCustomMethod] = useState('');
 
-  // Load tasks from Supabase on mount (falls back to localStorage).
+  // Load tasks from Supabase on mount (falls back to localStorage), then
+  // auto-dedupe so existing accumulated junk from previous scans (the
+  // "100 open tasks for one client" problem) gets cleaned up on the
+  // next visit. Keeps newest task per (client_id, url, action_summary).
   useEffect(() => {
-    loadTseoTasks().then(t => setTasks(t)).catch(() => setTasks(loadTasks()));
+    loadTseoTasks()
+      .then(t => setTasks(dedupeTasks(t)))
+      .catch(() => setTasks(dedupeTasks(loadTasks())));
   }, []);
 
   // Persist tasks to both Supabase + localStorage on every change.
@@ -303,9 +346,9 @@ export default function TechnicalSEO({ sub }) {
     if (!c) { setErr('Select a client first.'); return; }
     setBusy(true); setErr(''); setMsg('');
     try {
-      // Pin Google auth to this client's saved account so any GSC call
+      // Hint Google to the client's saved GSC account so any GSC call
       // below uses the right token and skips the account picker.
-      if (c.google_email) setActiveEmail(c.google_email);
+      const gscEmail = c.gsc_account_email || c.google_account_email || null;
       let auditData = null;
       let dataSource = '';
 
@@ -326,7 +369,7 @@ export default function TechnicalSEO({ sub }) {
       // STEP 1b: Enrich with GSC data if available (for traffic/impression context).
       if (c.gsc_property) {
         try {
-          await ensureToken([SCOPES.gsc], { email: c.google_email });
+          await ensureToken([SCOPES.gsc], { expectedEmail: gscEmail });
           const gscData = await querySearchAnalytics(c.gsc_property, { days: 28, dimensions: ['page'], rowLimit: 100 });
           auditData = (auditData || '') + '\n\n=== GSC TRAFFIC DATA (last 28 days) ===\n' + JSON.stringify(gscData).slice(0, 20000);
           dataSource += (dataSource ? ' + GSC' : 'GSC');
@@ -361,11 +404,24 @@ export default function TechnicalSEO({ sub }) {
         created_at: new Date().toISOString(),
         ...t
       }));
-      setTasks(prev => [...newTasks, ...prev]);
+      // Re-scanning the same client must REPLACE the open tasks for that
+      // client — not append. Otherwise tasks accumulate every run and
+      // the user ends up with 100+ stale duplicates after a few scans
+      // (which is exactly what was happening). Keep done/verified tasks
+      // as work history. Also cap new tasks at MAX_TASKS_PER_CLIENT to
+      // stop a noisy scan flooding the board.
+      const MAX_TASKS_PER_CLIENT = 25;
+      const cappedNew = newTasks.slice(0, MAX_TASKS_PER_CLIENT);
+      setTasks(prev => {
+        const kept = prev.filter(t =>
+          t.client_id !== c.id || (t.status === 'done' || t.status === 'verified')
+        );
+        return [...cappedNew, ...kept];
+      });
 
-      const critical = newTasks.filter(t => t.priority === 'critical').length;
-      const high = newTasks.filter(t => t.priority === 'high').length;
-      const quickWins = newTasks.filter(t => t.effort === 'quick').length;
+      const critical = cappedNew.filter(t => t.priority === 'critical').length;
+      const high = cappedNew.filter(t => t.priority === 'high').length;
+      const quickWins = cappedNew.filter(t => t.effort === 'quick').length;
       setMsg(
         `Added ${newTasks.length} tasks for ${c.name} from ${dataSource}` +
         (critical ? ` · ${critical} critical` : '') +
@@ -403,12 +459,23 @@ export default function TechnicalSEO({ sub }) {
         created_at: new Date().toISOString(),
         ...t
       }));
-      setTasks(prev => [...newTasks, ...prev]);
-      saveTseoTasks([...newTasks, ...tasks]).catch(() => {});
+      // Replace open tasks for this client (keep done/verified for history)
+      // and cap at 25 per scan — same logic as the live-scan path. Prevents
+      // task accumulation across re-scans of the same client.
+      const MAX_TASKS_PER_CLIENT = 25;
+      const cappedNew = newTasks.slice(0, MAX_TASKS_PER_CLIENT);
+      const nextTasks = (() => {
+        const kept = tasks.filter(t =>
+          t.client_id !== c.id || (t.status === 'done' || t.status === 'verified')
+        );
+        return [...cappedNew, ...kept];
+      })();
+      setTasks(nextTasks);
+      saveTseoTasks(nextTasks).catch(() => {});
 
-      const critical = newTasks.filter(t => t.priority === 'critical').length;
-      const high = newTasks.filter(t => t.priority === 'high').length;
-      setMsg(`Added ${newTasks.length} tasks for ${c.name} from pasted data` +
+      const critical = cappedNew.filter(t => t.priority === 'critical').length;
+      const high = cappedNew.filter(t => t.priority === 'high').length;
+      setMsg(`Added ${cappedNew.length} tasks for ${c.name} from pasted data` +
         (critical ? ` · ${critical} critical` : '') +
         (high ? ` · ${high} high priority` : ''));
     } catch (e) { setErr(e.message); }
@@ -425,7 +492,13 @@ export default function TechnicalSEO({ sub }) {
   async function handleVerify(task) {
     setBusy(true); setErr(''); setMsg('');
     try {
-      const r = await verifyFix(task, client);
+      // Resolve the task's actual client. Verifying against the topbar's
+      // current client produced cross-domain probes ("checking
+      // bamdiy.com/robots.txt for a Syte task") when users had a
+      // different client selected. Fall back to the topbar selection
+      // only if we can't find the task's client in the list.
+      const taskClient = clients.find(c => c.id === task.client_id) || client;
+      const r = await verifyFix(task, taskClient);
       // 'manual_required' = off-page check couldn't be automated. Don't
       // overwrite the task status as failed — surface a message instead so
       // the user knows to confirm manually.
@@ -497,16 +570,87 @@ export default function TechnicalSEO({ sub }) {
       verified: tasks.filter(t => t.status === 'verified').length,
       failed:   tasks.filter(t => t.status === 'failed').length
     };
+    // Find clients that haven't been scanned this month — offer a one-click
+    // bulk scan + auto-prompt during the first 7 days of the month so users
+    // don't have to remember to click each card individually.
+    const unscannedThisMonth = techClients.filter(c => {
+      const cTasks = tasks.filter(t =>
+        t.client_id === c.id &&
+        (t.created_at || '').slice(0, 7) === currentMonth
+      );
+      return cTasks.length === 0;
+    });
+    const dayOfMonth = new Date().getDate();
+    const isMonthStart = dayOfMonth <= 7;
+
+    async function scanAllUnscanned() {
+      if (busy) return;
+      const list = unscannedThisMonth;
+      if (!list.length) return;
+      const ok = window.confirm(
+        'Run Technical SEO scan for ' + list.length + ' unscanned client' +
+        (list.length === 1 ? '' : 's') + '?\nThis can take a few minutes per client.'
+      );
+      if (!ok) return;
+      for (let i = 0; i < list.length; i++) {
+        setMsg('Bulk scan ' + (i + 1) + '/' + list.length + ': ' + list[i].name);
+        try { await runScanForClient(list[i]); } catch {}
+      }
+      setMsg('Bulk scan complete — ' + list.length + ' clients scanned.');
+    }
+
     return (
       <div className="content-area">
-        {/* Status bar — shows progress when a scan is running from a pipeline card */}
+        {/* STICKY status banner — sticks to the top of the scroll area so a
+            scan triggered from a pipeline card lower down the page can't be
+            invisible behind the topbar. Includes scroll-into-view on mount
+            via auto-scrolling when busy starts (handled below). */}
         {(busy || msg || err) && (
-          <div className="card" style={{ marginBottom: 12, padding: '10px 16px', borderColor: busy ? ACCENT : err ? 'var(--red)' : 'var(--green)' }}>
+          <div className="card" style={{
+            marginBottom: 12, padding: '10px 16px',
+            borderColor: busy ? ACCENT : err ? 'var(--red)' : 'var(--green)',
+            position: 'sticky', top: 0, zIndex: 6,
+            background: 'var(--surface)'
+          }}>
             <div className="row" style={{ gap: 10 }}>
               {busy && <span className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} />}
               <span style={{ fontSize: 13, color: err ? 'var(--red)' : busy ? 'var(--text)' : 'var(--green)' }}>
                 {err || msg || 'Scanning…'}
               </span>
+            </div>
+          </div>
+        )}
+
+        {/* Month-start prompt: when there are unscanned clients in the first
+            week of the month, surface a single "Scan all" CTA at the top
+            so users don't have to chase individual cards. */}
+        {unscannedThisMonth.length > 0 && (
+          <div className="card" style={{
+            marginBottom: 12, padding: '12px 16px',
+            borderColor: isMonthStart ? ACCENT : 'var(--border)',
+            borderLeftWidth: 3,
+            borderLeftStyle: 'solid'
+          }}>
+            <div className="row" style={{ justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 600 }}>
+                  {isMonthStart
+                    ? 'It\'s the start of ' + monthLabel + ' — ' + unscannedThisMonth.length + ' client' + (unscannedThisMonth.length === 1 ? ' hasn\'t' : 's haven\'t') + ' been scanned yet'
+                    : unscannedThisMonth.length + ' client' + (unscannedThisMonth.length === 1 ? '' : 's') + ' not yet scanned this month'}
+                </div>
+                <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
+                  {unscannedThisMonth.slice(0, 5).map(c => c.name).join(', ')}
+                  {unscannedThisMonth.length > 5 && ` +${unscannedThisMonth.length - 5} more`}
+                </div>
+              </div>
+              <button
+                onClick={scanAllUnscanned}
+                disabled={busy}
+                className="primary"
+                style={{ background: ACCENT, borderColor: ACCENT, color: '#0a0a0c', fontSize: 12 }}
+              >
+                {busy ? 'Scanning…' : 'Scan all ' + unscannedThisMonth.length + ' now'}
+              </button>
             </div>
           </div>
         )}
@@ -543,7 +687,15 @@ export default function TechnicalSEO({ sub }) {
                   Showing top {topTasks.length} of {cTasks.length} tasks (highest priority first)
                 </div>
                 {topTasks.map(t => (
-                  <TaskCard key={t.id} task={t} onUpdate={updateTask} onVerify={handleVerify} busy={busy} buildPushItem={buildPushItem} onVerified={refreshTechImpls} />
+                  <TaskCard
+                    key={t.id} task={t}
+                    onUpdate={updateTask}
+                    onVerify={handleVerify}
+                    busy={busy}
+                    buildPushItem={buildPushItem}
+                    onVerified={refreshTechImpls}
+                    taskClient={c}
+                  />
                 ))}
               </div>
             );

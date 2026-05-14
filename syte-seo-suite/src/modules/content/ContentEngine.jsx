@@ -9,7 +9,7 @@ import AutoWrite from './AutoWrite.jsx';
 import GenerateImageButton from '../../components/GenerateImageButton.jsx';
 import MarkImplementedButton from '../../components/MarkImplementedButton.jsx';
 import { saveBlogResult, listBlogResults, deleteBlogResult, loadContentHistory } from '../../lib/supabase.js';
-import { parseOutputSections } from './articleParser.js';
+import { parseOutputSections, markdownToHtml } from './articleParser.js';
 
 const ACCENT = '#c8ff00';
 const HISTORY_KEY = 'syte-suite-content-history';
@@ -26,26 +26,8 @@ function escapeHtml(s = '') {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-// Convert Markdown → HTML so .docx export preserves headings, bold, lists.
-function markdownToHtml(md) {
-  if (!md) return '';
-  return md
-    .replace(/^#### (.+)$/gm, '<h4>$1</h4>')
-    .replace(/^### (.+)$/gm, '<h3>$1</h3>')
-    .replace(/^## (.+)$/gm, '<h2>$1</h2>')
-    .replace(/^# (.+)$/gm, '<h1>$1</h1>')
-    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    .replace(/\*(.+?)\*/g, '<em>$1</em>')
-    .replace(/^[-*] (.+)$/gm, '<li>$1</li>')
-    .replace(/(<li>[\s\S]*?<\/li>)/gm, (match) => '<ul>' + match + '</ul>')
-    .replace(/<\/ul>\s*<ul>/g, '')
-    .replace(/^\d+\. (.+)$/gm, '<li>$1</li>')
-    .replace(/```[\s\S]*?```/g, m => '<pre>' + m.slice(3, -3).trim() + '</pre>')
-    .replace(/`([^`]+)`/g, '<code>$1</code>')
-    .replace(/\n{2,}/g, '</p><p>')
-    .replace(/^(?!<[hluop])(.+)$/gm, '<p>$1</p>')
-    .replace(/<p><\/p>/g, '');
-}
+// markdownToHtml + GFM table support is in articleParser.js (shared with
+// wordpressPush.js + AutoWrite's "Copy as HTML" button).
 
 // .docx export — converts Markdown to HTML first so Word preserves headings,
 // bold, and list structure. Uses the "save as .doc" HTML envelope trick.
@@ -97,6 +79,27 @@ const SCORE_KEYS = [
   ['internal_linking',    'Internal Linking']
 ];
 
+// Copy markdown to the clipboard as both rich HTML and plain text so a
+// paste into Google Docs / Word / WordPress visual editor preserves
+// formatting (headings, bold, lists, tables).
+async function copyArticleFormatted(markdown) {
+  const html = markdownToHtml(markdown);
+  try {
+    if (typeof ClipboardItem !== 'undefined' && navigator.clipboard?.write) {
+      const item = new ClipboardItem({
+        'text/html':  new Blob([html], { type: 'text/html' }),
+        'text/plain': new Blob([markdown], { type: 'text/plain' })
+      });
+      await navigator.clipboard.write([item]);
+      return true;
+    }
+    await navigator.clipboard.writeText(markdown);
+    return true;
+  } catch {
+    try { await navigator.clipboard.writeText(markdown); return true; } catch { return false; }
+  }
+}
+
 function CopyButton({ text, label = 'Copy' }) {
   const [copied, setCopied] = React.useState(false);
   function copy() {
@@ -104,6 +107,25 @@ function CopyButton({ text, label = 'Copy' }) {
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     }).catch(() => {});
+  }
+  return (
+    <button onClick={copy} style={{ fontSize: 11, padding: '3px 10px' }}>
+      {copied ? 'Copied ✓' : label}
+    </button>
+  );
+}
+
+// Copy formatted (rich-text) so paste into Google Docs/Word/CMS preserves
+// headings, bold, lists, tables. Falls back to plain text if clipboard.write
+// is unavailable.
+function CopyRichButton({ markdown, label = 'Copy formatted' }) {
+  const [copied, setCopied] = React.useState(false);
+  async function copy() {
+    const ok = await copyArticleFormatted(markdown);
+    if (ok) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    }
   }
   return (
     <button onClick={copy} style={{ fontSize: 11, padding: '3px 10px' }}>
@@ -213,17 +235,25 @@ function ParsedOutput({ output, topic, pushItem, exportTxt, exportDocx, systemPr
               borderLeft: '3px solid var(--mod-content)',
               borderRadius: 'var(--radius)'
             }}>
-              <div className="row" style={{ justifyContent: 'space-between', marginBottom: 6 }}>
+              <div className="row" style={{ justifyContent: 'space-between', marginBottom: 6, flexWrap: 'wrap', gap: 6 }}>
                 <strong style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '.05em', color: 'var(--mod-content)' }}>
                   Article Body
                 </strong>
-                <CopyButton text={sections.body} />
+                <div className="row" style={{ gap: 6 }}>
+                  <CopyRichButton markdown={sections.body} />
+                  <CopyButton text={sections.body} label="Copy markdown" />
+                  <CopyButton text={markdownToHtml(sections.body)} label="Copy HTML" />
+                </div>
               </div>
-              <details>
+              <details open>
                 <summary className="muted" style={{ fontSize: 11, cursor: 'pointer' }}>
                   Show article ({Math.round(sections.body.length / 5)} words approx.)
                 </summary>
-                <div className="stream-output" style={{ marginTop: 8, maxHeight: 500 }}>{sections.body}</div>
+                <div
+                  className="article-rendered"
+                  style={{ marginTop: 8, maxHeight: 500, overflowY: 'auto', padding: 12, background: 'var(--bg)', borderRadius: 6, lineHeight: 1.6 }}
+                  dangerouslySetInnerHTML={{ __html: markdownToHtml(sections.body) }}
+                />
               </details>
 
               {/* Hero image generator — opt-in, only renders if an image API key is configured */}
@@ -498,15 +528,22 @@ export default function ContentEngine({ sub, setSub }) {
       const next = [entry, ...history];
       setHistory(next); saveHistory(next);
       // Also persist to Supabase so it's shared across browsers/users.
-      saveBlogResult({
-        client_id: client.id,
-        client_name: client.name,
-        tab,
-        topic, keyword,
-        length,
-        output: buf,
-        generated_at: new Date().toISOString()
-      }).catch(e => console.warn('[Content] Supabase save failed:', e.message));
+      // Awaited so a fast navigation away can't drop the write — the user
+      // reported articles vanishing from "Articles Written" because this
+      // used to be fire-and-forget and saved didn't always reach the DB.
+      try {
+        await saveBlogResult({
+          client_id: client.id,
+          client_name: client.name,
+          tab,
+          topic, keyword,
+          length,
+          output: buf,
+          generated_at: new Date().toISOString()
+        });
+      } catch (e) {
+        console.warn('[Content] Supabase save failed:', e.message);
+      }
     } catch (e) {
       setErr(e.message);
     } finally {
@@ -643,14 +680,25 @@ export default function ContentEngine({ sub, setSub }) {
                       <button onClick={(e) => { e.stopPropagation(); exportDocx(h.output, h.topic || 'article'); }} style={{ fontSize: 11, padding: '3px 8px' }}>.docx</button>
                     </div>
                   </div>
-                  {h.output && (
-                    <details style={{ marginTop: 6 }}>
-                      <summary className="muted" style={{ fontSize: 10, cursor: 'pointer' }}>Preview</summary>
-                      <pre style={{ marginTop: 6, padding: 10, background: 'var(--bg)', fontSize: 11, overflowX: 'auto', whiteSpace: 'pre-wrap', maxHeight: 300, borderRadius: 6 }}>
-                        {h.output.slice(0, 2000)}{h.output.length > 2000 ? '…' : ''}
-                      </pre>
-                    </details>
-                  )}
+                  {h.output && (() => {
+                    const parsed = parseOutputSections(h.output);
+                    const bodyHtml = markdownToHtml(parsed?.body || h.output);
+                    return (
+                      <details style={{ marginTop: 6 }}>
+                        <summary className="muted" style={{ fontSize: 10, cursor: 'pointer' }}>Preview</summary>
+                        <div
+                          className="article-rendered"
+                          style={{
+                            marginTop: 6, padding: 12, background: 'var(--bg)',
+                            fontSize: 13, lineHeight: 1.6, maxHeight: 500,
+                            overflowY: 'auto', borderRadius: 6,
+                            border: '1px solid var(--border)'
+                          }}
+                          dangerouslySetInnerHTML={{ __html: bodyHtml }}
+                        />
+                      </details>
+                    );
+                  })()}
                 </div>
               ))}
             </div>

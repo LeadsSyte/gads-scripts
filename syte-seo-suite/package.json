@@ -11,6 +11,7 @@
     "test:node": "node test/run-all.mjs",
     "test:components": "vitest run",
     "test:e2e": "playwright test",
+    "test:ai-qa": "node test/ai-qa/walkthrough.mjs",
     "test:all": "npm test && npm run test:e2e"
   },
   "dependencies": {
