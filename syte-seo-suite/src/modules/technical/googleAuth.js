@@ -154,7 +154,12 @@ export function getLastKnownEmail() {
   return t?.email || null;
 }
 
-// Load the Google Identity Services script on demand.
+// Load the Google Identity Services script on demand. We add a hard
+// timeout so a failed GIS load (network blocked, CSP, extension) doesn't
+// leave the cached promise pending forever and wedge every downstream
+// auth call. On failure we reset the cache so the next attempt retries
+// instead of inheriting a permanently rejected promise.
+const GIS_LOAD_TIMEOUT_MS = 8000;
 let gisLoaded;
 function loadGis() {
   if (gisLoaded) return gisLoaded;
@@ -163,9 +168,17 @@ function loadGis() {
     const s = document.createElement('script');
     s.src = 'https://accounts.google.com/gsi/client';
     s.async = true; s.defer = true;
-    s.onload = () => resolve();
-    s.onerror = reject;
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(new Error('Google Identity Services script load timed out'));
+    }, GIS_LOAD_TIMEOUT_MS);
+    function cleanup() { clearTimeout(timer); }
+    s.onload = () => { cleanup(); resolve(); };
+    s.onerror = () => { cleanup(); reject(new Error('Google Identity Services script failed to load')); };
     document.head.appendChild(s);
+  }).catch((e) => {
+    gisLoaded = undefined;
+    throw e;
   });
   return gisLoaded;
 }

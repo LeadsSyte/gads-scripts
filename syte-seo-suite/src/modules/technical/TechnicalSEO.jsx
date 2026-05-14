@@ -346,6 +346,9 @@ export default function TechnicalSEO({ sub }) {
     if (!c) { setErr('Select a client first.'); return; }
     setBusy(true); setErr(''); setMsg('');
     try {
+      // Hint Google to the client's saved GSC account so any GSC call
+      // below uses the right token and skips the account picker.
+      const gscEmail = c.gsc_account_email || c.google_account_email || null;
       let auditData = null;
       let dataSource = '';
 
@@ -366,7 +369,7 @@ export default function TechnicalSEO({ sub }) {
       // STEP 1b: Enrich with GSC data if available (for traffic/impression context).
       if (c.gsc_property) {
         try {
-          await ensureToken([SCOPES.gsc]);
+          await ensureToken([SCOPES.gsc], { expectedEmail: gscEmail });
           const gscData = await querySearchAnalytics(c.gsc_property, { days: 28, dimensions: ['page'], rowLimit: 100 });
           auditData = (auditData || '') + '\n\n=== GSC TRAFFIC DATA (last 28 days) ===\n' + JSON.stringify(gscData).slice(0, 20000);
           dataSource += (dataSource ? ' + GSC' : 'GSC');

@@ -738,13 +738,18 @@ export default function AEOEngine({ sub }) {
       // STEP 0: Pre-check Google credentials if client has GA4.
       // Do this BEFORE the pipeline so the OAuth popup appears up-front,
       // not mid-flow where it can hang or confuse the user.
+      //
+      // Hint Google to the client's saved account (per-API field wins
+      // over the legacy single google_account_email) so the picker is
+      // skipped when that account already has a live cached token.
+      const ga4Email = c.ga4_account_email || c.google_account_email || null;
       let ga4Ready = false;
       if (c.ga4_property_id) {
         const existingToken = getToken();
         if (!existingToken || !existingToken.access_token) {
           setProgress('Connecting to Google Analytics — please sign in…');
           try {
-            await ensureToken([SCOPES.ga4]);
+            await ensureToken([SCOPES.ga4], { expectedEmail: ga4Email });
             ga4Ready = true;
             setProgress('Google connected ✓');
           } catch (e) {
@@ -916,6 +921,8 @@ export default function AEOEngine({ sub }) {
     if (!client?.ga4_property_id) { setErr('Client has no GA4 property ID.'); return; }
     setBusy(true); setErr(''); setProgress('Running GA4 report…');
     try {
+      const ga4Email = client.ga4_account_email || client.google_account_email || null;
+      await ensureToken([SCOPES.ga4], { expectedEmail: ga4Email });
       const report = await runReport(client.ga4_property_id, 30);
       const rows = (report.rows || [])
         .map(r => ({
