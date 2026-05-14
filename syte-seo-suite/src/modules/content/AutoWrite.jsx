@@ -15,6 +15,7 @@ import LogExternalWork from '../../components/LogExternalWork.jsx';
 import { contentPipelineStatus } from '../../lib/pipelineStatus.js';
 import { listAllImplementations, saveBlogResult, loadContentHistory } from '../../lib/supabase.js';
 import { parseOutputSections } from './articleParser.js';
+import { setActiveEmail } from '../technical/googleAuth.js';
 
 // Lightweight, self-contained copy/section UI for the pipeline preview —
 // keeps AutoWrite independent of ContentEngine's internal components but
@@ -170,6 +171,9 @@ export default function AutoWrite() {
     setResearch(null); setPlan(null); setArticleStates({}); setResearchErr('');
     setResearchBusy(true); setBatchMode(false); setWritingIdx(null);
     try {
+      // Pin auth to this client's Google account so GSC fetch uses the
+      // right token and Google skips the account picker on first sign-in.
+      if (client.google_email) setActiveEmail(client.google_email);
       let data;
       let gscFailed = false;
       try {

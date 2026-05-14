@@ -13,7 +13,7 @@ import { listAllImplementations, saveAeoResult, loadAeoResults as loadAeoResults
 import { AEO_SYSTEM, AEO_TYPES, AEO_DEEP_SYSTEM } from './aeoTypes.js';
 import { fetchSitemapUrls } from './sitemap.js';
 import { listAccountSummaries, runReport } from './ga4.js';
-import { ensureToken, SCOPES, getToken, clearToken } from '../technical/googleAuth.js';
+import { ensureToken, SCOPES, getToken, clearToken, setActiveEmail } from '../technical/googleAuth.js';
 
 const ACCENT = '#00d4aa';
 const RESULTS_KEY = 'syte-suite-aeo-results';
@@ -548,13 +548,17 @@ export default function AEOEngine({ sub }) {
       // STEP 0: Pre-check Google credentials if client has GA4.
       // Do this BEFORE the pipeline so the OAuth popup appears up-front,
       // not mid-flow where it can hang or confuse the user.
+      //
+      // If the client has a saved google_email, pin auth to that account so
+      // Google skips the chooser and uses the right account immediately.
+      if (c.google_email) setActiveEmail(c.google_email);
       let ga4Ready = false;
       if (c.ga4_property_id) {
-        const existingToken = getToken();
+        const existingToken = getToken(c.google_email);
         if (!existingToken || !existingToken.access_token) {
           setProgress('Connecting to Google Analytics — please sign in…');
           try {
-            await ensureToken([SCOPES.ga4]);
+            await ensureToken([SCOPES.ga4], { email: c.google_email });
             ga4Ready = true;
             setProgress('Google connected ✓');
           } catch (e) {
@@ -726,6 +730,8 @@ export default function AEOEngine({ sub }) {
     if (!client?.ga4_property_id) { setErr('Client has no GA4 property ID.'); return; }
     setBusy(true); setErr(''); setProgress('Running GA4 report…');
     try {
+      if (client.google_email) setActiveEmail(client.google_email);
+      await ensureToken([SCOPES.ga4], { email: client.google_email });
       const report = await runReport(client.ga4_property_id, 30);
       const rows = (report.rows || [])
         .map(r => ({

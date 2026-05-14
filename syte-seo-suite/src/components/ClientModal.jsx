@@ -354,6 +354,8 @@ Return ONLY valid JSON: { "queries": ["...", "..."] }`;
           onChangeGa4={v => update('ga4_property_id', v)}
           gscValue={f.gsc_property}
           onChangeGsc={v => update('gsc_property', v)}
+          googleEmail={f.google_email}
+          onChangeGoogleEmail={v => update('google_email', v)}
         />
 
         {/* Reporting & AEO */}

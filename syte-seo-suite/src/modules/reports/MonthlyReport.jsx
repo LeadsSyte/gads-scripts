@@ -10,7 +10,7 @@ import {
 import { buildMicrositeHtml, downloadMicrosite } from './microsite.js';
 import { runSnapshot, snapshotPreflight } from './aeoRunner.js';
 import { compareSnapshots, rankBrandWithCompetitors, normalizeSnapshot } from './aeoCompare.js';
-import { ensureToken, SCOPES, getToken, switchAccount, silentRefresh } from '../technical/googleAuth.js';
+import { ensureToken, SCOPES, getToken, switchAccount, silentRefresh, setActiveEmail } from '../technical/googleAuth.js';
 import { fetchReportData } from './reportData.js';
 import ReportDashboard from './ReportDashboard.jsx';
 
@@ -124,15 +124,20 @@ export default function MonthlyReport() {
     }
 
     // ── Auth handling ──
+    // Pin to this client's saved Google account if any — that way silent
+    // refresh and any interactive fallback both target the right account
+    // and Google skips the chooser.
+    if (c.google_email) setActiveEmail(c.google_email);
+
     // Don't auto-pop the Google sign-in modal on mount/month change.
     // First try a silent refresh — works without a popup if the user is
     // still signed into Google in this browser. Only if that fails do
     // we surface the Connect Google control.
-    let token = getToken();
+    let token = getToken(c.google_email);
     const needsGoogle = c.ga4_property_id || c.gsc_property;
     if (!token?.access_token && needsGoogle && !forceRefresh) {
       setFetchStatus('Reconnecting to Google in the background…');
-      token = await silentRefresh([SCOPES.ga4, SCOPES.gsc]);
+      token = await silentRefresh([SCOPES.ga4, SCOPES.gsc], { hint: c.google_email });
       if (!token?.access_token) {
         setFetchStatus('Not connected to Google — click Connect Google to fetch fresh SEO data (cached AEO and saved client data still available)');
         return;
@@ -143,7 +148,7 @@ export default function MonthlyReport() {
       // forceRefresh = user explicitly clicked a button, OK to pop auth.
       setFetchStatus('Connecting to Google — please sign in if prompted…');
       try {
-        token = await ensureToken([SCOPES.ga4, SCOPES.gsc]);
+        token = await ensureToken([SCOPES.ga4, SCOPES.gsc], { email: c.google_email });
       } catch {
         setFetchStatus('Google auth failed — try again');
         return;

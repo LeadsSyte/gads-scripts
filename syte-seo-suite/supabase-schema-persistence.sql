@@ -48,6 +48,10 @@ alter table syte_suite_aeo_results disable row level security;
 -- 3. Add columns to clients (safe to re-run).
 alter table syte_suite_clients add column if not exists looker_url text;
 alter table syte_suite_clients add column if not exists client_type text;  -- 'ecommerce' | 'lead_gen'
+-- Preferred Google account for this client's GA4/GSC integration. Captured
+-- automatically on first sign-in and used as a login_hint so subsequent
+-- sessions skip the Google account picker.
+alter table syte_suite_clients add column if not exists google_email text;
 
 -- 4. AEO Deep Optimizations — full-page rewrites with FAQ + changes log.
 -- Distinct from syte_suite_aeo_results (which holds the 5-snippet quick-wins).

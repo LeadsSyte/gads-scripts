@@ -11,7 +11,7 @@ import { crawlSiteForIssues, summarizeCrawlForAI } from './crawler.js';
 import { upsertClient, listAllImplementations, saveTseoTasks, loadTseoTasks, updateTseoTask } from '../../lib/supabase.js';
 import { checkOffPageTask, isOffPageTask } from '../../lib/verification.js';
 import { querySearchAnalytics } from './gsc.js';
-import { ensureToken, SCOPES, getToken, clearToken } from './googleAuth.js';
+import { ensureToken, SCOPES, getToken, clearToken, setActiveEmail } from './googleAuth.js';
 
 const ACCENT = '#ff6b35';
 const TASKS_KEY = 'syte-suite-tseo-tasks';
@@ -303,6 +303,9 @@ export default function TechnicalSEO({ sub }) {
     if (!c) { setErr('Select a client first.'); return; }
     setBusy(true); setErr(''); setMsg('');
     try {
+      // Pin Google auth to this client's saved account so any GSC call
+      // below uses the right token and skips the account picker.
+      if (c.google_email) setActiveEmail(c.google_email);
       let auditData = null;
       let dataSource = '';
 
@@ -323,7 +326,7 @@ export default function TechnicalSEO({ sub }) {
       // STEP 1b: Enrich with GSC data if available (for traffic/impression context).
       if (c.gsc_property) {
         try {
-          await ensureToken([SCOPES.gsc]);
+          await ensureToken([SCOPES.gsc], { email: c.google_email });
           const gscData = await querySearchAnalytics(c.gsc_property, { days: 28, dimensions: ['page'], rowLimit: 100 });
           auditData = (auditData || '') + '\n\n=== GSC TRAFFIC DATA (last 28 days) ===\n' + JSON.stringify(gscData).slice(0, 20000);
           dataSource += (dataSource ? ' + GSC' : 'GSC');

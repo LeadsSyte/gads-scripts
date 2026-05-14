@@ -5,6 +5,7 @@ import {
   generateTopicRecommendations,
   buildArticleResearchContext
 } from './topicResearch.js';
+import { setActiveEmail } from '../technical/googleAuth.js';
 
 const ACCENT = '#c8ff00';
 
@@ -61,6 +62,9 @@ export default function TopicResearch({ onWriteArticle }) {
     }
     setBusy(true); setErr(''); setResearch(null); setPlan(null);
     try {
+      // Pin auth to this client's Google account so GSC fetch below uses
+      // the right token and skips the chooser if a fresh sign-in is needed.
+      if (client.google_email) setActiveEmail(client.google_email);
       setPhase('gsc');
       const data = await collectResearchData(client, { days });
       setResearch(data);

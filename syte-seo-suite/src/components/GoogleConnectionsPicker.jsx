@@ -20,7 +20,10 @@ import {
 // Props:
 //   ga4Value / onChangeGa4  — current GA4 Property ID string
 //   gscValue / onChangeGsc  — current GSC Property string
-export default function GoogleConnectionsPicker({ ga4Value, onChangeGa4, gscValue, onChangeGsc }) {
+//   googleEmail             — saved Google account email for this client
+//   onChangeGoogleEmail     — captures the email after sign-in so the
+//                             suite can skip the account picker next time
+export default function GoogleConnectionsPicker({ ga4Value, onChangeGa4, gscValue, onChangeGsc, googleEmail, onChangeGoogleEmail }) {
   const [signedIn, setSignedIn] = useState(!!getToken());
   const [email, setEmail] = useState(null);
 
@@ -78,6 +81,11 @@ export default function GoogleConnectionsPicker({ ga4Value, onChangeGa4, gscValu
     const e = await getCurrentEmail();
 
     setEmail(e);
+    // Persist the signed-in email onto the client record so we can hint
+    // straight back to this account on future sessions (no picker).
+    if (e && onChangeGoogleEmail && e !== googleEmail) {
+      onChangeGoogleEmail(e);
+    }
     setGa4Props(ga);
     setGscSites(sites);
     setApiErrors(errors);
@@ -88,7 +96,10 @@ export default function GoogleConnectionsPicker({ ga4Value, onChangeGa4, gscValu
   async function doSignIn() {
     setErr('');
     try {
-      await requestToken(ALL_READ_SCOPES);
+      // If we already know which account this client uses, hint straight to
+      // it — Google skips the chooser when that account is still signed in
+      // in this browser.
+      await requestToken(ALL_READ_SCOPES, googleEmail ? { hint: googleEmail } : undefined);
       setSignedIn(true);
     } catch (e) { setErr(e.message); }
   }
