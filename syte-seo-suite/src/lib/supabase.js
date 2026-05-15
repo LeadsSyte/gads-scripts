@@ -460,8 +460,17 @@ export async function saveTseoTasks(tasks) {
       if (error) console.error('saveTseoTasks error:', error);
     }
   }
-  // Always keep localStorage in sync as fallback
-  localStorage.setItem(TSEO_KEY, JSON.stringify(tasks));
+  // Always keep localStorage in sync as fallback. The cache can blow past
+  // the per-origin quota when tasks carry large copy_paste_fix payloads
+  // (full JSON-LD, meta descriptions, etc.); drop the cache rather than
+  // throwing — Supabase is authoritative.
+  const json = JSON.stringify(tasks);
+  try {
+    localStorage.setItem(TSEO_KEY, json);
+  } catch {
+    try { localStorage.removeItem(TSEO_KEY); } catch {}
+    try { localStorage.setItem(TSEO_KEY, json); } catch {}
+  }
 }
 
 export async function loadTseoTasks() {
@@ -471,8 +480,8 @@ export async function loadTseoTasks() {
       .select('*')
       .order('created_at', { ascending: false });
     if (!error && data?.length > 0) {
-      // Sync to localStorage as cache
-      localStorage.setItem(TSEO_KEY, JSON.stringify(data));
+      // Sync to localStorage as cache (best-effort — may exceed quota).
+      try { localStorage.setItem(TSEO_KEY, JSON.stringify(data)); } catch {}
       return data;
     }
   }
