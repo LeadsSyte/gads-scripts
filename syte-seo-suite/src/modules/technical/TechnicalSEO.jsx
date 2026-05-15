@@ -30,7 +30,22 @@ function loadTasks() {
   }
   try { return JSON.parse(localStorage.getItem(TASKS_KEY) || '[]'); } catch { return []; }
 }
-function saveTasks(t) { localStorage.setItem(TASKS_KEY, JSON.stringify(t)); }
+function saveTasks(t) {
+  // localStorage is only a fallback cache — Supabase is the source of truth.
+  // If we exceed the per-origin quota (typically 5–10 MB), drop the cache
+  // entirely rather than crashing the module. The next reload will refill
+  // from Supabase.
+  const json = JSON.stringify(t);
+  try {
+    localStorage.setItem(TASKS_KEY, json);
+  } catch (e) {
+    try { localStorage.removeItem(TASKS_KEY); } catch {}
+    try { localStorage.removeItem(LEGACY_KEY); } catch {}
+    try { localStorage.setItem(TASKS_KEY, json); } catch {
+      // Still too large — give up silently; Supabase has the data.
+    }
+  }
+}
 
 // Dedupe tasks by (client_id, url, action_summary). Keeps the most
 // recent (highest created_at) row per logical issue and caps OPEN
@@ -63,7 +78,9 @@ function dedupeTasks(list) {
   return [...capped, ...history];
 }
 function loadTeam() { try { return JSON.parse(localStorage.getItem(TEAM_KEY) || '[]'); } catch { return []; } }
-function saveTeam(t) { localStorage.setItem(TEAM_KEY, JSON.stringify(t)); }
+function saveTeam(t) {
+  try { localStorage.setItem(TEAM_KEY, JSON.stringify(t)); } catch {}
+}
 
 const TRIAGE_SYSTEM = `
 You are a senior technical SEO engineer. You receive raw site-audit data (WebCEO audit JSON or Google Search Console data) and must produce a prioritised task list.
