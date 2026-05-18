@@ -7,9 +7,12 @@
  * v2.0 NEW:
  *   - Per-client anomaly detection: today's conv_this_week vs that client's
  *     trailing 14-day baseline (median). Flags both drops AND spikes.
- *   - Orphan-account section: if installed in the Syte MCC, iterates all
- *     sub-accounts, finds any with spend in the last day that DON'T have a
- *     DailyDigest row in the last 7 days = script not installed / not running.
+ *   - Coverage-gap section ("Install script on these N accounts"): if
+ *     installed in the Syte MCC, iterates all sub-accounts with spend in the
+ *     LAST 7 DAYS, lists any that DON'T have a DailyDigest row in the same
+ *     window (= script not installed / not running). Pinned to the top of
+ *     the email with a red border + subject-line flag so it can't be missed.
+ *     Sorted by 7-day spend so highest-priority installs are at the top.
  *
  * v2.1 NEW:
  *   - Recent Activity section: queries change_event per MCC sub-account for
@@ -125,6 +128,12 @@ function main() {
   if (totals.errors > 0) email += '<td style="padding:0 20px 0 0;"><strong style="font-size:24px;color:#c62828;">' + totals.errors + '</strong><br><span style="font-size:12px;color:#666;">Errors</span></td>';
   email += '</tr></table></div>';
 
+  // === COVERAGE GAP: MCC accounts without the script — pinned to the top so
+  // it can't be missed. Only fires in MCC mode and only when there are gaps.
+  if (orphans.mode === 'mcc' && orphans.list.length > 0) {
+    email += _renderOrphansSection(orphans);
+  }
+
   // === ANOMALIES SECTION (drops + spikes vs per-account 14d baseline) ===
   if (anomalies.length > 0) {
     email += _renderAnomaliesSection(anomalies);
@@ -190,12 +199,15 @@ function main() {
 
   email += '</table></div>';
 
-  // === ORPHAN ACCOUNTS SECTION (MCC mode only) ===
-  if (orphans.mode === 'mcc') {
+  // === COVERAGE STATUS FOOTER ===
+  // If we ran in MCC mode AND found nothing, render the green "full coverage"
+  // confirmation here so people can see the check ran. Gap case is rendered
+  // at the top of the email instead.
+  if (orphans.mode === 'mcc' && orphans.list.length === 0) {
     email += _renderOrphansSection(orphans);
   } else if (orphans.mode === 'unsupported') {
     email += '<div style="padding:10px 15px;background:#f8f9fa;color:#888;font-size:11px;border-top:1px solid #eee;">'
-          + 'Orphan-account detection requires running this script at the MCC level (AdsManagerApp not available in current context).'
+          + 'Coverage check requires running this script at the MCC level (AdsManagerApp not available in current context).'
           + '</div>';
   }
 
@@ -232,7 +244,7 @@ function main() {
   var subjectBits = [today, todayRows.length + ' accts', totals.convThis.toFixed(0) + ' conv'];
   var drops = anomalies.filter(function(a) { return a.severity === 'drop'; }).length;
   if (drops > 0) subjectBits.push('⚠ ' + drops + ' drop' + (drops > 1 ? 's' : ''));
-  if (orphans.mode === 'mcc' && orphans.list.length > 0) subjectBits.push(orphans.list.length + ' orphan' + (orphans.list.length > 1 ? 's' : ''));
+  if (orphans.mode === 'mcc' && orphans.list.length > 0) subjectBits.push('⚠ ' + orphans.list.length + ' uninstalled');
   var correlatedDrops = _correlatedDropAccounts(activity, anomalies).length;
   if (correlatedDrops > 0) subjectBits.push('🔥 ' + correlatedDrops + ' correlated');
 
@@ -393,12 +405,15 @@ function _findOrphanAccounts(data, headers) {
     if (acct) installed[String(acct).toLowerCase().trim()] = true;
   }
 
-  // Iterate all sub-accounts with spend yesterday
+  // Iterate all sub-accounts with spend in the last 7 days (broader window
+  // catches accounts that didn't happen to spend yesterday but are still
+  // active and need the script). We pull 7-day stats so each row is
+  // priority-rankable by recent spend, not just one day.
   var orphans = [];
   try {
     var iter = AdsManagerApp.accounts()
       .withCondition("metrics.cost_micros > 0")
-      .forDateRange("YESTERDAY")
+      .forDateRange("LAST_7_DAYS")
       .get();
 
     while (iter.hasNext()) {
@@ -407,13 +422,17 @@ function _findOrphanAccounts(data, headers) {
       if (!name) continue;
       if (installed[name.toLowerCase().trim()]) continue;
 
-      // Pull spend + conversions to give context
-      var stats = account.getStatsFor("YESTERDAY");
+      // 7-day stats for sorting + context, plus yesterday for "is it still active"
+      var stats7 = account.getStatsFor("LAST_7_DAYS");
+      var stats1 = account.getStatsFor("YESTERDAY");
       orphans.push({
         name: name,
         cid: account.getCustomerId(),
-        cost: stats.getCost(),
-        conv: stats.getConversions()
+        cost7: stats7.getCost(),
+        conv7: stats7.getConversions(),
+        cost1: stats1.getCost(),
+        conv1: stats1.getConversions(),
+        activeYesterday: stats1.getCost() > 0
       });
     }
   } catch (e) {
@@ -421,8 +440,8 @@ function _findOrphanAccounts(data, headers) {
     return { mode: 'mcc', list: [], error: e.message };
   }
 
-  // Highest spend first
-  orphans.sort(function(a, b) { return b.cost - a.cost; });
+  // Highest 7-day spend first — these are the priority installs
+  orphans.sort(function(a, b) { return b.cost7 - a.cost7; });
   return { mode: 'mcc', list: orphans };
 }
 
@@ -432,32 +451,46 @@ function _renderOrphansSection(orphans) {
   }
   if (orphans.list.length === 0) {
     return '<div style="padding:10px 15px;background:#e8f5e9;color:#2e7d32;font-size:12px;border-top:1px solid #c8e6c9;">'
-         + '✓ No orphans: every MCC sub-account with spend yesterday is reporting to the dashboard.'
+         + '✓ Full coverage: every active MCC sub-account (last 7 days) is reporting to the dashboard.'
          + '</div>';
   }
 
-  var totalCost = 0;
-  orphans.list.forEach(function(o) { totalCost += o.cost; });
+  var totalCost7 = 0, totalCost1 = 0, activeYesterday = 0;
+  orphans.list.forEach(function(o) {
+    totalCost7 += o.cost7;
+    totalCost1 += o.cost1;
+    if (o.activeYesterday) activeYesterday++;
+  });
 
-  var html = '<div style="padding:15px;background:#fff8e1;border-top:1px solid #ffe082;">';
-  html += '<h3 style="color:#e65100;margin:0 0 6px;">Not in dashboard — script may not be installed (' + orphans.list.length + ' accounts)</h3>';
-  html += '<p style="margin:0 0 10px;font-size:12px;color:#666;">These MCC sub-accounts spent money yesterday but have no DailyDigest entry in the last ' + ORPHAN_LOOKBACK_DAYS + ' days. Total spend yesterday: <strong>' + totalCost.toFixed(0) + '</strong>.</p>';
+  // Prominent red border so it can't be missed — these need action
+  var html = '<div style="padding:15px;background:#fff8e1;border-top:3px solid #e65100;border-bottom:1px solid #ffe082;">';
+  html += '<h2 style="color:#e65100;margin:0 0 6px;font-size:16px;">⚠ Install script on these ' + orphans.list.length + ' MCC account' + (orphans.list.length > 1 ? 's' : '') + '</h2>';
+  html += '<p style="margin:0 0 10px;font-size:13px;color:#5d4037;">';
+  html += 'These sub-accounts have spent money in the last 7 days but have no DailyDigest entry — the optimization script is not installed (or has stopped running). ';
+  html += '<strong>Total spend last 7d: ' + totalCost7.toFixed(0) + '</strong> (' + activeYesterday + ' still spending yesterday).';
+  html += '</p>';
   html += '<table style="width:100%;border-collapse:collapse;font-size:12px;">';
   html += '<tr style="background:#ffecb3;">';
   html += '<th style="padding:6px 8px;text-align:left;">Account</th>';
   html += '<th style="padding:6px 8px;text-align:left;">CID</th>';
+  html += '<th style="padding:6px 8px;text-align:right;">Spend (7d)</th>';
+  html += '<th style="padding:6px 8px;text-align:right;">Conv (7d)</th>';
   html += '<th style="padding:6px 8px;text-align:right;">Spend (yest.)</th>';
-  html += '<th style="padding:6px 8px;text-align:right;">Conv (yest.)</th>';
+  html += '<th style="padding:6px 8px;text-align:center;">Active</th>';
   html += '</tr>';
   orphans.list.forEach(function(o) {
-    html += '<tr style="border-bottom:1px solid #ffe082;">';
+    var rowBg = o.activeYesterday ? '#fff' : '#fafafa';
+    html += '<tr style="background:' + rowBg + ';border-bottom:1px solid #ffe082;">';
     html += '<td style="padding:6px 8px;font-weight:600;">' + o.name + '</td>';
     html += '<td style="padding:6px 8px;font-family:monospace;color:#666;">' + o.cid + '</td>';
-    html += '<td style="padding:6px 8px;text-align:right;">' + o.cost.toFixed(2) + '</td>';
-    html += '<td style="padding:6px 8px;text-align:right;">' + o.conv.toFixed(0) + '</td>';
+    html += '<td style="padding:6px 8px;text-align:right;font-weight:600;">' + o.cost7.toFixed(0) + '</td>';
+    html += '<td style="padding:6px 8px;text-align:right;">' + o.conv7.toFixed(0) + '</td>';
+    html += '<td style="padding:6px 8px;text-align:right;color:#888;">' + o.cost1.toFixed(0) + '</td>';
+    html += '<td style="padding:6px 8px;text-align:center;">' + (o.activeYesterday ? '<span style="color:#c62828;font-weight:600;">●</span>' : '<span style="color:#bbb;">○</span>') + '</td>';
     html += '</tr>';
   });
   html += '</table>';
+  html += '<p style="margin:10px 0 0;font-size:11px;color:#888;">Sorted by 7-day spend (highest priority first). Red dot = still spending yesterday.</p>';
   html += '</div>';
   return html;
 }
