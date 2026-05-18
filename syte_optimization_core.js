@@ -13,7 +13,18 @@
  * When you improve this core, ALL client accounts get the update on their next scheduled run.
  *
 * Author: Syte Digital Agency (syte.co.za)
- * Version: 4.7.0
+ * Version: 4.8.0
+ *
+ * CHANGELOG v4.8.0 — RECURSIVE LEARNING IN PER-RUN AI PROMPT:
+ * - NEW: _loadPriorLessons() reads outcome-scored ChangeLog rows (last 90 days, this
+ *   account) and builds a compact "lessons" block listing INCORRECT prior negations
+ *   (and a sample of CORRECT ones for balance).
+ * - The block is injected into the _smartSearchTermReview() Haiku prompt on every
+ *   run, so each pass inherits what the script got wrong last time. Bounded at
+ *   30 incorrect + 15 correct rows to keep prompt size sane. Cached per run.
+ * - Closes the loop: outcomes were already scored 14 days post-change, and the
+ *   Sunday review already emailed recommendations — now those scored outcomes
+ *   actively influence the next decision, not just the next email.
  *
  * CHANGELOG v4.7.0 — STRICTER AUTOPILOT DEFAULTS + DETAILED EMAIL LISTINGS:
  * - BREAKING: Default tier for unlisted clients changed from 'tier_1_only' to 'approval_required'.
@@ -777,7 +788,8 @@ function _smartSearchTermReview(results) {
       '- EARLY_DETECTION: Low spend, clicked, no conversions yet\n' +
       '- INFORMATIONAL_PATTERN: Matches informational regex (how to, tutorial, etc.)\n' +
       '- CLIENT_IRRELEVANT_LIST: Contains a term the client flagged as irrelevant\n' +
-      'These flags are HINTS. Use them alongside your judgment.\n\n' +
+      'These flags are HINTS. Use them alongside your judgment.\n' +
+      _loadPriorLessons() + '\n' +
 
       'Search terms:\n' + termList;
 
@@ -1226,6 +1238,92 @@ function _backfillOutcomes() {
 
   } catch (e) {
     _log('ERROR', 'backfillOutcomes: ' + e.message);
+  }
+}
+
+
+// ============================================
+// PRIOR-OUTCOME LESSONS (recursive learning input for per-run AI prompts)
+// ============================================
+
+var _priorLessonsCache = null;
+
+/**
+ * Reads the ChangeLog for this account, finds prior negation decisions that
+ * were outcome-scored, and returns a compact "lessons" block to prepend to
+ * the per-run AI negation prompt. INCORRECT rows are the ones we most want
+ * the AI to learn from — but a small sample of CORRECT rows is included
+ * so it doesn't over-correct and start refusing safe negations.
+ *
+ * Bounded so prompt size stays reasonable: 30 incorrect + 15 correct max.
+ * Cached per run.
+ */
+function _loadPriorLessons() {
+  if (_priorLessonsCache !== null) return _priorLessonsCache;
+  _priorLessonsCache = '';
+
+  var sheet = _getChangeLogSheet();
+  if (!sheet) return '';
+
+  try {
+    var data = sheet.getDataRange().getValues();
+    if (data.length < 2) return '';
+
+    var headers = data[0];
+    var col = {};
+    for (var h = 0; h < headers.length; h++) col[headers[h]] = h;
+    if (col['outcome'] === undefined || col['account_name'] === undefined) return '';
+
+    var accountName = AdsApp.currentAccount().getName();
+    var cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - 90);
+
+    var incorrect = [];
+    var correct = [];
+
+    for (var r = 1; r < data.length; r++) {
+      var row = data[r];
+      if (row[col['account_name']] !== accountName) continue;
+      var ts = new Date(row[col['timestamp']]);
+      if (isNaN(ts.getTime()) || ts < cutoff) continue;
+
+      var fn = String(row[col['function_name']] || '').toLowerCase();
+      // Only lessons relevant to negation decisions
+      if (fn.indexOf('smart') === -1 && fn.indexOf('negat') === -1 && fn.indexOf('ngram') === -1) continue;
+
+      var outcome = String(row[col['outcome']] || '').toUpperCase();
+      var item = {
+        entity: row[col['entity']],
+        reason: row[col['reason']],
+        notes: row[col['outcome_notes']]
+      };
+      if (outcome === 'INCORRECT') incorrect.push(item);
+      else if (outcome === 'CORRECT') correct.push(item);
+    }
+
+    if (incorrect.length === 0 && correct.length === 0) return '';
+
+    var s = '\nLESSONS FROM PRIOR OUTCOMES (this account, last 90 days):\n';
+    if (incorrect.length > 0) {
+      s += 'Negations you got WRONG before (similar patterns now need extra caution — prefer "review" over "negate"):\n';
+      incorrect.slice(0, 30).forEach(function(it) {
+        s += '- "' + it.entity + '" — negated because: ' + (it.reason || '?') + '. Result: ' + (it.notes || 'incorrect') + '\n';
+      });
+    }
+    if (correct.length > 0) {
+      s += 'Negations that were CORRECT (these patterns are safe):\n';
+      correct.slice(0, 15).forEach(function(it) {
+        s += '- "' + it.entity + '" — ' + (it.notes || 'confirmed correct') + '\n';
+      });
+    }
+    s += 'Use these as priors, not as hard rules. Apply the same judgment to new terms.\n';
+
+    _priorLessonsCache = s;
+    _log('INFO', 'Prior lessons loaded: ' + incorrect.length + ' incorrect, ' + correct.length + ' correct');
+    return s;
+  } catch (e) {
+    _log('WARN', 'loadPriorLessons: ' + e.message);
+    return '';
   }
 }
 
