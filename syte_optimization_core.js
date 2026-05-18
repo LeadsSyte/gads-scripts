@@ -13,7 +13,18 @@
  * When you improve this core, ALL client accounts get the update on their next scheduled run.
  *
 * Author: Syte Digital Agency (syte.co.za)
- * Version: 4.8.0
+ * Version: 4.9.0
+ *
+ * CHANGELOG v4.9.0 — LEAD ANOMALY SELF-THROTTLE:
+ * - NEW: _loadLeadAnomalyContext() reads this account's last 14 days of
+ *   conv_this_week from DailyDigest, compares to today's value. If today is
+ *   >=30% below the median (matching daily_digest.js thresholds), prepends a
+ *   "LEAD ANOMALY ALERT" block to the smart-negation AI prompt instructing
+ *   it to default to "review" over "negate" until the trend recovers.
+ * - Closes the end-to-end loop: outcomes scored 14d post-change -> daily
+ *   anomaly detection in email -> next per-run AI call self-throttles while
+ *   the anomaly is unresolved. The script now backs off automatically when
+ *   leads tank, instead of compounding the problem with more negations.
  *
  * CHANGELOG v4.8.0 — RECURSIVE LEARNING IN PER-RUN AI PROMPT:
  * - NEW: _loadPriorLessons() reads outcome-scored ChangeLog rows (last 90 days, this
@@ -789,7 +800,8 @@ function _smartSearchTermReview(results) {
       '- INFORMATIONAL_PATTERN: Matches informational regex (how to, tutorial, etc.)\n' +
       '- CLIENT_IRRELEVANT_LIST: Contains a term the client flagged as irrelevant\n' +
       'These flags are HINTS. Use them alongside your judgment.\n' +
-      _loadPriorLessons() + '\n' +
+      _loadPriorLessons() +
+      _loadLeadAnomalyContext(results.conversionHealth ? results.conversionHealth.thisWeek : null) + '\n' +
 
       'Search terms:\n' + termList;
 
@@ -1323,6 +1335,86 @@ function _loadPriorLessons() {
     return s;
   } catch (e) {
     _log('WARN', 'loadPriorLessons: ' + e.message);
+    return '';
+  }
+}
+
+
+/**
+ * Reads DailyDigest for this account's trailing 14 days of conv_this_week,
+ * compares to today's value (from results.conversionHealth.thisWeek), and
+ * returns a CAUTION block for the AI prompt if today is anomalously low.
+ *
+ * Why this matters for recursive learning: a fresh lead drop is often the
+ * downstream effect of an earlier negation that was too aggressive. Telling
+ * the AI "leads are anomalously low right now" pushes it toward "review"
+ * over "negate" until the trend recovers — i.e. self-throttle while the
+ * anomaly is unresolved.
+ *
+ * Mirrors the thresholds in daily_digest.js so the email and the prompt
+ * agree on what counts as an anomaly.
+ */
+var _LEAD_ANOMALY_DROP_PCT = 30;
+var _LEAD_ANOMALY_WINDOW_DAYS = 14;
+var _LEAD_ANOMALY_MIN_SAMPLES = 3;
+
+function _loadLeadAnomalyContext(thisWeekConv) {
+  if (thisWeekConv === undefined || thisWeekConv === null) return '';
+
+  if (!CONFIG.MASTER_SHEET_ID) return '';
+
+  try {
+    var ss = SpreadsheetApp.openById(CONFIG.MASTER_SHEET_ID);
+    var sheet = ss.getSheetByName('DailyDigest');
+    if (!sheet) return '';
+    var data = sheet.getDataRange().getValues();
+    if (data.length < 2) return '';
+
+    var headers = data[0];
+    var col = {};
+    for (var h = 0; h < headers.length; h++) col[headers[h]] = h;
+    if (col['account'] === undefined || col['conv_this_week'] === undefined) return '';
+
+    var accountName = CONFIG.CLIENT_NAME || AdsApp.currentAccount().getName();
+    var todayStr = Utilities.formatDate(new Date(), AdsApp.currentAccount().getTimeZone(), 'yyyy-MM-dd');
+    var cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - _LEAD_ANOMALY_WINDOW_DAYS);
+
+    var history = [];
+    for (var r = 1; r < data.length; r++) {
+      var dateStr = String(data[r][0]);
+      if (dateStr === todayStr) continue;
+      var m = dateStr.match(/^(\d{4})-(\d{2})-(\d{2})/);
+      if (!m) continue;
+      var rowDate = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+      if (rowDate < cutoff) continue;
+      if (String(data[r][col['account']]) !== accountName) continue;
+      var conv = Number(data[r][col['conv_this_week']]);
+      if (!isNaN(conv)) history.push(conv);
+    }
+
+    if (history.length < _LEAD_ANOMALY_MIN_SAMPLES) return '';
+
+    history.sort(function(a, b) { return a - b; });
+    var mid = Math.floor(history.length / 2);
+    var median = history.length % 2 === 0 ? (history[mid - 1] + history[mid]) / 2 : history[mid];
+    if (median <= 0) return '';
+
+    var deltaPct = ((thisWeekConv - median) / median) * 100;
+    if (deltaPct > -_LEAD_ANOMALY_DROP_PCT) return '';
+
+    var msg = '\nLEAD ANOMALY ALERT:\n' +
+              'This account\'s conversions this week (' + thisWeekConv.toFixed(0) + ') are ' +
+              Math.abs(deltaPct).toFixed(0) + '% BELOW the ' + _LEAD_ANOMALY_WINDOW_DAYS + '-day median of ' + median.toFixed(0) + '.\n' +
+              'A drop this size often means a recent negation is filtering converting traffic. Until the lead trend recovers:\n' +
+              '- Default to "review" over "negate" when uncertain.\n' +
+              '- Only negate terms that are unambiguously irrelevant (jobs, DIY, academic, wrong product entirely).\n' +
+              '- Do NOT negate terms that share words with active keywords, even if spend looks wasteful — wait for more data.\n';
+
+    _log('INFO', 'Lead anomaly: thisWeek=' + thisWeekConv.toFixed(0) + ' vs median=' + median.toFixed(0) + ' (' + deltaPct.toFixed(0) + '%) — caution injected into AI prompt');
+    return msg;
+  } catch (e) {
+    _log('WARN', 'loadLeadAnomalyContext: ' + e.message);
     return '';
   }
 }
