@@ -11,6 +11,13 @@
  *     sub-accounts, finds any with spend in the last day that DON'T have a
  *     DailyDigest row in the last 7 days = script not installed / not running.
  *
+ * v2.1 NEW:
+ *   - Recent Activity section: queries change_event per MCC sub-account for
+ *     the last 7 days, buckets changes by HUMAN / SCRIPT / GOOGLE_AUTO.
+ *     Cross-references with the anomalies list — any account that is both in
+ *     DROPS and had human bid/budget touches gets a high-priority correlation
+ *     callout ("lead drop coincided with manual changes — start here").
+ *
  * This is a STANDALONE Google Ads Script — not loaded via the core.
  * Install it at the MCC level (not a sub-account) so the orphan section works.
  * Without MCC access the orphan section is skipped gracefully.
@@ -37,6 +44,12 @@ var BASELINE_MIN_SAMPLES = 3; // Need at least 3 prior data points to call anoma
 // Orphan detection: an account is an "orphan" if it spent in the last day
 // but has no DailyDigest row in the last N days.
 var ORPHAN_LOOKBACK_DAYS = 7;
+
+// Recent Activity (change_event scrape): how many days to look back.
+// Max 30; we use 7 to align with the "last week" framing.
+var ACTIVITY_LOOKBACK_DAYS = 7;
+// Skip the section entirely if every account is silent (no signal in showing zeros)
+var ACTIVITY_HIDE_IF_ALL_ZERO = true;
 
 function main() {
   var ss = SpreadsheetApp.openById(SHEET_ID);
@@ -71,6 +84,9 @@ function main() {
 
   // === Find orphan accounts (MCC mode only) ===
   var orphans = _findOrphanAccounts(data, headers);
+
+  // === Collect change_event activity per account (MCC mode only) ===
+  var activity = _collectChangeActivity();
 
   // Build email
   var email = '<html><body style="font-family:Arial,sans-serif;max-width:900px;margin:0 auto;color:#333;">';
@@ -183,6 +199,12 @@ function main() {
           + '</div>';
   }
 
+  // === RECENT ACTIVITY SECTION + DROP-CORRELATION CALLOUT (MCC mode only) ===
+  if (activity.mode === 'mcc') {
+    email += _renderDropCorrelation(activity, anomalies);
+    email += _renderActivitySection(activity);
+  }
+
   // Accounts needing attention (kept — different signal: errors / review backlog)
   var attention = todayRows.filter(function(r) {
     return (Number(r.errors) || 0) > 0 ||
@@ -211,6 +233,8 @@ function main() {
   var drops = anomalies.filter(function(a) { return a.severity === 'drop'; }).length;
   if (drops > 0) subjectBits.push('⚠ ' + drops + ' drop' + (drops > 1 ? 's' : ''));
   if (orphans.mode === 'mcc' && orphans.list.length > 0) subjectBits.push(orphans.list.length + ' orphan' + (orphans.list.length > 1 ? 's' : ''));
+  var correlatedDrops = _correlatedDropAccounts(activity, anomalies).length;
+  if (correlatedDrops > 0) subjectBits.push('🔥 ' + correlatedDrops + ' correlated');
 
   MailApp.sendEmail({
     to: EMAIL_TO,
@@ -456,4 +480,207 @@ function _median(arr) {
   var sorted = arr.slice().sort(function(a, b) { return a - b; });
   var mid = Math.floor(sorted.length / 2);
   return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
+}
+
+
+// ============================================
+// CHANGE_EVENT SCRAPER (MCC mode) — last 7 days, bucketed by client_type
+// ============================================
+
+/**
+ * For each MCC sub-account that spent yesterday, query the change_event
+ * resource for the last ACTIVITY_LOOKBACK_DAYS and bucket every event
+ * into HUMAN / SCRIPT / GOOGLE_AUTO based on client_type.
+ *
+ * High-signal counters track changes that directly affect performance:
+ *   bidBudgetTouches = human-driven changes to CAMPAIGN_BUDGET, BIDDING_STRATEGY,
+ *   CAMPAIGN status, or AD_GROUP_CRITERION (keyword bids/status). These are
+ *   the things most likely to explain a sudden lead drop.
+ *
+ * Returns { mode: 'mcc' | 'unsupported', byAccount: { name: bucket } }.
+ */
+function _collectChangeActivity() {
+  if (typeof AdsManagerApp === 'undefined') {
+    return { mode: 'unsupported', byAccount: {} };
+  }
+
+  var byAccount = {};
+
+  try {
+    var iter = AdsManagerApp.accounts()
+      .withCondition("metrics.cost_micros > 0")
+      .forDateRange("LAST_" + ACTIVITY_LOOKBACK_DAYS + "_DAYS")
+      .get();
+
+    while (iter.hasNext()) {
+      var account = iter.next();
+      var name = account.getName();
+      if (!name) continue;
+
+      AdsManagerApp.select(account);
+      var bucket = {
+        human: 0, script: 0, googleAuto: 0, other: 0,
+        bidBudgetTouches: 0,
+        lastHuman: null,   // { user, time }
+        lastGoogleAuto: null
+      };
+
+      try {
+        var q = "SELECT change_event.change_date_time, change_event.user_email, " +
+                "change_event.client_type, change_event.change_resource_type, " +
+                "change_event.resource_change_operation " +
+                "FROM change_event " +
+                "WHERE change_event.change_date_time DURING LAST_" + ACTIVITY_LOOKBACK_DAYS + "_DAYS " +
+                "ORDER BY change_event.change_date_time DESC LIMIT 10000";
+
+        var rows = AdsApp.search(q);
+        while (rows.hasNext()) {
+          var row = rows.next();
+          var ev = row.changeEvent || {};
+          var clientType = String(ev.clientType || 'UNKNOWN').toUpperCase();
+          var resType = String(ev.changeResourceType || '').toUpperCase();
+          var when = ev.changeDateTime || '';
+          var user = ev.userEmail || '';
+
+          var isHuman = clientType === 'GOOGLE_ADS_WEB_CLIENT' ||
+                        clientType === 'GOOGLE_ADS_EDITOR' ||
+                        clientType === 'GOOGLE_ADS_MOBILE_APP';
+          var isScript = clientType === 'GOOGLE_ADS_SCRIPTS' ||
+                         clientType === 'GOOGLE_ADS_API' ||
+                         clientType === 'GOOGLE_ADS_BULK_UPLOAD';
+          var isGoogleAuto = clientType === 'GOOGLE_ADS_AUTOMATED_RULE' ||
+                             clientType === 'GOOGLE_ADS_RECOMMENDATIONS';
+
+          if (isHuman) {
+            bucket.human++;
+            if (!bucket.lastHuman) bucket.lastHuman = { user: user, time: when };
+            // High-signal: human touched bids / budgets / status
+            if (resType === 'CAMPAIGN_BUDGET' || resType === 'BIDDING_STRATEGY' ||
+                resType === 'CAMPAIGN' || resType === 'AD_GROUP_CRITERION' ||
+                resType === 'AD_GROUP' || resType === 'AD_GROUP_AD') {
+              bucket.bidBudgetTouches++;
+            }
+          } else if (isScript) {
+            bucket.script++;
+          } else if (isGoogleAuto) {
+            bucket.googleAuto++;
+            if (!bucket.lastGoogleAuto) bucket.lastGoogleAuto = { time: when };
+          } else {
+            bucket.other++;
+          }
+        }
+      } catch (innerE) {
+        Logger.log('change_event query for "' + name + '": ' + innerE.message);
+        bucket.error = innerE.message;
+      }
+
+      byAccount[name] = bucket;
+    }
+  } catch (e) {
+    Logger.log('Activity collection error: ' + e.message);
+    return { mode: 'mcc', byAccount: byAccount, error: e.message };
+  }
+
+  return { mode: 'mcc', byAccount: byAccount };
+}
+
+
+/**
+ * Cross-reference anomalies with activity. Returns the list of accounts
+ * that have BOTH a DROP and human bid/budget touches in the last week —
+ * i.e. the ones a human should look at first.
+ */
+function _correlatedDropAccounts(activity, anomalies) {
+  if (!activity || activity.mode !== 'mcc') return [];
+  var out = [];
+  for (var i = 0; i < anomalies.length; i++) {
+    var a = anomalies[i];
+    if (a.severity !== 'drop') continue;
+    var bucket = activity.byAccount[a.account];
+    if (bucket && bucket.bidBudgetTouches > 0) {
+      out.push({ anomaly: a, bucket: bucket });
+    }
+  }
+  return out;
+}
+
+
+function _renderDropCorrelation(activity, anomalies) {
+  var correlated = _correlatedDropAccounts(activity, anomalies);
+  if (correlated.length === 0) return '';
+
+  var html = '<div style="padding:15px;background:#fff5f5;border-top:3px solid #c62828;border-bottom:1px solid #f0c4c4;">';
+  html += '<h3 style="color:#c62828;margin:0 0 6px;">🔥 Lead drop coincides with manual changes (' + correlated.length + ')</h3>';
+  html += '<p style="margin:0 0 10px;font-size:12px;color:#666;">These accounts dropped vs their 14-day median AND had human bid/budget/status changes in the last ' + ACTIVITY_LOOKBACK_DAYS + ' days. Start your investigation here.</p>';
+  html += '<ul style="font-size:13px;margin:0;padding:0 0 0 20px;">';
+  correlated.forEach(function(c) {
+    var a = c.anomaly, b = c.bucket;
+    html += '<li><strong>' + a.account + '</strong> — '
+         + a.today.toFixed(0) + ' conv vs ' + a.baseline.toFixed(0) + ' median '
+         + '<span style="color:#c62828;font-weight:600;">(' + a.deltaPct.toFixed(0) + '%)</span>, '
+         + b.bidBudgetTouches + ' manual bid/budget/status change' + (b.bidBudgetTouches > 1 ? 's' : '')
+         + (b.lastHuman && b.lastHuman.user ? ' (last: ' + b.lastHuman.user + ')' : '')
+         + '</li>';
+  });
+  html += '</ul></div>';
+  return html;
+}
+
+
+function _renderActivitySection(activity) {
+  if (activity.mode !== 'mcc') return '';
+
+  var entries = [];
+  var allZero = true;
+  for (var name in activity.byAccount) {
+    var b = activity.byAccount[name];
+    var total = b.human + b.script + b.googleAuto + b.other;
+    if (total > 0) allZero = false;
+    entries.push({ name: name, b: b, total: total });
+  }
+
+  if (ACTIVITY_HIDE_IF_ALL_ZERO && allZero) return '';
+
+  // Most active first; within that prioritise human-heavy accounts
+  entries.sort(function(x, y) {
+    if (y.b.human !== x.b.human) return y.b.human - x.b.human;
+    return y.total - x.total;
+  });
+
+  var html = '<div style="padding:15px;background:#fafafa;border-top:1px solid #eee;">';
+  html += '<h3 style="margin:0 0 6px;color:#1a1a2e;font-size:14px;">Recent Activity (last ' + ACTIVITY_LOOKBACK_DAYS + ' days, all MCC accounts with spend)</h3>';
+  html += '<p style="margin:0 0 10px;font-size:11px;color:#666;">Changes per account, bucketed by source. <strong style="color:#c62828;">Human</strong> = UI/Editor/mobile app. <strong style="color:#2d6cdf;">Script</strong> = Scripts/API/bulk upload. <strong style="color:#e65100;">Google Auto</strong> = auto-applied recommendations + automated rules.</p>';
+
+  html += '<table style="width:100%;border-collapse:collapse;font-size:12px;">';
+  html += '<tr style="background:#eceff1;">';
+  html += '<th style="padding:6px 8px;text-align:left;">Account</th>';
+  html += '<th style="padding:6px 8px;text-align:right;color:#c62828;">Human</th>';
+  html += '<th style="padding:6px 8px;text-align:right;">Bid/Budget</th>';
+  html += '<th style="padding:6px 8px;text-align:right;color:#2d6cdf;">Script</th>';
+  html += '<th style="padding:6px 8px;text-align:right;color:#e65100;">Google Auto</th>';
+  html += '<th style="padding:6px 8px;text-align:left;">Last human change</th>';
+  html += '</tr>';
+
+  for (var i = 0; i < entries.length; i++) {
+    var e = entries[i];
+    if (e.total === 0) continue;
+    var rowBg = e.b.bidBudgetTouches > 0 ? '#fff5f5' : (i % 2 === 0 ? '#fff' : '#fafbfc');
+    html += '<tr style="background:' + rowBg + ';border-bottom:1px solid #eee;">';
+    html += '<td style="padding:6px 8px;font-weight:600;">' + e.name + '</td>';
+    html += '<td style="padding:6px 8px;text-align:right;font-weight:' + (e.b.human > 0 ? '600' : 'normal') + ';">' + e.b.human + '</td>';
+    html += '<td style="padding:6px 8px;text-align:right;color:' + (e.b.bidBudgetTouches > 0 ? '#c62828' : '#999') + ';font-weight:' + (e.b.bidBudgetTouches > 0 ? '600' : 'normal') + ';">' + e.b.bidBudgetTouches + '</td>';
+    html += '<td style="padding:6px 8px;text-align:right;color:#666;">' + e.b.script + '</td>';
+    html += '<td style="padding:6px 8px;text-align:right;color:' + (e.b.googleAuto > 0 ? '#e65100' : '#999') + ';font-weight:' + (e.b.googleAuto > 0 ? '600' : 'normal') + ';">' + e.b.googleAuto + '</td>';
+    var lh = e.b.lastHuman;
+    html += '<td style="padding:6px 8px;font-size:11px;color:#666;">' + (lh ? (lh.user || 'unknown') + ' · ' + String(lh.time).substring(0, 16) : '—') + '</td>';
+    html += '</tr>';
+  }
+  html += '</table>';
+
+  if (activity.error) {
+    html += '<p style="margin:10px 0 0;font-size:11px;color:#c62828;">⚠ Partial data: ' + activity.error + '</p>';
+  }
+
+  html += '</div>';
+  return html;
 }
