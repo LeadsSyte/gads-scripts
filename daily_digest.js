@@ -197,6 +197,16 @@ function _runDigest() {
   var anomalyByAccount = {};
   for (var aii = 0; aii < anomalies.length; aii++) anomalyByAccount[String(anomalies[aii].account).toLowerCase().trim()] = anomalies[aii];
 
+  // Has activity for any account? Only show the Changes column if so —
+  // pointless dashes everywhere otherwise.
+  var anyActivity = false;
+  if (activity.mode === 'mcc') {
+    for (var ack in activity.byAccount) {
+      var ab = activity.byAccount[ack];
+      if (ab && (ab.human + ab.script + ab.googleAuto + ab.other) > 0) { anyActivity = true; break; }
+    }
+  }
+
   email += '<div style="padding:15px;"><table style="width:100%;border-collapse:collapse;font-size:12px;">';
   email += '<tr style="background:#e3f2fd;">';
   email += '<th style="padding:8px;text-align:left;">Account</th>';
@@ -204,6 +214,7 @@ function _runDigest() {
   email += '<th style="padding:8px;text-align:right;">Conv 7d</th>';
   email += '<th style="padding:8px;text-align:right;">vs Prev 7d</th>';
   if (mccStats.mode === 'mcc') email += '<th style="padding:8px;text-align:right;">Spend 7d</th>';
+  if (anyActivity) email += '<th style="padding:8px;text-align:right;" title="Changes in the last ' + ACTIVITY_LOOKBACK_DAYS + ' days (human / script / google-auto)">Changes 7d</th>';
   email += '<th style="padding:8px;text-align:right;">vs Baseline</th>';
   email += '<th style="padding:8px;text-align:right;">AI Neg</th>';
   email += '<th style="padding:8px;text-align:right;">Review</th>';
@@ -256,6 +267,24 @@ function _runDigest() {
     email += '<td style="padding:6px 8px;text-align:right;">' + (acc.convThis || 0).toFixed(0) + '</td>';
     email += '<td style="padding:6px 8px;text-align:right;">' + trendCell + '</td>';
     if (mccStats.mode === 'mcc') email += '<td style="padding:6px 8px;text-align:right;color:#666;">' + (acc.costThis || 0).toFixed(0) + '</td>';
+    if (anyActivity) {
+      var bucket = activity.byAccount[key] || null;
+      var changesCell;
+      if (!bucket || (bucket.human + bucket.script + bucket.googleAuto + bucket.other) === 0) {
+        changesCell = '<span style="color:#bbb;">—</span>';
+      } else {
+        // Compact display: H/S/A where H is bold-red if there were bid/budget touches
+        var humanColor = bucket.bidBudgetTouches > 0 ? '#c62828' : '#333';
+        var humanWeight = bucket.bidBudgetTouches > 0 ? '600' : 'normal';
+        changesCell =
+            '<span style="color:' + humanColor + ';font-weight:' + humanWeight + ';" title="human changes (UI/Editor)">' + bucket.human + 'h</span>'
+          + '<span style="color:#999;">/</span>'
+          + '<span style="color:#2d6cdf;" title="script + API + bulk upload">' + bucket.script + 's</span>'
+          + '<span style="color:#999;">/</span>'
+          + '<span style="color:#e65100;" title="Google auto-applied recs + automated rules">' + bucket.googleAuto + 'a</span>';
+      }
+      email += '<td style="padding:6px 8px;text-align:right;font-size:11px;">' + changesCell + '</td>';
+    }
     email += '<td style="padding:6px 8px;text-align:right;">' + baselineCell + '</td>';
     email += '<td style="padding:6px 8px;text-align:right;">' + (d ? (Number(d.ai_negated) || 0) : '<span style="color:#bbb;">—</span>') + '</td>';
     email += '<td style="padding:6px 8px;text-align:right;color:#e65100;font-weight:' + (d && (Number(d.ai_review) || 0) > 0 ? '600' : '400') + ';">' + (d ? (Number(d.ai_review) || 0) : '<span style="color:#bbb;">—</span>') + '</td>';
