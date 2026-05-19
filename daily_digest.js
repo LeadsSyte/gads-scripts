@@ -55,6 +55,7 @@ var ACTIVITY_LOOKBACK_DAYS = 7;
 var ACTIVITY_HIDE_IF_ALL_ZERO = true;
 
 function main() {
+  Logger.log('=== DAILY DIGEST v3 (with quota logging) — code is loaded ===');
   try {
     _runDigest();
   } catch (err) {
