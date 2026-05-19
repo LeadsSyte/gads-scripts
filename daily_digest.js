@@ -53,6 +53,13 @@ var ORPHAN_LOOKBACK_DAYS = 7;
 var ACTIVITY_LOOKBACK_DAYS = 7;
 // Skip the section entirely if every account is silent (no signal in showing zeros)
 var ACTIVITY_HIDE_IF_ALL_ZERO = true;
+// change_event is the slowest part of the digest (one AdsApp.search per account
+// plus an account-context switch). On large MCCs it can push past Google's
+// 30-min execution limit. Modes:
+//   'drops-only' (default) — only query accounts flagged as lead-drop anomalies. Fast.
+//   'all'                  — query every spending account. Slow.
+//   'off'                  — skip the activity scrape entirely.
+var ACTIVITY_SCOPE = 'drops-only';
 
 function main() {
   Logger.log('=== DAILY DIGEST v3 (with quota logging) — code is loaded ===');
@@ -115,12 +122,38 @@ function _runDigest() {
     }
   }
 
-  // Pull stats for every MCC sub-account that spent in the last 14 days.
-  // Returns { mode: 'mcc'|'unsupported', byAccount: { normName: stats } }.
-  var mccStats = _collectMccAccountStats();
+  // Compute anomalies BEFORE the MCC pass so we can pass drop accounts as
+  // the change_event filter (avoids per-account context switch + GAQL query
+  // for accounts we don't need activity data on).
+  var todayRowsArr = [];
+  for (var k in digestByAccount) todayRowsArr.push(digestByAccount[k]);
+  var anomaliesPre = (todayRowsArr.length > 0 && headers.length > 0)
+    ? _detectAnomalies(todayRowsArr, data, headers, today)
+    : [];
 
-  // Merge MCC stats + sheet rows into one list. Every spending account
-  // appears; accounts running the optimization script also carry digest data.
+  var activityFilter = null;
+  if (ACTIVITY_SCOPE === 'drops-only') {
+    activityFilter = {};
+    for (var afi = 0; afi < anomaliesPre.length; afi++) {
+      if (anomaliesPre[afi].severity === 'drop') {
+        activityFilter[String(anomaliesPre[afi].account).toLowerCase().trim()] = true;
+      }
+    }
+  } else if (ACTIVITY_SCOPE === 'off') {
+    activityFilter = {}; // empty = scrape nothing
+  }
+  // 'all' => activityFilter stays null = scrape every account
+
+  // Single MCC pass: stats + (optional) change_event scrape. This used to be
+  // two separate AdsManagerApp.accounts() iterations; merging them halves
+  // the per-account iterator overhead.
+  Logger.log('Starting MCC scan... (activity scope: ' + ACTIVITY_SCOPE + ')');
+  var mccData = _collectMccData(activityFilter);
+  var mccStats = { mode: mccData.mode, byAccount: mccData.byAccount, error: mccData.error };
+  var activity = mccData.activity;
+  Logger.log('MCC scan complete: ' + Object.keys(mccData.byAccount).length + ' accounts with stats, '
+           + Object.keys(activity.byAccount).length + ' with activity data');
+
   var accountList = _buildUnifiedAccountList(mccStats, digestByAccount);
 
   if (accountList.length === 0) {
@@ -135,15 +168,7 @@ function _runDigest() {
     return;
   }
 
-  // Anomalies still come from the sheet — needs daily history per account.
-  // Accounts without sheet history just won't have an anomaly entry.
-  var todayRowsArr = [];
-  for (var k in digestByAccount) todayRowsArr.push(digestByAccount[k]);
-  var anomalies = (todayRowsArr.length > 0 && headers.length > 0)
-    ? _detectAnomalies(todayRowsArr, data, headers, today)
-    : [];
-
-  var activity = _collectChangeActivity();
+  var anomalies = anomaliesPre;
 
   // === Coverage counts ===
   var withScript = 0, withoutScript = 0;
@@ -500,19 +525,33 @@ function _renderMtdSummary(accountList) {
 }
 
 
-function _collectMccAccountStats() {
+/**
+ * Single-pass MCC scan: per spending account, collects stats (LAST_7_DAYS,
+ * LAST_14_DAYS, MTD, prev-MTD) and — if the account matches activityFilter —
+ * also scrapes change_event activity. Returns stats and activity in one
+ * object so we only iterate AdsManagerApp.accounts() once.
+ *
+ * activityFilter:
+ *   null         => scrape change_event for every spending account
+ *   {} (empty)   => scrape nothing
+ *   { name: 1 }  => scrape only listed accounts (lowercase, trimmed)
+ *
+ * Returns { mode, byAccount, activity: { mode, byAccount } } where activity
+ * is shaped the same as the old _collectChangeActivity for downstream
+ * compatibility.
+ */
+function _collectMccData(activityFilter) {
   if (typeof AdsManagerApp === 'undefined') {
-    return { mode: 'unsupported', byAccount: {} };
+    return { mode: 'unsupported', byAccount: {}, activity: { mode: 'unsupported', byAccount: {} } };
   }
 
   // Compute the MTD and "previous month, same period" date ranges once,
-  // anchored to the local TIMEZONE so accounts always compare on calendar
-  // months as the user reads them. Format: yyyyMMdd (what getStatsFor accepts).
+  // anchored to TIMEZONE so accounts always compare on the calendar months
+  // the user reads. Format: yyyyMMdd (what getStatsFor accepts).
   var tzToday = Utilities.formatDate(new Date(), TIMEZONE, 'yyyy-MM-dd').split('-');
   var Y = Number(tzToday[0]), M = Number(tzToday[1]), D = Number(tzToday[2]);
   var pY = M === 1 ? Y - 1 : Y;
   var pM = M === 1 ? 12 : M - 1;
-  // Days in previous month (handles Feb / leap years)
   var daysInPrev = new Date(pY, pM, 0).getDate();
   var pD = Math.min(D, daysInPrev);
   var pad = function(n) { return n < 10 ? '0' + n : '' + n; };
@@ -522,22 +561,32 @@ function _collectMccAccountStats() {
   var prevMtdEnd = '' + pY + pad(pM) + pad(pD);
 
   var byAccount = {};
+  var activityByAccount = {};
+  var processed = 0, withSpend = 0, withActivity = 0;
+
   try {
     var iter = AdsManagerApp.accounts().get();
     while (iter.hasNext()) {
       var account = iter.next();
+      processed++;
+      if (processed % 25 === 0) {
+        Logger.log('MCC scan progress: ' + processed + ' iterated, ' + withSpend + ' spending, ' + withActivity + ' activity scraped');
+      }
       var name = account.getName();
       if (!name) continue;
 
       var s14 = account.getStatsFor('LAST_14_DAYS');
       if (s14.getCost() <= 0) continue;
+      withSpend++;
+
       var s7 = account.getStatsFor('LAST_7_DAYS');
       var sMtd = account.getStatsFor(mtdStart, mtdEnd);
       var sPrevMtd = account.getStatsFor(prevMtdStart, prevMtdEnd);
 
       var cost7 = s7.getCost();
       var conv7 = s7.getConversions();
-      byAccount[name.toLowerCase().trim()] = {
+      var key = name.toLowerCase().trim();
+      byAccount[key] = {
         name: name,
         cid: account.getCustomerId(),
         costThis: cost7,
@@ -551,13 +600,84 @@ function _collectMccAccountStats() {
         costPrevMtd: sPrevMtd.getCost(),
         convPrevMtd: sPrevMtd.getConversions()
       };
+
+      // Activity scrape — only if this account is in scope. This is the
+      // expensive part (account-context switch + GAQL query), so we skip
+      // it aggressively.
+      var scrapeActivity = (activityFilter === null) || (activityFilter[key] === true);
+      if (scrapeActivity) {
+        AdsManagerApp.select(account);
+        activityByAccount[key] = _scrapeChangeEvents();
+        withActivity++;
+      }
     }
   } catch (e) {
-    Logger.log('MCC stats collection error: ' + e.message);
-    return { mode: 'mcc', byAccount: byAccount, error: e.message };
+    Logger.log('MCC scan error: ' + e.message);
+    return { mode: 'mcc', byAccount: byAccount, error: e.message,
+             activity: { mode: 'mcc', byAccount: activityByAccount, error: e.message } };
   }
 
-  return { mode: 'mcc', byAccount: byAccount, mtdEnd: mtdEnd, prevMtdEnd: prevMtdEnd };
+  return {
+    mode: 'mcc',
+    byAccount: byAccount,
+    activity: { mode: 'mcc', byAccount: activityByAccount }
+  };
+}
+
+/** Scrape change_event for the currently-selected account. */
+function _scrapeChangeEvents() {
+  var bucket = {
+    human: 0, script: 0, googleAuto: 0, other: 0,
+    bidBudgetTouches: 0,
+    lastHuman: null,
+    lastGoogleAuto: null
+  };
+  try {
+    var q = "SELECT change_event.change_date_time, change_event.user_email, " +
+            "change_event.client_type, change_event.change_resource_type, " +
+            "change_event.resource_change_operation " +
+            "FROM change_event " +
+            "WHERE change_event.change_date_time DURING LAST_" + ACTIVITY_LOOKBACK_DAYS + "_DAYS " +
+            "ORDER BY change_event.change_date_time DESC LIMIT 10000";
+    var rows = AdsApp.search(q);
+    while (rows.hasNext()) {
+      var row = rows.next();
+      var ev = row.changeEvent || {};
+      var clientType = String(ev.clientType || 'UNKNOWN').toUpperCase();
+      var resType = String(ev.changeResourceType || '').toUpperCase();
+      var when = ev.changeDateTime || '';
+      var user = ev.userEmail || '';
+
+      var isHuman = clientType === 'GOOGLE_ADS_WEB_CLIENT' ||
+                    clientType === 'GOOGLE_ADS_EDITOR' ||
+                    clientType === 'GOOGLE_ADS_MOBILE_APP';
+      var isScript = clientType === 'GOOGLE_ADS_SCRIPTS' ||
+                     clientType === 'GOOGLE_ADS_API' ||
+                     clientType === 'GOOGLE_ADS_BULK_UPLOAD';
+      var isGoogleAuto = clientType === 'GOOGLE_ADS_AUTOMATED_RULE' ||
+                         clientType === 'GOOGLE_ADS_RECOMMENDATIONS';
+
+      if (isHuman) {
+        bucket.human++;
+        if (!bucket.lastHuman) bucket.lastHuman = { user: user, time: when };
+        if (resType === 'CAMPAIGN_BUDGET' || resType === 'BIDDING_STRATEGY' ||
+            resType === 'CAMPAIGN' || resType === 'AD_GROUP_CRITERION' ||
+            resType === 'AD_GROUP' || resType === 'AD_GROUP_AD') {
+          bucket.bidBudgetTouches++;
+        }
+      } else if (isScript) {
+        bucket.script++;
+      } else if (isGoogleAuto) {
+        bucket.googleAuto++;
+        if (!bucket.lastGoogleAuto) bucket.lastGoogleAuto = { time: when };
+      } else {
+        bucket.other++;
+      }
+    }
+  } catch (e) {
+    bucket.error = e.message;
+  }
+  return bucket;
 }
 
 /**
@@ -953,110 +1073,6 @@ function _median(arr) {
   var sorted = arr.slice().sort(function(a, b) { return a - b; });
   var mid = Math.floor(sorted.length / 2);
   return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
-}
-
-
-// ============================================
-// CHANGE_EVENT SCRAPER (MCC mode) — last 7 days, bucketed by client_type
-// ============================================
-
-/**
- * For each MCC sub-account that spent yesterday, query the change_event
- * resource for the last ACTIVITY_LOOKBACK_DAYS and bucket every event
- * into HUMAN / SCRIPT / GOOGLE_AUTO based on client_type.
- *
- * High-signal counters track changes that directly affect performance:
- *   bidBudgetTouches = human-driven changes to CAMPAIGN_BUDGET, BIDDING_STRATEGY,
- *   CAMPAIGN status, or AD_GROUP_CRITERION (keyword bids/status). These are
- *   the things most likely to explain a sudden lead drop.
- *
- * Returns { mode: 'mcc' | 'unsupported', byAccount: { name: bucket } }.
- */
-function _collectChangeActivity() {
-  if (typeof AdsManagerApp === 'undefined') {
-    return { mode: 'unsupported', byAccount: {} };
-  }
-
-  var byAccount = {};
-
-  try {
-    // No metric filter — see _findOrphanAccounts comment. Skip silent accounts
-    // after we have stats in hand.
-    var iter = AdsManagerApp.accounts().get();
-
-    while (iter.hasNext()) {
-      var account = iter.next();
-      var name = account.getName();
-      if (!name) continue;
-
-      var stats = account.getStatsFor("LAST_" + ACTIVITY_LOOKBACK_DAYS + "_DAYS");
-      if (stats.getCost() <= 0) continue;
-
-      AdsManagerApp.select(account);
-      var bucket = {
-        human: 0, script: 0, googleAuto: 0, other: 0,
-        bidBudgetTouches: 0,
-        lastHuman: null,   // { user, time }
-        lastGoogleAuto: null
-      };
-
-      try {
-        var q = "SELECT change_event.change_date_time, change_event.user_email, " +
-                "change_event.client_type, change_event.change_resource_type, " +
-                "change_event.resource_change_operation " +
-                "FROM change_event " +
-                "WHERE change_event.change_date_time DURING LAST_" + ACTIVITY_LOOKBACK_DAYS + "_DAYS " +
-                "ORDER BY change_event.change_date_time DESC LIMIT 10000";
-
-        var rows = AdsApp.search(q);
-        while (rows.hasNext()) {
-          var row = rows.next();
-          var ev = row.changeEvent || {};
-          var clientType = String(ev.clientType || 'UNKNOWN').toUpperCase();
-          var resType = String(ev.changeResourceType || '').toUpperCase();
-          var when = ev.changeDateTime || '';
-          var user = ev.userEmail || '';
-
-          var isHuman = clientType === 'GOOGLE_ADS_WEB_CLIENT' ||
-                        clientType === 'GOOGLE_ADS_EDITOR' ||
-                        clientType === 'GOOGLE_ADS_MOBILE_APP';
-          var isScript = clientType === 'GOOGLE_ADS_SCRIPTS' ||
-                         clientType === 'GOOGLE_ADS_API' ||
-                         clientType === 'GOOGLE_ADS_BULK_UPLOAD';
-          var isGoogleAuto = clientType === 'GOOGLE_ADS_AUTOMATED_RULE' ||
-                             clientType === 'GOOGLE_ADS_RECOMMENDATIONS';
-
-          if (isHuman) {
-            bucket.human++;
-            if (!bucket.lastHuman) bucket.lastHuman = { user: user, time: when };
-            // High-signal: human touched bids / budgets / status
-            if (resType === 'CAMPAIGN_BUDGET' || resType === 'BIDDING_STRATEGY' ||
-                resType === 'CAMPAIGN' || resType === 'AD_GROUP_CRITERION' ||
-                resType === 'AD_GROUP' || resType === 'AD_GROUP_AD') {
-              bucket.bidBudgetTouches++;
-            }
-          } else if (isScript) {
-            bucket.script++;
-          } else if (isGoogleAuto) {
-            bucket.googleAuto++;
-            if (!bucket.lastGoogleAuto) bucket.lastGoogleAuto = { time: when };
-          } else {
-            bucket.other++;
-          }
-        }
-      } catch (innerE) {
-        Logger.log('change_event query for "' + name + '": ' + innerE.message);
-        bucket.error = innerE.message;
-      }
-
-      byAccount[name] = bucket;
-    }
-  } catch (e) {
-    Logger.log('Activity collection error: ' + e.message);
-    return { mode: 'mcc', byAccount: byAccount, error: e.message };
-  }
-
-  return { mode: 'mcc', byAccount: byAccount };
 }
 
 
