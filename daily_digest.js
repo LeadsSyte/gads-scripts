@@ -171,15 +171,18 @@ function _runDigest() {
   var anomalies = anomaliesPre;
 
   // === Coverage counts ===
-  var withScript = 0, withoutScript = 0;
+  var withScript = 0, withoutScript = 0, ecommerceCount = 0;
   for (var ai = 0; ai < accountList.length; ai++) {
     if (accountList[ai].hasScript) withScript++; else withoutScript++;
+    if (accountList[ai].isEcommerce) ecommerceCount++;
   }
+  var hasEcommerce = ecommerceCount > 0;
 
   // === Aggregate totals ===
   var totals = { aiNegated: 0, aiReview: 0, winners: 0, errors: 0,
                  convThis: 0, convPrev: 0, costThis: 0,
-                 convMtd: 0, convPrevMtd: 0 };
+                 convMtd: 0, convPrevMtd: 0,
+                 revThis: 0, revPrev: 0, revMtd: 0, revPrevMtd: 0 };
   for (var ti = 0; ti < accountList.length; ti++) {
     var a = accountList[ti];
     totals.convThis += a.convThis || 0;
@@ -187,6 +190,12 @@ function _runDigest() {
     totals.costThis += a.costThis || 0;
     totals.convMtd += a.convMtd || 0;
     totals.convPrevMtd += a.convPrevMtd || 0;
+    if (a.isEcommerce) {
+      totals.revThis += a.revThis || 0;
+      totals.revPrev += a.revPrev || 0;
+      totals.revMtd += a.revMtd || 0;
+      totals.revPrevMtd += a.revPrevMtd || 0;
+    }
     if (a.digest) {
       totals.aiNegated += Number(a.digest.ai_negated) || 0;
       totals.aiReview += Number(a.digest.ai_review) || 0;
@@ -199,6 +208,10 @@ function _runDigest() {
   var convColor = totals.convThis >= totals.convPrev ? '#2e7d32' : '#c62828';
   var mtdChange = totals.convPrevMtd > 0 ? ((totals.convMtd - totals.convPrevMtd) / totals.convPrevMtd * 100).toFixed(0) : 'N/A';
   var mtdColor = totals.convMtd >= totals.convPrevMtd ? '#2e7d32' : '#c62828';
+  var revChange = totals.revPrev > 0 ? ((totals.revThis - totals.revPrev) / totals.revPrev * 100).toFixed(0) : 'N/A';
+  var revColor = totals.revThis >= totals.revPrev ? '#2e7d32' : '#c62828';
+  var revMtdChange = totals.revPrevMtd > 0 ? ((totals.revMtd - totals.revPrevMtd) / totals.revPrevMtd * 100).toFixed(0) : 'N/A';
+  var revMtdColor = totals.revMtd >= totals.revPrevMtd ? '#2e7d32' : '#c62828';
 
   // === Build email ===
   var email = '<html><body style="font-family:Arial,sans-serif;max-width:1000px;margin:0 auto;color:#333;">';
@@ -215,6 +228,10 @@ function _runDigest() {
   if (mccStats.mode === 'mcc') {
     email += '<td style="padding:0 20px 0 0;"><strong style="font-size:24px;color:' + mtdColor + ';">' + totals.convMtd.toFixed(0) + '</strong><br><span style="font-size:12px;color:#666;">Conv MTD</span></td>';
     email += '<td style="padding:0 20px 0 0;"><strong style="font-size:24px;">' + mtdChange + '%</strong><br><span style="font-size:12px;color:#666;">vs prev MTD</span></td>';
+    if (hasEcommerce) {
+      email += '<td style="padding:0 20px 0 0;"><strong style="font-size:24px;color:' + revColor + ';">' + _fmtMoney(totals.revThis) + '</strong><br><span style="font-size:12px;color:#666;">Revenue 7d</span></td>';
+      email += '<td style="padding:0 20px 0 0;"><strong style="font-size:24px;color:' + revMtdColor + ';">' + _fmtMoney(totals.revMtd) + '</strong><br><span style="font-size:12px;color:#666;">Revenue MTD (' + revMtdChange + '%)</span></td>';
+    }
     email += '<td style="padding:0 20px 0 0;"><strong style="font-size:24px;">' + totals.costThis.toFixed(0) + '</strong><br><span style="font-size:12px;color:#666;">Spend last 7d</span></td>';
   }
   email += '<td style="padding:0 20px 0 0;"><strong style="font-size:24px;color:#2d6cdf;">' + totals.aiNegated + '</strong><br><span style="font-size:12px;color:#666;">AI negated</span></td>';
@@ -254,6 +271,12 @@ function _runDigest() {
   if (mccStats.mode === 'mcc') {
     email += '<th style="padding:8px;text-align:right;">Conv MTD</th>';
     email += '<th style="padding:8px;text-align:right;">vs Prev MTD</th>';
+    if (hasEcommerce) {
+      email += '<th style="padding:8px;text-align:right;background:#e8f5e9;" title="Conversion value (revenue) for ecommerce accounts">Rev 7d</th>';
+      email += '<th style="padding:8px;text-align:right;background:#e8f5e9;">vs Prev 7d</th>';
+      email += '<th style="padding:8px;text-align:right;background:#e8f5e9;">Rev MTD</th>';
+      email += '<th style="padding:8px;text-align:right;background:#e8f5e9;">vs Prev MTD</th>';
+    }
     email += '<th style="padding:8px;text-align:right;">Spend 7d</th>';
   }
   if (anyActivity) email += '<th style="padding:8px;text-align:right;" title="Changes in the last ' + ACTIVITY_LOOKBACK_DAYS + ' days (human / script / google-auto)">Changes 7d</th>';
@@ -269,6 +292,7 @@ function _runDigest() {
   var fixedCols = 6; // Account, Script, Conv 7d, vs Prev 7d, vs Baseline, AI Neg
   fixedCols += 4; // Review, KW Paused, Winners, Errors
   if (mccStats.mode === 'mcc') fixedCols += 3; // Conv MTD, vs Prev MTD, Spend 7d
+  if (mccStats.mode === 'mcc' && hasEcommerce) fixedCols += 4; // Rev 7d, vs prev 7d, Rev MTD, vs prev MTD
   if (anyActivity) fixedCols += 1;
 
   // Track group boundary so we can render a divider between losers and winners.
@@ -357,6 +381,42 @@ function _runDigest() {
     if (mccStats.mode === 'mcc') {
       email += '<td style="padding:6px 8px;text-align:right;font-weight:600;">' + mtdCell + '</td>';
       email += '<td style="padding:6px 8px;text-align:right;">' + mtdTrendCell + '</td>';
+      if (hasEcommerce) {
+        // Revenue cells — populated only for ecommerce accounts. Lead-gen
+        // rows get dashes so the column reads as "not applicable" rather
+        // than "zero".
+        if (acc.isEcommerce) {
+          email += '<td style="padding:6px 8px;text-align:right;background:#f6fbf6;font-weight:600;">' + _fmtMoney(acc.revThis) + '</td>';
+
+          var revTrendArrow = acc.revPrev > 0 ? (acc.revThis >= acc.revPrev ? '↑' : '↓') : '—';
+          var revTrendPct = acc.revPrev > 0 ? ((acc.revThis - acc.revPrev) / acc.revPrev * 100).toFixed(0) : null;
+          var revTrendColor = acc.revThis >= acc.revPrev ? '#2e7d32' : '#c62828';
+          var revTrendCell = revTrendPct === null
+            ? '<span style="color:#bbb;">—</span>'
+            : '<span style="color:' + revTrendColor + ';font-weight:600;">' + (revTrendPct >= 0 ? '+' : '') + revTrendPct + '% ' + revTrendArrow + '</span>';
+          email += '<td style="padding:6px 8px;text-align:right;background:#f6fbf6;">' + revTrendCell + '</td>';
+
+          email += '<td style="padding:6px 8px;text-align:right;background:#f6fbf6;font-weight:600;">' + _fmtMoney(acc.revMtd) + '</td>';
+
+          var revMtdCell;
+          if (acc.revMtdDeltaPct === null) {
+            revMtdCell = '<span style="color:#bbb;">new</span>';
+          } else {
+            var revMtdColorR = acc.revMtdDeltaPct >= 0 ? '#2e7d32' : '#c62828';
+            var revMtdSign = acc.revMtdDeltaPct >= 0 ? '+' : '';
+            var revMtdArrow = acc.revMtdDeltaPct >= 0 ? '↑' : '↓';
+            revMtdCell = '<span style="color:' + revMtdColorR + ';font-weight:600;">'
+                       + revMtdSign + acc.revMtdDeltaPct.toFixed(0) + '% ' + revMtdArrow + '</span>'
+                       + ' <span style="font-size:10px;color:#888;">(prev ' + _fmtMoney(acc.revPrevMtd) + ')</span>';
+          }
+          email += '<td style="padding:6px 8px;text-align:right;background:#f6fbf6;">' + revMtdCell + '</td>';
+        } else {
+          email += '<td style="padding:6px 8px;text-align:right;background:#f6fbf6;color:#ccc;">—</td>';
+          email += '<td style="padding:6px 8px;text-align:right;background:#f6fbf6;color:#ccc;">—</td>';
+          email += '<td style="padding:6px 8px;text-align:right;background:#f6fbf6;color:#ccc;">—</td>';
+          email += '<td style="padding:6px 8px;text-align:right;background:#f6fbf6;color:#ccc;">—</td>';
+        }
+      }
       email += '<td style="padding:6px 8px;text-align:right;color:#666;">' + (acc.costThis || 0).toFixed(0) + '</td>';
     }
     if (anyActivity) {
@@ -585,20 +645,25 @@ function _collectMccData(activityFilter) {
 
       var cost7 = s7.getCost();
       var conv7 = s7.getConversions();
+      var rev7 = s7.getConversionValue();
       var key = name.toLowerCase().trim();
       byAccount[key] = {
         name: name,
         cid: account.getCustomerId(),
         costThis: cost7,
         convThis: conv7,
+        revThis: rev7,
         // Previous 7 days = days 8-14 = 14d total minus last 7d
         costPrev: Math.max(0, s14.getCost() - cost7),
         convPrev: Math.max(0, s14.getConversions() - conv7),
+        revPrev: Math.max(0, s14.getConversionValue() - rev7),
         // MTD vs same period last month
         costMtd: sMtd.getCost(),
         convMtd: sMtd.getConversions(),
+        revMtd: sMtd.getConversionValue(),
         costPrevMtd: sPrevMtd.getCost(),
-        convPrevMtd: sPrevMtd.getConversions()
+        convPrevMtd: sPrevMtd.getConversions(),
+        revPrevMtd: sPrevMtd.getConversionValue()
       };
 
       // Activity scrape — only if this account is in scope. This is the
@@ -703,10 +768,23 @@ function _buildUnifiedAccountList(mccStats, digestByAccount) {
       var mtdDeltaPct = convPrevMtd > 0
         ? ((convMtd - convPrevMtd) / convPrevMtd) * 100
         : (convMtd > 0 ? null : 0); // new account / no prior baseline
+
+      var revMtd = s.revMtd || 0;
+      var revPrevMtd = s.revPrevMtd || 0;
+      var revMtdDeltaPct = revPrevMtd > 0
+        ? ((revMtd - revPrevMtd) / revPrevMtd) * 100
+        : (revMtd > 0 ? null : 0);
+
+      // Ecommerce detection: explicit mode from digest, or non-zero
+      // conversion value in any window (means the account tracks rev).
+      var isEcommerce = (d && String(d.mode || '').toUpperCase() === 'ECOMMERCE')
+                     || s.revThis > 0 || s.revPrev > 0 || s.revMtd > 0;
+
       list.push({
         name: s.name,
         cid: s.cid,
         hasScript: !!d,
+        isEcommerce: isEcommerce,
         convThis: s.convThis,
         convPrev: s.convPrev,
         costThis: s.costThis,
@@ -715,6 +793,11 @@ function _buildUnifiedAccountList(mccStats, digestByAccount) {
         costMtd: s.costMtd || 0,
         costPrevMtd: s.costPrevMtd || 0,
         mtdDeltaPct: mtdDeltaPct,
+        revThis: s.revThis || 0,
+        revPrev: s.revPrev || 0,
+        revMtd: revMtd,
+        revPrevMtd: revPrevMtd,
+        revMtdDeltaPct: revMtdDeltaPct,
         digest: d
       });
     }
@@ -1008,6 +1091,17 @@ function _extractSheetId(s) {
 
 function _escapeHtml(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// Compact money format for ecommerce revenue: 1,234 ; 12.5k ; 1.2M.
+// No currency symbol because Google Ads sub-accounts can be in different
+// currencies and the unified totals would be misleading with a single symbol.
+function _fmtMoney(n) {
+  n = Number(n) || 0;
+  if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+  if (n >= 10000) return (n / 1000).toFixed(1) + 'k';
+  if (n >= 1000) return (n / 1000).toFixed(2) + 'k';
+  return n.toFixed(0);
 }
 
 // Send a minimal status email when there's no data to digest, so the user
