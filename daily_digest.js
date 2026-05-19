@@ -161,8 +161,17 @@ function _runDigest() {
     if (mccStats.mode === 'unsupported') {
       hint = 'No client script wrote a row for today (' + today + ', timezone ' + TIMEZONE + '), '
            + 'and this script is not running at MCC level so we can\'t pull stats directly.';
+    } else if (mccStats.error) {
+      // MCC scan threw partway through — surface the actual error instead
+      // of pretending nothing spent money. Common causes: a per-account
+      // API quota hit, a malformed account in the MCC, or a timeout.
+      hint = 'The MCC scan raised an error before any account stats could be collected: '
+           + '<code style="background:#fdecea;padding:2px 4px;">' + _escapeHtml(mccStats.error) + '</code>. '
+           + 'Check the Google Ads Scripts execution log for the full stack trace, then re-run.';
     } else {
-      hint = 'No MCC sub-account spent money in the last 14 days, and no client script wrote a row for today.';
+      hint = 'No MCC sub-account spent money in the last 14 days, and no client script wrote a row for today. '
+           + '<br><br>If this is unexpected, check the execution log for "MCC scan progress" lines — '
+           + 'they show how many accounts were iterated vs how many had spend.';
     }
     _sendEmptyDigest(today, hint);
     return;
