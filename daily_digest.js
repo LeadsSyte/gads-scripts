@@ -154,6 +154,13 @@ function _runDigest() {
   Logger.log('MCC scan complete: ' + Object.keys(mccData.byAccount).length + ' accounts with stats, '
            + Object.keys(activity.byAccount).length + ' with activity data');
 
+  // Fetch conversion value (revenue) for ecommerce accounts via MCC-level
+  // AWQL report. AdsManagerApp.Stats doesn't expose getConversionValue(),
+  // so we use a separate cross-account report query — one per time window.
+  if (mccStats.mode === 'mcc' && Object.keys(mccData.byAccount).length > 0) {
+    _mergeRevenueIntoMccStats(mccStats.byAccount);
+  }
+
   var accountList = _buildUnifiedAccountList(mccStats, digestByAccount);
 
   if (accountList.length === 0) {
@@ -161,8 +168,17 @@ function _runDigest() {
     if (mccStats.mode === 'unsupported') {
       hint = 'No client script wrote a row for today (' + today + ', timezone ' + TIMEZONE + '), '
            + 'and this script is not running at MCC level so we can\'t pull stats directly.';
+    } else if (mccStats.error) {
+      // MCC scan threw partway through — surface the actual error instead
+      // of pretending nothing spent money. Common causes: a per-account
+      // API quota hit, a malformed account in the MCC, or a timeout.
+      hint = 'The MCC scan raised an error before any account stats could be collected: '
+           + '<code style="background:#fdecea;padding:2px 4px;">' + _escapeHtml(mccStats.error) + '</code>. '
+           + 'Check the Google Ads Scripts execution log for the full stack trace, then re-run.';
     } else {
-      hint = 'No MCC sub-account spent money in the last 14 days, and no client script wrote a row for today.';
+      hint = 'No MCC sub-account spent money in the last 14 days, and no client script wrote a row for today. '
+           + '<br><br>If this is unexpected, check the execution log for "MCC scan progress" lines — '
+           + 'they show how many accounts were iterated vs how many had spend.';
     }
     _sendEmptyDigest(today, hint);
     return;
@@ -586,6 +602,72 @@ function _renderMtdSummary(accountList) {
 
 
 /**
+ * Pulls conversion value (revenue) per customer via a single MCC-level AWQL
+ * report per time window. Mutates the byAccount map in place, filling in
+ * revThis / revPrev / revMtd / revPrevMtd by externalCustomerId match.
+ *
+ * Why this exists: AdsManagerApp.Stats (returned by ManagedAccount.getStatsFor)
+ * does NOT expose getConversionValue — only getCost/getClicks/getImpressions/
+ * getConversions. To get revenue we have to use AdsManagerApp.report() with
+ * AWQL against ACCOUNT_PERFORMANCE_REPORT, which DOES expose ConversionValue.
+ *
+ * 4 cross-account queries total — cheap compared to selecting each account.
+ */
+function _mergeRevenueIntoMccStats(byAccount) {
+  // Build a quick CID -> key lookup so each row from the report finds the
+  // right account.
+  var cidToKey = {};
+  for (var k in byAccount) {
+    var s = byAccount[k];
+    if (s && s.cid) cidToKey[String(s.cid).replace(/[^0-9]/g, '')] = k;
+  }
+  if (Object.keys(cidToKey).length === 0) return;
+
+  // Match the same date windows _collectMccData uses, so the totals line up.
+  var tzToday = Utilities.formatDate(new Date(), TIMEZONE, 'yyyy-MM-dd').split('-');
+  var Y = Number(tzToday[0]), M = Number(tzToday[1]), D = Number(tzToday[2]);
+  var pY = M === 1 ? Y - 1 : Y;
+  var pM = M === 1 ? 12 : M - 1;
+  var daysInPrev = new Date(pY, pM, 0).getDate();
+  var pD = Math.min(D, daysInPrev);
+  var pad = function(n) { return n < 10 ? '0' + n : '' + n; };
+  // AWQL DURING accepts either presets ("LAST_7_DAYS") or yyyyMMdd,yyyyMMdd
+  var ranges = {
+    revThis: 'LAST_7_DAYS',
+    // Days 8-14 ago — explicit yyyyMMdd range
+    revPrev: _ymdNDaysAgo(14) + ',' + _ymdNDaysAgo(8),
+    revMtd: '' + Y + pad(M) + '01,' + Y + pad(M) + pad(D),
+    revPrevMtd: '' + pY + pad(pM) + '01,' + pY + pad(pM) + pad(pD)
+  };
+
+  Object.keys(ranges).forEach(function(field) {
+    try {
+      var awql = "SELECT ExternalCustomerId, ConversionValue "
+               + "FROM ACCOUNT_PERFORMANCE_REPORT "
+               + "DURING " + ranges[field];
+      var report = AdsManagerApp.report(awql);
+      var rows = report.rows();
+      while (rows.hasNext()) {
+        var row = rows.next();
+        var cidNum = String(row['ExternalCustomerId'] || '').replace(/[^0-9]/g, '');
+        var key = cidToKey[cidNum];
+        if (!key) continue;
+        var v = Number(row['ConversionValue']) || 0;
+        byAccount[key][field] = v;
+      }
+    } catch (e) {
+      Logger.log('Revenue report (' + field + ') failed: ' + e.message);
+    }
+  });
+}
+
+// Helper: yyyyMMdd string for the day N days ago in TIMEZONE.
+function _ymdNDaysAgo(n) {
+  var d = new Date(new Date().getTime() - n * 24 * 60 * 60 * 1000);
+  return Utilities.formatDate(d, TIMEZONE, 'yyyyMMdd');
+}
+
+/**
  * Single-pass MCC scan: per spending account, collects stats (LAST_7_DAYS,
  * LAST_14_DAYS, MTD, prev-MTD) and — if the account matches activityFilter —
  * also scrapes change_event activity. Returns stats and activity in one
@@ -645,25 +727,27 @@ function _collectMccData(activityFilter) {
 
       var cost7 = s7.getCost();
       var conv7 = s7.getConversions();
-      var rev7 = s7.getConversionValue();
       var key = name.toLowerCase().trim();
+      // Note: revenue (conversion value) is NOT available on
+      // AdsManagerApp.Stats — only cost/clicks/impressions/conversions are.
+      // We fetch revenue separately via AdsManagerApp.report() AWQL below.
       byAccount[key] = {
         name: name,
         cid: account.getCustomerId(),
         costThis: cost7,
         convThis: conv7,
-        revThis: rev7,
+        revThis: 0,
         // Previous 7 days = days 8-14 = 14d total minus last 7d
         costPrev: Math.max(0, s14.getCost() - cost7),
         convPrev: Math.max(0, s14.getConversions() - conv7),
-        revPrev: Math.max(0, s14.getConversionValue() - rev7),
+        revPrev: 0,
         // MTD vs same period last month
         costMtd: sMtd.getCost(),
         convMtd: sMtd.getConversions(),
-        revMtd: sMtd.getConversionValue(),
+        revMtd: 0,
         costPrevMtd: sPrevMtd.getCost(),
         convPrevMtd: sPrevMtd.getConversions(),
-        revPrevMtd: sPrevMtd.getConversionValue()
+        revPrevMtd: 0
       };
 
       // Activity scrape — only if this account is in scope. This is the
