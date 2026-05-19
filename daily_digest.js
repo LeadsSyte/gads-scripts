@@ -306,11 +306,7 @@ function _runDigest() {
   var correlatedDrops = _correlatedDropAccounts(activity, anomalies).length;
   if (correlatedDrops > 0) subjectBits.push('🔥 ' + correlatedDrops + ' correlated');
 
-  MailApp.sendEmail({
-    to: EMAIL_TO,
-    subject: 'Syte Daily Digest | ' + subjectBits.join(' | '),
-    htmlBody: email
-  });
+  _sendMail('Syte Daily Digest | ' + subjectBits.join(' | '), email);
 
   Logger.log('Daily digest sent: ' + todayRows.length + ' accounts, ' + anomalies.length + ' anomalies, ' + (orphans.list ? orphans.list.length : 0) + ' orphans');
 }
@@ -587,11 +583,21 @@ function _sendEmptyDigest(today, reasonHtml) {
     + '</div>'
     + '<div style="padding:15px;color:#999;font-size:11px;text-align:center;">Syte Digital Agency | Daily Digest | syte.co.za</div>'
     + '</body></html>';
-  MailApp.sendEmail({
-    to: EMAIL_TO,
-    subject: 'Syte Daily Digest | ' + today + ' | no data',
-    htmlBody: html
-  });
+  _sendMail('Syte Daily Digest | ' + today + ' | no data', html);
+}
+
+// Centralised send so every code path logs quota + result and we can tell
+// from the execution log whether delivery actually happened.
+function _sendMail(subject, htmlBody) {
+  var remaining = -1;
+  try { remaining = MailApp.getRemainingDailyQuota(); } catch (qe) { Logger.log('Quota check failed: ' + qe.message); }
+  Logger.log('Sending email to "' + EMAIL_TO + '" (remaining daily quota: ' + remaining + ')');
+  if (remaining === 0) {
+    Logger.log('ABORT: MailApp daily quota exhausted — email will not be sent.');
+    return;
+  }
+  MailApp.sendEmail({ to: EMAIL_TO, subject: subject, htmlBody: htmlBody });
+  Logger.log('Email send call returned without error. Subject: ' + subject);
 }
 
 function _parseSheetDate(str) {
