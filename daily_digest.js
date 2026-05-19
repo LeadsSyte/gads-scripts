@@ -97,141 +97,141 @@ function _runDigest() {
   var sheet = ss.getSheetByName('DailyDigest');
   var today = Utilities.formatDate(new Date(), TIMEZONE, 'yyyy-MM-dd');
 
-  if (!sheet) {
-    Logger.log('No DailyDigest tab found');
-    _sendEmptyDigest(today, 'The master sheet has no <strong>DailyDigest</strong> tab. '
-      + 'Either the tab was renamed/deleted, or no client script has written to it yet.');
-    return;
-  }
-
-  var data = sheet.getDataRange().getValues();
-  if (data.length < 2) {
-    Logger.log('No data in DailyDigest');
-    _sendEmptyDigest(today, 'The <strong>DailyDigest</strong> tab is empty — no client script has reported yet.');
-    return;
-  }
-
-  var headers = data[0];
-
-  // Filter to today's rows — normalise the cell to yyyy-MM-dd in TIMEZONE
-  // because Sheets stores the column as Date objects, not strings.
-  var todayRows = [];
-  for (var i = 1; i < data.length; i++) {
-    if (_toDateStr(data[i][0]) === today) {
-      var row = {};
-      for (var j = 0; j < headers.length; j++) {
-        row[headers[j]] = data[i][j];
+  // Read sheet data if the tab exists. Missing/empty tab is fine — in MCC
+  // mode we can still render a digest from MCC stats alone, every account
+  // just won't have optimization-script columns.
+  var data = [], headers = [], digestByAccount = {};
+  if (sheet) {
+    data = sheet.getDataRange().getValues();
+    if (data.length >= 2) {
+      headers = data[0];
+      for (var i = 1; i < data.length; i++) {
+        if (_toDateStr(data[i][0]) === today) {
+          var row = {};
+          for (var j = 0; j < headers.length; j++) row[headers[j]] = data[i][j];
+          if (row.account) digestByAccount[String(row.account).toLowerCase().trim()] = row;
+        }
       }
-      todayRows.push(row);
     }
   }
 
-  if (todayRows.length === 0) {
-    Logger.log('No runs found for today (' + today + ')');
-    // Show what the most-recent date in the sheet is, so the user can tell
-    // whether client scripts simply haven't run yet today vs a date/timezone
-    // mismatch.
-    var lastDate = '';
-    for (var li = data.length - 1; li >= 1; li--) {
-      if (data[li][0]) { lastDate = _toDateStr(data[li][0]) || String(data[li][0]); break; }
+  // Pull stats for every MCC sub-account that spent in the last 14 days.
+  // Returns { mode: 'mcc'|'unsupported', byAccount: { normName: stats } }.
+  var mccStats = _collectMccAccountStats();
+
+  // Merge MCC stats + sheet rows into one list. Every spending account
+  // appears; accounts running the optimization script also carry digest data.
+  var accountList = _buildUnifiedAccountList(mccStats, digestByAccount);
+
+  if (accountList.length === 0) {
+    var hint;
+    if (mccStats.mode === 'unsupported') {
+      hint = 'No client script wrote a row for today (' + today + ', timezone ' + TIMEZONE + '), '
+           + 'and this script is not running at MCC level so we can\'t pull stats directly.';
+    } else {
+      hint = 'No MCC sub-account spent money in the last 14 days, and no client script wrote a row for today.';
     }
-    _sendEmptyDigest(today,
-      'No client script wrote a row for today (' + today + ', timezone ' + TIMEZONE + ') yet. '
-      + 'Last date seen in the sheet: <strong>' + (lastDate || 'none') + '</strong>. '
-      + 'If this is unexpected, check that client scripts have run and that their date format matches yyyy-MM-dd.');
+    _sendEmptyDigest(today, hint);
     return;
   }
 
-  // === Compute anomalies per account ===
-  var anomalies = _detectAnomalies(todayRows, data, headers, today);
+  // Anomalies still come from the sheet — needs daily history per account.
+  // Accounts without sheet history just won't have an anomaly entry.
+  var todayRowsArr = [];
+  for (var k in digestByAccount) todayRowsArr.push(digestByAccount[k]);
+  var anomalies = (todayRowsArr.length > 0 && headers.length > 0)
+    ? _detectAnomalies(todayRowsArr, data, headers, today)
+    : [];
 
-  // === Find orphan accounts (MCC mode only) ===
-  var orphans = _findOrphanAccounts(data, headers);
-
-  // === Collect change_event activity per account (MCC mode only) ===
   var activity = _collectChangeActivity();
 
-  // Build email
-  var email = '<html><body style="font-family:Arial,sans-serif;max-width:900px;margin:0 auto;color:#333;">';
-  email += '<div style="background:linear-gradient(135deg,#1a1a2e,#16213e);color:white;padding:20px;border-radius:8px 8px 0 0;">';
-  email += '<h1 style="margin:0;font-size:20px;">Syte Daily Digest</h1>';
-  email += '<p style="margin:5px 0 0;opacity:0.8;">' + today + ' | ' + todayRows.length + ' accounts processed</p></div>';
-
-  // Summary totals
-  var totals = { kwPaused: 0, stNegated: 0, aiNegated: 0, aiReview: 0, winners: 0,
-                 audit: 0, errors: 0, convThis: 0, convLast: 0 };
-
-  for (var i = 0; i < todayRows.length; i++) {
-    var r = todayRows[i];
-    totals.kwPaused += Number(r.keywords_paused) || 0;
-    totals.stNegated += Number(r.search_terms_negated) || 0;
-    totals.aiNegated += Number(r.ai_negated) || 0;
-    totals.aiReview += Number(r.ai_review) || 0;
-    totals.winners += Number(r.winners_promoted) || 0;
-    totals.audit += Number(r.audit_findings) || 0;
-    totals.errors += Number(r.errors) || 0;
-    totals.convThis += Number(r.conv_this_week) || 0;
-    totals.convLast += Number(r.conv_last_week) || 0;
+  // === Coverage counts ===
+  var withScript = 0, withoutScript = 0;
+  for (var ai = 0; ai < accountList.length; ai++) {
+    if (accountList[ai].hasScript) withScript++; else withoutScript++;
   }
 
-  var convChange = totals.convLast > 0 ? ((totals.convThis - totals.convLast) / totals.convLast * 100).toFixed(0) : 'N/A';
-  var convColor = totals.convThis >= totals.convLast ? '#2e7d32' : '#c62828';
+  // === Aggregate totals ===
+  var totals = { aiNegated: 0, aiReview: 0, winners: 0, errors: 0, convThis: 0, convPrev: 0, costThis: 0 };
+  for (var ti = 0; ti < accountList.length; ti++) {
+    var a = accountList[ti];
+    totals.convThis += a.convThis || 0;
+    totals.convPrev += a.convPrev || 0;
+    totals.costThis += a.costThis || 0;
+    if (a.digest) {
+      totals.aiNegated += Number(a.digest.ai_negated) || 0;
+      totals.aiReview += Number(a.digest.ai_review) || 0;
+      totals.winners += Number(a.digest.winners_promoted) || 0;
+      totals.errors += Number(a.digest.errors) || 0;
+    }
+  }
+
+  var convChange = totals.convPrev > 0 ? ((totals.convThis - totals.convPrev) / totals.convPrev * 100).toFixed(0) : 'N/A';
+  var convColor = totals.convThis >= totals.convPrev ? '#2e7d32' : '#c62828';
+
+  // === Build email ===
+  var email = '<html><body style="font-family:Arial,sans-serif;max-width:1000px;margin:0 auto;color:#333;">';
+  email += '<div style="background:linear-gradient(135deg,#1a1a2e,#16213e);color:white;padding:20px;border-radius:8px 8px 0 0;">';
+  email += '<h1 style="margin:0;font-size:20px;">Syte Daily Digest</h1>';
+  email += '<p style="margin:5px 0 0;opacity:0.8;">' + today + ' | ' + accountList.length + ' accounts ('
+        + withScript + ' running optimization script, ' + withoutScript + ' without)</p></div>';
 
   // Totals bar
   email += '<div style="background:#f8f9fa;padding:15px;border-bottom:1px solid #e0e5ec;">';
   email += '<table style="border:none;border-collapse:collapse;"><tr>';
-  email += '<td style="padding:0 20px 0 0;"><strong style="font-size:24px;color:' + convColor + ';">' + totals.convThis.toFixed(0) + '</strong><br><span style="font-size:12px;color:#666;">Conv this week</span></td>';
-  email += '<td style="padding:0 20px 0 0;"><strong style="font-size:24px;">' + convChange + '%</strong><br><span style="font-size:12px;color:#666;">vs last week</span></td>';
+  email += '<td style="padding:0 20px 0 0;"><strong style="font-size:24px;color:' + convColor + ';">' + totals.convThis.toFixed(0) + '</strong><br><span style="font-size:12px;color:#666;">Conv last 7d</span></td>';
+  email += '<td style="padding:0 20px 0 0;"><strong style="font-size:24px;">' + convChange + '%</strong><br><span style="font-size:12px;color:#666;">vs prev 7d</span></td>';
+  if (mccStats.mode === 'mcc') {
+    email += '<td style="padding:0 20px 0 0;"><strong style="font-size:24px;">' + totals.costThis.toFixed(0) + '</strong><br><span style="font-size:12px;color:#666;">Spend last 7d</span></td>';
+  }
   email += '<td style="padding:0 20px 0 0;"><strong style="font-size:24px;color:#2d6cdf;">' + totals.aiNegated + '</strong><br><span style="font-size:12px;color:#666;">AI negated</span></td>';
   email += '<td style="padding:0 20px 0 0;"><strong style="font-size:24px;color:#e65100;">' + totals.aiReview + '</strong><br><span style="font-size:12px;color:#666;">Need review</span></td>';
   email += '<td style="padding:0 20px 0 0;"><strong style="font-size:24px;">' + totals.winners + '</strong><br><span style="font-size:12px;color:#666;">Winners</span></td>';
   if (totals.errors > 0) email += '<td style="padding:0 20px 0 0;"><strong style="font-size:24px;color:#c62828;">' + totals.errors + '</strong><br><span style="font-size:12px;color:#666;">Errors</span></td>';
   email += '</tr></table></div>';
 
-  // === COVERAGE GAP: MCC accounts without the script — pinned to the top so
-  // it can't be missed. Only fires in MCC mode and only when there are gaps.
-  if (orphans.mode === 'mcc' && orphans.list.length > 0) {
-    email += _renderOrphansSection(orphans);
-  }
+  // === Anomalies section ===
+  if (anomalies.length > 0) email += _renderAnomaliesSection(anomalies);
 
-  // === ANOMALIES SECTION (drops + spikes vs per-account 14d baseline) ===
-  if (anomalies.length > 0) {
-    email += _renderAnomaliesSection(anomalies);
-  }
-
-  // Per-account table (with anomaly badges inline)
+  // === Per-account table (unified MCC + sheet) ===
   var anomalyByAccount = {};
-  for (var ai = 0; ai < anomalies.length; ai++) anomalyByAccount[anomalies[ai].account] = anomalies[ai];
+  for (var aii = 0; aii < anomalies.length; aii++) anomalyByAccount[String(anomalies[aii].account).toLowerCase().trim()] = anomalies[aii];
 
   email += '<div style="padding:15px;"><table style="width:100%;border-collapse:collapse;font-size:12px;">';
   email += '<tr style="background:#e3f2fd;">';
   email += '<th style="padding:8px;text-align:left;">Account</th>';
-  email += '<th style="padding:8px;text-align:center;">Mode</th>';
-  email += '<th style="padding:8px;text-align:center;">Run</th>';
-  email += '<th style="padding:8px;text-align:right;">Conv</th>';
+  email += '<th style="padding:8px;text-align:center;">Script</th>';
+  email += '<th style="padding:8px;text-align:right;">Conv 7d</th>';
+  email += '<th style="padding:8px;text-align:right;">vs Prev 7d</th>';
+  if (mccStats.mode === 'mcc') email += '<th style="padding:8px;text-align:right;">Spend 7d</th>';
   email += '<th style="padding:8px;text-align:right;">vs Baseline</th>';
   email += '<th style="padding:8px;text-align:right;">AI Neg</th>';
   email += '<th style="padding:8px;text-align:right;">Review</th>';
   email += '<th style="padding:8px;text-align:right;">KW Paused</th>';
   email += '<th style="padding:8px;text-align:right;">Winners</th>';
-  email += '<th style="padding:8px;text-align:right;">Audit</th>';
   email += '<th style="padding:8px;text-align:right;">Errors</th>';
-  email += '<th style="padding:8px;text-align:right;">Time</th>';
   email += '</tr>';
 
-  for (var i = 0; i < todayRows.length; i++) {
-    var r = todayRows[i];
-    var isPreview = r.run_mode === 'PREVIEW';
-    var hasErrors = (Number(r.errors) || 0) > 0;
-    var anom = anomalyByAccount[r.account];
-    var rowBg = hasErrors ? '#ffebee'
+  for (var ri = 0; ri < accountList.length; ri++) {
+    var acc = accountList[ri];
+    var key = String(acc.name).toLowerCase().trim();
+    var anom = anomalyByAccount[key];
+    var d = acc.digest;
+    var hasErrors = d && (Number(d.errors) || 0) > 0;
+    var isPreview = d && d.run_mode === 'PREVIEW';
+
+    var rowBg = !acc.hasScript ? '#fff8f0'
+              : hasErrors ? '#ffebee'
               : anom && anom.severity === 'drop' ? '#fff5f5'
               : anom && anom.severity === 'spike' ? '#f1f8e9'
-              : (i % 2 === 0 ? '#fff' : '#fafbfc');
-    var convW = Number(r.conv_this_week) || 0;
-    var convL = Number(r.conv_last_week) || 0;
-    var convTrend = convL > 0 ? (convW >= convL ? '↑' : '↓') : '—';
-    var convTrendColor = convW >= convL ? '#2e7d32' : '#c62828';
+              : (ri % 2 === 0 ? '#fff' : '#fafbfc');
+
+    var convTrendArrow = acc.convPrev > 0 ? (acc.convThis >= acc.convPrev ? '↑' : '↓') : '—';
+    var convTrendPct = acc.convPrev > 0 ? ((acc.convThis - acc.convPrev) / acc.convPrev * 100).toFixed(0) : null;
+    var convTrendColor = acc.convThis >= acc.convPrev ? '#2e7d32' : '#c62828';
+    var trendCell = convTrendPct === null
+      ? '<span style="color:#bbb;">—</span>'
+      : '<span style="color:' + convTrendColor + ';font-weight:600;">' + (convTrendPct >= 0 ? '+' : '') + convTrendPct + '% ' + convTrendArrow + '</span>';
 
     var baselineCell = '<span style="color:#bbb;">—</span>';
     if (anom) {
@@ -241,54 +241,69 @@ function _runDigest() {
                    + ' <span style="font-size:10px;color:#888;">(med ' + anom.baseline.toFixed(0) + ')</span>';
     }
 
+    var scriptBadge;
+    if (!acc.hasScript) {
+      scriptBadge = '<span style="padding:2px 6px;border-radius:4px;font-size:10px;font-weight:600;background:#ffcdd2;color:#c62828;">NO SCRIPT</span>';
+    } else if (isPreview) {
+      scriptBadge = '<span style="padding:2px 6px;border-radius:4px;font-size:10px;font-weight:600;background:#fff3e0;color:#e65100;">PREVIEW</span>';
+    } else {
+      scriptBadge = '<span style="padding:2px 6px;border-radius:4px;font-size:10px;font-weight:600;background:#e8f5e9;color:#2e7d32;">LIVE</span>';
+    }
+
     email += '<tr style="background:' + rowBg + ';border-bottom:1px solid #eee;">';
-    email += '<td style="padding:6px 8px;font-weight:600;">' + r.account + (anom ? ' ' + _anomalyBadge(anom.severity) : '') + '</td>';
-    email += '<td style="padding:6px 8px;text-align:center;font-size:11px;">' + r.mode + '</td>';
-    email += '<td style="padding:6px 8px;text-align:center;"><span style="padding:2px 6px;border-radius:4px;font-size:10px;font-weight:600;background:' + (isPreview ? '#fff3e0;color:#e65100' : '#e8f5e9;color:#2e7d32') + ';">' + r.run_mode + '</span></td>';
-    email += '<td style="padding:6px 8px;text-align:right;">' + convW.toFixed(0) + ' <span style="color:' + convTrendColor + ';">' + convTrend + '</span></td>';
+    email += '<td style="padding:6px 8px;font-weight:600;">' + acc.name + (anom ? ' ' + _anomalyBadge(anom.severity) : '') + '</td>';
+    email += '<td style="padding:6px 8px;text-align:center;">' + scriptBadge + '</td>';
+    email += '<td style="padding:6px 8px;text-align:right;">' + (acc.convThis || 0).toFixed(0) + '</td>';
+    email += '<td style="padding:6px 8px;text-align:right;">' + trendCell + '</td>';
+    if (mccStats.mode === 'mcc') email += '<td style="padding:6px 8px;text-align:right;color:#666;">' + (acc.costThis || 0).toFixed(0) + '</td>';
     email += '<td style="padding:6px 8px;text-align:right;">' + baselineCell + '</td>';
-    email += '<td style="padding:6px 8px;text-align:right;">' + (Number(r.ai_negated) || 0) + '</td>';
-    email += '<td style="padding:6px 8px;text-align:right;color:#e65100;font-weight:' + ((Number(r.ai_review) || 0) > 0 ? '600' : '400') + ';">' + (Number(r.ai_review) || 0) + '</td>';
-    email += '<td style="padding:6px 8px;text-align:right;">' + (Number(r.keywords_paused) || 0) + '</td>';
-    email += '<td style="padding:6px 8px;text-align:right;color:#2e7d32;">' + (Number(r.winners_promoted) || 0) + '</td>';
-    email += '<td style="padding:6px 8px;text-align:right;">' + (Number(r.audit_findings) || 0) + '</td>';
-    email += '<td style="padding:6px 8px;text-align:right;' + (hasErrors ? 'color:#c62828;font-weight:600;' : '') + '">' + (Number(r.errors) || 0) + '</td>';
-    email += '<td style="padding:6px 8px;text-align:right;font-size:11px;color:#888;">' + r.duration_s + 's</td>';
+    email += '<td style="padding:6px 8px;text-align:right;">' + (d ? (Number(d.ai_negated) || 0) : '<span style="color:#bbb;">—</span>') + '</td>';
+    email += '<td style="padding:6px 8px;text-align:right;color:#e65100;font-weight:' + (d && (Number(d.ai_review) || 0) > 0 ? '600' : '400') + ';">' + (d ? (Number(d.ai_review) || 0) : '<span style="color:#bbb;">—</span>') + '</td>';
+    email += '<td style="padding:6px 8px;text-align:right;">' + (d ? (Number(d.keywords_paused) || 0) : '<span style="color:#bbb;">—</span>') + '</td>';
+    email += '<td style="padding:6px 8px;text-align:right;color:#2e7d32;">' + (d ? (Number(d.winners_promoted) || 0) : '<span style="color:#bbb;">—</span>') + '</td>';
+    email += '<td style="padding:6px 8px;text-align:right;' + (hasErrors ? 'color:#c62828;font-weight:600;' : '') + '">' + (d ? (Number(d.errors) || 0) : '<span style="color:#bbb;">—</span>') + '</td>';
     email += '</tr>';
   }
-
   email += '</table></div>';
 
-  // === COVERAGE STATUS FOOTER ===
-  // If we ran in MCC mode AND found nothing, render the green "full coverage"
-  // confirmation here so people can see the check ran. Gap case is rendered
-  // at the top of the email instead.
-  if (orphans.mode === 'mcc' && orphans.list.length === 0) {
-    email += _renderOrphansSection(orphans);
-  } else if (orphans.mode === 'unsupported') {
+  // === Coverage footer (replaces dedicated orphan section) ===
+  if (mccStats.mode === 'mcc') {
+    if (withoutScript > 0) {
+      email += '<div style="padding:12px 15px;background:#fff8e1;border-top:1px solid #ffe082;color:#5d4037;font-size:12px;">'
+            + '<strong style="color:#e65100;">Coverage gap:</strong> ' + withoutScript
+            + ' account' + (withoutScript > 1 ? 's' : '') + ' marked <strong>NO SCRIPT</strong> above. '
+            + 'Install the optimization script on those accounts to enable AI negatives, anomaly detection, and the rest of the columns.'
+            + '</div>';
+    } else {
+      email += '<div style="padding:10px 15px;background:#e8f5e9;color:#2e7d32;font-size:12px;border-top:1px solid #c8e6c9;">'
+            + 'Full coverage: optimization script is running on every active MCC sub-account.'
+            + '</div>';
+    }
+  } else if (mccStats.mode === 'unsupported') {
     email += '<div style="padding:10px 15px;background:#f8f9fa;color:#888;font-size:11px;border-top:1px solid #eee;">'
-          + 'Coverage check requires running this script at the MCC level (AdsManagerApp not available in current context).'
+          + 'Install this script at the MCC level to see all spending accounts, not just those reporting via DailyDigest.'
           + '</div>';
   }
 
-  // === RECENT ACTIVITY SECTION + DROP-CORRELATION CALLOUT (MCC mode only) ===
+  // Recent activity + drop correlation
   if (activity.mode === 'mcc') {
     email += _renderDropCorrelation(activity, anomalies);
     email += _renderActivitySection(activity);
   }
 
-  // Accounts needing attention (kept — different signal: errors / review backlog)
-  var attention = todayRows.filter(function(r) {
-    return (Number(r.errors) || 0) > 0 ||
-           (Number(r.ai_review) || 0) > 10;
-  });
-
+  // Attention list — only meaningful for accounts running the script
+  var attention = [];
+  for (var att = 0; att < accountList.length; att++) {
+    var ad = accountList[att].digest;
+    if (!ad) continue;
+    if ((Number(ad.errors) || 0) > 0 || (Number(ad.ai_review) || 0) > 10) attention.push(ad);
+  }
   if (attention.length > 0) {
     email += '<div style="padding:15px;background:#fff8e1;border-top:1px solid #ffe082;">';
     email += '<h3 style="color:#e65100;margin:0 0 10px;">Needs Attention (' + attention.length + ' accounts)</h3>';
     email += '<ul style="font-size:13px;margin:0;padding:0 0 0 20px;">';
-    for (var a = 0; a < attention.length; a++) {
-      var ra = attention[a];
+    for (var an = 0; an < attention.length; an++) {
+      var ra = attention[an];
       var issues = [];
       if ((Number(ra.errors) || 0) > 0) issues.push(ra.errors + ' errors');
       if ((Number(ra.ai_review) || 0) > 10) issues.push(ra.ai_review + ' terms need review');
@@ -301,16 +316,113 @@ function _runDigest() {
   email += '</body></html>';
 
   // Subject line surfaces the most urgent signal
-  var subjectBits = [today, todayRows.length + ' accts', totals.convThis.toFixed(0) + ' conv'];
+  var subjectBits = [today, accountList.length + ' accts', totals.convThis.toFixed(0) + ' conv'];
   var drops = anomalies.filter(function(a) { return a.severity === 'drop'; }).length;
   if (drops > 0) subjectBits.push('⚠ ' + drops + ' drop' + (drops > 1 ? 's' : ''));
-  if (orphans.mode === 'mcc' && orphans.list.length > 0) subjectBits.push('⚠ ' + orphans.list.length + ' uninstalled');
+  if (withoutScript > 0) subjectBits.push('⚠ ' + withoutScript + ' uninstalled');
   var correlatedDrops = _correlatedDropAccounts(activity, anomalies).length;
   if (correlatedDrops > 0) subjectBits.push('🔥 ' + correlatedDrops + ' correlated');
 
   _sendMail('Syte Daily Digest | ' + subjectBits.join(' | '), email);
 
-  Logger.log('Daily digest sent: ' + todayRows.length + ' accounts, ' + anomalies.length + ' anomalies, ' + (orphans.list ? orphans.list.length : 0) + ' orphans');
+  Logger.log('Daily digest sent: ' + accountList.length + ' accounts ('
+           + withScript + ' with script, ' + withoutScript + ' without), '
+           + anomalies.length + ' anomalies');
+}
+
+
+// ============================================
+// MCC ACCOUNT STATS (new — drives the unified table)
+// ============================================
+
+/**
+ * Iterate every MCC sub-account and return last-7-day and previous-7-day
+ * conv/cost stats. Used to populate the digest table for every spending
+ * account, not just those reporting via DailyDigest.
+ *
+ * Returns { mode: 'mcc'|'unsupported', byAccount: { normName: stats } }.
+ */
+function _collectMccAccountStats() {
+  if (typeof AdsManagerApp === 'undefined') {
+    return { mode: 'unsupported', byAccount: {} };
+  }
+
+  var byAccount = {};
+  try {
+    var iter = AdsManagerApp.accounts().get();
+    while (iter.hasNext()) {
+      var account = iter.next();
+      var name = account.getName();
+      if (!name) continue;
+
+      var s14 = account.getStatsFor('LAST_14_DAYS');
+      if (s14.getCost() <= 0) continue;
+      var s7 = account.getStatsFor('LAST_7_DAYS');
+
+      var cost7 = s7.getCost();
+      var conv7 = s7.getConversions();
+      byAccount[name.toLowerCase().trim()] = {
+        name: name,
+        cid: account.getCustomerId(),
+        costThis: cost7,
+        convThis: conv7,
+        // Previous 7 days = days 8-14 = 14d total minus last 7d
+        costPrev: Math.max(0, s14.getCost() - cost7),
+        convPrev: Math.max(0, s14.getConversions() - conv7)
+      };
+    }
+  } catch (e) {
+    Logger.log('MCC stats collection error: ' + e.message);
+    return { mode: 'mcc', byAccount: byAccount, error: e.message };
+  }
+
+  return { mode: 'mcc', byAccount: byAccount };
+}
+
+/**
+ * Merge MCC stats with sheet rows into one ordered list. Every spending MCC
+ * sub-account appears; ones running the optimization script also carry the
+ * day's DailyDigest row.
+ *
+ * If MCC isn't available, fall back to sheet-only (sub-account install mode).
+ */
+function _buildUnifiedAccountList(mccStats, digestByAccount) {
+  var list = [];
+
+  if (mccStats.mode === 'mcc') {
+    for (var key in mccStats.byAccount) {
+      var s = mccStats.byAccount[key];
+      var d = digestByAccount[key] || null;
+      list.push({
+        name: s.name,
+        cid: s.cid,
+        hasScript: !!d,
+        convThis: s.convThis,
+        convPrev: s.convPrev,
+        costThis: s.costThis,
+        digest: d
+      });
+    }
+    // Sort by spend desc — biggest accounts on top
+    list.sort(function(a, b) { return (b.costThis || 0) - (a.costThis || 0); });
+  } else {
+    // Sub-account / sheet-only mode
+    for (var dk in digestByAccount) {
+      var dr = digestByAccount[dk];
+      list.push({
+        name: dr.account,
+        cid: null,
+        hasScript: true,
+        convThis: Number(dr.conv_this_week) || 0,
+        convPrev: Number(dr.conv_last_week) || 0,
+        costThis: null,
+        digest: dr
+      });
+    }
+    list.sort(function(a, b) { return (b.convThis || 0) - (a.convThis || 0); });
+  }
+
+  return list;
 }
 
 
