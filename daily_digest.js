@@ -55,15 +55,62 @@ var ACTIVITY_LOOKBACK_DAYS = 7;
 var ACTIVITY_HIDE_IF_ALL_ZERO = true;
 
 function main() {
-  var ss = SpreadsheetApp.openById(SHEET_ID);
+  try {
+    _runDigest();
+  } catch (err) {
+    // Surface failure via email so the user knows the trigger fired but errored,
+    // instead of failing silently into the Logger.
+    Logger.log('Daily digest fatal error: ' + (err && err.stack ? err.stack : err));
+    try {
+      MailApp.sendEmail({
+        to: EMAIL_TO,
+        subject: 'Syte Daily Digest | FAILED',
+        htmlBody: '<p>The daily digest script threw an error before it could send the report.</p>'
+                + '<pre style="background:#f8f9fa;padding:10px;border:1px solid #eee;white-space:pre-wrap;">'
+                + _escapeHtml(String(err && err.stack ? err.stack : err))
+                + '</pre>'
+                + '<p style="color:#666;font-size:12px;">Check the Google Ads Scripts execution log for full context.</p>'
+      });
+    } catch (mailErr) {
+      Logger.log('Also failed to send error email: ' + mailErr.message);
+    }
+    throw err;
+  }
+}
+
+function _runDigest() {
+  // Accept either a bare ID or a full Google Sheets URL in SHEET_ID.
+  var sheetId = _extractSheetId(SHEET_ID);
+  if (!sheetId) {
+    throw new Error('SHEET_ID is not set or unrecognised: "' + SHEET_ID + '". Paste either the sheet ID or the full URL.');
+  }
+
+  var ss;
+  try {
+    ss = SpreadsheetApp.openById(sheetId);
+  } catch (e) {
+    throw new Error('Could not open spreadsheet "' + sheetId + '": ' + e.message
+                  + ' — make sure the script account has access to the sheet.');
+  }
+
   var sheet = ss.getSheetByName('DailyDigest');
-  if (!sheet) { Logger.log('No DailyDigest tab found'); return; }
+  var today = Utilities.formatDate(new Date(), TIMEZONE, 'yyyy-MM-dd');
+
+  if (!sheet) {
+    Logger.log('No DailyDigest tab found');
+    _sendEmptyDigest(today, 'The master sheet has no <strong>DailyDigest</strong> tab. '
+      + 'Either the tab was renamed/deleted, or no client script has written to it yet.');
+    return;
+  }
 
   var data = sheet.getDataRange().getValues();
-  if (data.length < 2) { Logger.log('No data in DailyDigest'); return; }
+  if (data.length < 2) {
+    Logger.log('No data in DailyDigest');
+    _sendEmptyDigest(today, 'The <strong>DailyDigest</strong> tab is empty — no client script has reported yet.');
+    return;
+  }
 
   var headers = data[0];
-  var today = Utilities.formatDate(new Date(), TIMEZONE, 'yyyy-MM-dd');
 
   // Filter to today's rows
   var todayRows = [];
@@ -79,6 +126,17 @@ function main() {
 
   if (todayRows.length === 0) {
     Logger.log('No runs found for today (' + today + ')');
+    // Show what the most-recent date in the sheet is, so the user can tell
+    // whether client scripts simply haven't run yet today vs a date/timezone
+    // mismatch.
+    var lastDate = '';
+    for (var li = data.length - 1; li >= 1; li--) {
+      if (data[li][0]) { lastDate = String(data[li][0]); break; }
+    }
+    _sendEmptyDigest(today,
+      'No client script wrote a row for today (' + today + ', timezone ' + TIMEZONE + ') yet. '
+      + 'Last date seen in the sheet: <strong>' + (lastDate || 'none') + '</strong>. '
+      + 'If this is unexpected, check that client scripts have run and that their date format matches yyyy-MM-dd.');
     return;
   }
 
@@ -499,6 +557,42 @@ function _renderOrphansSection(orphans) {
 // ============================================
 // HELPERS
 // ============================================
+
+// Accept either a bare sheet ID or a full Google Sheets URL.
+function _extractSheetId(s) {
+  if (!s) return null;
+  s = String(s).trim();
+  if (!s || s === 'PASTE_SHEET_ID_HERE') return null;
+  var m = s.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+  if (m) return m[1];
+  // Already a bare ID
+  if (/^[a-zA-Z0-9-_]{20,}$/.test(s)) return s;
+  return null;
+}
+
+function _escapeHtml(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// Send a minimal status email when there's no data to digest, so the user
+// gets confirmation that the script ran and a hint about why it's quiet.
+function _sendEmptyDigest(today, reasonHtml) {
+  var html = '<html><body style="font-family:Arial,sans-serif;max-width:700px;margin:0 auto;color:#333;">'
+    + '<div style="background:linear-gradient(135deg,#1a1a2e,#16213e);color:white;padding:20px;border-radius:8px 8px 0 0;">'
+    + '<h1 style="margin:0;font-size:20px;">Syte Daily Digest</h1>'
+    + '<p style="margin:5px 0 0;opacity:0.8;">' + today + ' | no data</p></div>'
+    + '<div style="padding:20px;background:#fff8e1;border-top:3px solid #e65100;">'
+    + '<h3 style="margin:0 0 8px;color:#e65100;">Nothing to report</h3>'
+    + '<p style="margin:0;font-size:13px;color:#5d4037;">' + reasonHtml + '</p>'
+    + '</div>'
+    + '<div style="padding:15px;color:#999;font-size:11px;text-align:center;">Syte Digital Agency | Daily Digest | syte.co.za</div>'
+    + '</body></html>';
+  MailApp.sendEmail({
+    to: EMAIL_TO,
+    subject: 'Syte Daily Digest | ' + today + ' | no data',
+    htmlBody: html
+  });
+}
 
 function _parseSheetDate(str) {
   if (!str) return null;
