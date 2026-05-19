@@ -461,25 +461,23 @@ function _findOrphanAccounts(data, headers) {
     if (acct) installed[String(acct).toLowerCase().trim()] = true;
   }
 
-  // Iterate all sub-accounts with spend in the last 7 days (broader window
-  // catches accounts that didn't happen to spend yesterday but are still
-  // active and need the script). We pull 7-day stats so each row is
-  // priority-rankable by recent spend, not just one day.
+  // Iterate all sub-accounts and filter by spend after we have the stats.
+  // Filtering with .withCondition("metrics.cost_micros > 0") on
+  // AdsManagerApp.accounts() now raises PROHIBITED_METRIC_IN_SELECT_OR_WHERE
+  // because cost_micros is not selectable on customer_client.
   var orphans = [];
   try {
-    var iter = AdsManagerApp.accounts()
-      .withCondition("metrics.cost_micros > 0")
-      .forDateRange("LAST_7_DAYS")
-      .get();
+    var iter = AdsManagerApp.accounts().get();
 
     while (iter.hasNext()) {
       var account = iter.next();
       var name = account.getName();
       if (!name) continue;
+
+      var stats7 = account.getStatsFor("LAST_7_DAYS");
+      if (stats7.getCost() <= 0) continue; // no spend in the window — ignore
       if (installed[name.toLowerCase().trim()]) continue;
 
-      // 7-day stats for sorting + context, plus yesterday for "is it still active"
-      var stats7 = account.getStatsFor("LAST_7_DAYS");
       var stats1 = account.getStatsFor("YESTERDAY");
       orphans.push({
         name: name,
@@ -662,15 +660,17 @@ function _collectChangeActivity() {
   var byAccount = {};
 
   try {
-    var iter = AdsManagerApp.accounts()
-      .withCondition("metrics.cost_micros > 0")
-      .forDateRange("LAST_" + ACTIVITY_LOOKBACK_DAYS + "_DAYS")
-      .get();
+    // No metric filter — see _findOrphanAccounts comment. Skip silent accounts
+    // after we have stats in hand.
+    var iter = AdsManagerApp.accounts().get();
 
     while (iter.hasNext()) {
       var account = iter.next();
       var name = account.getName();
       if (!name) continue;
+
+      var stats = account.getStatsFor("LAST_" + ACTIVITY_LOOKBACK_DAYS + "_DAYS");
+      if (stats.getCost() <= 0) continue;
 
       AdsManagerApp.select(account);
       var bucket = {
