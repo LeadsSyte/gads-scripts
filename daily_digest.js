@@ -113,10 +113,11 @@ function _runDigest() {
 
   var headers = data[0];
 
-  // Filter to today's rows
+  // Filter to today's rows — normalise the cell to yyyy-MM-dd in TIMEZONE
+  // because Sheets stores the column as Date objects, not strings.
   var todayRows = [];
   for (var i = 1; i < data.length; i++) {
-    if (String(data[i][0]) === today) {
+    if (_toDateStr(data[i][0]) === today) {
       var row = {};
       for (var j = 0; j < headers.length; j++) {
         row[headers[j]] = data[i][j];
@@ -132,7 +133,7 @@ function _runDigest() {
     // mismatch.
     var lastDate = '';
     for (var li = data.length - 1; li >= 1; li--) {
-      if (data[li][0]) { lastDate = String(data[li][0]); break; }
+      if (data[li][0]) { lastDate = _toDateStr(data[li][0]) || String(data[li][0]); break; }
     }
     _sendEmptyDigest(today,
       'No client script wrote a row for today (' + today + ', timezone ' + TIMEZONE + ') yet. '
@@ -339,9 +340,9 @@ function _detectAnomalies(todayRows, data, headers, todayStr) {
   // Group historical conv_this_week per account (excluding today)
   var byAcct = {};
   for (var i = 1; i < data.length; i++) {
-    var dateStr = String(data[i][0]);
+    var dateStr = _toDateStr(data[i][0]);
     if (dateStr === todayStr) continue;
-    var rowDate = _parseSheetDate(dateStr);
+    var rowDate = _parseSheetDate(data[i][0]);
     if (!rowDate || rowDate < cutoff) continue;
     var acct = data[i][colIdx['account']];
     if (!acct) continue;
@@ -454,7 +455,7 @@ function _findOrphanAccounts(data, headers) {
   var cutoff = new Date(now.getTime() - ORPHAN_LOOKBACK_DAYS * 24 * 60 * 60 * 1000);
   var installed = {};
   for (var i = 1; i < data.length; i++) {
-    var rowDate = _parseSheetDate(String(data[i][0]));
+    var rowDate = _parseSheetDate(data[i][0]);
     if (!rowDate || rowDate < cutoff) continue;
     var acct = data[i][colIdx['account']];
     if (acct) installed[String(acct).toLowerCase().trim()] = true;
@@ -601,12 +602,32 @@ function _sendMail(subject, htmlBody) {
   Logger.log('Email send call returned without error. Subject: ' + subject);
 }
 
-function _parseSheetDate(str) {
-  if (!str) return null;
-  // Expected format: yyyy-MM-dd
-  var m = String(str).match(/^(\d{4})-(\d{2})-(\d{2})/);
-  if (!m) return null;
-  return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+function _parseSheetDate(val) {
+  if (val === null || val === undefined || val === '') return null;
+  if (val instanceof Date) {
+    if (isNaN(val.getTime())) return null;
+    // Use the configured TIMEZONE so a Date stored as midnight-in-some-zone
+    // collapses to the same calendar day the user thinks of as "today".
+    var s = Utilities.formatDate(val, TIMEZONE, 'yyyy-MM-dd');
+    var p = s.split('-');
+    return new Date(Number(p[0]), Number(p[1]) - 1, Number(p[2]));
+  }
+  var str = String(val);
+  var m = str.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (m) return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  // Last resort: let JS try to parse it (handles "Mon May 18 2026 ..." form)
+  var d = new Date(str);
+  if (isNaN(d.getTime())) return null;
+  var s2 = Utilities.formatDate(d, TIMEZONE, 'yyyy-MM-dd').split('-');
+  return new Date(Number(s2[0]), Number(s2[1]) - 1, Number(s2[2]));
+}
+
+// Normalise a sheet cell value to a yyyy-MM-dd string in TIMEZONE.
+// Handles Date objects and any string the sheet might give us.
+function _toDateStr(val) {
+  var d = _parseSheetDate(val);
+  if (!d) return '';
+  return Utilities.formatDate(d, TIMEZONE, 'yyyy-MM-dd');
 }
 
 function _median(arr) {
