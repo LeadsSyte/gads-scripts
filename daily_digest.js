@@ -152,12 +152,16 @@ function _runDigest() {
   }
 
   // === Aggregate totals ===
-  var totals = { aiNegated: 0, aiReview: 0, winners: 0, errors: 0, convThis: 0, convPrev: 0, costThis: 0 };
+  var totals = { aiNegated: 0, aiReview: 0, winners: 0, errors: 0,
+                 convThis: 0, convPrev: 0, costThis: 0,
+                 convMtd: 0, convPrevMtd: 0 };
   for (var ti = 0; ti < accountList.length; ti++) {
     var a = accountList[ti];
     totals.convThis += a.convThis || 0;
     totals.convPrev += a.convPrev || 0;
     totals.costThis += a.costThis || 0;
+    totals.convMtd += a.convMtd || 0;
+    totals.convPrevMtd += a.convPrevMtd || 0;
     if (a.digest) {
       totals.aiNegated += Number(a.digest.ai_negated) || 0;
       totals.aiReview += Number(a.digest.ai_review) || 0;
@@ -168,6 +172,8 @@ function _runDigest() {
 
   var convChange = totals.convPrev > 0 ? ((totals.convThis - totals.convPrev) / totals.convPrev * 100).toFixed(0) : 'N/A';
   var convColor = totals.convThis >= totals.convPrev ? '#2e7d32' : '#c62828';
+  var mtdChange = totals.convPrevMtd > 0 ? ((totals.convMtd - totals.convPrevMtd) / totals.convPrevMtd * 100).toFixed(0) : 'N/A';
+  var mtdColor = totals.convMtd >= totals.convPrevMtd ? '#2e7d32' : '#c62828';
 
   // === Build email ===
   var email = '<html><body style="font-family:Arial,sans-serif;max-width:1000px;margin:0 auto;color:#333;">';
@@ -182,6 +188,8 @@ function _runDigest() {
   email += '<td style="padding:0 20px 0 0;"><strong style="font-size:24px;color:' + convColor + ';">' + totals.convThis.toFixed(0) + '</strong><br><span style="font-size:12px;color:#666;">Conv last 7d</span></td>';
   email += '<td style="padding:0 20px 0 0;"><strong style="font-size:24px;">' + convChange + '%</strong><br><span style="font-size:12px;color:#666;">vs prev 7d</span></td>';
   if (mccStats.mode === 'mcc') {
+    email += '<td style="padding:0 20px 0 0;"><strong style="font-size:24px;color:' + mtdColor + ';">' + totals.convMtd.toFixed(0) + '</strong><br><span style="font-size:12px;color:#666;">Conv MTD</span></td>';
+    email += '<td style="padding:0 20px 0 0;"><strong style="font-size:24px;">' + mtdChange + '%</strong><br><span style="font-size:12px;color:#666;">vs prev MTD</span></td>';
     email += '<td style="padding:0 20px 0 0;"><strong style="font-size:24px;">' + totals.costThis.toFixed(0) + '</strong><br><span style="font-size:12px;color:#666;">Spend last 7d</span></td>';
   }
   email += '<td style="padding:0 20px 0 0;"><strong style="font-size:24px;color:#2d6cdf;">' + totals.aiNegated + '</strong><br><span style="font-size:12px;color:#666;">AI negated</span></td>';
@@ -192,6 +200,11 @@ function _runDigest() {
 
   // === Anomalies section ===
   if (anomalies.length > 0) email += _renderAnomaliesSection(anomalies);
+
+  // === MTD Biggest Losers / Winners summary (MCC mode only) ===
+  if (mccStats.mode === 'mcc') {
+    email += _renderMtdSummary(accountList);
+  }
 
   // === Per-account table (unified MCC + sheet) ===
   var anomalyByAccount = {};
@@ -213,7 +226,11 @@ function _runDigest() {
   email += '<th style="padding:8px;text-align:center;">Script</th>';
   email += '<th style="padding:8px;text-align:right;">Conv 7d</th>';
   email += '<th style="padding:8px;text-align:right;">vs Prev 7d</th>';
-  if (mccStats.mode === 'mcc') email += '<th style="padding:8px;text-align:right;">Spend 7d</th>';
+  if (mccStats.mode === 'mcc') {
+    email += '<th style="padding:8px;text-align:right;">Conv MTD</th>';
+    email += '<th style="padding:8px;text-align:right;">vs Prev MTD</th>';
+    email += '<th style="padding:8px;text-align:right;">Spend 7d</th>';
+  }
   if (anyActivity) email += '<th style="padding:8px;text-align:right;" title="Changes in the last ' + ACTIVITY_LOOKBACK_DAYS + ' days (human / script / google-auto)">Changes 7d</th>';
   email += '<th style="padding:8px;text-align:right;">vs Baseline</th>';
   email += '<th style="padding:8px;text-align:right;">AI Neg</th>';
@@ -223,8 +240,37 @@ function _runDigest() {
   email += '<th style="padding:8px;text-align:right;">Errors</th>';
   email += '</tr>';
 
+  // Helpers for column count so the group-divider colspan stays in sync
+  var fixedCols = 6; // Account, Script, Conv 7d, vs Prev 7d, vs Baseline, AI Neg
+  fixedCols += 4; // Review, KW Paused, Winners, Errors
+  if (mccStats.mode === 'mcc') fixedCols += 3; // Conv MTD, vs Prev MTD, Spend 7d
+  if (anyActivity) fixedCols += 1;
+
+  // Track group boundary so we can render a divider between losers and winners.
+  var winnersStartIdx = -1;
+  if (mccStats.mode === 'mcc') {
+    for (var fi = 0; fi < accountList.length; fi++) {
+      var fp = accountList[fi].mtdDeltaPct;
+      if (fp !== null && fp >= 0) { winnersStartIdx = fi; break; }
+    }
+  }
+
   for (var ri = 0; ri < accountList.length; ri++) {
     var acc = accountList[ri];
+
+    // Group divider rows
+    if (mccStats.mode === 'mcc') {
+      if (ri === 0 && winnersStartIdx !== 0 && acc.mtdDeltaPct !== null && acc.mtdDeltaPct < 0) {
+        email += '<tr style="background:#ffe0e0;"><td colspan="' + fixedCols + '" style="padding:6px 8px;font-weight:700;color:#c62828;text-transform:uppercase;letter-spacing:0.5px;font-size:11px;">▼ Biggest Losers (MTD vs same period last month)</td></tr>';
+      }
+      if (ri === winnersStartIdx && winnersStartIdx !== -1) {
+        email += '<tr style="background:#e0f2e0;"><td colspan="' + fixedCols + '" style="padding:6px 8px;font-weight:700;color:#2e7d32;text-transform:uppercase;letter-spacing:0.5px;font-size:11px;">▲ Biggest Winners (MTD vs same period last month)</td></tr>';
+      }
+      if (acc.mtdDeltaPct === null && (ri === 0 || accountList[ri - 1].mtdDeltaPct !== null)) {
+        email += '<tr style="background:#f0f0f0;"><td colspan="' + fixedCols + '" style="padding:6px 8px;font-weight:700;color:#666;text-transform:uppercase;letter-spacing:0.5px;font-size:11px;">— No Prior MTD Baseline</td></tr>';
+      }
+    }
+
     var key = String(acc.name).toLowerCase().trim();
     var anom = anomalyByAccount[key];
     var d = acc.digest;
@@ -261,12 +307,33 @@ function _runDigest() {
       scriptBadge = '<span style="padding:2px 6px;border-radius:4px;font-size:10px;font-weight:600;background:#e8f5e9;color:#2e7d32;">LIVE</span>';
     }
 
+    // MTD cells
+    var mtdCell = '<span style="color:#bbb;">—</span>';
+    var mtdTrendCell = '<span style="color:#bbb;">—</span>';
+    if (mccStats.mode === 'mcc') {
+      mtdCell = (acc.convMtd || 0).toFixed(0);
+      if (acc.mtdDeltaPct === null) {
+        mtdTrendCell = '<span style="color:#bbb;">new</span>';
+      } else {
+        var mtdColor = acc.mtdDeltaPct >= 0 ? '#2e7d32' : '#c62828';
+        var mtdSign = acc.mtdDeltaPct >= 0 ? '+' : '';
+        var mtdArrow = acc.mtdDeltaPct >= 0 ? '↑' : '↓';
+        mtdTrendCell = '<span style="color:' + mtdColor + ';font-weight:600;">'
+                     + mtdSign + acc.mtdDeltaPct.toFixed(0) + '% ' + mtdArrow + '</span>'
+                     + ' <span style="font-size:10px;color:#888;">(prev ' + (acc.convPrevMtd || 0).toFixed(0) + ')</span>';
+      }
+    }
+
     email += '<tr style="background:' + rowBg + ';border-bottom:1px solid #eee;">';
     email += '<td style="padding:6px 8px;font-weight:600;">' + acc.name + (anom ? ' ' + _anomalyBadge(anom.severity) : '') + '</td>';
     email += '<td style="padding:6px 8px;text-align:center;">' + scriptBadge + '</td>';
     email += '<td style="padding:6px 8px;text-align:right;">' + (acc.convThis || 0).toFixed(0) + '</td>';
     email += '<td style="padding:6px 8px;text-align:right;">' + trendCell + '</td>';
-    if (mccStats.mode === 'mcc') email += '<td style="padding:6px 8px;text-align:right;color:#666;">' + (acc.costThis || 0).toFixed(0) + '</td>';
+    if (mccStats.mode === 'mcc') {
+      email += '<td style="padding:6px 8px;text-align:right;font-weight:600;">' + mtdCell + '</td>';
+      email += '<td style="padding:6px 8px;text-align:right;">' + mtdTrendCell + '</td>';
+      email += '<td style="padding:6px 8px;text-align:right;color:#666;">' + (acc.costThis || 0).toFixed(0) + '</td>';
+    }
     if (anyActivity) {
       var bucket = activity.byAccount[key] || null;
       var changesCell;
@@ -371,10 +438,88 @@ function _runDigest() {
  *
  * Returns { mode: 'mcc'|'unsupported', byAccount: { normName: stats } }.
  */
+// Top losers + top winners by MTD vs prev-month-same-period.
+function _renderMtdSummary(accountList) {
+  // Require some volume in either window so a 1-conv jump doesn't dominate.
+  var MIN_CONV = 3;
+
+  var ranked = [];
+  for (var i = 0; i < accountList.length; i++) {
+    var a = accountList[i];
+    if (a.mtdDeltaPct === null) continue;
+    if ((a.convMtd || 0) < MIN_CONV && (a.convPrevMtd || 0) < MIN_CONV) continue;
+    ranked.push(a);
+  }
+  if (ranked.length === 0) return '';
+
+  var losers = ranked.filter(function(a) { return a.mtdDeltaPct < 0; })
+                     .sort(function(a, b) { return a.mtdDeltaPct - b.mtdDeltaPct; })
+                     .slice(0, 5);
+  var winners = ranked.filter(function(a) { return a.mtdDeltaPct >= 0; })
+                      .sort(function(a, b) { return b.mtdDeltaPct - a.mtdDeltaPct; })
+                      .slice(0, 5);
+
+  if (losers.length === 0 && winners.length === 0) return '';
+
+  function row(a, isLoser) {
+    var color = isLoser ? '#c62828' : '#2e7d32';
+    var sign = a.mtdDeltaPct >= 0 ? '+' : '';
+    return '<li><strong>' + a.name + '</strong> — '
+         + (a.convMtd || 0).toFixed(0) + ' MTD vs ' + (a.convPrevMtd || 0).toFixed(0) + ' prior '
+         + '<span style="color:' + color + ';font-weight:600;">(' + sign + a.mtdDeltaPct.toFixed(0) + '%)</span></li>';
+  }
+
+  var html = '<div style="padding:15px;background:#fafafa;border-top:1px solid #eee;border-bottom:1px solid #eee;">';
+  html += '<h3 style="margin:0 0 10px;color:#1a1a2e;font-size:14px;">MTD performance vs same period last month</h3>';
+  html += '<table style="width:100%;border-collapse:collapse;"><tr style="vertical-align:top;">';
+
+  html += '<td style="width:50%;padding-right:10px;">';
+  if (losers.length > 0) {
+    html += '<strong style="color:#c62828;">▼ Biggest losers (' + losers.length + ')</strong>';
+    html += '<ul style="margin:4px 0 0;padding:0 0 0 20px;font-size:13px;">';
+    losers.forEach(function(a) { html += row(a, true); });
+    html += '</ul>';
+  } else {
+    html += '<span style="color:#999;font-size:13px;">No accounts down vs same period last month.</span>';
+  }
+  html += '</td>';
+
+  html += '<td style="width:50%;padding-left:10px;">';
+  if (winners.length > 0) {
+    html += '<strong style="color:#2e7d32;">▲ Biggest winners (' + winners.length + ')</strong>';
+    html += '<ul style="margin:4px 0 0;padding:0 0 0 20px;font-size:13px;">';
+    winners.forEach(function(a) { html += row(a, false); });
+    html += '</ul>';
+  } else {
+    html += '<span style="color:#999;font-size:13px;">No accounts up vs same period last month.</span>';
+  }
+  html += '</td>';
+
+  html += '</tr></table></div>';
+  return html;
+}
+
+
 function _collectMccAccountStats() {
   if (typeof AdsManagerApp === 'undefined') {
     return { mode: 'unsupported', byAccount: {} };
   }
+
+  // Compute the MTD and "previous month, same period" date ranges once,
+  // anchored to the local TIMEZONE so accounts always compare on calendar
+  // months as the user reads them. Format: yyyyMMdd (what getStatsFor accepts).
+  var tzToday = Utilities.formatDate(new Date(), TIMEZONE, 'yyyy-MM-dd').split('-');
+  var Y = Number(tzToday[0]), M = Number(tzToday[1]), D = Number(tzToday[2]);
+  var pY = M === 1 ? Y - 1 : Y;
+  var pM = M === 1 ? 12 : M - 1;
+  // Days in previous month (handles Feb / leap years)
+  var daysInPrev = new Date(pY, pM, 0).getDate();
+  var pD = Math.min(D, daysInPrev);
+  var pad = function(n) { return n < 10 ? '0' + n : '' + n; };
+  var mtdStart = '' + Y + pad(M) + '01';
+  var mtdEnd = '' + Y + pad(M) + pad(D);
+  var prevMtdStart = '' + pY + pad(pM) + '01';
+  var prevMtdEnd = '' + pY + pad(pM) + pad(pD);
 
   var byAccount = {};
   try {
@@ -387,6 +532,8 @@ function _collectMccAccountStats() {
       var s14 = account.getStatsFor('LAST_14_DAYS');
       if (s14.getCost() <= 0) continue;
       var s7 = account.getStatsFor('LAST_7_DAYS');
+      var sMtd = account.getStatsFor(mtdStart, mtdEnd);
+      var sPrevMtd = account.getStatsFor(prevMtdStart, prevMtdEnd);
 
       var cost7 = s7.getCost();
       var conv7 = s7.getConversions();
@@ -397,7 +544,12 @@ function _collectMccAccountStats() {
         convThis: conv7,
         // Previous 7 days = days 8-14 = 14d total minus last 7d
         costPrev: Math.max(0, s14.getCost() - cost7),
-        convPrev: Math.max(0, s14.getConversions() - conv7)
+        convPrev: Math.max(0, s14.getConversions() - conv7),
+        // MTD vs same period last month
+        costMtd: sMtd.getCost(),
+        convMtd: sMtd.getConversions(),
+        costPrevMtd: sPrevMtd.getCost(),
+        convPrevMtd: sPrevMtd.getConversions()
       };
     }
   } catch (e) {
@@ -405,13 +557,17 @@ function _collectMccAccountStats() {
     return { mode: 'mcc', byAccount: byAccount, error: e.message };
   }
 
-  return { mode: 'mcc', byAccount: byAccount };
+  return { mode: 'mcc', byAccount: byAccount, mtdEnd: mtdEnd, prevMtdEnd: prevMtdEnd };
 }
 
 /**
  * Merge MCC stats with sheet rows into one ordered list. Every spending MCC
  * sub-account appears; ones running the optimization script also carry the
  * day's DailyDigest row.
+ *
+ * Sorted by MTD-vs-previous-MTD delta ascending: biggest losers at the top,
+ * biggest winners at the bottom. The render layer inserts a group divider
+ * between negative and non-negative deltas so the two groups read cleanly.
  *
  * If MCC isn't available, fall back to sheet-only (sub-account install mode).
  */
@@ -422,6 +578,11 @@ function _buildUnifiedAccountList(mccStats, digestByAccount) {
     for (var key in mccStats.byAccount) {
       var s = mccStats.byAccount[key];
       var d = digestByAccount[key] || null;
+      var convMtd = s.convMtd || 0;
+      var convPrevMtd = s.convPrevMtd || 0;
+      var mtdDeltaPct = convPrevMtd > 0
+        ? ((convMtd - convPrevMtd) / convPrevMtd) * 100
+        : (convMtd > 0 ? null : 0); // new account / no prior baseline
       list.push({
         name: s.name,
         cid: s.cid,
@@ -429,13 +590,26 @@ function _buildUnifiedAccountList(mccStats, digestByAccount) {
         convThis: s.convThis,
         convPrev: s.convPrev,
         costThis: s.costThis,
+        convMtd: convMtd,
+        convPrevMtd: convPrevMtd,
+        costMtd: s.costMtd || 0,
+        costPrevMtd: s.costPrevMtd || 0,
+        mtdDeltaPct: mtdDeltaPct,
         digest: d
       });
     }
-    // Sort by spend desc — biggest accounts on top
-    list.sort(function(a, b) { return (b.costThis || 0) - (a.costThis || 0); });
+    // Losers first (most-negative MTD delta on top), winners at bottom.
+    // Accounts with no prior baseline sink to the bottom.
+    list.sort(function(a, b) {
+      var aN = a.mtdDeltaPct === null;
+      var bN = b.mtdDeltaPct === null;
+      if (aN && !bN) return 1;
+      if (bN && !aN) return -1;
+      if (aN && bN) return (b.convMtd || 0) - (a.convMtd || 0);
+      return a.mtdDeltaPct - b.mtdDeltaPct;
+    });
   } else {
-    // Sub-account / sheet-only mode
+    // Sub-account / sheet-only mode — no MTD data available
     for (var dk in digestByAccount) {
       var dr = digestByAccount[dk];
       list.push({
@@ -445,6 +619,11 @@ function _buildUnifiedAccountList(mccStats, digestByAccount) {
         convThis: Number(dr.conv_this_week) || 0,
         convPrev: Number(dr.conv_last_week) || 0,
         costThis: null,
+        convMtd: null,
+        convPrevMtd: null,
+        costMtd: null,
+        costPrevMtd: null,
+        mtdDeltaPct: null,
         digest: dr
       });
     }
