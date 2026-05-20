@@ -196,7 +196,7 @@ function _runDigest() {
 
   // === Aggregate totals ===
   var totals = { aiNegated: 0, aiReview: 0, winners: 0, errors: 0,
-                 convThis: 0, convPrev: 0, costThis: 0,
+                 convThis: 0, convPrev: 0, costThis: 0, costMtd: 0, costPrevMtd: 0,
                  convMtd: 0, convPrevMtd: 0,
                  revThis: 0, revPrev: 0, revMtd: 0, revPrevMtd: 0 };
   for (var ti = 0; ti < accountList.length; ti++) {
@@ -204,6 +204,8 @@ function _runDigest() {
     totals.convThis += a.convThis || 0;
     totals.convPrev += a.convPrev || 0;
     totals.costThis += a.costThis || 0;
+    totals.costMtd += a.costMtd || 0;
+    totals.costPrevMtd += a.costPrevMtd || 0;
     totals.convMtd += a.convMtd || 0;
     totals.convPrevMtd += a.convPrevMtd || 0;
     if (a.isEcommerce) {
@@ -228,6 +230,7 @@ function _runDigest() {
   var revColor = totals.revThis >= totals.revPrev ? '#2e7d32' : '#c62828';
   var revMtdChange = totals.revPrevMtd > 0 ? ((totals.revMtd - totals.revPrevMtd) / totals.revPrevMtd * 100).toFixed(0) : 'N/A';
   var revMtdColor = totals.revMtd >= totals.revPrevMtd ? '#2e7d32' : '#c62828';
+  var spendMtdChange = totals.costPrevMtd > 0 ? ((totals.costMtd - totals.costPrevMtd) / totals.costPrevMtd * 100).toFixed(0) : 'N/A';
 
   // === Build email ===
   var email = '<html><body style="font-family:Arial,sans-serif;max-width:1000px;margin:0 auto;color:#333;">';
@@ -249,6 +252,7 @@ function _runDigest() {
       email += '<td style="padding:0 20px 0 0;"><strong style="font-size:24px;color:' + revMtdColor + ';">' + _fmtMoney(totals.revMtd) + '</strong><br><span style="font-size:12px;color:#666;">Revenue MTD (' + revMtdChange + '%)</span></td>';
     }
     email += '<td style="padding:0 20px 0 0;"><strong style="font-size:24px;">' + totals.costThis.toFixed(0) + '</strong><br><span style="font-size:12px;color:#666;">Spend last 7d</span></td>';
+    email += '<td style="padding:0 20px 0 0;"><strong style="font-size:24px;">' + totals.costMtd.toFixed(0) + '</strong><br><span style="font-size:12px;color:#666;">Spend MTD (' + spendMtdChange + '%)</span></td>';
   }
   email += '<td style="padding:0 20px 0 0;"><strong style="font-size:24px;color:#2d6cdf;">' + totals.aiNegated + '</strong><br><span style="font-size:12px;color:#666;">AI negated</span></td>';
   email += '<td style="padding:0 20px 0 0;"><strong style="font-size:24px;color:#e65100;">' + totals.aiReview + '</strong><br><span style="font-size:12px;color:#666;">Need review</span></td>';
@@ -294,6 +298,7 @@ function _runDigest() {
       email += '<th style="padding:8px;text-align:right;background:#e8f5e9;">vs Prev MTD</th>';
     }
     email += '<th style="padding:8px;text-align:right;">Spend 7d</th>';
+    email += '<th style="padding:8px;text-align:right;">Spend MTD</th>';
   }
   if (anyActivity) email += '<th style="padding:8px;text-align:right;" title="Changes in the last ' + ACTIVITY_LOOKBACK_DAYS + ' days (human / script / google-auto)">Changes 7d</th>';
   email += '<th style="padding:8px;text-align:right;">vs Baseline</th>';
@@ -307,7 +312,7 @@ function _runDigest() {
   // Helpers for column count so the group-divider colspan stays in sync
   var fixedCols = 6; // Account, Script, Conv 7d, vs Prev 7d, vs Baseline, AI Neg
   fixedCols += 4; // Review, KW Paused, Winners, Errors
-  if (mccStats.mode === 'mcc') fixedCols += 3; // Conv MTD, vs Prev MTD, Spend 7d
+  if (mccStats.mode === 'mcc') fixedCols += 4; // Conv MTD, vs Prev MTD, Spend 7d, Spend MTD
   if (mccStats.mode === 'mcc' && hasEcommerce) fixedCols += 4; // Rev 7d, vs prev 7d, Rev MTD, vs prev MTD
   if (anyActivity) fixedCols += 1;
 
@@ -434,6 +439,7 @@ function _runDigest() {
         }
       }
       email += '<td style="padding:6px 8px;text-align:right;color:#666;">' + (acc.costThis || 0).toFixed(0) + '</td>';
+      email += '<td style="padding:6px 8px;text-align:right;color:#666;font-weight:600;">' + (acc.costMtd || 0).toFixed(0) + '</td>';
     }
     if (anyActivity) {
       var bucket = activity.byAccount[key] || null;
@@ -641,6 +647,7 @@ function _mergeRevenueIntoMccStats(byAccount) {
   };
 
   Object.keys(ranges).forEach(function(field) {
+    var seen = 0, matched = 0, totalRev = 0;
     try {
       var awql = "SELECT ExternalCustomerId, ConversionValue "
                + "FROM ACCOUNT_PERFORMANCE_REPORT "
@@ -649,14 +656,19 @@ function _mergeRevenueIntoMccStats(byAccount) {
       var rows = report.rows();
       while (rows.hasNext()) {
         var row = rows.next();
+        seen++;
         var cidNum = String(row['ExternalCustomerId'] || '').replace(/[^0-9]/g, '');
         var key = cidToKey[cidNum];
         if (!key) continue;
+        matched++;
         var v = Number(row['ConversionValue']) || 0;
+        totalRev += v;
         byAccount[key][field] = v;
       }
+      Logger.log('Revenue ' + field + ' (' + ranges[field] + '): ' + seen + ' rows from report, '
+               + matched + ' matched CIDs, total=' + totalRev.toFixed(0));
     } catch (e) {
-      Logger.log('Revenue report (' + field + ') failed: ' + e.message);
+      Logger.log('Revenue report (' + field + ') FAILED: ' + e.message);
     }
   });
 }
