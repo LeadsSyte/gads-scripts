@@ -396,7 +396,7 @@ export default function MonthlyReport() {
       const aliceText = await claudeComplete({
         system: ALICE_AEO_SYSTEM,
         messages: [{ role: 'user', content: aeoPayload }],
-        model: 'claude-sonnet-4-20250514',
+        model: 'claude-sonnet-4-6',
         max_tokens: 1200,
         temperature: 0.7
       });
@@ -407,7 +407,7 @@ export default function MonthlyReport() {
       const micrositeText = await claudeComplete({
         system: MICROSITE_AEO_SYSTEM,
         messages: [{ role: 'user', content: aeoPayload }],
-        model: 'claude-sonnet-4-20250514',
+        model: 'claude-sonnet-4-6',
         // Was 1200 — the AEO microsite JSON has narratives, priorities,
         // highlights, work items etc. that easily blow past that and
         // truncate mid-JSON, which then fails extractJSON. 4000 leaves
@@ -428,7 +428,7 @@ export default function MonthlyReport() {
       const qaText = await claudeComplete({
         system: QA_AEO_SYSTEM,
         messages: [{ role: 'user', content: 'Alice email to review:\n\n' + aliceText }],
-        model: 'claude-sonnet-4-20250514',
+        model: 'claude-sonnet-4-6',
         max_tokens: 500,
         temperature: 0
       });
@@ -512,7 +512,7 @@ export default function MonthlyReport() {
       const aliceText = await claudeComplete({
         system: ALICE_SYSTEM,
         messages: [{ role: 'user', content: payload }],
-        model: 'claude-sonnet-4-20250514',
+        model: 'claude-sonnet-4-6',
         max_tokens: 1000,
         temperature: 0.7
       });
@@ -524,7 +524,7 @@ export default function MonthlyReport() {
       const micrositeText = await claudeComplete({
         system: MICROSITE_SYSTEM,
         messages: [{ role: 'user', content: payload }],
-        model: 'claude-sonnet-4-20250514',
+        model: 'claude-sonnet-4-6',
         // Was 1000 — same truncation issue as the AEO path. Bumped to 4000.
         max_tokens: 4000,
         temperature: 0.5
@@ -542,7 +542,7 @@ export default function MonthlyReport() {
       const qaText = await claudeComplete({
         system: QA_SYSTEM,
         messages: [{ role: 'user', content: 'Alice email to review:\n\n' + aliceText }],
-        model: 'claude-sonnet-4-20250514',
+        model: 'claude-sonnet-4-6',
         max_tokens: 500,
         temperature: 0
       });
