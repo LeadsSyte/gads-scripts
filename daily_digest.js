@@ -604,6 +604,17 @@ function _collectMccData(activityFilter) {
   var activityByAccount = {};
   var processed = 0, withSpend = 0, withActivity = 0;
 
+  // Pre-compute the widest revenue window we need (from prev-MTD start through
+  // today) so a single GAQL query per account covers all 4 buckets.
+  var revRangeStart = (prevMtdStart < _ymd(new Date(new Date().getTime() - 14 * 86400000)))
+                    ? prevMtdStart : _ymd(new Date(new Date().getTime() - 14 * 86400000));
+  var revRangeEnd = mtdEnd;
+  // Bucket boundaries (yyyyMMdd) for the JS-side date splitting
+  var d7Start = _ymd(new Date(new Date().getTime() - 6 * 86400000));
+  var d7End = mtdEnd; // today
+  var d14Start = _ymd(new Date(new Date().getTime() - 13 * 86400000));
+  var d14End = _ymd(new Date(new Date().getTime() - 7 * 86400000));
+
   try {
     var iter = AdsManagerApp.accounts().get();
     while (iter.hasNext()) {
@@ -615,48 +626,46 @@ function _collectMccData(activityFilter) {
       var name = account.getName();
       if (!name) continue;
 
-      // Cheap pre-filter: skip if 14d spend is zero. Uses ManagedAccount.Stats
-      // (no select required), saving a context switch on dead accounts.
-      var s14pre = account.getStatsFor('LAST_14_DAYS');
-      if (s14pre.getCost() <= 0) continue;
+      // Cheap pre-filter via ManagedAccount.Stats (no select needed yet).
+      var s14 = account.getStatsFor('LAST_14_DAYS');
+      if (s14.getCost() <= 0) continue;
       withSpend++;
 
-      // Select the account so we can use AdsApp.currentAccount().getStatsFor(),
-      // whose Stats objects expose getConversionValue() — ManagedAccount.Stats
-      // does not. This also primes the context for the change_event scrape.
-      AdsManagerApp.select(account);
-      var current = AdsApp.currentAccount();
-
-      var s7 = current.getStatsFor('LAST_7_DAYS');
-      var s14 = current.getStatsFor('LAST_14_DAYS');
-      var sMtd = current.getStatsFor(mtdStart, mtdEnd);
-      var sPrevMtd = current.getStatsFor(prevMtdStart, prevMtdEnd);
+      var s7 = account.getStatsFor('LAST_7_DAYS');
+      var sMtd = account.getStatsFor(mtdStart, mtdEnd);
+      var sPrevMtd = account.getStatsFor(prevMtdStart, prevMtdEnd);
 
       var cost7 = s7.getCost();
       var conv7 = s7.getConversions();
-      var rev7 = s7.getConversionValue();
       var key = name.toLowerCase().trim();
       byAccount[key] = {
         name: name,
         cid: account.getCustomerId(),
         costThis: cost7,
         convThis: conv7,
-        revThis: rev7,
+        revThis: 0,
         // Previous 7 days = days 8-14 = 14d total minus last 7d
         costPrev: Math.max(0, s14.getCost() - cost7),
         convPrev: Math.max(0, s14.getConversions() - conv7),
-        revPrev: Math.max(0, s14.getConversionValue() - rev7),
+        revPrev: 0,
         // MTD vs same period last month
         costMtd: sMtd.getCost(),
         convMtd: sMtd.getConversions(),
-        revMtd: sMtd.getConversionValue(),
+        revMtd: 0,
         costPrevMtd: sPrevMtd.getCost(),
         convPrevMtd: sPrevMtd.getConversions(),
-        revPrevMtd: sPrevMtd.getConversionValue()
+        revPrevMtd: 0
       };
 
-      // Activity scrape — only if this account is in scope. Account is
-      // already selected above so this is just the GAQL cost.
+      // Switch into account scope for revenue (GAQL on `customer`) and the
+      // change_event scrape — both require account context. Stats has no
+      // getConversionValue(), so we have to read it via the report API.
+      AdsManagerApp.select(account);
+
+      _fillRevenueBuckets(byAccount[key], revRangeStart, revRangeEnd,
+                          d7Start, d7End, d14Start, d14End,
+                          mtdStart, mtdEnd, prevMtdStart, prevMtdEnd);
+
       var scrapeActivity = (activityFilter === null) || (activityFilter[key] === true);
       if (scrapeActivity) {
         activityByAccount[key] = _scrapeChangeEvents();
@@ -674,6 +683,52 @@ function _collectMccData(activityFilter) {
     byAccount: byAccount,
     activity: { mode: 'mcc', byAccount: activityByAccount }
   };
+}
+
+// yyyyMMdd formatter using the script TIMEZONE.
+function _ymd(date) {
+  return Utilities.formatDate(date, TIMEZONE, 'yyyyMMdd');
+}
+
+// Convert yyyyMMdd to GAQL date literal yyyy-MM-dd.
+function _ymdToDash(s) {
+  return s.substring(0, 4) + '-' + s.substring(4, 6) + '-' + s.substring(6, 8);
+}
+
+/**
+ * Single GAQL query against `customer` segmented by date, summing
+ * metrics.conversions_value into the four revenue buckets the digest
+ * needs. Stats objects don't expose conversion value, so this is the
+ * documented reliable path in account scope.
+ *
+ * All date args are yyyyMMdd. The widest-range query covers prev-MTD
+ * start through today; rows are bucketed in JS by date string compare.
+ */
+function _fillRevenueBuckets(target, rangeStart, rangeEnd,
+                             d7Start, d7End, d14Start, d14End,
+                             mtdStart, mtdEnd, prevMtdStart, prevMtdEnd) {
+  try {
+    var q = "SELECT segments.date, metrics.conversions_value "
+          + "FROM customer "
+          + "WHERE segments.date BETWEEN '" + _ymdToDash(rangeStart) + "' "
+          + "AND '" + _ymdToDash(rangeEnd) + "'";
+    var rows = AdsApp.search(q);
+    while (rows.hasNext()) {
+      var row = rows.next();
+      var segs = row.segments || {};
+      var mets = row.metrics || {};
+      // segments.date comes back as 'YYYY-MM-DD' — strip dashes for compare.
+      var ymd = String(segs.date || '').replace(/-/g, '');
+      var v = Number(mets.conversionsValue) || 0;
+      if (v === 0 || !ymd) continue;
+      if (ymd >= d7Start && ymd <= d7End) target.revThis += v;
+      if (ymd >= d14Start && ymd <= d14End) target.revPrev += v;
+      if (ymd >= mtdStart && ymd <= mtdEnd) target.revMtd += v;
+      if (ymd >= prevMtdStart && ymd <= prevMtdEnd) target.revPrevMtd += v;
+    }
+  } catch (e) {
+    Logger.log('Revenue fetch failed for ' + target.name + ': ' + e.message);
+  }
 }
 
 /** Scrape change_event for the currently-selected account. */
