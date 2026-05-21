@@ -121,26 +121,36 @@ RANKING-AWARE WRITING RULES:
 }
 
 export const TAB_PROMPTS = {
-  'New Article': (topic, keyword, length) => `
+  'New Article': (topic, keyword, length) => {
+    const target = length || 1500;
+    const minWords = Math.round(target * 0.9);
+    const maxWords = Math.round(target * 1.15);
+    return `
 Write a complete SEO + AEO optimised article.
 
 Primary keyword: ${keyword}
 Topic / angle: ${topic}
-Target length: ${length || 1500} words
+
+LENGTH (HARD CONSTRAINT — do not exceed):
+- Article body MUST be between ${minWords} and ${maxWords} words. This is the body content only (everything between the H1 and the FAQ section).
+- Do NOT pad to hit the upper bound. Aim for ${target} words. If the topic is fully covered in fewer words, stop.
+- The FAQ, meta tags, AEO summary, and QA JSON are SEPARATE from the body word count.
+- Total response (body + FAQ + meta + QA JSON) MUST NOT exceed ${Math.round(maxWords * 1.5)} words.
 
 MANDATORY OUTPUT CHECKLIST (do not skip any):
-1. Full HTML article with proper heading hierarchy
-2. At least one comparison table OR step-by-step guide
+1. Full HTML article body (${minWords}–${maxWords} words) with proper heading hierarchy
+2. At least one comparison table OR step-by-step guide (counted within the body word budget)
 3. At least one clear call-to-action (CTA) — match to audience intent
 4. Author attribution with credentials in opening or closing paragraph
 5. Meta Title (50-58 chars, brand at end)
 6. Meta Description (150-160 chars)
 7. AEO Summary Block (40-80 words, answer-first, right after H1)
-8. FAQ section (schema-ready, 5+ questions)
+8. FAQ section (schema-ready, exactly 5 questions — do not exceed)
 9. QA JSON scoring block
 
-Return all items in this exact order.
-`.trim(),
+Return all items in this exact order. Stop after the QA JSON.
+`.trim();
+  },
 
   'Rewrite & Expand': (existing, keyword, length) => `
 Rewrite and expand the following article. Preserve factual claims, tighten the language, apply ALL core + compliance rules, and expand to ~${length || 1800} words.

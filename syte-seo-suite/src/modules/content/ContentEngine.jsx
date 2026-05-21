@@ -387,9 +387,20 @@ export default function ContentEngine({ sub, setSub }) {
     setQuickSystem(system);
     setQuickUserPrompt(userPrompt);
 
-    // Expected output is roughly 6 chars/word for HTML + metas + QA block.
-    const expectedChars = Math.max(3000, quickLength * 6 + 1500);
+    // Expected output is HTML body (~14 chars/body word incl. tags) plus a
+    // fixed overhead for meta block, AEO summary, FAQ section, comparison
+    // table/step list, and the QA JSON. Underestimating this pegs the bar
+    // at the cap halfway through, which looks frozen.
+    const expectedChars = Math.max(8000, quickLength * 14 + 6000);
     setQuickPhase('Generating article…'); setQuickProgress(8);
+
+    // Time-based safety crawl: if streaming exceeds the size estimate the
+    // chars-based pct saturates at 95. This ticker nudges the bar forward
+    // by a sliver so the user can see the stream is still alive.
+    const startedAt = Date.now();
+    const crawlId = setInterval(() => {
+      setQuickProgress(p => (p < 95 ? p : Math.min(96, p + 0.05)));
+    }, 500);
 
     try {
       let buf = '';
@@ -401,12 +412,17 @@ export default function ContentEngine({ sub, setSub }) {
         onDelta: (t) => {
           buf += t;
           setQuickOutput(buf);
-          // Real progress: how much of the expected output we've received.
-          // Cap at 95% so the last 5% is reserved for parsing + save.
-          const pct = Math.min(95, 8 + (buf.length / expectedChars) * 87);
-          setQuickProgress(pct);
+          // Two signals fight for the bar position: chars received (real
+          // progress) and elapsed time (so it keeps moving past the cap).
+          // Take the max so neither stalls the other.
+          const charsPct = 8 + (buf.length / expectedChars) * 82;
+          const elapsedSec = (Date.now() - startedAt) / 1000;
+          // 45s is the typical full-run; ease toward 90% over that window.
+          const timePct = 8 + Math.min(82, (elapsedSec / 45) * 82);
+          setQuickProgress(p => Math.max(p, Math.min(95, Math.max(charsPct, timePct))));
         }
       });
+      clearInterval(crawlId);
       setQuickPhase('Saving…'); setQuickProgress(97);
       const saved = await saveBlogResult({
         client_id: qc.id,
@@ -426,6 +442,7 @@ export default function ContentEngine({ sub, setSub }) {
       setQuickErr(e.message);
       setQuickPhase('Failed');
     } finally {
+      clearInterval(crawlId);
       setQuickBusy(false);
     }
   }
