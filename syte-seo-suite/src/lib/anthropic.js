@@ -1,6 +1,6 @@
 import { getStoredApiKey } from './auth.js';
 
-export const CLAUDE_MODEL = 'claude-sonnet-4-20250514';
+export const CLAUDE_MODEL = 'claude-sonnet-4-6';
 const API_URL = 'https://api.anthropic.com/v1/messages';
 
 function headers() {

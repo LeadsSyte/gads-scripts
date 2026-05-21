@@ -62,7 +62,7 @@ ${pageHtml ? 'Current page HTML (source material — reorganize and clarify, do 
 
 Return the JSON object as specified in the system prompt.`
     }],
-    model: 'claude-sonnet-4-20250514',
+    model: 'claude-sonnet-4-6',
     max_tokens: 16000,
     temperature: 0.4
   });

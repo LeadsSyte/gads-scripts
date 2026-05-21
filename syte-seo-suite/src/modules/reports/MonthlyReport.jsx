@@ -242,7 +242,7 @@ Write an AEO performance email covering: what AI engines are saying about this b
       const aliceText = await claudeComplete({
         system: ALICE_SYSTEM,
         messages: [{ role: 'user', content: aeoPayload }],
-        model: 'claude-sonnet-4-20250514',
+        model: 'claude-sonnet-4-6',
         max_tokens: 1200,
         temperature: 0.7
       });
@@ -253,7 +253,7 @@ Write an AEO performance email covering: what AI engines are saying about this b
       const micrositeText = await claudeComplete({
         system: MICROSITE_SYSTEM,
         messages: [{ role: 'user', content: aeoPayload }],
-        model: 'claude-sonnet-4-20250514',
+        model: 'claude-sonnet-4-6',
         max_tokens: 1200,
         temperature: 0.5
       });
@@ -267,7 +267,7 @@ Write an AEO performance email covering: what AI engines are saying about this b
       const qaText = await claudeComplete({
         system: QA_SYSTEM,
         messages: [{ role: 'user', content: 'Alice email to review:\n\n' + aliceText }],
-        model: 'claude-sonnet-4-20250514',
+        model: 'claude-sonnet-4-6',
         max_tokens: 500,
         temperature: 0
       });
@@ -323,7 +323,7 @@ Write an AEO performance email covering: what AI engines are saying about this b
       const aliceText = await claudeComplete({
         system: ALICE_SYSTEM,
         messages: [{ role: 'user', content: payload }],
-        model: 'claude-sonnet-4-20250514',
+        model: 'claude-sonnet-4-6',
         max_tokens: 1000,
         temperature: 0.7
       });
@@ -335,7 +335,7 @@ Write an AEO performance email covering: what AI engines are saying about this b
       const micrositeText = await claudeComplete({
         system: MICROSITE_SYSTEM,
         messages: [{ role: 'user', content: payload }],
-        model: 'claude-sonnet-4-20250514',
+        model: 'claude-sonnet-4-6',
         max_tokens: 1000,
         temperature: 0.5
       });
@@ -349,7 +349,7 @@ Write an AEO performance email covering: what AI engines are saying about this b
       const qaText = await claudeComplete({
         system: QA_SYSTEM,
         messages: [{ role: 'user', content: 'Alice email to review:\n\n' + aliceText }],
-        model: 'claude-sonnet-4-20250514',
+        model: 'claude-sonnet-4-6',
         max_tokens: 500,
         temperature: 0
       });
