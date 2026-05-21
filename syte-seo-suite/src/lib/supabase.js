@@ -569,6 +569,99 @@ export async function deleteAeoResult(clientId, url) {
 }
 
 // ---------------------------------------------------------------------------
+// Rejected optimizations — operator-driven blocklist so a task or AEO
+// snippet that's been explicitly rejected doesn't reappear when the next
+// month's audit re-discovers the same underlying issue.
+// ---------------------------------------------------------------------------
+
+const TSEO_REJECTIONS_KEY = LS_PREFIX + 'tseo_rejections';
+const AEO_REJECTIONS_KEY = LS_PREFIX + 'aeo_rejections';
+
+export async function saveTseoRejection(clientId, dedupKey, reason = '') {
+  assertClientId(clientId, 'saveTseoRejection');
+  const row = { client_id: clientId, dedup_key: dedupKey, reason, rejected_at: new Date().toISOString() };
+  if (supabase) {
+    const { error } = await supabase
+      .from('syte_suite_tseo_rejections')
+      .upsert(row, { onConflict: 'client_id,dedup_key' });
+    if (error) throw error;
+  }
+  try {
+    const list = JSON.parse(localStorage.getItem(TSEO_REJECTIONS_KEY) || '[]');
+    const idx = list.findIndex(r => r.client_id === clientId && r.dedup_key === dedupKey);
+    if (idx >= 0) list[idx] = row; else list.push(row);
+    localStorage.setItem(TSEO_REJECTIONS_KEY, JSON.stringify(list));
+  } catch {}
+  return row;
+}
+
+export async function listTseoRejections() {
+  if (supabase) {
+    const { data, error } = await supabase.from('syte_suite_tseo_rejections').select('*');
+    if (!error && data) {
+      try { localStorage.setItem(TSEO_REJECTIONS_KEY, JSON.stringify(data)); } catch {}
+      return data;
+    }
+  }
+  try { return JSON.parse(localStorage.getItem(TSEO_REJECTIONS_KEY) || '[]'); } catch { return []; }
+}
+
+export async function deleteTseoRejection(clientId, dedupKey) {
+  if (supabase) {
+    await supabase.from('syte_suite_tseo_rejections')
+      .delete().eq('client_id', clientId).eq('dedup_key', dedupKey);
+  }
+  try {
+    const list = JSON.parse(localStorage.getItem(TSEO_REJECTIONS_KEY) || '[]');
+    localStorage.setItem(TSEO_REJECTIONS_KEY, JSON.stringify(
+      list.filter(r => !(r.client_id === clientId && r.dedup_key === dedupKey))
+    ));
+  } catch {}
+}
+
+export async function saveAeoRejection(clientId, pageUrl, optKey, reason = '') {
+  assertClientId(clientId, 'saveAeoRejection');
+  const row = { client_id: clientId, page_url: pageUrl, opt_key: optKey, reason, rejected_at: new Date().toISOString() };
+  if (supabase) {
+    const { error } = await supabase
+      .from('syte_suite_aeo_rejections')
+      .upsert(row, { onConflict: 'client_id,page_url,opt_key' });
+    if (error) throw error;
+  }
+  try {
+    const list = JSON.parse(localStorage.getItem(AEO_REJECTIONS_KEY) || '[]');
+    const idx = list.findIndex(r => r.client_id === clientId && r.page_url === pageUrl && r.opt_key === optKey);
+    if (idx >= 0) list[idx] = row; else list.push(row);
+    localStorage.setItem(AEO_REJECTIONS_KEY, JSON.stringify(list));
+  } catch {}
+  return row;
+}
+
+export async function listAeoRejections() {
+  if (supabase) {
+    const { data, error } = await supabase.from('syte_suite_aeo_rejections').select('*');
+    if (!error && data) {
+      try { localStorage.setItem(AEO_REJECTIONS_KEY, JSON.stringify(data)); } catch {}
+      return data;
+    }
+  }
+  try { return JSON.parse(localStorage.getItem(AEO_REJECTIONS_KEY) || '[]'); } catch { return []; }
+}
+
+export async function deleteAeoRejection(clientId, pageUrl, optKey) {
+  if (supabase) {
+    await supabase.from('syte_suite_aeo_rejections')
+      .delete().eq('client_id', clientId).eq('page_url', pageUrl).eq('opt_key', optKey);
+  }
+  try {
+    const list = JSON.parse(localStorage.getItem(AEO_REJECTIONS_KEY) || '[]');
+    localStorage.setItem(AEO_REJECTIONS_KEY, JSON.stringify(
+      list.filter(r => !(r.client_id === clientId && r.page_url === pageUrl && r.opt_key === optKey))
+    ));
+  } catch {}
+}
+
+// ---------------------------------------------------------------------------
 // AEO Deep Optimizations — full-page rewrites with FAQ + changes log.
 // Stored per (client, url). Upsert on save so re-running overwrites.
 // ---------------------------------------------------------------------------

@@ -17,15 +17,22 @@ const here = dirname(fileURLToPath(import.meta.url));
 const SRC_PATH = resolve(here, '../src/modules/technical/TechnicalSEO.jsx');
 const src = readFileSync(SRC_PATH, 'utf8');
 
-// Pull just the dedupeTasks function out of the module by regex —
-// avoids transpiling the whole JSX file.
+// Pull dedupeTasks + the shared taskDedupKey helper out of the module by
+// regex — avoids transpiling the whole JSX file. taskDedupKey is exported
+// so it can also be used by the rejection blocklist; dedupeTasks calls it.
+const keyMatch = src.match(/export function taskDedupKey\([\s\S]*?^\}/m);
 const fnMatch = src.match(/function dedupeTasks\([\s\S]*?^\}/m);
-if (!fnMatch) {
-  console.error('FAIL tseo-task-dedupe: dedupeTasks function not found in source');
+if (!keyMatch || !fnMatch) {
+  console.error('FAIL tseo-task-dedupe: taskDedupKey or dedupeTasks not found in source');
   process.exit(1);
 }
 const ctx = vm.createContext({ });
-vm.runInContext(fnMatch[0] + '\nglobalThis.__dedupe = dedupeTasks;', ctx);
+vm.runInContext(
+  keyMatch[0].replace(/^export\s+/, '') + '\n' +
+  fnMatch[0] + '\n' +
+  'globalThis.__dedupe = dedupeTasks;',
+  ctx
+);
 const dedupeTasks = ctx.__dedupe;
 
 let pass = 0, fail = 0;

@@ -8,7 +8,7 @@ import PipelineView from '../../components/PipelineView.jsx';
 import { technicalPipelineStatus } from '../../lib/pipelineStatus.js';
 import { getAudit, syncWebceoClients, webceoDiagnose } from './webceo.js';
 import { crawlSiteForIssues, summarizeCrawlForAI } from './crawler.js';
-import { upsertClient, listAllImplementations, saveTseoTasks, loadTseoTasks, updateTseoTask } from '../../lib/supabase.js';
+import { upsertClient, listAllImplementations, saveTseoTasks, loadTseoTasks, updateTseoTask, listTseoRejections, saveTseoRejection } from '../../lib/supabase.js';
 import { checkOffPageTask, isOffPageTask } from '../../lib/verification.js';
 import { querySearchAnalytics } from './gsc.js';
 import { ensureToken, SCOPES, getToken, clearToken } from './googleAuth.js';
@@ -47,6 +47,13 @@ function saveTasks(t) {
   }
 }
 
+// Stable dedup key for a task. Same shape used by dedupeTasks and by the
+// rejection blocklist so a freshly-triaged task with a new UUID but the
+// same logical issue is collapsed/filtered consistently.
+export function taskDedupKey(t) {
+  return (t.client_id || '') + '|' + (t.page_url || t.url || '') + '|' + (t.action_summary || t.title || '');
+}
+
 // Dedupe tasks by (client_id, url, action_summary). Keeps the most
 // recent (highest created_at) row per logical issue and caps OPEN
 // tasks per client to 25. Done/verified tasks are preserved in full
@@ -61,7 +68,7 @@ function dedupeTasks(list) {
   for (const t of open.sort((a, b) =>
     String(b.created_at || '').localeCompare(String(a.created_at || ''))
   )) {
-    const key = (t.client_id || '') + '|' + (t.url || '') + '|' + (t.action_summary || t.title || '');
+    const key = taskDedupKey(t);
     if (!seen.has(key)) seen.set(key, t);
   }
   // Cap per client.
@@ -223,9 +230,16 @@ function statusClass(s) {
 // domain — without this, the verifier used the topbar-selected client,
 // which led to "robots.txt is not reachable at https://bamdiy.com/..."
 // when the user was working on a Syte task with bamdiy.com selected.
-function TaskCard({ task: t, onUpdate, onVerify, busy, buildPushItem, onVerified, taskClient }) {
+function TaskCard({ task: t, onUpdate, onVerify, onReject, busy, buildPushItem, onVerified, taskClient }) {
   const [open, setOpen] = React.useState(false);
   const copyFix = () => navigator.clipboard.writeText(t.copy_paste_fix || '').catch(() => {});
+
+  function handleReject(e) {
+    e.stopPropagation();
+    const reason = window.prompt('Reject this optimization? It will be filtered out of future scans.\n\nOptional reason:') ;
+    if (reason === null) return; // user cancelled
+    onReject(t, reason || '');
+  }
 
   return (
     <div style={{
@@ -302,6 +316,15 @@ function TaskCard({ task: t, onUpdate, onVerify, busy, buildPushItem, onVerified
               client={taskClient}
               onVerified={onVerified}
             />
+            {t.status === 'open' && onReject && (
+              <button
+                onClick={handleReject}
+                title="Reject this optimization so it won't appear in future scans"
+                style={{ fontSize: 11, padding: '4px 10px', color: 'var(--red)', borderColor: 'rgba(255,77,77,.3)' }}
+              >
+                Reject
+              </button>
+            )}
           </div>
         </div>
       )}
@@ -322,6 +345,10 @@ export default function TechnicalSEO({ sub }) {
   const [err, setErr] = useState('');
   const [syncResult, setSyncResult] = useState(null);
   const [customMethod, setCustomMethod] = useState('');
+  // Set of rejected dedup keys ("clientId|pageUrl|title"). Filtered out of
+  // the visible task list and from any future scan-generated tasks so a
+  // rejected optimization doesn't reappear next month.
+  const [rejectedKeys, setRejectedKeys] = useState(() => new Set());
 
   // Load tasks from Supabase on mount (falls back to localStorage), then
   // auto-dedupe so existing accumulated junk from previous scans (the
@@ -331,7 +358,40 @@ export default function TechnicalSEO({ sub }) {
     loadTseoTasks()
       .then(t => setTasks(dedupeTasks(t)))
       .catch(() => setTasks(dedupeTasks(loadTasks())));
+    listTseoRejections()
+      .then(rows => setRejectedKeys(new Set((rows || []).map(r => (r.client_id || '') + '|' + r.dedup_key))))
+      .catch(() => {});
   }, []);
+
+  // Filter rejected open tasks out of the visible list. Rejection key
+  // combines client_id with the dedup_key so it round-trips with the
+  // server-side blocklist regardless of which client is selected.
+  const visibleTasks = useMemo(() => {
+    if (!rejectedKeys.size) return tasks;
+    return tasks.filter(t => {
+      if (t.status === 'done' || t.status === 'verified') return true;
+      return !rejectedKeys.has((t.client_id || '') + '|' + taskDedupKey(t));
+    });
+  }, [tasks, rejectedKeys]);
+
+  async function rejectTask(t, reason) {
+    if (!t?.client_id) return;
+    const key = taskDedupKey(t);
+    const fullKey = (t.client_id || '') + '|' + key;
+    // Optimistic: hide immediately, then persist. If save fails we don't
+    // restore — local state already mirrors intent.
+    setRejectedKeys(prev => {
+      const next = new Set(prev);
+      next.add(fullKey);
+      return next;
+    });
+    setTasks(prev => prev.filter(x => x.id !== t.id));
+    try {
+      await saveTseoRejection(t.client_id, key, reason || '');
+    } catch (e) {
+      console.warn('[TSEO] saveTseoRejection failed:', e.message);
+    }
+  }
 
   // Persist tasks to both Supabase + localStorage on every change.
   useEffect(() => {
@@ -341,8 +401,8 @@ export default function TechnicalSEO({ sub }) {
   useEffect(() => { saveTeam(team); }, [team]);
 
   const clientTasks = useMemo(
-    () => client ? tasks.filter(t => t.client_id === client.id) : tasks,
-    [tasks, client]
+    () => client ? visibleTasks.filter(t => t.client_id === client.id) : visibleTasks,
+    [visibleTasks, client]
   );
 
   const staleClients = useMemo(() => {
@@ -420,7 +480,7 @@ export default function TechnicalSEO({ sub }) {
         data_source: dataSource,
         created_at: new Date().toISOString(),
         ...t
-      }));
+      })).filter(t => !rejectedKeys.has((t.client_id || '') + '|' + taskDedupKey(t)));
       // Re-scanning the same client must REPLACE the open tasks for that
       // client — not append. Otherwise tasks accumulate every run and
       // the user ends up with 100+ stale duplicates after a few scans
@@ -475,7 +535,7 @@ export default function TechnicalSEO({ sub }) {
         data_source: 'WebCEO (pasted)',
         created_at: new Date().toISOString(),
         ...t
-      }));
+      })).filter(t => !rejectedKeys.has((t.client_id || '') + '|' + taskDedupKey(t)));
       // Replace open tasks for this client (keep done/verified for history)
       // and cap at 25 per scan — same logic as the live-scan path. Prevents
       // task accumulation across re-scans of the same client.
@@ -572,9 +632,10 @@ export default function TechnicalSEO({ sub }) {
   const [expandedClient, setExpandedClient] = useState(null);
 
   // Get tasks for a specific client, sorted by priority (critical first).
+  // Uses visibleTasks so rejected items don't appear in the per-client view.
   function getClientTasks(clientId) {
     const priorityOrder = { critical: 0, high: 1, medium: 2, low: 3 };
-    return tasks
+    return visibleTasks
       .filter(t => t.client_id === clientId)
       .sort((a, b) => (priorityOrder[a.priority] ?? 4) - (priorityOrder[b.priority] ?? 4));
   }
@@ -708,6 +769,7 @@ export default function TechnicalSEO({ sub }) {
                     key={t.id} task={t}
                     onUpdate={updateTask}
                     onVerify={handleVerify}
+                    onReject={rejectTask}
                     busy={busy}
                     buildPushItem={buildPushItem}
                     onVerified={refreshTechImpls}
@@ -771,6 +833,19 @@ export default function TechnicalSEO({ sub }) {
                     {status === 'done' && <button onClick={() => handleVerify(t)} disabled={busy}>Verify</button>}
                     {t.copy_paste_fix && (
                       <PushToCmsButton item={buildPushItem(t)} label="Push to CMS" />
+                    )}
+                    {status === 'open' && (
+                      <button
+                        onClick={() => {
+                          const reason = window.prompt('Reject this optimization? It will be filtered out of future scans.\n\nOptional reason:');
+                          if (reason === null) return;
+                          rejectTask(t, reason || '');
+                        }}
+                        title="Reject this optimization so it won't appear in future scans"
+                        style={{ color: 'var(--red)', borderColor: 'rgba(255,77,77,.3)' }}
+                      >
+                        Reject
+                      </button>
                     )}
                   </div>
                   {t.copy_paste_fix && (
