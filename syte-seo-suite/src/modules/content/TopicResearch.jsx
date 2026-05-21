@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useClients } from '../../store/useClients.js';
 import {
   collectResearchData,
@@ -40,18 +40,42 @@ export default function TopicResearch({ onWriteArticle }) {
   const [days, setDays] = useState(90);
   const [busy, setBusy] = useState(false);
   const [phase, setPhase] = useState('idle'); // idle | gsc | claude | done
+  const [progress, setProgress] = useState(0);
   const [research, setResearch] = useState(null);
   const [plan, setPlan] = useState(null);
   const [err, setErr] = useState('');
   const [typeFilter, setTypeFilter] = useState('all');
+  const progressTimer = useRef(null);
 
   useEffect(() => {
     // Reset when switching clients.
     setResearch(null);
     setPlan(null);
     setPhase('idle');
+    setProgress(0);
     setErr('');
   }, [client?.id]);
+
+  useEffect(() => () => { if (progressTimer.current) clearInterval(progressTimer.current); }, []);
+
+  // Drives an asymptotic progress animation toward `ceiling` so the bar
+  // keeps creeping forward while we wait on a network call we can't
+  // measure (GSC pull or Claude completion).
+  function startProgressCreep(from, ceiling, stepMs = 400, stepPct = 1.2) {
+    if (progressTimer.current) clearInterval(progressTimer.current);
+    setProgress(from);
+    progressTimer.current = setInterval(() => {
+      setProgress(p => {
+        if (p >= ceiling) return p;
+        const remaining = ceiling - p;
+        return Math.min(ceiling, p + Math.max(0.2, remaining * 0.05) + stepPct * 0.1);
+      });
+    }, stepMs);
+  }
+
+  function stopProgressCreep() {
+    if (progressTimer.current) { clearInterval(progressTimer.current); progressTimer.current = null; }
+  }
 
   async function runResearch() {
     if (!client) { setErr('Select a client first.'); return; }
@@ -62,16 +86,23 @@ export default function TopicResearch({ onWriteArticle }) {
     setBusy(true); setErr(''); setResearch(null); setPlan(null);
     try {
       setPhase('gsc');
+      startProgressCreep(2, 35);
       const data = await collectResearchData(client, { days });
       setResearch(data);
+      setProgress(40);
 
       setPhase('claude');
+      startProgressCreep(40, 95);
       const result = await generateTopicRecommendations(client, data);
       setPlan(result);
+      stopProgressCreep();
+      setProgress(100);
       setPhase('done');
     } catch (e) {
+      stopProgressCreep();
       setErr(e.message);
       setPhase('idle');
+      setProgress(0);
     } finally {
       setBusy(false);
     }
@@ -131,8 +162,6 @@ export default function TopicResearch({ onWriteArticle }) {
           </div>
           <div className="row" style={{ gap: 10 }}>
             <span className="muted" style={{ fontSize: 12, alignSelf: 'center' }}>
-              {phase === 'gsc' && 'Pulling Search Console data…'}
-              {phase === 'claude' && 'Claude is prioritizing opportunities…'}
               {phase === 'done' && research && `${research.allQueryCount} queries analyzed · ${plan?.opportunities?.length || 0} opportunities`}
             </span>
             <button
@@ -145,6 +174,52 @@ export default function TopicResearch({ onWriteArticle }) {
             </button>
           </div>
         </div>
+
+        {(busy || phase === 'done') && (
+          <div style={{ marginTop: 14 }}>
+            <div className="row" style={{ justifyContent: 'space-between', marginBottom: 6 }}>
+              <span className="muted" style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '.06em' }}>
+                {phase === 'gsc' && 'Pulling Search Console data…'}
+                {phase === 'claude' && 'Claude is prioritizing opportunities…'}
+                {phase === 'done' && 'Research complete'}
+              </span>
+              <span className="mono muted" style={{ fontSize: 11 }}>{Math.round(progress)}%</span>
+            </div>
+            <div
+              style={{
+                height: 6,
+                background: 'var(--surface-3)',
+                borderRadius: 999,
+                overflow: 'hidden'
+              }}
+              role="progressbar"
+              aria-valuenow={Math.round(progress)}
+              aria-valuemin={0}
+              aria-valuemax={100}
+            >
+              <div
+                style={{
+                  width: `${progress}%`,
+                  height: '100%',
+                  background: ACCENT,
+                  borderRadius: 999,
+                  transition: 'width .35s ease-out'
+                }}
+              />
+            </div>
+            <div className="row" style={{ justifyContent: 'space-between', marginTop: 6, fontSize: 10 }}>
+              <span style={{ color: phase === 'gsc' ? ACCENT : (progress >= 40 ? 'var(--text-muted)' : 'var(--text-dim)') }}>
+                1. Search Console
+              </span>
+              <span style={{ color: phase === 'claude' ? ACCENT : (progress >= 95 ? 'var(--text-muted)' : 'var(--text-dim)') }}>
+                2. Claude analysis
+              </span>
+              <span style={{ color: phase === 'done' ? ACCENT : 'var(--text-dim)' }}>
+                3. Done
+              </span>
+            </div>
+          </div>
+        )}
 
         {err && (
           <div style={{ marginTop: 10, padding: 12, background: 'rgba(255,77,77,.06)', border: '1px solid rgba(255,77,77,.2)', borderRadius: 6 }}>
@@ -300,8 +375,8 @@ export default function TopicResearch({ onWriteArticle }) {
       )}
 
       {research && !plan && phase === 'claude' && (
-        <div className="muted" style={{ marginTop: 10 }}>
-          Analyzed {research.allQueryCount} queries · {research.totalImpressions.toLocaleString()} total impressions. Waiting for Claude…
+        <div className="muted" style={{ marginTop: 10, fontSize: 12 }}>
+          Analyzed {research.allQueryCount} queries · {research.totalImpressions.toLocaleString()} total impressions.
         </div>
       )}
     </div>

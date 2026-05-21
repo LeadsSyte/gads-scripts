@@ -12,6 +12,12 @@ import { getStoredApiKey } from '../../lib/auth.js';
 const MAX_TOKENS = 500;
 
 // ------- ChatGPT / OpenAI --------------------------------------------------
+// Uses the Responses API (not Chat Completions) with the web_search_preview
+// tool enabled. Without web search, gpt-4o relies on stale training data
+// and reliably refuses to recommend specific brands or hallucinates ones
+// that don't exist — the result is "ChatGPT 0% on every query" because
+// no SA brand name ever appears. Web search makes ChatGPT actually look
+// at current pages, so brand mentions track real visibility.
 export const chatgpt = {
   id: 'chatgpt',
   label: 'ChatGPT',
@@ -20,19 +26,18 @@ export const chatgpt = {
   async ask(query) {
     const { openaiKey } = loadSettings();
     try {
-      const res = await fetch('https://api.openai.com/v1/chat/completions', {
+      const res = await fetch('/.netlify/functions/openai-proxy', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: 'Bearer ' + openaiKey
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          model: 'gpt-4o',
-          max_tokens: MAX_TOKENS,
-          messages: [
-            { role: 'system', content: 'You are a helpful assistant. Answer naturally.' },
-            { role: 'user', content: query }
-          ]
+          apiKey: openaiKey,
+          endpoint: 'responses',
+          body: {
+            model: 'gpt-4o',
+            input: query,
+            tools: [{ type: 'web_search_preview' }],
+            max_output_tokens: MAX_TOKENS
+          }
         })
       });
       if (!res.ok) {
@@ -40,7 +45,21 @@ export const chatgpt = {
         return { error: 'OpenAI ' + res.status + ' ' + txt.slice(0, 200) };
       }
       const data = await res.json();
-      const text = data.choices?.[0]?.message?.content || '';
+      // Responses API returns output[].content[].text + structured URL
+      // citations in annotations. We collapse text parts into one string
+      // for the brand detector — the citations get appended so the
+      // detector also picks up domain mentions that only appear in the
+      // citation list (the gold-tier signal).
+      const parts = [];
+      for (const item of data.output || []) {
+        for (const c of item.content || []) {
+          if (typeof c.text === 'string') parts.push(c.text);
+          for (const a of c.annotations || []) {
+            if (a.type === 'url_citation' && a.url) parts.push(a.url);
+          }
+        }
+      }
+      const text = parts.join('\n').trim();
       return { text };
     } catch (e) { return { error: e.message }; }
   }
@@ -82,15 +101,19 @@ export const perplexity = {
 };
 
 // ------- Gemini ------------------------------------------------------------
+// Model bumped to gemini-2.5-flash — the older gemini-1.5-flash was
+// retired earlier in 2025 and now returns 404 for new calls. That was
+// silently zeroing every Gemini row in AEO snapshots (no surfaced
+// error, just an empty row that got filtered out at render time).
 export const gemini = {
   id: 'gemini',
   label: 'Gemini',
-  model: 'gemini-1.5-flash',
+  model: 'gemini-2.5-flash',
   isConfigured: () => !!loadSettings().googleAiKey,
   async ask(query) {
     const { googleAiKey } = loadSettings();
     try {
-      const url = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key='
+      const url = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key='
         + encodeURIComponent(googleAiKey);
       const res = await fetch(url, {
         method: 'POST',
