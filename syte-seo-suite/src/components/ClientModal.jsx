@@ -147,15 +147,17 @@ Brand context: ${f.context || ''}
 Website: ${f.url || ''}
 Competitors: ${f.competitors || ''}
 
-Generate 15 probe queries that a potential customer would ask an AI assistant (ChatGPT, Perplexity, Gemini, Claude). The goal is to test whether THIS SPECIFIC brand gets mentioned in AI recommendations.
+Generate 40 probe queries that a potential customer would ask an AI assistant (ChatGPT, Perplexity, Gemini, Claude). The goal is to test whether THIS SPECIFIC brand gets mentioned in AI recommendations across a broad enough surface to capture its real visibility footprint.
 
 QUERY TYPES TO INCLUDE (mix of all):
-1. "Best [service/product] in [location]" — direct recommendation queries (3-4 of these)
-2. "Top [industry] companies/suppliers in [country]" — list queries where brands appear (2-3 of these)
-3. "[Brand name] vs [competitor]" — direct comparison queries (1-2 of these)
-4. "Is [brand name] good?" / "[brand name] reviews" — reputation queries (1 of these)
-5. Problem-first queries: "I need [specific service] for [use case]" — where AI might recommend providers (3-4 of these)
-6. Category-specific: "where to buy [specific product] in [location]" — purchase intent (2 of these)
+1. Pure head terms — single product/service nouns ("pallet racking", "industrial shelving", "mezzanine floors") — no qualifiers, no location (8-10 of these)
+2. "Best [service/product] in [location]" — direct recommendation queries (5-6 of these)
+3. "Top [industry] companies/suppliers in [country]" — list queries where brands appear (4-5 of these)
+4. "[Brand name] vs [competitor]" — direct comparison queries (2-3 of these)
+5. "Is [brand name] good?" / "[brand name] reviews" / "[brand name] alternatives" — reputation queries (2 of these)
+6. Problem-first queries: "I need [specific service] for [use case]" — where AI might recommend providers (5-6 of these)
+7. Category-specific: "where to buy [specific product] in [location]" — purchase intent (4-5 of these)
+8. Use-case queries: "[product] for [industry/setting]" e.g. "shelving for warehouses", "racking for cold storage" (4-5 of these)
 
 RULES:
 - Queries MUST be the kind where AI engines naturally recommend specific brands/companies
@@ -168,7 +170,7 @@ Return ONLY valid JSON: { "queries": ["...", "..."] }`;
       const text = await claudeComplete({
         system: 'You generate AEO probe queries. Output ONLY valid JSON — no code fences, no prose.',
         messages: [{ role: 'user', content: prompt }],
-        max_tokens: 800,
+        max_tokens: 1800,
         temperature: 0.7
       });
       const parsed = extractJSON(text);
@@ -349,9 +351,23 @@ Return ONLY valid JSON: { "queries": ["...", "..."] }`;
         {/* Google connections (GA4 + GSC) */}
         <GoogleConnectionsPicker
           ga4Value={f.ga4_property_id}
-          onChangeGa4={v => update('ga4_property_id', v)}
+          onChangeGa4={(v, acc) => {
+            update('ga4_property_id', v);
+            // Auto-bind the GA4 API to whichever Google account the
+            // operator was using when they picked. Only set when the
+            // value is non-empty — clearing the property shouldn't drop
+            // the account binding (the user may pick again immediately).
+            if (acc && v) update('ga4_account_email', acc);
+          }}
           gscValue={f.gsc_property}
-          onChangeGsc={v => update('gsc_property', v)}
+          onChangeGsc={(v, acc) => {
+            update('gsc_property', v);
+            if (acc && v) update('gsc_account_email', acc);
+          }}
+          savedEmail={f.google_account_email}
+          onChangeEmail={v => update('google_account_email', v)}
+          savedGa4Email={f.ga4_account_email}
+          savedGscEmail={f.gsc_account_email}
         />
 
         {/* Reporting & AEO */}

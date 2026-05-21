@@ -191,16 +191,45 @@ export default function ImplementationProgress() {
                         {impl.page_url}
                       </div>
                     )}
-                    {impl.verification_detail && (
-                      <div style={{
-                        fontSize: 11, marginTop: 4, padding: '4px 8px',
-                        background: 'var(--surface-2)', borderRadius: 4,
-                        borderLeft: '2px solid ' + st.color,
-                        color: 'var(--text-muted)'
-                      }}>
-                        {impl.verification_detail}
-                      </div>
-                    )}
+                    {impl.verification_detail && (() => {
+                      // Split out the inline base64 screenshot (added by
+                      // MarkImplementedButton's "Upload screenshot" path)
+                      // and render it as an actual image with a click-to-
+                      // open-fullsize link. Without this, historic rows
+                      // showed a huge wall of base64 text instead of the
+                      // proof shot.
+                      const m = String(impl.verification_detail)
+                        .match(/\[SCREENSHOT\]([\s\S]+?)\[\/SCREENSHOT\]/);
+                      const text = m ? impl.verification_detail.replace(m[0], '').trim() : impl.verification_detail;
+                      const screenshot = m ? m[1] : '';
+                      return (
+                        <div style={{
+                          fontSize: 11, marginTop: 4, padding: '4px 8px',
+                          background: 'var(--surface-2)', borderRadius: 4,
+                          borderLeft: '2px solid ' + st.color,
+                          color: 'var(--text-muted)'
+                        }}>
+                          <div style={{ whiteSpace: 'pre-wrap' }}>{text}</div>
+                          {screenshot && (
+                            <div style={{ marginTop: 6 }}>
+                              <a href={screenshot} target="_blank" rel="noreferrer">
+                                <img
+                                  src={screenshot}
+                                  alt="Verification proof screenshot"
+                                  style={{
+                                    maxWidth: '100%', maxHeight: 200,
+                                    border: '1px solid var(--border)', borderRadius: 4
+                                  }}
+                                />
+                              </a>
+                              <div className="muted" style={{ fontSize: 9, marginTop: 3 }}>
+                                Click to open full size · Uploaded screenshot proof
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
                   </div>
                   <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4, flexShrink: 0 }}>
                     <span className={'badge ' + st.badge} style={{ fontSize: 10 }}>

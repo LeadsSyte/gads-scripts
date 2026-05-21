@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useClients } from '../../store/useClients.js';
 import {
   collectResearchData,
@@ -45,6 +45,7 @@ export default function TopicResearch({ onWriteArticle }) {
   const [plan, setPlan] = useState(null);
   const [err, setErr] = useState('');
   const [typeFilter, setTypeFilter] = useState('all');
+  const progressTimer = useRef(null);
 
   useEffect(() => {
     // Reset when switching clients.
@@ -55,23 +56,26 @@ export default function TopicResearch({ onWriteArticle }) {
     setErr('');
   }, [client?.id]);
 
-  // Smooth ticking animation while research is in flight. Neither GSC nor
-  // Claude emit real progress events, so we ease the bar toward a per-phase
-  // ceiling and let the phase transitions yank it forward.
-  useEffect(() => {
-    if (!busy) return;
-    const ceiling = phase === 'gsc' ? 40 : phase === 'claude' ? 92 : 0;
-    if (ceiling === 0) return;
-    const id = setInterval(() => {
+  useEffect(() => () => { if (progressTimer.current) clearInterval(progressTimer.current); }, []);
+
+  // Drives an asymptotic progress animation toward `ceiling` so the bar
+  // keeps creeping forward while we wait on a network call we can't
+  // measure (GSC pull or Claude completion).
+  function startProgressCreep(from, ceiling, stepMs = 400, stepPct = 1.2) {
+    if (progressTimer.current) clearInterval(progressTimer.current);
+    setProgress(from);
+    progressTimer.current = setInterval(() => {
       setProgress(p => {
         if (p >= ceiling) return p;
-        // Ease out — slow as we approach the ceiling.
-        const step = Math.max(0.3, (ceiling - p) * 0.04);
-        return Math.min(ceiling, p + step);
+        const remaining = ceiling - p;
+        return Math.min(ceiling, p + Math.max(0.2, remaining * 0.05) + stepPct * 0.1);
       });
-    }, 200);
-    return () => clearInterval(id);
-  }, [busy, phase]);
+    }, stepMs);
+  }
+
+  function stopProgressCreep() {
+    if (progressTimer.current) { clearInterval(progressTimer.current); progressTimer.current = null; }
+  }
 
   async function runResearch() {
     if (!client) { setErr('Select a client first.'); return; }
@@ -80,19 +84,22 @@ export default function TopicResearch({ onWriteArticle }) {
       return;
     }
     setBusy(true); setErr(''); setResearch(null); setPlan(null);
-    setProgress(3);
     try {
       setPhase('gsc');
+      startProgressCreep(2, 35);
       const data = await collectResearchData(client, { days });
       setResearch(data);
-      setProgress(p => Math.max(p, 45));
+      setProgress(40);
 
       setPhase('claude');
+      startProgressCreep(40, 95);
       const result = await generateTopicRecommendations(client, data);
       setPlan(result);
+      stopProgressCreep();
       setProgress(100);
       setPhase('done');
     } catch (e) {
+      stopProgressCreep();
       setErr(e.message);
       setPhase('idle');
       setProgress(0);
@@ -154,11 +161,9 @@ export default function TopicResearch({ onWriteArticle }) {
             </select>
           </div>
           <div className="row" style={{ gap: 10 }}>
-            {!busy && phase === 'done' && research && (
-              <span className="muted" style={{ fontSize: 12, alignSelf: 'center' }}>
-                {research.allQueryCount} queries analyzed · {plan?.opportunities?.length || 0} opportunities
-              </span>
-            )}
+            <span className="muted" style={{ fontSize: 12, alignSelf: 'center' }}>
+              {phase === 'done' && research && `${research.allQueryCount} queries analyzed · ${plan?.opportunities?.length || 0} opportunities`}
+            </span>
             <button
               className="primary"
               onClick={runResearch}
@@ -170,34 +175,48 @@ export default function TopicResearch({ onWriteArticle }) {
           </div>
         </div>
 
-        {/* Progress bar — shows while research is running through GSC + Claude phases. */}
-        {(busy || (progress > 0 && progress < 100)) && (
-          <div style={{ marginTop: 12, padding: 12, background: 'var(--surface-2)', borderRadius: 8, border: '1px solid var(--border)' }}>
+        {(busy || phase === 'done') && (
+          <div style={{ marginTop: 14 }}>
             <div className="row" style={{ justifyContent: 'space-between', marginBottom: 6 }}>
-              <div className="row" style={{ gap: 8 }}>
-                {busy && <span className="spinner" style={{ width: 12, height: 12, borderWidth: 2 }} />}
-                <span style={{ fontSize: 12, fontWeight: 600 }}>
-                  {phase === 'gsc' && 'Pulling Search Console data…'}
-                  {phase === 'claude' && 'Claude is prioritizing opportunities…'}
-                  {phase === 'done' && 'Done ✓'}
-                  {phase === 'idle' && 'Starting…'}
-                </span>
-              </div>
-              <span className="muted" style={{ fontSize: 11, fontVariantNumeric: 'tabular-nums' }}>{Math.round(progress)}%</span>
+              <span className="muted" style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '.06em' }}>
+                {phase === 'gsc' && 'Pulling Search Console data…'}
+                {phase === 'claude' && 'Claude is prioritizing opportunities…'}
+                {phase === 'done' && 'Research complete'}
+              </span>
+              <span className="mono muted" style={{ fontSize: 11 }}>{Math.round(progress)}%</span>
             </div>
-            <div style={{ height: 6, background: 'var(--surface-3, #1a1c20)', borderRadius: 999, overflow: 'hidden' }}>
-              <div style={{
-                width: progress + '%',
-                height: '100%',
-                background: 'linear-gradient(90deg, ' + ACCENT + ', #4dabff)',
-                transition: 'width 300ms ease-out',
-                borderRadius: 999
-              }} />
+            <div
+              style={{
+                height: 6,
+                background: 'var(--surface-3)',
+                borderRadius: 999,
+                overflow: 'hidden'
+              }}
+              role="progressbar"
+              aria-valuenow={Math.round(progress)}
+              aria-valuemin={0}
+              aria-valuemax={100}
+            >
+              <div
+                style={{
+                  width: `${progress}%`,
+                  height: '100%',
+                  background: ACCENT,
+                  borderRadius: 999,
+                  transition: 'width .35s ease-out'
+                }}
+              />
             </div>
-            <div className="muted" style={{ fontSize: 10, marginTop: 6 }}>
-              {phase === 'gsc' && `Fetching last ${days} days of query + page data from Search Console.`}
-              {phase === 'claude' && research && `Analyzing ${research.allQueryCount} queries · ${research.totalImpressions.toLocaleString()} impressions — usually 15–40 seconds.`}
-              {phase !== 'gsc' && phase !== 'claude' && 'Preparing research run…'}
+            <div className="row" style={{ justifyContent: 'space-between', marginTop: 6, fontSize: 10 }}>
+              <span style={{ color: phase === 'gsc' ? ACCENT : (progress >= 40 ? 'var(--text-muted)' : 'var(--text-dim)') }}>
+                1. Search Console
+              </span>
+              <span style={{ color: phase === 'claude' ? ACCENT : (progress >= 95 ? 'var(--text-muted)' : 'var(--text-dim)') }}>
+                2. Claude analysis
+              </span>
+              <span style={{ color: phase === 'done' ? ACCENT : 'var(--text-dim)' }}>
+                3. Done
+              </span>
             </div>
           </div>
         )}
@@ -355,6 +374,11 @@ export default function TopicResearch({ onWriteArticle }) {
         </>
       )}
 
+      {research && !plan && phase === 'claude' && (
+        <div className="muted" style={{ marginTop: 10, fontSize: 12 }}>
+          Analyzed {research.allQueryCount} queries · {research.totalImpressions.toLocaleString()} total impressions.
+        </div>
+      )}
     </div>
   );
 }

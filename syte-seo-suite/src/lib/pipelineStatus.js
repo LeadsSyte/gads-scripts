@@ -59,15 +59,26 @@ export function contentPipelineStatus(client, implementations, month, contentHis
 
   // "Articles Written" = ALL required articles are written, but not all verified yet.
   if (quotaMet) {
+    // Both summary and detail use the SAME denominator (written, the
+    // actual count of articles in the list) so users don't see a
+    // contradiction like "1/2 verified" + "1 of 7 verified" simultaneously.
+    // The "need N to advance to Verified on Site" line is what tells them
+    // the quota; before this fix users couldn't tell whether the bucket
+    // moved on quota (required) or completion (written).
     const parts = [written + ' written'];
-    if (verifiedCount > 0) parts.push(verifiedCount + '/' + required + ' verified');
-    else parts.push('0 verified');
+    parts.push(verifiedCount + ' verified');
+    // We only reach here if allVerified was false above, so verifiedCount
+    // < required. remainingForQuota is always >= 1 in this branch.
+    const remainingForQuota = required - verifiedCount;
+    const detail = verifiedCount === 0
+      ? 'All ' + written + ' articles written, awaiting verification. ' +
+        'Verify any ' + required + ' to move to Verified on Site.'
+      : verifiedCount + ' of ' + written + ' verified — verify ' +
+        remainingForQuota + ' more to move to Verified on Site (quota: ' + required + ').';
     return {
       section: 'articles-written',
       summary: parts.join(' · '),
-      detail: verifiedCount > 0
-        ? verifiedCount + ' of ' + required + ' verified — ' + (required - verifiedCount) + ' awaiting verification'
-        : 'All ' + required + ' articles written, awaiting upload & verification'
+      detail
     };
   }
 
@@ -90,8 +101,12 @@ export function contentPipelineStatus(client, implementations, month, contentHis
 export function technicalPipelineStatus(client, implementations, tasks, month) {
   const m = month || thisMonth();
 
-  if (!client.wceo_project_id && !client.gsc_property) {
-    return { section: 'credentials-missing', detail: 'No WebCEO project or GSC property' };
+  // Crawler-first scan path needs only a website URL or sitemap URL —
+  // GSC is optional enrichment, WebCEO is fully deprecated. Bucket as
+  // "credentials-missing" only when the crawler has nothing to work with.
+  const hasCrawlTarget = !!(client.url || client.sitemap_url);
+  if (!hasCrawlTarget && !client.gsc_property) {
+    return { section: 'credentials-missing', detail: 'No website URL, sitemap URL, or GSC property' };
   }
 
   const monthImpls = (implementations || []).filter(
@@ -166,16 +181,31 @@ export function aeoPipelineStatus(client, implementations, aeoResults, month, de
   const monthResults = Object.values(aeoResults || {}).filter(
     r => r.client_id === client.id && (r.generated_at || '').slice(0, 7) === m
   );
-  const totalOpts = monthResults.reduce((a, r) => a + (r.optimizations?.length || 0), 0);
+  // ALSO count optimizations from any earlier month — these existed but
+  // the strict month filter was hiding them as "not run". Show the
+  // client in optimizations-generated with a "stale" note instead of
+  // burying them in NOT RUN YET.
+  const allClientResults = Object.values(aeoResults || {}).filter(
+    r => r.client_id === client.id
+  );
+  const priorResults = allClientResults.filter(
+    r => (r.generated_at || '').slice(0, 7) !== m
+  );
+  const monthOpts = monthResults.reduce((a, r) => a + (r.optimizations?.length || 0), 0);
+  const priorOpts = priorResults.reduce((a, r) => a + (r.optimizations?.length || 0), 0);
+  const totalOpts = monthOpts + priorOpts;
 
   // Deep optimizations count as real work too. Each deep opt is a full-page
   // rewrite so we count it as 1 "optimization" toward the month's work.
   const monthDeep = (deepResults || []).filter(
     d => d.client_id === client.id && (d.generated_at || '').slice(0, 7) === m
   );
-  const deepCount = monthDeep.length;
+  const allDeep = (deepResults || []).filter(d => d.client_id === client.id);
+  const priorDeep = allDeep.filter(d => (d.generated_at || '').slice(0, 7) !== m);
+  const deepCount = monthDeep.length + priorDeep.length;
   const totalWork = totalOpts + deepCount;
   const allImplemented = totalWork > 0 && verified.length >= totalWork;
+  const isStale = monthResults.length === 0 && monthDeep.length === 0 && (priorResults.length > 0 || priorDeep.length > 0);
 
   // Only "verified-on-site" when all optimizations are implemented + verified.
   if (allImplemented && verified.length > 0) {
@@ -186,19 +216,22 @@ export function aeoPipelineStatus(client, implementations, aeoResults, month, de
     };
   }
 
-  if (monthResults.length > 0 || deepCount > 0) {
+  if (totalOpts > 0 || deepCount > 0) {
     const parts = [];
     if (totalOpts > 0) parts.push(totalOpts + ' quick-win optimizations');
     if (deepCount > 0) parts.push(deepCount + ' deep rewrite' + (deepCount > 1 ? 's' : ''));
     if (verified.length > 0) parts.push(verified.length + ' verified');
     const remaining = totalWork - verified.length;
     if (remaining > 0) parts.push(remaining + ' awaiting implementation');
+    if (isStale) parts.push('from prior month — re-run for ' + m);
     return {
-      section: allImplemented ? 'optimizations-generated' : (verified.length > 0 ? 'optimizations-generated' : 'optimizations-generated'),
+      section: 'optimizations-generated',
       summary: parts.join(' · '),
-      detail: verified.length > 0
-        ? verified.length + ' of ' + totalWork + ' items verified'
-        : 'Generated, awaiting implementation'
+      detail: isStale
+        ? 'Existing optimizations are from a prior month. Click Run Optimizations to refresh for ' + m + '.'
+        : (verified.length > 0
+          ? verified.length + ' of ' + totalWork + ' items verified'
+          : 'Generated, awaiting implementation')
     };
   }
 
