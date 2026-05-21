@@ -40,6 +40,7 @@ export default function TopicResearch({ onWriteArticle }) {
   const [days, setDays] = useState(90);
   const [busy, setBusy] = useState(false);
   const [phase, setPhase] = useState('idle'); // idle | gsc | claude | done
+  const [progress, setProgress] = useState(0);
   const [research, setResearch] = useState(null);
   const [plan, setPlan] = useState(null);
   const [err, setErr] = useState('');
@@ -50,8 +51,27 @@ export default function TopicResearch({ onWriteArticle }) {
     setResearch(null);
     setPlan(null);
     setPhase('idle');
+    setProgress(0);
     setErr('');
   }, [client?.id]);
+
+  // Smooth ticking animation while research is in flight. Neither GSC nor
+  // Claude emit real progress events, so we ease the bar toward a per-phase
+  // ceiling and let the phase transitions yank it forward.
+  useEffect(() => {
+    if (!busy) return;
+    const ceiling = phase === 'gsc' ? 40 : phase === 'claude' ? 92 : 0;
+    if (ceiling === 0) return;
+    const id = setInterval(() => {
+      setProgress(p => {
+        if (p >= ceiling) return p;
+        // Ease out — slow as we approach the ceiling.
+        const step = Math.max(0.3, (ceiling - p) * 0.04);
+        return Math.min(ceiling, p + step);
+      });
+    }, 200);
+    return () => clearInterval(id);
+  }, [busy, phase]);
 
   async function runResearch() {
     if (!client) { setErr('Select a client first.'); return; }
@@ -60,18 +80,22 @@ export default function TopicResearch({ onWriteArticle }) {
       return;
     }
     setBusy(true); setErr(''); setResearch(null); setPlan(null);
+    setProgress(3);
     try {
       setPhase('gsc');
       const data = await collectResearchData(client, { days });
       setResearch(data);
+      setProgress(p => Math.max(p, 45));
 
       setPhase('claude');
       const result = await generateTopicRecommendations(client, data);
       setPlan(result);
+      setProgress(100);
       setPhase('done');
     } catch (e) {
       setErr(e.message);
       setPhase('idle');
+      setProgress(0);
     } finally {
       setBusy(false);
     }
@@ -130,11 +154,11 @@ export default function TopicResearch({ onWriteArticle }) {
             </select>
           </div>
           <div className="row" style={{ gap: 10 }}>
-            <span className="muted" style={{ fontSize: 12, alignSelf: 'center' }}>
-              {phase === 'gsc' && 'Pulling Search Console data…'}
-              {phase === 'claude' && 'Claude is prioritizing opportunities…'}
-              {phase === 'done' && research && `${research.allQueryCount} queries analyzed · ${plan?.opportunities?.length || 0} opportunities`}
-            </span>
+            {!busy && phase === 'done' && research && (
+              <span className="muted" style={{ fontSize: 12, alignSelf: 'center' }}>
+                {research.allQueryCount} queries analyzed · {plan?.opportunities?.length || 0} opportunities
+              </span>
+            )}
             <button
               className="primary"
               onClick={runResearch}
@@ -145,6 +169,38 @@ export default function TopicResearch({ onWriteArticle }) {
             </button>
           </div>
         </div>
+
+        {/* Progress bar — shows while research is running through GSC + Claude phases. */}
+        {(busy || (progress > 0 && progress < 100)) && (
+          <div style={{ marginTop: 12, padding: 12, background: 'var(--surface-2)', borderRadius: 8, border: '1px solid var(--border)' }}>
+            <div className="row" style={{ justifyContent: 'space-between', marginBottom: 6 }}>
+              <div className="row" style={{ gap: 8 }}>
+                {busy && <span className="spinner" style={{ width: 12, height: 12, borderWidth: 2 }} />}
+                <span style={{ fontSize: 12, fontWeight: 600 }}>
+                  {phase === 'gsc' && 'Pulling Search Console data…'}
+                  {phase === 'claude' && 'Claude is prioritizing opportunities…'}
+                  {phase === 'done' && 'Done ✓'}
+                  {phase === 'idle' && 'Starting…'}
+                </span>
+              </div>
+              <span className="muted" style={{ fontSize: 11, fontVariantNumeric: 'tabular-nums' }}>{Math.round(progress)}%</span>
+            </div>
+            <div style={{ height: 6, background: 'var(--surface-3, #1a1c20)', borderRadius: 999, overflow: 'hidden' }}>
+              <div style={{
+                width: progress + '%',
+                height: '100%',
+                background: 'linear-gradient(90deg, ' + ACCENT + ', #4dabff)',
+                transition: 'width 300ms ease-out',
+                borderRadius: 999
+              }} />
+            </div>
+            <div className="muted" style={{ fontSize: 10, marginTop: 6 }}>
+              {phase === 'gsc' && `Fetching last ${days} days of query + page data from Search Console.`}
+              {phase === 'claude' && research && `Analyzing ${research.allQueryCount} queries · ${research.totalImpressions.toLocaleString()} impressions — usually 15–40 seconds.`}
+              {phase !== 'gsc' && phase !== 'claude' && 'Preparing research run…'}
+            </div>
+          </div>
+        )}
 
         {err && (
           <div style={{ marginTop: 10, padding: 12, background: 'rgba(255,77,77,.06)', border: '1px solid rgba(255,77,77,.2)', borderRadius: 6 }}>
@@ -299,11 +355,6 @@ export default function TopicResearch({ onWriteArticle }) {
         </>
       )}
 
-      {research && !plan && phase === 'claude' && (
-        <div className="muted" style={{ marginTop: 10 }}>
-          Analyzed {research.allQueryCount} queries · {research.totalImpressions.toLocaleString()} total impressions. Waiting for Claude…
-        </div>
-      )}
     </div>
   );
 }
