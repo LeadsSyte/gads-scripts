@@ -56,10 +56,12 @@ var ACTIVITY_HIDE_IF_ALL_ZERO = true;
 // change_event is the slowest part of the digest (one AdsApp.search per account
 // plus an account-context switch). On large MCCs it can push past Google's
 // 30-min execution limit. Modes:
-//   'drops-only' (default) — only query accounts flagged as lead-drop anomalies. Fast.
-//   'all'                  — query every spending account. Slow.
+//   'all' (default)        — query every spending account. The MCC scan
+//                            already selects each account for the revenue
+//                            fetch, so the extra GAQL is cheap.
+//   'drops-only'           — only query accounts flagged as lead-drop anomalies.
 //   'off'                  — skip the activity scrape entirely.
-var ACTIVITY_SCOPE = 'drops-only';
+var ACTIVITY_SCOPE = 'all';
 
 function main() {
   Logger.log('=== DAILY DIGEST v3 (with quota logging) — code is loaded ===');
@@ -153,13 +155,6 @@ function _runDigest() {
   var activity = mccData.activity;
   Logger.log('MCC scan complete: ' + Object.keys(mccData.byAccount).length + ' accounts with stats, '
            + Object.keys(activity.byAccount).length + ' with activity data');
-
-  // Fetch conversion value (revenue) for ecommerce accounts via MCC-level
-  // AWQL report. AdsManagerApp.Stats doesn't expose getConversionValue(),
-  // so we use a separate cross-account report query — one per time window.
-  if (mccStats.mode === 'mcc' && Object.keys(mccData.byAccount).length > 0) {
-    _mergeRevenueIntoMccStats(mccStats.byAccount);
-  }
 
   var accountList = _buildUnifiedAccountList(mccStats, digestByAccount);
 
@@ -268,16 +263,6 @@ function _runDigest() {
   var anomalyByAccount = {};
   for (var aii = 0; aii < anomalies.length; aii++) anomalyByAccount[String(anomalies[aii].account).toLowerCase().trim()] = anomalies[aii];
 
-  // Has activity for any account? Only show the Changes column if so —
-  // pointless dashes everywhere otherwise.
-  var anyActivity = false;
-  if (activity.mode === 'mcc') {
-    for (var ack in activity.byAccount) {
-      var ab = activity.byAccount[ack];
-      if (ab && (ab.human + ab.script + ab.googleAuto + ab.other) > 0) { anyActivity = true; break; }
-    }
-  }
-
   email += '<div style="padding:15px;"><table style="width:100%;border-collapse:collapse;font-size:12px;">';
   email += '<tr style="background:#e3f2fd;">';
   email += '<th style="padding:8px;text-align:left;">Account</th>';
@@ -294,22 +279,15 @@ function _runDigest() {
       email += '<th style="padding:8px;text-align:right;background:#e8f5e9;">vs Prev MTD</th>';
     }
     email += '<th style="padding:8px;text-align:right;">Spend 7d</th>';
+    email += '<th style="padding:8px;text-align:right;">Spend MTD</th>';
+    email += '<th style="padding:8px;text-align:right;">vs Prev MTD</th>';
   }
-  if (anyActivity) email += '<th style="padding:8px;text-align:right;" title="Changes in the last ' + ACTIVITY_LOOKBACK_DAYS + ' days (human / script / google-auto)">Changes 7d</th>';
-  email += '<th style="padding:8px;text-align:right;">vs Baseline</th>';
-  email += '<th style="padding:8px;text-align:right;">AI Neg</th>';
-  email += '<th style="padding:8px;text-align:right;">Review</th>';
-  email += '<th style="padding:8px;text-align:right;">KW Paused</th>';
-  email += '<th style="padding:8px;text-align:right;">Winners</th>';
-  email += '<th style="padding:8px;text-align:right;">Errors</th>';
   email += '</tr>';
 
   // Helpers for column count so the group-divider colspan stays in sync
-  var fixedCols = 6; // Account, Script, Conv 7d, vs Prev 7d, vs Baseline, AI Neg
-  fixedCols += 4; // Review, KW Paused, Winners, Errors
-  if (mccStats.mode === 'mcc') fixedCols += 3; // Conv MTD, vs Prev MTD, Spend 7d
+  var fixedCols = 4; // Account, Script, Conv 7d, vs Prev 7d
+  if (mccStats.mode === 'mcc') fixedCols += 5; // Conv MTD, vs Prev MTD, Spend 7d, Spend MTD, vs Prev MTD
   if (mccStats.mode === 'mcc' && hasEcommerce) fixedCols += 4; // Rev 7d, vs prev 7d, Rev MTD, vs prev MTD
-  if (anyActivity) fixedCols += 1;
 
   // Track group boundary so we can render a divider between losers and winners.
   var winnersStartIdx = -1;
@@ -354,14 +332,6 @@ function _runDigest() {
     var trendCell = convTrendPct === null
       ? '<span style="color:#bbb;">—</span>'
       : '<span style="color:' + convTrendColor + ';font-weight:600;">' + (convTrendPct >= 0 ? '+' : '') + convTrendPct + '% ' + convTrendArrow + '</span>';
-
-    var baselineCell = '<span style="color:#bbb;">—</span>';
-    if (anom) {
-      var sign = anom.deltaPct >= 0 ? '+' : '';
-      var color = anom.severity === 'drop' ? '#c62828' : anom.severity === 'spike' ? '#2e7d32' : '#666';
-      baselineCell = '<span style="color:' + color + ';font-weight:600;">' + sign + anom.deltaPct.toFixed(0) + '%</span>'
-                   + ' <span style="font-size:10px;color:#888;">(med ' + anom.baseline.toFixed(0) + ')</span>';
-    }
 
     var scriptBadge;
     if (!acc.hasScript) {
@@ -434,31 +404,25 @@ function _runDigest() {
         }
       }
       email += '<td style="padding:6px 8px;text-align:right;color:#666;">' + (acc.costThis || 0).toFixed(0) + '</td>';
-    }
-    if (anyActivity) {
-      var bucket = activity.byAccount[key] || null;
-      var changesCell;
-      if (!bucket || (bucket.human + bucket.script + bucket.googleAuto + bucket.other) === 0) {
-        changesCell = '<span style="color:#bbb;">—</span>';
+
+      // Spend MTD + delta vs prev MTD
+      var spendMtdCell = (acc.costMtd || 0).toFixed(0);
+      var spendMtdTrendCell;
+      var costPrevMtdVal = acc.costPrevMtd || 0;
+      if (costPrevMtdVal > 0) {
+        var spendDelta = ((acc.costMtd || 0) - costPrevMtdVal) / costPrevMtdVal * 100;
+        var spendColor = spendDelta >= 0 ? '#2e7d32' : '#c62828';
+        var spendSign = spendDelta >= 0 ? '+' : '';
+        var spendArrow = spendDelta >= 0 ? '↑' : '↓';
+        spendMtdTrendCell = '<span style="color:' + spendColor + ';font-weight:600;">'
+                          + spendSign + spendDelta.toFixed(0) + '% ' + spendArrow + '</span>'
+                          + ' <span style="font-size:10px;color:#888;">(prev ' + costPrevMtdVal.toFixed(0) + ')</span>';
       } else {
-        // Compact display: H/S/A where H is bold-red if there were bid/budget touches
-        var humanColor = bucket.bidBudgetTouches > 0 ? '#c62828' : '#333';
-        var humanWeight = bucket.bidBudgetTouches > 0 ? '600' : 'normal';
-        changesCell =
-            '<span style="color:' + humanColor + ';font-weight:' + humanWeight + ';" title="human changes (UI/Editor)">' + bucket.human + 'h</span>'
-          + '<span style="color:#999;">/</span>'
-          + '<span style="color:#2d6cdf;" title="script + API + bulk upload">' + bucket.script + 's</span>'
-          + '<span style="color:#999;">/</span>'
-          + '<span style="color:#e65100;" title="Google auto-applied recs + automated rules">' + bucket.googleAuto + 'a</span>';
+        spendMtdTrendCell = '<span style="color:#bbb;">' + ((acc.costMtd || 0) > 0 ? 'new' : '—') + '</span>';
       }
-      email += '<td style="padding:6px 8px;text-align:right;font-size:11px;">' + changesCell + '</td>';
+      email += '<td style="padding:6px 8px;text-align:right;font-weight:600;">' + spendMtdCell + '</td>';
+      email += '<td style="padding:6px 8px;text-align:right;">' + spendMtdTrendCell + '</td>';
     }
-    email += '<td style="padding:6px 8px;text-align:right;">' + baselineCell + '</td>';
-    email += '<td style="padding:6px 8px;text-align:right;">' + (d ? (Number(d.ai_negated) || 0) : '<span style="color:#bbb;">—</span>') + '</td>';
-    email += '<td style="padding:6px 8px;text-align:right;color:#e65100;font-weight:' + (d && (Number(d.ai_review) || 0) > 0 ? '600' : '400') + ';">' + (d ? (Number(d.ai_review) || 0) : '<span style="color:#bbb;">—</span>') + '</td>';
-    email += '<td style="padding:6px 8px;text-align:right;">' + (d ? (Number(d.keywords_paused) || 0) : '<span style="color:#bbb;">—</span>') + '</td>';
-    email += '<td style="padding:6px 8px;text-align:right;color:#2e7d32;">' + (d ? (Number(d.winners_promoted) || 0) : '<span style="color:#bbb;">—</span>') + '</td>';
-    email += '<td style="padding:6px 8px;text-align:right;' + (hasErrors ? 'color:#c62828;font-weight:600;' : '') + '">' + (d ? (Number(d.errors) || 0) : '<span style="color:#bbb;">—</span>') + '</td>';
     email += '</tr>';
   }
   email += '</table></div>';
@@ -602,72 +566,6 @@ function _renderMtdSummary(accountList) {
 
 
 /**
- * Pulls conversion value (revenue) per customer via a single MCC-level AWQL
- * report per time window. Mutates the byAccount map in place, filling in
- * revThis / revPrev / revMtd / revPrevMtd by externalCustomerId match.
- *
- * Why this exists: AdsManagerApp.Stats (returned by ManagedAccount.getStatsFor)
- * does NOT expose getConversionValue — only getCost/getClicks/getImpressions/
- * getConversions. To get revenue we have to use AdsManagerApp.report() with
- * AWQL against ACCOUNT_PERFORMANCE_REPORT, which DOES expose ConversionValue.
- *
- * 4 cross-account queries total — cheap compared to selecting each account.
- */
-function _mergeRevenueIntoMccStats(byAccount) {
-  // Build a quick CID -> key lookup so each row from the report finds the
-  // right account.
-  var cidToKey = {};
-  for (var k in byAccount) {
-    var s = byAccount[k];
-    if (s && s.cid) cidToKey[String(s.cid).replace(/[^0-9]/g, '')] = k;
-  }
-  if (Object.keys(cidToKey).length === 0) return;
-
-  // Match the same date windows _collectMccData uses, so the totals line up.
-  var tzToday = Utilities.formatDate(new Date(), TIMEZONE, 'yyyy-MM-dd').split('-');
-  var Y = Number(tzToday[0]), M = Number(tzToday[1]), D = Number(tzToday[2]);
-  var pY = M === 1 ? Y - 1 : Y;
-  var pM = M === 1 ? 12 : M - 1;
-  var daysInPrev = new Date(pY, pM, 0).getDate();
-  var pD = Math.min(D, daysInPrev);
-  var pad = function(n) { return n < 10 ? '0' + n : '' + n; };
-  // AWQL DURING accepts either presets ("LAST_7_DAYS") or yyyyMMdd,yyyyMMdd
-  var ranges = {
-    revThis: 'LAST_7_DAYS',
-    // Days 8-14 ago — explicit yyyyMMdd range
-    revPrev: _ymdNDaysAgo(14) + ',' + _ymdNDaysAgo(8),
-    revMtd: '' + Y + pad(M) + '01,' + Y + pad(M) + pad(D),
-    revPrevMtd: '' + pY + pad(pM) + '01,' + pY + pad(pM) + pad(pD)
-  };
-
-  Object.keys(ranges).forEach(function(field) {
-    try {
-      var awql = "SELECT ExternalCustomerId, ConversionValue "
-               + "FROM ACCOUNT_PERFORMANCE_REPORT "
-               + "DURING " + ranges[field];
-      var report = AdsManagerApp.report(awql);
-      var rows = report.rows();
-      while (rows.hasNext()) {
-        var row = rows.next();
-        var cidNum = String(row['ExternalCustomerId'] || '').replace(/[^0-9]/g, '');
-        var key = cidToKey[cidNum];
-        if (!key) continue;
-        var v = Number(row['ConversionValue']) || 0;
-        byAccount[key][field] = v;
-      }
-    } catch (e) {
-      Logger.log('Revenue report (' + field + ') failed: ' + e.message);
-    }
-  });
-}
-
-// Helper: yyyyMMdd string for the day N days ago in TIMEZONE.
-function _ymdNDaysAgo(n) {
-  var d = new Date(new Date().getTime() - n * 24 * 60 * 60 * 1000);
-  return Utilities.formatDate(d, TIMEZONE, 'yyyyMMdd');
-}
-
-/**
  * Single-pass MCC scan: per spending account, collects stats (LAST_7_DAYS,
  * LAST_14_DAYS, MTD, prev-MTD) and — if the account matches activityFilter —
  * also scrapes change_event activity. Returns stats and activity in one
@@ -717,45 +615,50 @@ function _collectMccData(activityFilter) {
       var name = account.getName();
       if (!name) continue;
 
-      var s14 = account.getStatsFor('LAST_14_DAYS');
-      if (s14.getCost() <= 0) continue;
+      // Cheap pre-filter: skip if 14d spend is zero. Uses ManagedAccount.Stats
+      // (no select required), saving a context switch on dead accounts.
+      var s14pre = account.getStatsFor('LAST_14_DAYS');
+      if (s14pre.getCost() <= 0) continue;
       withSpend++;
 
-      var s7 = account.getStatsFor('LAST_7_DAYS');
-      var sMtd = account.getStatsFor(mtdStart, mtdEnd);
-      var sPrevMtd = account.getStatsFor(prevMtdStart, prevMtdEnd);
+      // Select the account so we can use AdsApp.currentAccount().getStatsFor(),
+      // whose Stats objects expose getConversionValue() — ManagedAccount.Stats
+      // does not. This also primes the context for the change_event scrape.
+      AdsManagerApp.select(account);
+      var current = AdsApp.currentAccount();
+
+      var s7 = current.getStatsFor('LAST_7_DAYS');
+      var s14 = current.getStatsFor('LAST_14_DAYS');
+      var sMtd = current.getStatsFor(mtdStart, mtdEnd);
+      var sPrevMtd = current.getStatsFor(prevMtdStart, prevMtdEnd);
 
       var cost7 = s7.getCost();
       var conv7 = s7.getConversions();
+      var rev7 = s7.getConversionValue();
       var key = name.toLowerCase().trim();
-      // Note: revenue (conversion value) is NOT available on
-      // AdsManagerApp.Stats — only cost/clicks/impressions/conversions are.
-      // We fetch revenue separately via AdsManagerApp.report() AWQL below.
       byAccount[key] = {
         name: name,
         cid: account.getCustomerId(),
         costThis: cost7,
         convThis: conv7,
-        revThis: 0,
+        revThis: rev7,
         // Previous 7 days = days 8-14 = 14d total minus last 7d
         costPrev: Math.max(0, s14.getCost() - cost7),
         convPrev: Math.max(0, s14.getConversions() - conv7),
-        revPrev: 0,
+        revPrev: Math.max(0, s14.getConversionValue() - rev7),
         // MTD vs same period last month
         costMtd: sMtd.getCost(),
         convMtd: sMtd.getConversions(),
-        revMtd: 0,
+        revMtd: sMtd.getConversionValue(),
         costPrevMtd: sPrevMtd.getCost(),
         convPrevMtd: sPrevMtd.getConversions(),
-        revPrevMtd: 0
+        revPrevMtd: sPrevMtd.getConversionValue()
       };
 
-      // Activity scrape — only if this account is in scope. This is the
-      // expensive part (account-context switch + GAQL query), so we skip
-      // it aggressively.
+      // Activity scrape — only if this account is in scope. Account is
+      // already selected above so this is just the GAQL cost.
       var scrapeActivity = (activityFilter === null) || (activityFilter[key] === true);
       if (scrapeActivity) {
-        AdsManagerApp.select(account);
         activityByAccount[key] = _scrapeChangeEvents();
         withActivity++;
       }
@@ -782,11 +685,19 @@ function _scrapeChangeEvents() {
     lastGoogleAuto: null
   };
   try {
+    // GAQL's LAST_N_DAYS presets exclude today, so a change the user made an
+    // hour ago wouldn't appear. Use an explicit datetime range covering the
+    // full lookback window up through right now (end-of-current-day) so
+    // changes made today are included.
+    var nowMs = new Date().getTime();
+    var fromStr = Utilities.formatDate(new Date(nowMs - ACTIVITY_LOOKBACK_DAYS * 86400000), TIMEZONE, 'yyyy-MM-dd') + ' 00:00:00';
+    var toStr = Utilities.formatDate(new Date(nowMs), TIMEZONE, 'yyyy-MM-dd') + ' 23:59:59';
     var q = "SELECT change_event.change_date_time, change_event.user_email, " +
             "change_event.client_type, change_event.change_resource_type, " +
             "change_event.resource_change_operation " +
             "FROM change_event " +
-            "WHERE change_event.change_date_time DURING LAST_" + ACTIVITY_LOOKBACK_DAYS + "_DAYS " +
+            "WHERE change_event.change_date_time >= '" + fromStr + "' " +
+            "AND change_event.change_date_time <= '" + toStr + "' " +
             "ORDER BY change_event.change_date_time DESC LIMIT 10000";
     var rows = AdsApp.search(q);
     while (rows.hasNext()) {
