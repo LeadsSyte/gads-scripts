@@ -12,6 +12,7 @@ import { aeoPipelineStatus } from '../../lib/pipelineStatus.js';
 import { listAllImplementations, saveAeoResult, loadAeoResults as loadAeoResultsFromDb, deleteAeoResult, saveDeepResult, listDeepResults, deleteDeepResult } from '../../lib/supabase.js';
 import { AEO_SYSTEM, AEO_TYPES, AEO_DEEP_SYSTEM } from './aeoTypes.js';
 import { fetchSitemapUrls } from './sitemap.js';
+import QueryDiscovery from './QueryDiscovery.jsx';
 import { listAccountSummaries, runReport } from './ga4.js';
 import { ensureToken, SCOPES, getToken, clearToken } from '../technical/googleAuth.js';
 
@@ -867,6 +868,10 @@ export default function AEOEngine({ sub }) {
   }
 
   // -------- Subviews --------
+  if (sub === 'Query Discovery') {
+    return <QueryDiscovery />;
+  }
+
   if (sub === 'Run Optimizations') {
     return (
       <div className="content-area">
