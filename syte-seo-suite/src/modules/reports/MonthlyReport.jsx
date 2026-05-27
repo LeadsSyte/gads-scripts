@@ -175,12 +175,23 @@ export default function MonthlyReport() {
       try {
         const cached = await getCachedReportData(c.id, m);
         const isCurrentVersion = cached?.data?.version === REPORT_DATA_VERSION;
-        if (cached?.data && isCurrentVersion) {
+        // Cache is also stale if the client's GA4/GSC properties have
+        // changed since the cached fetch — otherwise fixing a wrong
+        // property URL leaves the old permission error stuck on screen.
+        const propsMatch = cached?.data
+          && cached.data.ga4_property_id === (c.ga4_property_id || null)
+          && cached.data.gsc_property === (c.gsc_property || null);
+        if (cached?.data && isCurrentVersion && propsMatch) {
           setReportData(cached.data);
           setFetchStatus('Loaded from cache (fetched ' + new Date(cached.fetched_at).toLocaleDateString() + ') · Click Refresh Data to re-fetch');
           return;
         }
-        if (cached?.data && !isCurrentVersion) {
+        if (cached?.data && isCurrentVersion && !propsMatch) {
+          // Properties changed on the client — drop the cached result
+          // entirely and fall through to a fresh fetch.
+          setReportData(null);
+          setFetchStatus('GA4/GSC property changed — refetching…');
+        } else if (cached?.data && !isCurrentVersion) {
           // Old-shape cache exists. Show it as a fallback so the page
           // isn't blank, then silently try to refresh in the background
           // ONLY if a token is already present (no popup).
@@ -276,6 +287,8 @@ export default function MonthlyReport() {
     try {
       const data = await fetchReportData(c, year, mo);
       data.version = REPORT_DATA_VERSION;
+      data.ga4_property_id = c.ga4_property_id || null;
+      data.gsc_property = c.gsc_property || null;
       setReportData(data);
       // Cache for future visits.
       setCachedReportData(c.id, m, data).catch(() => {});
