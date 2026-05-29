@@ -5,7 +5,7 @@ import { corsFetchText } from '../../lib/corsProxy.js';
 import PushToCmsButton from '../../components/PushToCmsButton.jsx';
 import MarkImplementedButton from '../../components/MarkImplementedButton.jsx';
 import PipelineView from '../../components/PipelineView.jsx';
-import { technicalPipelineStatus } from '../../lib/pipelineStatus.js';
+import { technicalPipelineStatus, monthOptions } from '../../lib/pipelineStatus.js';
 import { getAudit, syncWebceoClients, webceoDiagnose } from './webceo.js';
 import { crawlSiteForIssues, summarizeCrawlForAI } from './crawler.js';
 import { upsertClient, listAllImplementations, saveTseoTasks, loadTseoTasks, updateTseoTask } from '../../lib/supabase.js';
@@ -453,8 +453,10 @@ export default function TechnicalSEO({ sub }) {
   }
   useEffect(() => { refreshTechImpls(); }, []);
 
-  const currentMonth = new Date().toISOString().slice(0, 7);
-  const monthLabel = new Date().toLocaleString('en-US', { month: 'long', year: 'numeric' });
+  const months = useMemo(() => monthOptions(), []);
+  const [selMonth, setSelMonth] = useState(new Date().toISOString().slice(0, 7));
+  const currentMonth = selMonth;
+  const monthLabel = months.find(m => m.value === selMonth)?.label || selMonth;
 
   const techClients = clients.filter(c => c.does_technical !== false);
   const techPipeline = useMemo(() => {
@@ -512,6 +514,11 @@ export default function TechnicalSEO({ sub }) {
         <PipelineView
           title={`Technical SEO — ${monthLabel}`}
           month={monthLabel}
+          monthSelector={
+            <select value={selMonth} onChange={e => setSelMonth(e.target.value)} style={{ width: 170, fontSize: 12 }}>
+              {months.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
+            </select>
+          }
           sections={techPipeline}
           onAction={(c, action) => {
             if (action === 'scan') {

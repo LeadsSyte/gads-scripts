@@ -8,7 +8,7 @@ import ClientCardsGrid from '../../components/ClientCardsGrid.jsx';
 import MarkImplementedButton from '../../components/MarkImplementedButton.jsx';
 import PipelineView from '../../components/PipelineView.jsx';
 import LogExternalWork from '../../components/LogExternalWork.jsx';
-import { aeoPipelineStatus } from '../../lib/pipelineStatus.js';
+import { aeoPipelineStatus, monthOptions } from '../../lib/pipelineStatus.js';
 import { listAllImplementations, saveAeoResult, loadAeoResults as loadAeoResultsFromDb, deleteAeoResult, saveDeepResult, listDeepResults, deleteDeepResult } from '../../lib/supabase.js';
 import { AEO_SYSTEM, AEO_TYPES, AEO_DEEP_SYSTEM } from './aeoTypes.js';
 import { fetchSitemapUrls } from './sitemap.js';
@@ -816,8 +816,10 @@ export default function AEOEngine({ sub }) {
   }
   useEffect(() => { refreshImplementations(); }, []);
 
-  const currentMonth = new Date().toISOString().slice(0, 7);
-  const monthLabel = new Date().toLocaleString('en-US', { month: 'long', year: 'numeric' });
+  const months = useMemo(() => monthOptions(), []);
+  const [selMonth, setSelMonth] = useState(new Date().toISOString().slice(0, 7));
+  const currentMonth = selMonth;
+  const monthLabel = months.find(m => m.value === selMonth)?.label || selMonth;
   const aeoClients = clients.filter(c => c.does_aeo !== false);
 
   const aeoPipeline = useMemo(() => {
@@ -886,6 +888,11 @@ export default function AEOEngine({ sub }) {
         <PipelineView
           title={`AEO Engine — ${monthLabel}`}
           month={monthLabel}
+          monthSelector={
+            <select value={selMonth} onChange={e => setSelMonth(e.target.value)} style={{ width: 170, fontSize: 12 }}>
+              {months.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
+            </select>
+          }
           sections={aeoPipeline}
           onAction={(c, action) => {
             if (action === 'run') {

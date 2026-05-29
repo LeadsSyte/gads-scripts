@@ -7,7 +7,7 @@ import {
   listDeepResults,
   loadContentHistory
 } from '../../lib/supabase.js';
-import { approvalsStatus } from '../../lib/pipelineStatus.js';
+import { approvalsStatus, monthOptions } from '../../lib/pipelineStatus.js';
 
 // Cross-module approvals matrix. Shows every client × every module for the
 // selected month. Refreshes monthly but keeps history via the month picker.
@@ -40,19 +40,6 @@ function StatusCell({ status }) {
       )}
     </td>
   );
-}
-
-// Generate month options for the last 12 months.
-function monthOptions() {
-  const out = [];
-  const now = new Date();
-  for (let i = 0; i < 12; i++) {
-    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-    const value = d.toISOString().slice(0, 7);
-    const label = d.toLocaleString('en-US', { month: 'long', year: 'numeric' });
-    out.push({ value, label });
-  }
-  return out;
 }
 
 export default function Approvals() {

@@ -8,6 +8,27 @@ const BLOGS_KEY = 'syte-suite-content_blogs';
 
 function thisMonth() { return new Date().toISOString().slice(0, 7); }
 
+// Month options for the dashboard pickers (newest first). Values are
+// UTC YYYY-MM strings so they match how rows are bucketed everywhere else
+// (timestamp.slice(0, 7) on the ISO/UTC string). Building them from
+// getUTCMonth avoids the off-by-one that local-midnight dates hit in
+// positive-offset timezones (e.g. SAST UTC+2).
+export function monthOptions(count = 12) {
+  const out = [];
+  const now = new Date();
+  let y = now.getUTCFullYear();
+  let m = now.getUTCMonth(); // 0-11
+  for (let i = 0; i < count; i++) {
+    const value = `${y}-${String(m + 1).padStart(2, '0')}`;
+    const label = new Date(Date.UTC(y, m, 1))
+      .toLocaleString('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+    out.push({ value, label });
+    m -= 1;
+    if (m < 0) { m = 11; y -= 1; }
+  }
+  return out;
+}
+
 // Fallback: read cached content history from localStorage (written by
 // loadContentHistory in supabase.js). The caller is expected to pass
 // the Supabase-loaded list via the `contentHistory` param when available.
