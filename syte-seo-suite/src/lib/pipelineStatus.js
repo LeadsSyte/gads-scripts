@@ -207,11 +207,14 @@ export function aeoPipelineStatus(client, implementations, aeoResults, month, de
 
 // ─── Approvals matrix ────────────────────────────────────────────
 // For each client, return the status of each module this month.
-export function approvalsStatus(client, implementations, tasks, aeoResults, month, contentHistory) {
+// `deepResults` (AEO full-page rewrites) is required for the AEO column to
+// reach "verified-on-site" — without it totalWork is 0 and AEO can never
+// clear, even when verified implementations exist.
+export function approvalsStatus(client, implementations, tasks, aeoResults, month, contentHistory, deepResults) {
   const m = month || thisMonth();
   return {
     content: contentPipelineStatus(client, implementations, m, contentHistory),
     technical: technicalPipelineStatus(client, implementations, tasks, m),
-    aeo: aeoPipelineStatus(client, implementations, aeoResults, m)
+    aeo: aeoPipelineStatus(client, implementations, aeoResults, m, deepResults)
   };
 }
