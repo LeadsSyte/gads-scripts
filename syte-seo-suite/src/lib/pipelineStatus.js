@@ -92,12 +92,14 @@ export function contentPipelineStatus(client, implementations, month, contentHis
     };
   }
 
-  // In progress — some articles written but quota not met.
+  // In progress — at least one article written but quota not met. Counts as
+  // "Articles Written" (with an X/Y progress note) so real work isn't hidden
+  // under "No Articles Yet"; only zero-article clients stay there.
   if (written > 0) {
     const parts = [written + '/' + required + ' articles'];
     if (verifiedCount > 0) parts.push(verifiedCount + ' verified');
     return {
-      section: 'no-articles',
+      section: 'articles-written',
       summary: parts.join(' · '),
       detail: written + ' of ' + required + ' articles written — ' + (required - written) + ' remaining'
     };
