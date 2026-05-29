@@ -1,11 +1,16 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useClients } from '../../store/useClients.js';
 import { claudeComplete, extractJSON } from '../../lib/anthropic.js';
-import { listAeoSnapshots, logReportSent, getCachedReportData, setCachedReportData } from '../../lib/supabase.js';
-import { ALICE_SYSTEM, MICROSITE_SYSTEM, QA_SYSTEM, buildAlicePayload, getWorkSummary } from './reportPrompts.js';
-import { buildMicrositeHtml, downloadMicrosite } from './microsite.js';
+import { listAeoSnapshots, logReportSent, logReportGenerated, getGeneratedReport, getCachedReportData, setCachedReportData } from '../../lib/supabase.js';
+import {
+  ALICE_SYSTEM, MICROSITE_SYSTEM, QA_SYSTEM,
+  ALICE_AEO_SYSTEM, MICROSITE_AEO_SYSTEM, QA_AEO_SYSTEM,
+  buildAlicePayload, getWorkSummary, buildAeoPayload
+} from './reportPrompts.js';
+import { buildMicrositeHtml, downloadMicrosite, downloadMicrositePdf } from './microsite.js';
 import { runSnapshot, snapshotPreflight } from './aeoRunner.js';
-import { ensureToken, SCOPES, getToken, switchAccount } from '../technical/googleAuth.js';
+import { compareSnapshots, rankBrandWithCompetitors, normalizeSnapshot } from './aeoCompare.js';
+import { ensureToken, SCOPES, getToken, switchAccount, silentRefresh, getCurrentEmail, getTokenForEmail, TOKEN_EVENT } from '../technical/googleAuth.js';
 import { fetchReportData } from './reportData.js';
 import ReportDashboard from './ReportDashboard.jsx';
 
@@ -40,6 +45,7 @@ function parseAliceOutput(text) {
 
 export default function MonthlyReport() {
   const client = useClients(s => s.current());
+  const saveClient = useClients(s => s.save);
   const [month, setMonth] = useState(previousMonth());
   const [form, setForm] = useState({});
   const [algContext, setAlgContext] = useState('');
@@ -55,47 +61,110 @@ export default function MonthlyReport() {
   const [showMicroFull, setShowMicroFull] = useState(false);
   const [reportData, setReportData] = useState(null);
   const [liveAeoProbe, setLiveAeoProbe] = useState(null);
+  const [previousAeoSnap, setPreviousAeoSnap] = useState(null);
+  const [aeoOnly, setAeoOnly] = useState(false);
+  // In-place visual editing state. When set, renders verbatim instead of
+  // rebuilding from microJson — that's how operator edits to copy/figures
+  // survive download / PDF / saved-report reload.
+  const [htmlOverride, setHtmlOverride] = useState(null);
+  const [editingMicro, setEditingMicro] = useState(false);
+  const microIframeRef = useRef(null);
 
-  // Auto-fetch GA4 + GSC data when client or month changes.
+  const [savedReportLoaded, setSavedReportLoaded] = useState(false);
+
+  // When client / month changes: rehydrate any previously-generated report
+  // (so review mode shows up without regenerating), then fetch fresh GA4 +
+  // GSC data only if there's nothing saved to render.
   useEffect(() => {
     setEmail({ subject: '', body: '' });
     setMicroJson(null); setQa(null); setSent(false); setPhase('idle'); setErr('');
+    setAeoOnly(false);
+    setSavedReportLoaded(false);
+    setLiveAeoProbe(null);
+    setHtmlOverride(null); setEditingMicro(false);
     const hasSeo = client?.does_content !== false || client?.does_technical !== false;
     const hasAeo = client?.does_aeo !== false;
     setForm({ hasSeo, hasAeo, industry: client?.industry || '' });
-    if (client?.id) {
-      setWorkSummary(getWorkSummary(client.id, month));
-      autoFetchMetrics(client, month);
-    }
+    if (!client?.id) return;
+    setWorkSummary(getWorkSummary(client.id, month));
+
+    let cancelled = false;
+    (async () => {
+      const saved = await getGeneratedReport(client.id, month).catch(() => null);
+      if (cancelled) return;
+      // Microsite JSON is required to render the iframe preview, so review
+      // mode only kicks in if at least that survived the save.
+      if (saved?.microsite_json) {
+        setMicroJson(saved.microsite_json);
+        setEmail({ subject: saved.email_subject || '', body: saved.email_body || '' });
+        if (saved.qa) setQa(saved.qa);
+        if (saved.aeo_probe) setLiveAeoProbe(saved.aeo_probe);
+        if (saved.report_type === 'aeo') setAeoOnly(true);
+        if (saved.microsite_html_override) setHtmlOverride(saved.microsite_html_override);
+        // Saved snapshot of report_data wins over a live fetch — the
+        // generated copy was written against this data and the numbers
+        // would mismatch otherwise.
+        if (saved.report_data) {
+          setReportData(saved.report_data);
+          setFetchStatus('Loaded saved report from ' + new Date(saved.generated_at || saved.created_at || Date.now()).toLocaleDateString());
+        } else {
+          autoFetchMetrics(client, month);
+        }
+        setPhase('review');
+        setSavedReportLoaded(true);
+      } else {
+        autoFetchMetrics(client, month);
+      }
+    })();
+    return () => { cancelled = true; };
   }, [client?.id, month]);
 
   useEffect(() => {
-    if (!client) { setAeoSnap(null); setWorkSummary(null); return; }
+    if (!client) { setAeoSnap(null); setPreviousAeoSnap(null); setWorkSummary(null); return; }
     listAeoSnapshots(client.id).then(rows => {
-      const match = rows.find(r => r.month === month) || null;
+      // Sort newest-first then find this month + the most recent prior month.
+      const sorted = (rows || []).slice().sort((a, b) => (b.month || '').localeCompare(a.month || ''));
+      const match = sorted.find(r => r.month === month) || null;
+      const prev = sorted.find(r => r.month && r.month < month) || null;
       setAeoSnap(match);
+      setPreviousAeoSnap(prev);
     }).catch(() => {});
   }, [client?.id, month]);
 
-  // If the Google token appears AFTER this report mounted (e.g. user signed in
-  // via the Google Connections picker on the client modal), refetch metrics
-  // automatically — otherwise the report is stuck on the "auth failed" state.
-  // The storage event covers cross-tab; the custom event covers same-tab
-  // (localStorage writes don't fire 'storage' in the originating tab).
+  // Re-trigger the data fetch whenever a Google token lands — covers the
+  // case where the operator signs in elsewhere (the client modal's picker,
+  // a background refresh resolving late, switching accounts) while the
+  // Monthly Report is already on screen. Without this they had to navigate
+  // away and back, or "reset it in the client part", to see data load.
+  // The fetchStatus guard avoids a redundant pull when autoFetchMetrics
+  // itself just persisted the token mid-cycle.
   useEffect(() => {
-    function onTokenChange() {
-      if (client?.id) autoFetchMetrics(client, month, true);
-    }
-    function onStorage(e) {
-      if (e.key === 'syte-suite-google-token' && e.newValue) onTokenChange();
-    }
-    window.addEventListener('storage', onStorage);
-    window.addEventListener('syte-google-token-changed', onTokenChange);
-    return () => {
-      window.removeEventListener('storage', onStorage);
-      window.removeEventListener('syte-google-token-changed', onTokenChange);
+    if (!client?.id) return;
+    const onTokenChange = () => {
+      if (!getToken()?.access_token) return;
+      // Only react when we're currently in an unconnected / mismatched
+      // state. If a fetch is already in progress or data is already
+      // loaded, the in-flight cycle will handle it.
+      if (
+        fetchStatus.includes('Not connected') ||
+        fetchStatus.includes('Wrong Google') ||
+        fetchStatus.includes('sign-in needed') ||
+        fetchStatus.includes('Reconnecting') ||
+        fetchStatus === ''
+      ) {
+        autoFetchMetrics(client, month, true);
+      }
     };
-  }, [client?.id, month]);
+    window.addEventListener(TOKEN_EVENT, onTokenChange);
+    return () => window.removeEventListener(TOKEN_EVENT, onTokenChange);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [client?.id, month, fetchStatus]);
+
+  // Bump this whenever the report data shape changes in a way that
+  // makes old cache entries stale (e.g. keyword pull went 50 → 500,
+  // pagination added at v3). Cache entries without a matching version
+  // are treated as a miss and refetched.
+  const REPORT_DATA_VERSION = 3;
 
   // Pull all report data (GA4 traffic + conversions + GSC keywords) via reportData.js.
   async function autoFetchMetrics(c, m, forceRefresh = false) {
@@ -105,25 +174,111 @@ export default function MonthlyReport() {
     if (!forceRefresh) {
       try {
         const cached = await getCachedReportData(c.id, m);
-        if (cached?.data) {
+        const isCurrentVersion = cached?.data?.version === REPORT_DATA_VERSION;
+        // Cache is also stale if the client's GA4/GSC properties have
+        // changed since the cached fetch — otherwise fixing a wrong
+        // property URL leaves the old permission error stuck on screen.
+        const propsMatch = cached?.data
+          && cached.data.ga4_property_id === (c.ga4_property_id || null)
+          && cached.data.gsc_property === (c.gsc_property || null);
+        if (cached?.data && isCurrentVersion && propsMatch) {
           setReportData(cached.data);
-          setFetchStatus('Loaded from cache (fetched ' + new Date(cached.fetched_at).toLocaleDateString() + ') · Click Switch Google Account to re-fetch');
+          setFetchStatus('Loaded from cache (fetched ' + new Date(cached.fetched_at).toLocaleDateString() + ') · Click Refresh Data to re-fetch');
           return;
+        }
+        if (cached?.data && isCurrentVersion && !propsMatch) {
+          // Properties changed on the client — drop the cached result
+          // entirely and fall through to a fresh fetch.
+          setReportData(null);
+          setFetchStatus('GA4/GSC property changed — refetching…');
+        } else if (cached?.data && !isCurrentVersion) {
+          // Old-shape cache exists. Show it as a fallback so the page
+          // isn't blank, then silently try to refresh in the background
+          // ONLY if a token is already present (no popup).
+          setReportData(cached.data);
+          setFetchStatus('Loaded older cache · Refreshing with new keyword depth…');
+          if (!getToken()?.access_token) {
+            setFetchStatus('Loaded older cache · Click Refresh Data to pull the latest keyword set');
+            return;
+          }
         }
       } catch {}
     }
 
-    setFetchStatus('Checking Google connection…');
-    setReportData(null);
+    // ── Auth handling ──
+    // Per-API bindings: a client can have GA4 in one Google account and
+    // GSC in another. Each API uses its own binding; both fall back to
+    // the legacy single google_account_email if the per-API field isn't
+    // set yet (clients created before this split).
+    const ga4Email = c.ga4_account_email || c.google_account_email || null;
+    const gscEmail = c.gsc_account_email || c.google_account_email || null;
+    const needsGa4 = !!c.ga4_property_id;
+    const needsGsc = !!c.gsc_property;
+    const needsGoogle = needsGa4 || needsGsc;
 
-    let token = getToken();
-    if (!token?.access_token && (c.ga4_property_id || c.gsc_property)) {
-      setFetchStatus('Connecting to Google — please sign in if prompted…');
-      try {
-        token = await ensureToken([SCOPES.ga4, SCOPES.gsc]);
-      } catch {
-        setFetchStatus('Google auth failed — try again');
-        return;
+    // If both APIs already have a valid cached token under the right
+    // account, we can fetch silently with zero round-trips. Otherwise we
+    // try a silent refresh per missing API; if that fails, defer to an
+    // explicit Connect Google CTA (don't auto-pop on mount).
+    if (needsGoogle) {
+      const ga4Cached = needsGa4 && ga4Email ? !!getTokenForEmail(ga4Email, [SCOPES.ga4]) : !needsGa4;
+      const gscCached = needsGsc && gscEmail ? !!getTokenForEmail(gscEmail, [SCOPES.gsc]) : !needsGsc;
+      const allCached = ga4Cached && gscCached;
+
+      if (!allCached && !forceRefresh) {
+        setFetchStatus('Reconnecting to Google in the background…');
+        // Silent refresh whichever API is missing, hinting at its bound
+        // account. If both succeed silently we proceed; if either still
+        // fails, fall back to the Connect Google CTA.
+        const tasks = [];
+        if (needsGa4 && !ga4Cached) tasks.push(silentRefresh([SCOPES.ga4], { loginHint: ga4Email }));
+        if (needsGsc && !gscCached) tasks.push(silentRefresh([SCOPES.gsc], { loginHint: gscEmail }));
+        const results = await Promise.all(tasks);
+        const stillMissing =
+          (needsGa4 && ga4Email && !getTokenForEmail(ga4Email, [SCOPES.ga4])) ||
+          (needsGsc && gscEmail && !getTokenForEmail(gscEmail, [SCOPES.gsc])) ||
+          (!ga4Email && !gscEmail && !results.some(t => t?.access_token));
+        if (stillMissing) {
+          setFetchStatus('Not connected to Google — click Connect Google to fetch fresh SEO data (cached AEO and saved client data still available)');
+          return;
+        }
+      }
+
+      if (!allCached && forceRefresh) {
+        setFetchStatus('Connecting to Google — please sign in if prompted…');
+        try {
+          // Pop the picker for whichever account the user needs to add.
+          // GA4 binding takes priority; if GA4 is already cached we'll
+          // pop GSC's binding instead.
+          if (needsGa4 && ga4Email && !getTokenForEmail(ga4Email, [SCOPES.ga4])) {
+            await ensureToken([SCOPES.ga4], { expectedEmail: ga4Email });
+          } else if (needsGsc && gscEmail && !getTokenForEmail(gscEmail, [SCOPES.gsc])) {
+            await ensureToken([SCOPES.gsc], { expectedEmail: gscEmail });
+          } else {
+            // No per-API binding saved yet — first-time setup. Pop the
+            // combined picker and capture whatever the operator chose.
+            await ensureToken([SCOPES.ga4, SCOPES.gsc]);
+            try {
+              const email = await getCurrentEmail();
+              if (email) {
+                const patch = { ...c };
+                if (!c.google_account_email) patch.google_account_email = email;
+                if (needsGa4 && !c.ga4_account_email) patch.ga4_account_email = email;
+                if (needsGsc && !c.gsc_account_email) patch.gsc_account_email = email;
+                await saveClient(patch);
+              }
+            } catch {}
+          }
+        } catch (e) {
+          if (e?.accountMismatch) {
+            setFetchStatus(`Wrong Google account: signed in as ${e.currentEmail}, but ${c.name} expected ${e.expectedEmail}. Click Switch Google Account.`);
+          } else if (e?.requiresInteraction || /popup|denied|interaction/i.test(e?.message || '')) {
+            setFetchStatus('Google sign-in needed — click Switch Google Account to continue.');
+          } else {
+            setFetchStatus('Google auth failed: ' + (e?.message || 'unknown'));
+          }
+          return;
+        }
       }
     }
 
@@ -131,6 +286,9 @@ export default function MonthlyReport() {
     setFetchStatus('Pulling GA4 + GSC data for ' + monthLabel(m) + '…');
     try {
       const data = await fetchReportData(c, year, mo);
+      data.version = REPORT_DATA_VERSION;
+      data.ga4_property_id = c.ga4_property_id || null;
+      data.gsc_property = c.gsc_property || null;
       setReportData(data);
       // Cache for future visits.
       setCachedReportData(c.id, m, data).catch(() => {});
@@ -184,20 +342,41 @@ export default function MonthlyReport() {
 
   const micrositeHtml = useMemo(() => {
     if (!microJson || !client) return '';
+    // Use the live probe if we just ran one; otherwise fall back to the
+    // saved snapshot for this month so the report renders even without
+    // a fresh probe in the same session. Normalize either way so legacy
+    // snapshots get derived visibility / detection / keyword_wins fields.
+    const aeoProbe = normalizeSnapshot(liveAeoProbe || aeoSnap || null);
+    const aeoCompare = aeoProbe
+      ? compareSnapshots(aeoProbe, normalizeSnapshot(previousAeoSnap))
+      : null;
+    const aeoRanking = aeoProbe
+      ? rankBrandWithCompetitors(aeoProbe, client.name)
+      : null;
     return buildMicrositeHtml({
       micro: microJson,
       client,
       monthLabel: monthLabel(month),
+      previousMonthLabel: previousAeoSnap ? monthLabel(previousAeoSnap.month) : null,
       rankscale: client.rankscale_url,
       reportData,
-      aeoProbe: liveAeoProbe
+      aeoProbe,
+      aeoCompare,
+      aeoRanking,
+      aeoOnly
     });
-  }, [microJson, client, month, reportData, liveAeoProbe]);
+  }, [microJson, client, month, reportData, liveAeoProbe, aeoSnap, previousAeoSnap, aeoOnly]);
+
+  // What we actually render / download / print: the operator's visual
+  // edits if any, otherwise the freshly built microsite. Override is
+  // cleared when client/month change.
+  const displayHtml = htmlOverride || micrositeHtml;
 
   // Generate AEO-only report — skips SEO data, focuses on AI visibility.
   async function generateAeoOnly() {
     if (!client) return;
     setErr(''); setEmail({ subject: '', body: '' }); setMicroJson(null); setQa(null); setSent(false); setLiveAeoProbe(null);
+    setAeoOnly(true);
 
     try {
       // Step 1: Run AEO probe
@@ -214,65 +393,75 @@ export default function MonthlyReport() {
 
       // Step 2: Generate AEO-focused email
       setPhase('alice');
-      const citedCount = probeResult.per_query?.filter(r => r.mentioned).length || 0;
-      const totalCount = probeResult.per_query?.length || 0;
-      const aeoPayload = `Client: ${client.name}
-Industry: ${client.industry || ''}
-Month: ${monthLabel(month)}
-
-AEO REPORT — AI Visibility Assessment
-
-AEO Score: ${probeResult.overall_score}/100
-Citations: ${citedCount} out of ${totalCount} AI responses mentioned ${client.name}
-Sentiment: ${probeResult.sentiment}
-Engines tested: ${(probeResult.engines_used || []).join(', ')}
-Per-engine scores: ${JSON.stringify(probeResult.engine_scores || {})}
-
-Top cited queries:
-${probeResult.per_query?.filter(r => r.mentioned).map(r => '- "' + r.query + '" on ' + r.engine + ' (position ' + r.position + ', ' + r.sentiment + ')').join('\n') || 'None'}
-
-Queries where brand was NOT cited:
-${probeResult.per_query?.filter(r => !r.mentioned && !r.error).map(r => '- "' + r.query + '" on ' + r.engine).join('\n') || 'None'}
-
-Competitors appearing in responses:
-${(probeResult.competitors || []).map(c => '- ' + c.name + ': ' + c.appearances + ' mentions').join('\n') || 'None tracked'}
-
-Write an AEO performance email covering: what AI engines are saying about this brand, where they're cited, what's missing, and what the next steps are to improve AI visibility. Focus on actionable insights.`;
+      const compare = compareSnapshots(probeResult, previousAeoSnap);
+      const ranking = rankBrandWithCompetitors(probeResult, client.name);
+      const brandRank = ranking.findIndex(r => r.isBrand) + 1;
+      const aeoPayload = buildAeoPayload({
+        client,
+        monthLabel: monthLabel(month),
+        previousMonthLabel: previousAeoSnap ? monthLabel(previousAeoSnap.month) : null,
+        probe: probeResult,
+        compare,
+        ranking,
+        brandRank
+      });
 
       const aliceText = await claudeComplete({
-        system: ALICE_SYSTEM,
+        system: ALICE_AEO_SYSTEM,
         messages: [{ role: 'user', content: aeoPayload }],
-        model: 'claude-sonnet-4-20250514',
+        model: 'claude-sonnet-4-6',
         max_tokens: 1200,
         temperature: 0.7
       });
       setEmail(parseAliceOutput(aliceText));
 
-      // Step 3: Generate microsite JSON
+      // Step 3: Generate microsite JSON (AEO-only shape)
       setPhase('micro');
       const micrositeText = await claudeComplete({
-        system: MICROSITE_SYSTEM,
+        system: MICROSITE_AEO_SYSTEM,
         messages: [{ role: 'user', content: aeoPayload }],
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 1200,
+        model: 'claude-sonnet-4-6',
+        // Was 1200 — the AEO microsite JSON has narratives, priorities,
+        // highlights, work items etc. that easily blow past that and
+        // truncate mid-JSON, which then fails extractJSON. 4000 leaves
+        // headroom while still being well under the model limit.
+        max_tokens: 4000,
         temperature: 0.5
       });
       const microObj = extractJSON(micrositeText);
-      if (!microObj) throw new Error('Microsite JSON could not be parsed.');
+      if (!microObj) {
+        console.error('[Report] Microsite (AEO) raw output:', micrositeText);
+        throw new Error('Microsite JSON could not be parsed. Raw output logged to console — usually means truncated output (raise max_tokens) or model wrapped JSON in stray prose.');
+      }
       if (!microObj.clientName) microObj.clientName = client.name;
       setMicroJson(microObj);
 
-      // Step 4: QA
+      // Step 4: QA (AEO-specific checks: no SEO talk, no doom framing)
       setPhase('qa');
       const qaText = await claudeComplete({
-        system: QA_SYSTEM,
+        system: QA_AEO_SYSTEM,
         messages: [{ role: 'user', content: 'Alice email to review:\n\n' + aliceText }],
-        model: 'claude-sonnet-4-20250514',
+        model: 'claude-sonnet-4-6',
         max_tokens: 500,
         temperature: 0
       });
       const qaObj = extractJSON(qaText);
       if (qaObj) setQa(qaObj);
+
+      logReportGenerated({
+        client_id: client.id,
+        month,
+        report_type: 'aeo',
+        qa_score: qaObj?.overallScore || null,
+        email_subject: parseAliceOutput(aliceText).subject || '',
+        // Full content snapshot so the report can be re-rendered on a
+        // future visit without regenerating.
+        email_body: parseAliceOutput(aliceText).body || aliceText,
+        microsite_json: microObj,
+        qa: qaObj || null,
+        aeo_probe: probeResult,
+        report_data: null
+      }).catch(() => {});
 
       setPhase('review');
     } catch (e) {
@@ -284,13 +473,26 @@ Write an AEO performance email covering: what AI engines are saying about this b
   async function generate() {
     if (!client) return;
     setErr(''); setEmail({ subject: '', body: '' }); setMicroJson(null); setQa(null); setSent(false);
+    setAeoOnly(false);
+
+    // Compute MoM comparison and ranking from saved snapshot if we have one,
+    // so Alice can lead with momentum metrics ("+68% citations MoM") even
+    // when not running a fresh probe.
+    const aeoForCompare = aeoSnap || liveAeoProbe;
+    const aeoCompare = aeoForCompare ? compareSnapshots(aeoForCompare, previousAeoSnap) : null;
+    const aeoRanking = aeoForCompare ? rankBrandWithCompetitors(aeoForCompare, client.name) : null;
+    const brandRank = aeoRanking ? aeoRanking.findIndex(r => r.isBrand) + 1 : null;
 
     const payload = buildAlicePayload({
       clientName: client.name,
       industry: client.industry || '',
       goals: client.context,
       month: monthLabel(month),
+      previousMonthLabel: previousAeoSnap ? monthLabel(previousAeoSnap.month) : null,
       algorithmContext: algContext,
+      aeoCompare,
+      aeoRanking,
+      brandRank,
       ...form
     }, aeoSnap, workSummary);
 
@@ -323,7 +525,7 @@ Write an AEO performance email covering: what AI engines are saying about this b
       const aliceText = await claudeComplete({
         system: ALICE_SYSTEM,
         messages: [{ role: 'user', content: payload }],
-        model: 'claude-sonnet-4-20250514',
+        model: 'claude-sonnet-4-6',
         max_tokens: 1000,
         temperature: 0.7
       });
@@ -335,12 +537,16 @@ Write an AEO performance email covering: what AI engines are saying about this b
       const micrositeText = await claudeComplete({
         system: MICROSITE_SYSTEM,
         messages: [{ role: 'user', content: payload }],
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 1000,
+        model: 'claude-sonnet-4-6',
+        // Was 1000 — same truncation issue as the AEO path. Bumped to 4000.
+        max_tokens: 4000,
         temperature: 0.5
       });
       const microObj = extractJSON(micrositeText);
-      if (!microObj) throw new Error('Microsite JSON could not be parsed from model output.');
+      if (!microObj) {
+        console.error('[Report] Microsite raw output:', micrositeText);
+        throw new Error('Microsite JSON could not be parsed from model output. Raw output logged to console — usually means truncated output (raise max_tokens) or model wrapped JSON in stray prose.');
+      }
       if (!microObj.clientName) microObj.clientName = client.name;
       setMicroJson(microObj);
 
@@ -349,12 +555,27 @@ Write an AEO performance email covering: what AI engines are saying about this b
       const qaText = await claudeComplete({
         system: QA_SYSTEM,
         messages: [{ role: 'user', content: 'Alice email to review:\n\n' + aliceText }],
-        model: 'claude-sonnet-4-20250514',
+        model: 'claude-sonnet-4-6',
         max_tokens: 500,
         temperature: 0
       });
       const qaObj = extractJSON(qaText);
       if (qaObj) setQa(qaObj);
+
+      logReportGenerated({
+        client_id: client.id,
+        month,
+        report_type: 'full',
+        qa_score: qaObj?.overallScore || null,
+        email_subject: parsed.subject || '',
+        // Full content snapshot so the report can be re-rendered on a
+        // future visit without regenerating.
+        email_body: parsed.body || aliceText,
+        microsite_json: microObj,
+        qa: qaObj || null,
+        aeo_probe: liveAeoProbe,
+        report_data: reportData
+      }).catch(() => {});
 
       setPhase('review');
     } catch (e) {
@@ -384,9 +605,80 @@ Write an AEO performance email covering: what AI engines are saying about this b
   }
 
   function downloadHtml() {
-    if (!micrositeHtml) return;
+    if (!displayHtml) return;
     const safeName = (client.name || 'client').replace(/[^a-z0-9]+/gi, '-');
-    downloadMicrosite(micrositeHtml, `${safeName}-${month}-Report.html`);
+    downloadMicrosite(displayHtml, `${safeName}-${month}-Report.html`);
+  }
+
+  // Print to PDF — opens the microsite in a new window with print-
+  // friendly CSS injected, then triggers window.print() so the user
+  // gets the browser's "Save as PDF" dialog. No server-side renderer
+  // needed; works in every modern browser.
+  function downloadPdf() {
+    if (!displayHtml) return;
+    const safeName = (client.name || 'client').replace(/[^a-z0-9]+/gi, '-');
+    downloadMicrositePdf(displayHtml, `${safeName}-${month}-Report.pdf`);
+  }
+
+  // Toggle in-place visual editing on the microsite preview iframe. Sets
+  // body.contentEditable so the operator can click into any rendered
+  // text and tweak it. Click Apply Edits to capture the resulting HTML
+  // as the override; from then on download / PDF / saved-report reload
+  // all reflect the edits.
+  function toggleMicroEdit() {
+    const iframe = microIframeRef.current;
+    const doc = iframe?.contentDocument;
+    if (!doc?.body) return;
+    if (editingMicro) {
+      doc.body.contentEditable = 'false';
+      doc.designMode = 'off';
+      setEditingMicro(false);
+    } else {
+      doc.body.contentEditable = 'true';
+      // designMode = 'on' makes the whole document editable (richer
+      // selection / paste behaviour than per-element contentEditable).
+      try { doc.designMode = 'on'; } catch {}
+      setEditingMicro(true);
+      try { iframe.contentWindow?.focus(); } catch {}
+    }
+  }
+
+  async function applyMicroEdits() {
+    const iframe = microIframeRef.current;
+    const doc = iframe?.contentDocument;
+    if (!doc) return;
+    // Capture the full document including <head> / <style> so the saved
+    // HTML re-renders identically — the microsite's CSS lives in the
+    // iframe's <style> block.
+    const html = '<!DOCTYPE html>\n' + doc.documentElement.outerHTML;
+    setHtmlOverride(html);
+    // Persist immediately so a tab close or refresh keeps the edits.
+    try {
+      await logReportGenerated({
+        client_id: client.id,
+        month,
+        report_type: aeoOnly ? 'aeo' : 'full',
+        qa_score: qa?.overallScore || null,
+        email_subject: email.subject || '',
+        email_body: email.body || '',
+        microsite_json: microJson,
+        microsite_html_override: html,
+        qa: qa || null,
+        aeo_probe: liveAeoProbe,
+        report_data: aeoOnly ? null : reportData
+      });
+    } catch {}
+    // Exit edit mode — the iframe will reload from the new srcDoc.
+    if (doc.body) {
+      doc.body.contentEditable = 'false';
+      try { doc.designMode = 'off'; } catch {}
+    }
+    setEditingMicro(false);
+  }
+
+  function discardMicroEdits() {
+    setHtmlOverride(null);
+    setEditingMicro(false);
   }
 
   if (!client) return <div className="muted">Select a client first.</div>;
@@ -437,20 +729,44 @@ Write an AEO performance email covering: what AI engines are saying about this b
             <span style={{ color: fetchStatus.includes('✓') ? 'var(--green)' : fetchStatus.includes('failed') || fetchStatus.includes('403') ? 'var(--orange)' : 'var(--text-muted)', flex: 1 }}>
               {fetchStatus}
             </span>
-            {fetchStatus.includes('cache') && (
+            {(fetchStatus.includes('cache') || fetchStatus.includes('Not connected') || fetchStatus.includes('Loaded saved report')) && (
               <button
-                onClick={() => autoFetchMetrics(client, month, true)}
+                onClick={async () => {
+                  // Refresh-data path also clears the saved-report-loaded
+                  // state so the UI flow doesn't keep flagging stale data.
+                  setSavedReportLoaded(false);
+                  setReportData(null);
+                  await autoFetchMetrics(client, month, true);
+                }}
                 style={{ fontSize: 11, padding: '4px 12px', borderColor: 'var(--green)', color: 'var(--green)', whiteSpace: 'nowrap' }}
               >
-                Refresh Data
+                {fetchStatus.includes('Not connected') ? 'Connect Google' : 'Refresh Data'}
               </button>
             )}
-            {(fetchStatus.includes('403') || fetchStatus.includes('permission') || fetchStatus.includes('failed')) && (
+            {(fetchStatus.includes('403') || fetchStatus.includes('permission') || fetchStatus.includes('failed') || fetchStatus.includes('Wrong Google account') || fetchStatus.includes('sign-in needed') || fetchStatus.includes('Not connected')) && (
               <button
                 onClick={async () => {
                   try {
                     setFetchStatus('Switching Google account…');
+                    // No loginHint here: the operator is hitting Switch
+                    // because the bound account is wrong / unavailable.
+                    // forcePicker shows the chooser so they can pick any
+                    // signed-in account.
                     await switchAccount([SCOPES.ga4, SCOPES.gsc]);
+                    // Re-bind to whatever the operator picked. Without this,
+                    // the next mount silentRefresh keeps trying the old
+                    // email and fails the same way.
+                    try {
+                      const email = await getCurrentEmail();
+                      if (email && email !== client.google_account_email) {
+                        await saveClient({
+                          ...client,
+                          google_account_email: email,
+                          ga4_account_email: email,
+                          gsc_account_email: email
+                        });
+                      }
+                    } catch {}
                     autoFetchMetrics(client, month, true);
                   } catch (e) {
                     setFetchStatus('Re-auth failed: ' + e.message);
@@ -458,7 +774,7 @@ Write an AEO performance email covering: what AI engines are saying about this b
                 }}
                 style={{ fontSize: 11, padding: '4px 12px', borderColor: 'var(--blue)', color: 'var(--blue)', whiteSpace: 'nowrap' }}
               >
-                Switch Google Account
+                {client.google_account_email ? `Switch from ${client.google_account_email}` : 'Switch Google Account'}
               </button>
             )}
           </div>
@@ -484,23 +800,35 @@ Write an AEO performance email covering: what AI engines are saying about this b
           </div>
         </div>
         <ReportDashboard data={reportData} client={client} monthLabel={monthLabel(month)} />
-        {!reportData && !fetchStatus.includes('Pulling') && (
-          <div className="row" style={{ gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-            <span className="muted" style={{ fontSize: 12 }}>
-              {!client.ga4_property_id && !client.gsc_property
-                ? 'No GA4 or GSC configured — set up in Edit Client → Google Connections.'
-                : 'No data loaded yet.'}
-            </span>
-            {(client.ga4_property_id || client.gsc_property) && (
-              <button
-                onClick={() => autoFetchMetrics(client, month, true)}
-                style={{ fontSize: 11, padding: '5px 14px', borderColor: ACCENT, color: ACCENT }}
-              >
-                {getToken()?.access_token ? 'Fetch from GA4 + GSC' : 'Connect Google & Fetch'}
-              </button>
-            )}
-          </div>
-        )}
+        {!reportData && (() => {
+          // Only show a generic loading note when we're actually loading.
+          // If fetchStatus already says "Not connected" / "Click Refresh"
+          // / "Loaded older cache" the banner above is the signal — adding
+          // "Loading…" underneath it just looks broken.
+          const isPulling = fetchStatus.includes('Pulling') || fetchStatus.includes('Reconnecting');
+          const isStopped = fetchStatus.includes('Not connected') ||
+                            fetchStatus.includes('Click Refresh') ||
+                            fetchStatus.includes('Loaded older cache') ||
+                            fetchStatus.includes('failed');
+          if (isStopped) {
+            return (
+              <div className="muted" style={{ fontSize: 12 }}>
+                SEO performance data unavailable until you reconnect Google. AEO snapshot, work history, and AI tools all still work without it.
+              </div>
+            );
+          }
+          if (!isPulling && !client.ga4_property_id && !client.gsc_property) {
+            return (
+              <div className="muted" style={{ fontSize: 12 }}>
+                No GA4 or GSC configured — set up in Edit Client → Google Connections.
+              </div>
+            );
+          }
+          if (isPulling) {
+            return <div className="muted" style={{ fontSize: 12 }}>Loading…</div>;
+          }
+          return null;
+        })()}
       </div>
 
       {/* Step 3: AEO manual override (only shown if snapshot missing) */}
@@ -596,8 +924,57 @@ Write an AEO performance email covering: what AI engines are saying about this b
           <textarea value={algContext} onChange={e => setAlgContext(e.target.value)} rows={2} placeholder="e.g. Google March 2025 core update rolled out mid-month…" />
         </div>
 
-        <div className="row" style={{ justifyContent: 'space-between', marginTop: 14 }}>
-          <div className="row" style={{ gap: 8 }}>
+        {/* Generate CTAs — pulled into their own row above the phase
+            pills so they're obvious. Big targets, accent-coloured. */}
+        <div style={{
+          marginTop: 18, padding: 18,
+          background: 'linear-gradient(135deg, rgba(167,139,250,.08), rgba(167,139,250,.02))',
+          border: '1px solid rgba(167,139,250,.25)',
+          borderRadius: 12
+        }}>
+          <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 14 }}>
+            <div>
+              <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>
+                Ready to generate the report
+              </div>
+              <div className="muted" style={{ fontSize: 12 }}>
+                Pulls the latest data, runs Alice + microsite + QA, then opens for review.
+              </div>
+            </div>
+            <div className="row" style={{ gap: 10, flexWrap: 'wrap' }}>
+              {(client.does_content !== false || client.does_technical !== false) && (
+                <button
+                  className="primary"
+                  onClick={generate}
+                  disabled={phase !== 'idle' && phase !== 'review'}
+                  style={{
+                    background: ACCENT, borderColor: ACCENT, color: '#0a0a0c',
+                    padding: '12px 22px', fontSize: 14, fontWeight: 600
+                  }}
+                >
+                  {phase === 'idle' || phase === 'review' ? '▶ Generate Full Report' : 'Working…'}
+                </button>
+              )}
+              {client.does_aeo !== false && (
+                <button
+                  onClick={generateAeoOnly}
+                  disabled={phase !== 'idle' && phase !== 'review'}
+                  style={{
+                    borderColor: 'var(--mod-aeo)', color: 'var(--mod-aeo)',
+                    padding: '12px 22px', fontSize: 14, fontWeight: 600
+                  }}
+                >
+                  {phase === 'idle' || phase === 'review' ? '▶ Generate AEO Report' : 'Working…'}
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Phase indicators — moved below the CTA so the buttons lead. */}
+        <div className="row" style={{ marginTop: 12, gap: 8, flexWrap: 'wrap' }}>
+          <span className="muted" style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '.06em' }}>Pipeline:</span>
+          <div className="row" style={{ gap: 6 }}>
             {PHASES.map(p => (
               <span key={p.key} style={{
                 fontSize: 11, padding: '4px 10px', borderRadius: 999,
@@ -608,18 +985,6 @@ Write an AEO performance email covering: what AI engines are saying about this b
               }}>{p.label}</span>
             ))}
           </div>
-          <div className="row" style={{ gap: 8 }}>
-            {(client.does_content !== false || client.does_technical !== false) && (
-              <button className="primary" onClick={generate} disabled={phase !== 'idle' && phase !== 'review'} style={{ background: ACCENT, borderColor: ACCENT, color: '#0a0a0c' }}>
-                {phase === 'idle' || phase === 'review' ? 'Generate Full Report' : 'Working…'}
-              </button>
-            )}
-            {client.does_aeo !== false && (
-              <button onClick={generateAeoOnly} disabled={phase !== 'idle' && phase !== 'review'} style={{ borderColor: 'var(--mod-aeo)', color: 'var(--mod-aeo)' }}>
-                {phase === 'idle' || phase === 'review' ? 'Generate AEO Report' : 'Working…'}
-              </button>
-            )}
-          </div>
         </div>
         {err && <div style={{ color: 'var(--red)', marginTop: 10 }}>{err}</div>}
       </div>
@@ -627,6 +992,31 @@ Write an AEO performance email covering: what AI engines are saying about this b
       {/* Review section */}
       {phase === 'review' && (
         <>
+          {savedReportLoaded && (
+            <div className="card" style={{ marginBottom: 14, padding: '10px 16px', borderColor: 'rgba(167,139,250,.4)', background: 'rgba(167,139,250,.06)' }}>
+              <div className="row" style={{ gap: 10, alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 13 }}>
+                  <strong style={{ color: ACCENT }}>Saved report loaded.</strong>{' '}
+                  <span className="muted">Showing the report generated for {monthLabel(month)}. Refresh data to pull live GA4 + GSC, or Regenerate to rewrite the email + microsite from scratch.</span>
+                </span>
+                <button
+                  onClick={async () => {
+                    // Discard the frozen reportData snapshot and pull live
+                    // GA4 + GSC. Useful when the saved report was generated
+                    // before the operator wired up the client's properties
+                    // (or when the operator just wants the latest numbers
+                    // without regenerating the email + microsite copy).
+                    setSavedReportLoaded(false);
+                    setReportData(null);
+                    await autoFetchMetrics(client, month, true);
+                  }}
+                  style={{ fontSize: 11, padding: '4px 12px', borderColor: 'var(--green)', color: 'var(--green)', whiteSpace: 'nowrap' }}
+                >
+                  Refresh data
+                </button>
+              </div>
+            </div>
+          )}
           {qa && (
             <div className="card" style={{ marginBottom: 14 }}>
               <div className="row" style={{ justifyContent: 'space-between', marginBottom: 10 }}>
@@ -679,22 +1069,46 @@ Write an AEO performance email covering: what AI engines are saying about this b
             <textarea value={email.body} onChange={e => setEmail(prev => ({ ...prev, body: e.target.value }))} rows={12} style={{ fontFamily: 'DM Sans, sans-serif', fontSize: 14 }} />
           </div>
 
-          {micrositeHtml && (
+          {displayHtml && (
             <div className="card" style={{ marginBottom: 14 }}>
-              <div className="row" style={{ justifyContent: 'space-between', marginBottom: 10 }}>
-                <strong>Microsite Preview</strong>
-                <div className="row" style={{ gap: 8 }}>
-                  <button onClick={downloadHtml}>Download .html</button>
+              <div className="row" style={{ justifyContent: 'space-between', marginBottom: 10, flexWrap: 'wrap', gap: 8 }}>
+                <div className="row" style={{ gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <strong>Microsite Preview</strong>
+                  {htmlOverride && !editingMicro && (
+                    <span className="badge" style={{ fontSize: 9, background: 'rgba(167,139,250,.15)', color: ACCENT, borderColor: ACCENT }}>EDITED</span>
+                  )}
+                  {editingMicro && (
+                    <span className="badge" style={{ fontSize: 9, background: 'rgba(255,159,67,.15)', color: 'var(--orange)', borderColor: 'var(--orange)' }}>EDITING — click into the preview to change text</span>
+                  )}
+                </div>
+                <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+                  {!editingMicro && (
+                    <button onClick={toggleMicroEdit} style={{ borderColor: ACCENT, color: ACCENT }}>
+                      {htmlOverride ? 'Edit again' : 'Edit visually'}
+                    </button>
+                  )}
+                  {editingMicro && (
+                    <>
+                      <button onClick={applyMicroEdits} className="primary" style={{ background: ACCENT, borderColor: ACCENT, color: '#0a0a0c' }}>Apply edits</button>
+                      <button onClick={toggleMicroEdit}>Cancel</button>
+                    </>
+                  )}
+                  {htmlOverride && !editingMicro && (
+                    <button onClick={discardMicroEdits} style={{ color: 'var(--red)' }}>Discard edits</button>
+                  )}
+                  <button onClick={downloadHtml} disabled={editingMicro}>Download .html</button>
+                  <button onClick={downloadPdf} className="primary" disabled={editingMicro}>Download PDF</button>
                   <button onClick={() => setShowMicroFull(v => !v)}>{showMicroFull ? 'Collapse' : 'Open full screen'}</button>
                 </div>
               </div>
               <iframe
+                ref={microIframeRef}
                 title="microsite"
-                srcDoc={micrositeHtml}
+                srcDoc={displayHtml}
                 style={{
                   width: '100%',
                   height: showMicroFull ? '80vh' : 520,
-                  border: '1px solid var(--border)',
+                  border: editingMicro ? '2px solid ' + ACCENT : '1px solid var(--border)',
                   borderRadius: 'var(--radius)',
                   background: 'var(--bg)'
                 }}
