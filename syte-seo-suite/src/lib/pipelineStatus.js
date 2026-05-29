@@ -8,6 +8,27 @@ const BLOGS_KEY = 'syte-suite-content_blogs';
 
 function thisMonth() { return new Date().toISOString().slice(0, 7); }
 
+// Month options for the dashboard pickers (newest first). Values are
+// UTC YYYY-MM strings so they match how rows are bucketed everywhere else
+// (timestamp.slice(0, 7) on the ISO/UTC string). Building them from
+// getUTCMonth avoids the off-by-one that local-midnight dates hit in
+// positive-offset timezones (e.g. SAST UTC+2).
+export function monthOptions(count = 12) {
+  const out = [];
+  const now = new Date();
+  let y = now.getUTCFullYear();
+  let m = now.getUTCMonth(); // 0-11
+  for (let i = 0; i < count; i++) {
+    const value = `${y}-${String(m + 1).padStart(2, '0')}`;
+    const label = new Date(Date.UTC(y, m, 1))
+      .toLocaleString('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+    out.push({ value, label });
+    m -= 1;
+    if (m < 0) { m = 11; y -= 1; }
+  }
+  return out;
+}
+
 // Fallback: read cached content history from localStorage (written by
 // loadContentHistory in supabase.js). The caller is expected to pass
 // the Supabase-loaded list via the `contentHistory` param when available.
@@ -82,12 +103,14 @@ export function contentPipelineStatus(client, implementations, month, contentHis
     };
   }
 
-  // In progress — some articles written but quota not met.
+  // In progress — at least one article written but quota not met. Counts as
+  // "Articles Written" (with an X/Y progress note) so real work isn't hidden
+  // under "No Articles Yet"; only zero-article clients stay there.
   if (written > 0) {
     const parts = [written + '/' + required + ' articles'];
     if (verifiedCount > 0) parts.push(verifiedCount + ' verified');
     return {
-      section: 'no-articles',
+      section: 'articles-written',
       summary: parts.join(' · '),
       detail: written + ' of ' + required + ' articles written — ' + (required - written) + ' remaining'
     };
@@ -240,11 +263,14 @@ export function aeoPipelineStatus(client, implementations, aeoResults, month, de
 
 // ─── Approvals matrix ────────────────────────────────────────────
 // For each client, return the status of each module this month.
-export function approvalsStatus(client, implementations, tasks, aeoResults, month, contentHistory) {
+// `deepResults` (AEO full-page rewrites) is required for the AEO column to
+// reach "verified-on-site" — without it totalWork is 0 and AEO can never
+// clear, even when verified implementations exist.
+export function approvalsStatus(client, implementations, tasks, aeoResults, month, contentHistory, deepResults) {
   const m = month || thisMonth();
   return {
     content: contentPipelineStatus(client, implementations, m, contentHistory),
     technical: technicalPipelineStatus(client, implementations, tasks, m),
-    aeo: aeoPipelineStatus(client, implementations, aeoResults, m)
+    aeo: aeoPipelineStatus(client, implementations, aeoResults, m, deepResults)
   };
 }
