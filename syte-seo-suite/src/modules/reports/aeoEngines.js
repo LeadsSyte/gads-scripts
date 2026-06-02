@@ -8,8 +8,14 @@
 
 import { loadSettings } from '../../lib/settings.js';
 import { getStoredApiKey } from '../../lib/auth.js';
+import { fetchWithTimeout } from '../../lib/http.js';
 
 const MAX_TOKENS = 500;
+
+// Per-engine request timeout. A single stalled provider must not hang the
+// whole probe sweep — on timeout ask() returns { error } and the sweep
+// carries on, exactly like any other engine error.
+const ENGINE_TIMEOUT_MS = 45000;
 
 // ------- ChatGPT / OpenAI --------------------------------------------------
 // Uses the Responses API (not Chat Completions) with the web_search_preview
@@ -26,7 +32,7 @@ export const chatgpt = {
   async ask(query) {
     const { openaiKey } = loadSettings();
     try {
-      const res = await fetch('/.netlify/functions/openai-proxy', {
+      const res = await fetchWithTimeout('/.netlify/functions/openai-proxy', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -39,7 +45,7 @@ export const chatgpt = {
             max_output_tokens: MAX_TOKENS
           }
         })
-      });
+      }, ENGINE_TIMEOUT_MS);
       if (!res.ok) {
         const txt = await res.text().catch(() => '');
         return { error: 'OpenAI ' + res.status + ' ' + txt.slice(0, 200) };
@@ -74,7 +80,7 @@ export const perplexity = {
   async ask(query) {
     const { perplexityKey } = loadSettings();
     try {
-      const res = await fetch('https://api.perplexity.ai/chat/completions', {
+      const res = await fetchWithTimeout('https://api.perplexity.ai/chat/completions', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -88,7 +94,7 @@ export const perplexity = {
             { role: 'user', content: query }
           ]
         })
-      });
+      }, ENGINE_TIMEOUT_MS);
       if (!res.ok) {
         const txt = await res.text().catch(() => '');
         return { error: 'Perplexity ' + res.status + ' ' + txt.slice(0, 200) };
@@ -126,11 +132,11 @@ async function geminiCall(model, body, apiKey) {
   let lastErr = null;
   for (let attempt = 0; attempt <= GEMINI_RETRY_DELAYS_MS.length; attempt++) {
     try {
-      const res = await fetch(url, {
+      const res = await fetchWithTimeout(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body
-      });
+      }, ENGINE_TIMEOUT_MS);
       if (res.ok) {
         const data = await res.json();
         const text = data.candidates?.[0]?.content?.parts?.map(p => p.text).join('') || '';
@@ -188,7 +194,7 @@ export const claude = {
   async ask(query) {
     const key = getStoredApiKey();
     try {
-      const res = await fetch('https://api.anthropic.com/v1/messages', {
+      const res = await fetchWithTimeout('https://api.anthropic.com/v1/messages', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -201,7 +207,7 @@ export const claude = {
           max_tokens: MAX_TOKENS,
           messages: [{ role: 'user', content: query }]
         })
-      });
+      }, ENGINE_TIMEOUT_MS);
       if (!res.ok) {
         const txt = await res.text().catch(() => '');
         return { error: 'Claude ' + res.status + ' ' + txt.slice(0, 200) };

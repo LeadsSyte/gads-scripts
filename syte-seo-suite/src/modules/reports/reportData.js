@@ -9,6 +9,11 @@
 import { ensureToken, SCOPES } from '../technical/googleAuth.js';
 import { querySearchAnalytics } from '../technical/gsc.js';
 import { buildKeywordBuckets, classifyKeywords } from './keywordBuckets.js';
+import { fetchWithTimeout } from '../../lib/http.js';
+
+// Cap GA4 calls so a stalled Analytics endpoint surfaces as an error in the
+// report's errors[] instead of hanging the whole fetch behind Promise.all.
+const GA4_TIMEOUT_MS = 30000;
 
 // ─── Date helpers ────────────────────────────────────────────
 function monthRange(year, month) {
@@ -51,7 +56,7 @@ async function fetchGA4Period(propertyId, dateRange, clientType, expectedEmail =
     metrics.push({ name: 'keyEvents' });
   }
 
-  const res = await fetch(
+  const res = await fetchWithTimeout(
     `https://analyticsdata.googleapis.com/v1beta/properties/${propertyId}:runReport`,
     {
       method: 'POST',
@@ -70,7 +75,8 @@ async function fetchGA4Period(propertyId, dateRange, clientType, expectedEmail =
           }
         }
       })
-    }
+    },
+    GA4_TIMEOUT_MS
   );
   if (!res.ok) {
     const txt = await res.text().catch(() => '');
