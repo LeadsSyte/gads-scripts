@@ -230,8 +230,15 @@ export async function fetchReportData(client, year, month1Based) {
   // bucketed views — top 3, top 10, improved, striking distance, head
   // term wins. Branded queries are excluded from the showcase buckets
   // since they would rank #1 regardless of SEO work.
+  // TEMP freeze diagnostics — remove once the report freeze is localized.
+  const __t = (typeof performance !== 'undefined' ? performance.now() : Date.now());
   const classifiedKeywords = classifyKeywords(keywords, client.name);
   const keywordBuckets = buildKeywordBuckets(classifiedKeywords, client.name);
+  try {
+    const dur = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - __t;
+    console.log('⏱️[freeze] classify+buckets:', Math.round(dur) + 'ms', 'keywords=' + (keywords?.length || 0),
+      'buckets=' + JSON.stringify(keywordBuckets.counts));
+  } catch {}
 
   const summary = {
     clientType,

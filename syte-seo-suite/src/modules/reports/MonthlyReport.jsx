@@ -169,6 +169,8 @@ export default function MonthlyReport() {
   // Pull all report data (GA4 traffic + conversions + GSC keywords) via reportData.js.
   async function autoFetchMetrics(c, m, forceRefresh = false) {
     if (!c) return;
+    // TEMP freeze diagnostics — remove once the report freeze is localized.
+    try { console.log('⏱️[freeze] autoFetchMetrics START client=' + c.id, 'force=' + forceRefresh); } catch {}
 
     // Check cache first (unless forced refresh).
     if (!forceRefresh) {
@@ -182,6 +184,7 @@ export default function MonthlyReport() {
           && cached.data.ga4_property_id === (c.ga4_property_id || null)
           && cached.data.gsc_property === (c.gsc_property || null);
         if (cached?.data && isCurrentVersion && propsMatch) {
+          try { console.log('⏱️[freeze] cache HIT → setReportData; keywords=' + (cached.data.keywords?.length || 0)); } catch {}
           setReportData(cached.data);
           setFetchStatus('Loaded from cache (fetched ' + new Date(cached.fetched_at).toLocaleDateString() + ') · Click Refresh Data to re-fetch');
           return;

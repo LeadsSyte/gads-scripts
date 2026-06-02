@@ -917,6 +917,8 @@ export async function loadContentHistory() {
 // ---------------------------------------------------------------------------
 
 export async function getCachedReportData(clientId, month) {
+  // TEMP freeze diagnostics — remove once the report freeze is localized.
+  const __t0 = (typeof performance !== 'undefined' ? performance.now() : Date.now());
   if (supabase) {
     const { data } = await supabase
       .from('syte_suite_report_cache')
@@ -925,10 +927,13 @@ export async function getCachedReportData(clientId, month) {
       .eq('month', month)
       .limit(1)
       .single();
+    try { console.log('⏱️[freeze] getCachedReportData (supabase):', Math.round(((typeof performance !== 'undefined' ? performance.now() : Date.now())) - __t0) + 'ms'); } catch {}
     return data || null;
   }
   try {
-    const cache = JSON.parse(localStorage.getItem(LS_PREFIX + 'report_cache') || '{}');
+    const raw = localStorage.getItem(LS_PREFIX + 'report_cache') || '{}';
+    const cache = JSON.parse(raw);
+    try { console.log('⏱️[freeze] getCachedReportData (localStorage parse):', Math.round(((typeof performance !== 'undefined' ? performance.now() : Date.now())) - __t0) + 'ms', 'blob=' + (raw.length / 1024).toFixed(0) + 'KB'); } catch {}
     return cache[clientId + '::' + month] || null;
   } catch { return null; }
 }
@@ -952,10 +957,14 @@ export async function setCachedReportData(clientId, month, reportData) {
     }
   }
   try {
+    // TEMP freeze diagnostics — remove once the report freeze is localized.
+    const __t0 = (typeof performance !== 'undefined' ? performance.now() : Date.now());
     const cache = JSON.parse(localStorage.getItem(LS_PREFIX + 'report_cache') || '{}');
     cache[clientId + '::' + month] = { data: reportData, fetched_at: new Date().toISOString() };
-    localStorage.setItem(LS_PREFIX + 'report_cache', JSON.stringify(cache));
-  } catch {}
+    const serialized = JSON.stringify(cache);
+    localStorage.setItem(LS_PREFIX + 'report_cache', serialized);
+    try { console.log('⏱️[freeze] setCachedReportData (localStorage parse+stringify):', Math.round(((typeof performance !== 'undefined' ? performance.now() : Date.now())) - __t0) + 'ms', 'blob=' + (serialized.length / 1024).toFixed(0) + 'KB'); } catch {}
+  } catch (e) { try { console.log('⏱️[freeze] setCachedReportData FAILED:', e?.name || e); } catch {} }
 }
 
 export async function deleteBlogResult(id) {
