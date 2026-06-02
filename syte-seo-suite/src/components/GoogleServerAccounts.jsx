@@ -7,7 +7,8 @@ import {
   serverAuthEnabled,
   listConnectedAccounts,
   connectGoogleAccount,
-  revokeConnectedAccount
+  revokeConnectedAccount,
+  serverAuthHealth
 } from '../lib/googleServerAuth.js';
 
 export default function GoogleServerAccounts() {
@@ -15,6 +16,7 @@ export default function GoogleServerAccounts() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  const [health, setHealth] = useState(null);
 
   async function refresh() {
     setErr('');
@@ -84,9 +86,28 @@ export default function GoogleServerAccounts() {
         </div>
       ))}
 
-      <button className="primary" onClick={onConnect} disabled={busy} style={{ marginTop: 12 }}>
-        {busy ? 'Working…' : '+ Connect a Google account'}
-      </button>
+      <div className="row" style={{ gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
+        <button className="primary" onClick={onConnect} disabled={busy}>
+          {busy ? 'Working…' : '+ Connect a Google account'}
+        </button>
+        <button
+          disabled={busy}
+          onClick={async () => {
+            setBusy(true); setErr('');
+            try { setHealth(await serverAuthHealth()); }
+            catch (e) { setErr(e.message); }
+            finally { setBusy(false); }
+          }}
+        >
+          Check setup
+        </button>
+      </div>
+
+      {health && (
+        <pre style={{ fontSize: 11, marginTop: 10, padding: 10, background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 6, overflow: 'auto' }}>
+          {JSON.stringify(health, null, 2)}
+        </pre>
+      )}
     </div>
   );
 }

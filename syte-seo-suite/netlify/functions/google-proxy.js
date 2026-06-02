@@ -91,6 +91,34 @@ export async function handler(event) {
   try { payload = JSON.parse(event.body || '{}'); }
   catch { return json(400, { error: 'Invalid JSON' }); }
 
+  // Diagnostics — answered BEFORE the gate so setup can be verified without
+  // any secret. Reports only booleans/counts, never secret values, so it's
+  // safe to expose. Used by the connected-accounts panel + manual debugging.
+  if (payload.action === 'health') {
+    const out = {
+      env: {
+        GOOGLE_CLIENT_ID: !!process.env.GOOGLE_CLIENT_ID,
+        GOOGLE_CLIENT_SECRET: !!process.env.GOOGLE_CLIENT_SECRET,
+        GOOGLE_REDIRECT_URI: !!process.env.GOOGLE_REDIRECT_URI,
+        SUPABASE_URL: !!(process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL),
+        SUPABASE_SERVICE_KEY: !!(process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_KEY || process.env.SUPABASE_ANON_KEY),
+        PROXY_SHARED_SECRET: !!process.env.PROXY_SHARED_SECRET
+      },
+      supabase: { reachable: false, tableExists: false, accountCount: null }
+    };
+    const sb = getSupabase();
+    if (sb) {
+      const { count, error } = await sb
+        .from('syte_suite_google_accounts')
+        .select('email', { count: 'exact', head: true });
+      out.supabase.reachable = true;
+      if (error) out.supabase.error = error.message;
+      else { out.supabase.tableExists = true; out.supabase.accountCount = count ?? 0; }
+    }
+    out.ok = out.env.GOOGLE_CLIENT_ID && out.env.GOOGLE_CLIENT_SECRET && out.supabase.tableExists;
+    return json(200, out);
+  }
+
   // Optional shared-secret gate (off by default for the internal case).
   const gate = process.env.PROXY_SHARED_SECRET;
   if (gate && payload.gate !== gate) return json(401, { error: 'Unauthorized' });
