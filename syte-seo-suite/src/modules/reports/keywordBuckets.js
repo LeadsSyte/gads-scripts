@@ -50,11 +50,6 @@ function tokenize(s) {
   return (s || '').toLowerCase().replace(/[^\w\s&-]/g, ' ').split(/\s+/).filter(Boolean);
 }
 
-// Significant tokens = total words minus stopwords.
-function significantTokens(s) {
-  return tokenize(s).filter(t => !STOPWORDS.has(t));
-}
-
 // Build brand-token list once per classifier call. We treat any keyword
 // containing the brand name (or a strong fragment of it) as branded.
 function brandTokens(brandName) {
@@ -67,13 +62,19 @@ function brandTokens(brandName) {
   return out;
 }
 
-export function classifyKeyword(keyword, brandName) {
+// `brandSet` is the brand-token Set for `brandName`. It is identical for
+// every keyword in a pull, so callers classifying a list (classifyKeywords)
+// build it ONCE and pass it in — rebuilding it per keyword tokenized the
+// brand name tens of thousands of times on a 10k-row GSC pull, which blocked
+// the main thread long enough to freeze the tab when opening a report.
+export function classifyKeyword(keyword, brandName, brandSet = brandTokens(brandName)) {
   const q = (keyword?.query || '').toLowerCase().trim();
   if (!q) return { branded: false, headTerm: false, longTail: true, hasLocation: false, wordCount: 0 };
 
   const tokens = tokenize(q);
-  const sig = significantTokens(q);
-  const brandSet = brandTokens(brandName);
+  // Significant tokens = words minus stopwords. Derived from the single
+  // tokenization above rather than re-tokenizing the query string.
+  const sig = tokens.filter(t => !STOPWORDS.has(t));
 
   const branded = tokens.some(t => brandSet.has(t)) ||
                   (brandSet.has(tokens.join('')));
@@ -92,9 +93,16 @@ export function classifyKeyword(keyword, brandName) {
   return { branded, headTerm, longTail, hasLocation, hasQualifier, wordCount: tokens.length };
 }
 
-// Return a copy of `keywords` with .classification attached.
+// Return `keywords` with .classification attached. Builds the brand-token
+// set once and reuses it for every row. Rows that already carry a
+// classification are passed through untouched — buildKeywordBuckets is fed
+// the already-classified list from fetchReportData, so without this guard a
+// 10k-row pull was classified twice (once here, once inside buildKeywordBuckets).
 export function classifyKeywords(keywords, brandName) {
-  return (keywords || []).map(kw => ({ ...kw, classification: classifyKeyword(kw, brandName) }));
+  const brandSet = brandTokens(brandName);
+  return (keywords || []).map(kw =>
+    kw.classification ? kw : { ...kw, classification: classifyKeyword(kw, brandName, brandSet) }
+  );
 }
 
 // Build the bucketed views used by the report microsite.
