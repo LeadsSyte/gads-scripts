@@ -9,6 +9,16 @@ const API_URL = 'https://api.anthropic.com/v1/messages';
 // Cap each call so a dead socket rejects instead of freezing on "Working…".
 const COMPLETE_TIMEOUT_MS = 90000;
 
+// Transient API conditions worth retrying. 529 = Anthropic "Overloaded"
+// (their servers are momentarily saturated); 429 = rate limit; 5xx = gateway
+// blips. These clear on their own, so we back off and try again rather than
+// aborting the whole report. A 4xx that isn't 429 is a real client error and
+// is surfaced immediately.
+const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504, 529]);
+const RETRY_DELAYS_MS = [1000, 2000, 4000, 8000];
+
+function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
+
 function headers() {
   const key = getStoredApiKey();
   if (!key) throw new Error('API key not unlocked. Refresh and enter password.');
@@ -20,19 +30,44 @@ function headers() {
   };
 }
 
-// Non-streaming single-shot call. Returns plain text.
-export async function claudeComplete({ system, messages, max_tokens = 4096, temperature = 0.7, model = CLAUDE_MODEL }) {
-  const res = await fetchWithTimeout(API_URL, {
-    method: 'POST',
-    headers: headers(),
-    body: JSON.stringify({ model, max_tokens, temperature, system, messages })
-  }, COMPLETE_TIMEOUT_MS);
-  if (!res.ok) {
-    const txt = await res.text();
-    throw new Error('Claude API error: ' + res.status + ' ' + txt);
+// Non-streaming single-shot call. Returns plain text. Retries transient
+// overload/rate-limit/gateway errors with exponential backoff so a brief
+// "Overloaded" (529) doesn't kill report generation.
+export async function claudeComplete({ system, messages, max_tokens = 4096, temperature = 0.7, model = CLAUDE_MODEL, onRetry }) {
+  const body = JSON.stringify({ model, max_tokens, temperature, system, messages });
+  let lastErr = '';
+
+  for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt++) {
+    let res;
+    try {
+      res = await fetchWithTimeout(API_URL, { method: 'POST', headers: headers(), body }, COMPLETE_TIMEOUT_MS);
+    } catch (e) {
+      // Network error or timeout — treat as transient and retry.
+      lastErr = e.message;
+      if (attempt < RETRY_DELAYS_MS.length) {
+        onRetry?.({ attempt: attempt + 1, status: null, error: lastErr });
+        await wait(RETRY_DELAYS_MS[attempt]);
+        continue;
+      }
+      throw e;
+    }
+
+    if (res.ok) {
+      const data = await res.json();
+      return (data.content || []).map(b => b.text || '').join('');
+    }
+
+    const txt = await res.text().catch(() => '');
+    lastErr = 'Claude API error: ' + res.status + ' ' + txt;
+    if (RETRYABLE_STATUS.has(res.status) && attempt < RETRY_DELAYS_MS.length) {
+      onRetry?.({ attempt: attempt + 1, status: res.status, error: lastErr });
+      await wait(RETRY_DELAYS_MS[attempt]);
+      continue;
+    }
+    throw new Error(lastErr);
   }
-  const data = await res.json();
-  return (data.content || []).map(b => b.text || '').join('');
+
+  throw new Error(lastErr || 'Claude API: retries exhausted');
 }
 
 // Streaming. Calls onDelta(text) for each token chunk. Returns full text.
