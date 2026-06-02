@@ -101,11 +101,14 @@ export default function GoogleConnectionsPicker({
     setApiErrors(errors);
     if (genericErr) setErr(genericErr);
     setLoading(false);
-    // First-time auto-bind only — if the client has no saved email yet,
-    // remember whichever account is currently signed in. Subsequent re-binding
-    // happens via doSwitch or the explicit "Use this account" button so we
-    // never silently overwrite a known-good email.
-    if (e && onChangeEmail && !savedEmail) onChangeEmail(e);
+    // NOTE: we deliberately do NOT auto-bind the currently signed-in account
+    // to the client here. Doing so silently rebound a client to whatever
+    // account the browser was signed into when you opened/switched to it —
+    // corrupting clients whose properties live in a different account (you'd
+    // see "saved property not visible to <wrong account>"). Binding now only
+    // happens through deliberate actions: picking a property (sets the per-API
+    // ga4/gsc account), the explicit "Use this account" button, or Switch
+    // account.
   }
 
   async function doSignIn() {
