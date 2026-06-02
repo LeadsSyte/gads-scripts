@@ -11,6 +11,8 @@ import {
 import {
   fetchGa4Properties,
   fetchGscSites,
+  fetchGa4PropertiesForAccount,
+  fetchGscSitesForAccount,
   normalizeGa4Id,
   normalizeGscProperty,
   clearPropertyCache
@@ -83,31 +85,46 @@ export default function GoogleConnectionsPicker({
   useEffect(() => setGa4Local(ga4Value || ''), [ga4Value]);
   useEffect(() => setGscLocal(gscValue || ''), [gscValue]);
 
-  // Load properties whenever we're signed in.
+  // Load properties. Browser mode: whenever signed in. Server mode: whenever a
+  // connected account is bound (and re-load when it changes) — properties come
+  // from THAT account via the proxy, not from whatever the browser is signed
+  // into.
   useEffect(() => {
+    if (serverAuth) {
+      if (!boundAccount) { setGa4Props([]); setGscSites([]); return; }
+      loadProperties();
+      return;
+    }
     if (!signedIn) { setGa4Props([]); setGscSites([]); return; }
     loadProperties();
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [signedIn]);
+  }, [signedIn, serverAuth, boundAccount]);
 
   async function loadProperties({ bypassCache = false } = {}) {
     setLoading(true); setErr(''); setApiErrors([]);
     const errors = [];
     let genericErr = '';
 
-    const ga = await fetchGa4Properties({ bypassCache }).catch(e => {
+    const gaFetch = serverAuth
+      ? fetchGa4PropertiesForAccount(boundAccount, { bypassCache })
+      : fetchGa4Properties({ bypassCache });
+    const ga = await gaFetch.catch(e => {
       console.error('GA4 fetch failed', e);
       if (e.apiDisabled) errors.push({ service: 'GA4 Admin', message: e.message, enableUrl: e.enableUrl });
       else genericErr += (genericErr ? ' · ' : '') + 'GA4: ' + e.message;
       return [];
     });
-    const sites = await fetchGscSites({ bypassCache }).catch(e => {
+    const gscFetch = serverAuth
+      ? fetchGscSitesForAccount(boundAccount, { bypassCache })
+      : fetchGscSites({ bypassCache });
+    const sites = await gscFetch.catch(e => {
       console.error('GSC fetch failed', e);
       if (e.apiDisabled) errors.push({ service: 'Search Console', message: e.message, enableUrl: e.enableUrl });
       else genericErr += (genericErr ? ' · ' : '') + 'GSC: ' + e.message;
       return [];
     });
-    const e = await getCurrentEmail();
+    // In server mode the "current account" is the bound one; no browser lookup.
+    const e = serverAuth ? boundAccount : await getCurrentEmail();
 
     setEmail(e);
     setGa4Props(ga);
@@ -268,7 +285,7 @@ export default function GoogleConnectionsPicker({
         </div>
       )}
 
-      {savedEmail && (
+      {!serverAuth && savedEmail && (
         <div style={{
           marginBottom: 10,
           padding: 10,
