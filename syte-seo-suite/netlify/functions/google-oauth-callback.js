@@ -85,15 +85,24 @@ export async function handler(event) {
     return html(page('Google did not return a refresh token. Remove this app under your Google Account → Security → Third-party access, then reconnect.', false));
   }
 
-  // 2. Resolve which account this is for.
+  // 2. Resolve which account this is for. Prefer the id_token (returned with
+  //    the openid scope — no extra round-trip), fall back to userinfo.
   let email = null;
-  try {
-    const info = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
-      headers: { Authorization: 'Bearer ' + accessToken }
-    });
-    if (info.ok) email = (await info.json()).email || null;
-  } catch {}
-  if (!email) return html(page('Could not resolve the Google account email.', false), 502);
+  if (tokenData.id_token) {
+    try {
+      const payload = JSON.parse(Buffer.from(tokenData.id_token.split('.')[1], 'base64').toString('utf8'));
+      email = payload.email || null;
+    } catch {}
+  }
+  if (!email) {
+    try {
+      const info = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+        headers: { Authorization: 'Bearer ' + accessToken }
+      });
+      if (info.ok) email = (await info.json()).email || null;
+    } catch {}
+  }
+  if (!email) return html(page('Could not resolve the Google account email. Reconnect — the consent screen must include the email/profile permission.', false), 502);
 
   // 3. Store the refresh token (service-role only table).
   const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
