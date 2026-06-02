@@ -36,6 +36,12 @@ async function callProxy(payload) {
   return data;
 }
 
+// Setup diagnostics — which env vars are present (booleans only) and whether
+// the Supabase table is reachable. Safe to call before anything is connected.
+export async function serverAuthHealth() {
+  return callProxy({ action: 'health' });
+}
+
 // List connected accounts (emails + status only — never tokens).
 export async function listConnectedAccounts() {
   const { accounts } = await callProxy({ action: 'list' });
