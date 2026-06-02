@@ -14,6 +14,12 @@
 // Google consent → /.netlify/functions/google-oauth-callback.
 
 const SCOPES = [
+  // openid + email + profile so the callback can reliably resolve which
+  // Google account this is (userinfo / id_token). Without these the email
+  // lookup fails for accounts that haven't previously granted profile scopes.
+  'openid',
+  'email',
+  'profile',
   'https://www.googleapis.com/auth/analytics.readonly',
   'https://www.googleapis.com/auth/webmasters.readonly'
 ];
