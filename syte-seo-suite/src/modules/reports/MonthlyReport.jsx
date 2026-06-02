@@ -11,6 +11,7 @@ import { buildMicrositeHtml, downloadMicrosite, downloadMicrositePdf } from './m
 import { runSnapshot, snapshotPreflight } from './aeoRunner.js';
 import { compareSnapshots, rankBrandWithCompetitors, normalizeSnapshot } from './aeoCompare.js';
 import { ensureToken, SCOPES, getToken, switchAccount, silentRefresh, getCurrentEmail, getTokenForEmail, TOKEN_EVENT } from '../technical/googleAuth.js';
+import { serverAuthEnabled } from '../../lib/googleServerAuth.js';
 import { fetchReportData } from './reportData.js';
 import ReportDashboard from './ReportDashboard.jsx';
 
@@ -269,7 +270,12 @@ export default function MonthlyReport() {
     // account, we can fetch silently with zero round-trips. Otherwise we
     // try a silent refresh per missing API; if that fails, defer to an
     // explicit Connect Google CTA (don't auto-pop on mount).
-    if (needsGoogle) {
+    //
+    // Skip this entire browser-auth preflight when server auth is on: the
+    // proxy holds the tokens, so there's nothing to sign into here. Running
+    // it anyway would pop a pointless browser sign-in AND auto-save the
+    // current browser account onto the client (the wrong-credentials bug).
+    if (needsGoogle && !serverAuthEnabled()) {
       const ga4Cached = needsGa4 && ga4Email ? !!getTokenForEmail(ga4Email, [SCOPES.ga4]) : !needsGa4;
       const gscCached = needsGsc && gscEmail ? !!getTokenForEmail(gscEmail, [SCOPES.gsc]) : !needsGsc;
       const allCached = ga4Cached && gscCached;
