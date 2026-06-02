@@ -5,10 +5,10 @@ import { corsFetchText } from '../../lib/corsProxy.js';
 import PushToCmsButton from '../../components/PushToCmsButton.jsx';
 import MarkImplementedButton from '../../components/MarkImplementedButton.jsx';
 import PipelineView from '../../components/PipelineView.jsx';
-import { technicalPipelineStatus } from '../../lib/pipelineStatus.js';
+import { technicalPipelineStatus, monthOptions } from '../../lib/pipelineStatus.js';
 import { getAudit, syncWebceoClients, webceoDiagnose } from './webceo.js';
 import { crawlSiteForIssues, summarizeCrawlForAI } from './crawler.js';
-import { upsertClient, listAllImplementations, saveTseoTasks, loadTseoTasks, updateTseoTask } from '../../lib/supabase.js';
+import { upsertClient, listAllImplementations, saveTseoTasks, loadTseoTasks, updateTseoTask, listTseoRejections, saveTseoRejection } from '../../lib/supabase.js';
 import { checkOffPageTask, isOffPageTask } from '../../lib/verification.js';
 import { querySearchAnalytics } from './gsc.js';
 import { ensureToken, SCOPES, getToken, clearToken } from './googleAuth.js';
@@ -30,9 +30,64 @@ function loadTasks() {
   }
   try { return JSON.parse(localStorage.getItem(TASKS_KEY) || '[]'); } catch { return []; }
 }
-function saveTasks(t) { localStorage.setItem(TASKS_KEY, JSON.stringify(t)); }
+function saveTasks(t) {
+  // localStorage is only a fallback cache — Supabase is the source of truth.
+  // If we exceed the per-origin quota (typically 5–10 MB), drop the cache
+  // entirely rather than crashing the module. The next reload will refill
+  // from Supabase.
+  const json = JSON.stringify(t);
+  try {
+    localStorage.setItem(TASKS_KEY, json);
+  } catch (e) {
+    try { localStorage.removeItem(TASKS_KEY); } catch {}
+    try { localStorage.removeItem(LEGACY_KEY); } catch {}
+    try { localStorage.setItem(TASKS_KEY, json); } catch {
+      // Still too large — give up silently; Supabase has the data.
+    }
+  }
+}
+
+// Stable dedup key for a task. Same shape used by dedupeTasks and by the
+// rejection blocklist so a freshly-triaged task with a new UUID but the
+// same logical issue is collapsed/filtered consistently.
+export function taskDedupKey(t) {
+  return (t.client_id || '') + '|' + (t.page_url || t.url || '') + '|' + (t.action_summary || t.title || '');
+}
+
+// Dedupe tasks by (client_id, url, action_summary). Keeps the most
+// recent (highest created_at) row per logical issue and caps OPEN
+// tasks per client to 25. Done/verified tasks are preserved in full
+// because they're the work-history record.
+function dedupeTasks(list) {
+  if (!Array.isArray(list)) return [];
+  // Bucket by status — done/verified pass through untouched.
+  const history = list.filter(t => t.status === 'done' || t.status === 'verified');
+  const open = list.filter(t => t.status === 'open' || t.status === 'failed');
+  // Keep newest per dedup key.
+  const seen = new Map();
+  for (const t of open.sort((a, b) =>
+    String(b.created_at || '').localeCompare(String(a.created_at || ''))
+  )) {
+    const key = taskDedupKey(t);
+    if (!seen.has(key)) seen.set(key, t);
+  }
+  // Cap per client.
+  const PER_CLIENT_MAX = 25;
+  const byClient = new Map();
+  const capped = [];
+  for (const t of seen.values()) {
+    const c = byClient.get(t.client_id) || 0;
+    if (c < PER_CLIENT_MAX) {
+      capped.push(t);
+      byClient.set(t.client_id, c + 1);
+    }
+  }
+  return [...capped, ...history];
+}
 function loadTeam() { try { return JSON.parse(localStorage.getItem(TEAM_KEY) || '[]'); } catch { return []; } }
-function saveTeam(t) { localStorage.setItem(TEAM_KEY, JSON.stringify(t)); }
+function saveTeam(t) {
+  try { localStorage.setItem(TEAM_KEY, JSON.stringify(t)); } catch {}
+}
 
 const TRIAGE_SYSTEM = `
 You are a senior technical SEO engineer. You receive raw site-audit data (WebCEO audit JSON or Google Search Console data) and must produce a prioritised task list.
@@ -169,9 +224,22 @@ function statusClass(s) {
 
 // Expandable task card for the pipeline view — shows priority, description,
 // copy-paste fix in a code block, and action buttons.
-function TaskCard({ task: t, onUpdate, onVerify, busy, buildPushItem, onVerified }) {
+//
+// taskClient: the client this task ACTUALLY belongs to (resolved from
+// task.client_id). Passed down so the verify button checks the right
+// domain — without this, the verifier used the topbar-selected client,
+// which led to "robots.txt is not reachable at https://bamdiy.com/..."
+// when the user was working on a Syte task with bamdiy.com selected.
+function TaskCard({ task: t, onUpdate, onVerify, onReject, busy, buildPushItem, onVerified, taskClient }) {
   const [open, setOpen] = React.useState(false);
   const copyFix = () => navigator.clipboard.writeText(t.copy_paste_fix || '').catch(() => {});
+
+  function handleReject(e) {
+    e.stopPropagation();
+    const reason = window.prompt('Reject this optimization? It will be filtered out of future scans.\n\nOptional reason:') ;
+    if (reason === null) return; // user cancelled
+    onReject(t, reason || '');
+  }
 
   return (
     <div style={{
@@ -245,8 +313,18 @@ function TaskCard({ task: t, onUpdate, onVerify, busy, buildPushItem, onVerified
               pageUrl={t.page_url}
               title={t.title}
               description={t.copy_paste_fix || t.description || ''}
+              client={taskClient}
               onVerified={onVerified}
             />
+            {t.status === 'open' && onReject && (
+              <button
+                onClick={handleReject}
+                title="Reject this optimization so it won't appear in future scans"
+                style={{ fontSize: 11, padding: '4px 10px', color: 'var(--red)', borderColor: 'rgba(255,77,77,.3)' }}
+              >
+                Reject
+              </button>
+            )}
           </div>
         </div>
       )}
@@ -267,11 +345,53 @@ export default function TechnicalSEO({ sub }) {
   const [err, setErr] = useState('');
   const [syncResult, setSyncResult] = useState(null);
   const [customMethod, setCustomMethod] = useState('');
+  // Set of rejected dedup keys ("clientId|pageUrl|title"). Filtered out of
+  // the visible task list and from any future scan-generated tasks so a
+  // rejected optimization doesn't reappear next month.
+  const [rejectedKeys, setRejectedKeys] = useState(() => new Set());
 
-  // Load tasks from Supabase on mount (falls back to localStorage).
+  // Load tasks from Supabase on mount (falls back to localStorage), then
+  // auto-dedupe so existing accumulated junk from previous scans (the
+  // "100 open tasks for one client" problem) gets cleaned up on the
+  // next visit. Keeps newest task per (client_id, url, action_summary).
   useEffect(() => {
-    loadTseoTasks().then(t => setTasks(t)).catch(() => setTasks(loadTasks()));
+    loadTseoTasks()
+      .then(t => setTasks(dedupeTasks(t)))
+      .catch(() => setTasks(dedupeTasks(loadTasks())));
+    listTseoRejections()
+      .then(rows => setRejectedKeys(new Set((rows || []).map(r => (r.client_id || '') + '|' + r.dedup_key))))
+      .catch(() => {});
   }, []);
+
+  // Filter rejected open tasks out of the visible list. Rejection key
+  // combines client_id with the dedup_key so it round-trips with the
+  // server-side blocklist regardless of which client is selected.
+  const visibleTasks = useMemo(() => {
+    if (!rejectedKeys.size) return tasks;
+    return tasks.filter(t => {
+      if (t.status === 'done' || t.status === 'verified') return true;
+      return !rejectedKeys.has((t.client_id || '') + '|' + taskDedupKey(t));
+    });
+  }, [tasks, rejectedKeys]);
+
+  async function rejectTask(t, reason) {
+    if (!t?.client_id) return;
+    const key = taskDedupKey(t);
+    const fullKey = (t.client_id || '') + '|' + key;
+    // Optimistic: hide immediately, then persist. If save fails we don't
+    // restore — local state already mirrors intent.
+    setRejectedKeys(prev => {
+      const next = new Set(prev);
+      next.add(fullKey);
+      return next;
+    });
+    setTasks(prev => prev.filter(x => x.id !== t.id));
+    try {
+      await saveTseoRejection(t.client_id, key, reason || '');
+    } catch (e) {
+      console.warn('[TSEO] saveTseoRejection failed:', e.message);
+    }
+  }
 
   // Persist tasks to both Supabase + localStorage on every change.
   useEffect(() => {
@@ -281,8 +401,8 @@ export default function TechnicalSEO({ sub }) {
   useEffect(() => { saveTeam(team); }, [team]);
 
   const clientTasks = useMemo(
-    () => client ? tasks.filter(t => t.client_id === client.id) : tasks,
-    [tasks, client]
+    () => client ? visibleTasks.filter(t => t.client_id === client.id) : visibleTasks,
+    [visibleTasks, client]
   );
 
   const staleClients = useMemo(() => {
@@ -303,6 +423,9 @@ export default function TechnicalSEO({ sub }) {
     if (!c) { setErr('Select a client first.'); return; }
     setBusy(true); setErr(''); setMsg('');
     try {
+      // Hint Google to the client's saved GSC account so any GSC call
+      // below uses the right token and skips the account picker.
+      const gscEmail = c.gsc_account_email || c.google_account_email || null;
       let auditData = null;
       let dataSource = '';
 
@@ -323,7 +446,7 @@ export default function TechnicalSEO({ sub }) {
       // STEP 1b: Enrich with GSC data if available (for traffic/impression context).
       if (c.gsc_property) {
         try {
-          await ensureToken([SCOPES.gsc]);
+          await ensureToken([SCOPES.gsc], { expectedEmail: gscEmail });
           const gscData = await querySearchAnalytics(c.gsc_property, { days: 28, dimensions: ['page'], rowLimit: 100 });
           auditData = (auditData || '') + '\n\n=== GSC TRAFFIC DATA (last 28 days) ===\n' + JSON.stringify(gscData).slice(0, 20000);
           dataSource += (dataSource ? ' + GSC' : 'GSC');
@@ -357,12 +480,25 @@ export default function TechnicalSEO({ sub }) {
         data_source: dataSource,
         created_at: new Date().toISOString(),
         ...t
-      }));
-      setTasks(prev => [...newTasks, ...prev]);
+      })).filter(t => !rejectedKeys.has((t.client_id || '') + '|' + taskDedupKey(t)));
+      // Re-scanning the same client must REPLACE the open tasks for that
+      // client — not append. Otherwise tasks accumulate every run and
+      // the user ends up with 100+ stale duplicates after a few scans
+      // (which is exactly what was happening). Keep done/verified tasks
+      // as work history. Also cap new tasks at MAX_TASKS_PER_CLIENT to
+      // stop a noisy scan flooding the board.
+      const MAX_TASKS_PER_CLIENT = 25;
+      const cappedNew = newTasks.slice(0, MAX_TASKS_PER_CLIENT);
+      setTasks(prev => {
+        const kept = prev.filter(t =>
+          t.client_id !== c.id || (t.status === 'done' || t.status === 'verified')
+        );
+        return [...cappedNew, ...kept];
+      });
 
-      const critical = newTasks.filter(t => t.priority === 'critical').length;
-      const high = newTasks.filter(t => t.priority === 'high').length;
-      const quickWins = newTasks.filter(t => t.effort === 'quick').length;
+      const critical = cappedNew.filter(t => t.priority === 'critical').length;
+      const high = cappedNew.filter(t => t.priority === 'high').length;
+      const quickWins = cappedNew.filter(t => t.effort === 'quick').length;
       setMsg(
         `Added ${newTasks.length} tasks for ${c.name} from ${dataSource}` +
         (critical ? ` · ${critical} critical` : '') +
@@ -399,13 +535,24 @@ export default function TechnicalSEO({ sub }) {
         data_source: 'WebCEO (pasted)',
         created_at: new Date().toISOString(),
         ...t
-      }));
-      setTasks(prev => [...newTasks, ...prev]);
-      saveTseoTasks([...newTasks, ...tasks]).catch(() => {});
+      })).filter(t => !rejectedKeys.has((t.client_id || '') + '|' + taskDedupKey(t)));
+      // Replace open tasks for this client (keep done/verified for history)
+      // and cap at 25 per scan — same logic as the live-scan path. Prevents
+      // task accumulation across re-scans of the same client.
+      const MAX_TASKS_PER_CLIENT = 25;
+      const cappedNew = newTasks.slice(0, MAX_TASKS_PER_CLIENT);
+      const nextTasks = (() => {
+        const kept = tasks.filter(t =>
+          t.client_id !== c.id || (t.status === 'done' || t.status === 'verified')
+        );
+        return [...cappedNew, ...kept];
+      })();
+      setTasks(nextTasks);
+      saveTseoTasks(nextTasks).catch(() => {});
 
-      const critical = newTasks.filter(t => t.priority === 'critical').length;
-      const high = newTasks.filter(t => t.priority === 'high').length;
-      setMsg(`Added ${newTasks.length} tasks for ${c.name} from pasted data` +
+      const critical = cappedNew.filter(t => t.priority === 'critical').length;
+      const high = cappedNew.filter(t => t.priority === 'high').length;
+      setMsg(`Added ${cappedNew.length} tasks for ${c.name} from pasted data` +
         (critical ? ` · ${critical} critical` : '') +
         (high ? ` · ${high} high priority` : ''));
     } catch (e) { setErr(e.message); }
@@ -422,7 +569,13 @@ export default function TechnicalSEO({ sub }) {
   async function handleVerify(task) {
     setBusy(true); setErr(''); setMsg('');
     try {
-      const r = await verifyFix(task, client);
+      // Resolve the task's actual client. Verifying against the topbar's
+      // current client produced cross-domain probes ("checking
+      // bamdiy.com/robots.txt for a Syte task") when users had a
+      // different client selected. Fall back to the topbar selection
+      // only if we can't find the task's client in the list.
+      const taskClient = clients.find(c => c.id === task.client_id) || client;
+      const r = await verifyFix(task, taskClient);
       // 'manual_required' = off-page check couldn't be automated. Don't
       // overwrite the task status as failed — surface a message instead so
       // the user knows to confirm manually.
@@ -453,8 +606,10 @@ export default function TechnicalSEO({ sub }) {
   }
   useEffect(() => { refreshTechImpls(); }, []);
 
-  const currentMonth = new Date().toISOString().slice(0, 7);
-  const monthLabel = new Date().toLocaleString('en-US', { month: 'long', year: 'numeric' });
+  const months = useMemo(() => monthOptions(), []);
+  const [selMonth, setSelMonth] = useState(new Date().toISOString().slice(0, 7));
+  const currentMonth = selMonth;
+  const monthLabel = months.find(m => m.value === selMonth)?.label || selMonth;
 
   const techClients = clients.filter(c => c.does_technical !== false);
   const techPipeline = useMemo(() => {
@@ -479,9 +634,10 @@ export default function TechnicalSEO({ sub }) {
   const [expandedClient, setExpandedClient] = useState(null);
 
   // Get tasks for a specific client, sorted by priority (critical first).
+  // Uses visibleTasks so rejected items don't appear in the per-client view.
   function getClientTasks(clientId) {
     const priorityOrder = { critical: 0, high: 1, medium: 2, low: 3 };
-    return tasks
+    return visibleTasks
       .filter(t => t.client_id === clientId)
       .sort((a, b) => (priorityOrder[a.priority] ?? 4) - (priorityOrder[b.priority] ?? 4));
   }
@@ -494,11 +650,48 @@ export default function TechnicalSEO({ sub }) {
       verified: tasks.filter(t => t.status === 'verified').length,
       failed:   tasks.filter(t => t.status === 'failed').length
     };
+    // Find clients that haven't been scanned this month — offer a one-click
+    // bulk scan + auto-prompt during the first 7 days of the month so users
+    // don't have to remember to click each card individually.
+    const unscannedThisMonth = techClients.filter(c => {
+      const cTasks = tasks.filter(t =>
+        t.client_id === c.id &&
+        (t.created_at || '').slice(0, 7) === currentMonth
+      );
+      return cTasks.length === 0;
+    });
+    const dayOfMonth = new Date().getDate();
+    const isMonthStart = dayOfMonth <= 7;
+
+    async function scanAllUnscanned() {
+      if (busy) return;
+      const list = unscannedThisMonth;
+      if (!list.length) return;
+      const ok = window.confirm(
+        'Run Technical SEO scan for ' + list.length + ' unscanned client' +
+        (list.length === 1 ? '' : 's') + '?\nThis can take a few minutes per client.'
+      );
+      if (!ok) return;
+      for (let i = 0; i < list.length; i++) {
+        setMsg('Bulk scan ' + (i + 1) + '/' + list.length + ': ' + list[i].name);
+        try { await runScanForClient(list[i]); } catch {}
+      }
+      setMsg('Bulk scan complete — ' + list.length + ' clients scanned.');
+    }
+
     return (
       <div className="content-area">
-        {/* Status bar — shows progress when a scan is running from a pipeline card */}
+        {/* STICKY status banner — sticks to the top of the scroll area so a
+            scan triggered from a pipeline card lower down the page can't be
+            invisible behind the topbar. Includes scroll-into-view on mount
+            via auto-scrolling when busy starts (handled below). */}
         {(busy || msg || err) && (
-          <div className="card" style={{ marginBottom: 12, padding: '10px 16px', borderColor: busy ? ACCENT : err ? 'var(--red)' : 'var(--green)' }}>
+          <div className="card" style={{
+            marginBottom: 12, padding: '10px 16px',
+            borderColor: busy ? ACCENT : err ? 'var(--red)' : 'var(--green)',
+            position: 'sticky', top: 0, zIndex: 6,
+            background: 'var(--surface)'
+          }}>
             <div className="row" style={{ gap: 10 }}>
               {busy && <span className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} />}
               <span style={{ fontSize: 13, color: err ? 'var(--red)' : busy ? 'var(--text)' : 'var(--green)' }}>
@@ -508,10 +701,49 @@ export default function TechnicalSEO({ sub }) {
           </div>
         )}
 
+        {/* Month-start prompt: when there are unscanned clients in the first
+            week of the month, surface a single "Scan all" CTA at the top
+            so users don't have to chase individual cards. */}
+        {unscannedThisMonth.length > 0 && (
+          <div className="card" style={{
+            marginBottom: 12, padding: '12px 16px',
+            borderColor: isMonthStart ? ACCENT : 'var(--border)',
+            borderLeftWidth: 3,
+            borderLeftStyle: 'solid'
+          }}>
+            <div className="row" style={{ justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 600 }}>
+                  {isMonthStart
+                    ? 'It\'s the start of ' + monthLabel + ' — ' + unscannedThisMonth.length + ' client' + (unscannedThisMonth.length === 1 ? ' hasn\'t' : 's haven\'t') + ' been scanned yet'
+                    : unscannedThisMonth.length + ' client' + (unscannedThisMonth.length === 1 ? '' : 's') + ' not yet scanned this month'}
+                </div>
+                <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
+                  {unscannedThisMonth.slice(0, 5).map(c => c.name).join(', ')}
+                  {unscannedThisMonth.length > 5 && ` +${unscannedThisMonth.length - 5} more`}
+                </div>
+              </div>
+              <button
+                onClick={scanAllUnscanned}
+                disabled={busy}
+                className="primary"
+                style={{ background: ACCENT, borderColor: ACCENT, color: '#0a0a0c', fontSize: 12 }}
+              >
+                {busy ? 'Scanning…' : 'Scan all ' + unscannedThisMonth.length + ' now'}
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Pipeline view */}
         <PipelineView
           title={`Technical SEO — ${monthLabel}`}
           month={monthLabel}
+          monthSelector={
+            <select value={selMonth} onChange={e => setSelMonth(e.target.value)} style={{ width: 170, fontSize: 12 }}>
+              {months.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
+            </select>
+          }
           sections={techPipeline}
           onAction={(c, action) => {
             if (action === 'scan') {
@@ -540,7 +772,16 @@ export default function TechnicalSEO({ sub }) {
                   Showing top {topTasks.length} of {cTasks.length} tasks (highest priority first)
                 </div>
                 {topTasks.map(t => (
-                  <TaskCard key={t.id} task={t} onUpdate={updateTask} onVerify={handleVerify} busy={busy} buildPushItem={buildPushItem} onVerified={refreshTechImpls} />
+                  <TaskCard
+                    key={t.id} task={t}
+                    onUpdate={updateTask}
+                    onVerify={handleVerify}
+                    onReject={rejectTask}
+                    busy={busy}
+                    buildPushItem={buildPushItem}
+                    onVerified={refreshTechImpls}
+                    taskClient={c}
+                  />
                 ))}
               </div>
             );
@@ -599,6 +840,19 @@ export default function TechnicalSEO({ sub }) {
                     {status === 'done' && <button onClick={() => handleVerify(t)} disabled={busy}>Verify</button>}
                     {t.copy_paste_fix && (
                       <PushToCmsButton item={buildPushItem(t)} label="Push to CMS" />
+                    )}
+                    {status === 'open' && (
+                      <button
+                        onClick={() => {
+                          const reason = window.prompt('Reject this optimization? It will be filtered out of future scans.\n\nOptional reason:');
+                          if (reason === null) return;
+                          rejectTask(t, reason || '');
+                        }}
+                        title="Reject this optimization so it won't appear in future scans"
+                        style={{ color: 'var(--red)', borderColor: 'rgba(255,77,77,.3)' }}
+                      >
+                        Reject
+                      </button>
                     )}
                   </div>
                   {t.copy_paste_fix && (

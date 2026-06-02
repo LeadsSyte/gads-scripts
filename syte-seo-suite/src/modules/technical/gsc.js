@@ -7,8 +7,8 @@ import { fetchWithTimeout } from '../../lib/http.js';
 // the report records it in errors[] instead of freezing.
 const GSC_TIMEOUT_MS = 45000;
 
-async function gscFetch(path, init = {}) {
-  const token = await ensureToken([SCOPES.gsc]);
+async function gscFetch(path, init = {}, { expectedEmail = null } = {}) {
+  const token = await ensureToken([SCOPES.gsc], { expectedEmail });
   const res = await fetchWithTimeout('https://searchconsole.googleapis.com' + path, {
     ...init,
     headers: {
@@ -44,13 +44,17 @@ export async function listSites() {
 
 // Generic keyword/page query. `dimensions` is an array like ['query'],
 // ['page'], or ['query', 'page']. Caller decides timeframe and row limit.
+// `expectedEmail` pins which Google account's cached token gets used —
+// lets a single client pull GSC from one account while GA4 lives in
+// another.
 export async function querySearchAnalytics(siteUrl, {
   days = 90,
   dimensions = ['query'],
   rowLimit = 1000,
   startRow = 0,
   startDate,
-  endDate
+  endDate,
+  expectedEmail = null
 } = {}) {
   const ed = endDate || new Date().toISOString().slice(0, 10);
   const sd = startDate || new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
@@ -63,7 +67,7 @@ export async function querySearchAnalytics(siteUrl, {
       rowLimit,
       startRow
     })
-  });
+  }, { expectedEmail });
 }
 
 // Convenience wrappers used by the Content Engine topic researcher.

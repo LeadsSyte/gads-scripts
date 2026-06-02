@@ -282,6 +282,27 @@ export async function runSnapshot(client, { onProgress, iterations } = {}) {
     engineScores[eng.id] = runs ? Math.round((hits / runs) * 100) : 0;
   }
 
+  // Per-engine health — runs / errors / first error message. Surfaces
+  // engines that are silently failing across every probe (e.g. retired
+  // model, expired API key, proxy down) instead of leaving the operator
+  // wondering why only Claude rows show up in the report.
+  const engineHealth = {};
+  for (const eng of engines) {
+    const mineRaw = rawResults.filter(r => r.engine === eng.id);
+    const errored = mineRaw.filter(r => r.error);
+    engineHealth[eng.id] = {
+      label: eng.label,
+      runs: mineRaw.length,
+      errors: errored.length,
+      // Sample first non-empty error message to surface — most diagnostic
+      // value is in seeing it once, not 50 times.
+      sample_error: errored[0]?.error || null,
+      // Convenience flag: every iteration of every query failed for this
+      // engine. That's the "totally broken" case the UI should highlight.
+      all_failed: mineRaw.length > 0 && errored.length === mineRaw.length
+    };
+  }
+
   // Composite "AEO Performance Index" — a weighted 0-100 number that
   // balances four quality dimensions instead of being a glorified
   // mention-count. The visibility-only version was effectively
@@ -362,6 +383,7 @@ export async function runSnapshot(client, { onProgress, iterations } = {}) {
     // Engine breakdown
     engine_scores: engineScores,
     engines_used: engines.map(e => e.id),
+    engine_health: engineHealth,
 
     // Run config
     iterations: N,

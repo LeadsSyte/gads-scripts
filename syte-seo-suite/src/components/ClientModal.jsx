@@ -351,9 +351,23 @@ Return ONLY valid JSON: { "queries": ["...", "..."] }`;
         {/* Google connections (GA4 + GSC) */}
         <GoogleConnectionsPicker
           ga4Value={f.ga4_property_id}
-          onChangeGa4={v => update('ga4_property_id', v)}
+          onChangeGa4={(v, acc) => {
+            update('ga4_property_id', v);
+            // Auto-bind the GA4 API to whichever Google account the
+            // operator was using when they picked. Only set when the
+            // value is non-empty — clearing the property shouldn't drop
+            // the account binding (the user may pick again immediately).
+            if (acc && v) update('ga4_account_email', acc);
+          }}
           gscValue={f.gsc_property}
-          onChangeGsc={v => update('gsc_property', v)}
+          onChangeGsc={(v, acc) => {
+            update('gsc_property', v);
+            if (acc && v) update('gsc_account_email', acc);
+          }}
+          savedEmail={f.google_account_email}
+          onChangeEmail={v => update('google_account_email', v)}
+          savedGa4Email={f.ga4_account_email}
+          savedGscEmail={f.gsc_account_email}
         />
 
         {/* Reporting & AEO */}

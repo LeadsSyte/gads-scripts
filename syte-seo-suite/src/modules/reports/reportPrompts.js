@@ -24,6 +24,12 @@ AEO TONE RULES:
 - For zero-visibility category terms, frame as "the next opportunity" not "the missing 93%".
 - FORBIDDEN PHRASES (and any close paraphrase): "AI visibility crisis", "missing from X% of responses", "virtually invisible", "critical gap", "alarming", "concerning", "shortfall", "the bad news". These NEVER appear in any AEO discussion.
 
+VOICE & POINT OF VIEW (NEVER BREAK):
+- Write TO the client, not ABOUT them. Use second person ("your", "you've", "you're seeing") and first-person plural ("we", "we've", "our work together").
+- NEVER refer to the client by name in the third person. "Digital Parks Africa's focus on…" reads as a third-party briefing — write "Your focus on…" or "We've leaned into…" instead. Mentioning the brand name conversationally once is fine; describing them like an outside observer is not.
+- Avoid management-consultant / press-release register: don't say "the brand", "the company", "DPA continues to…". Say "you", "we", "the work this month".
+- The reader is a marketing lead at the client company. They want to feel like the agency is in the trenches with them — not being briefed about themselves by a stranger.
+
 WRITING RULES:
 - No bullet points. Flowing paragraphs only.
 - Never open with "I hope this email finds you well" or any cliché.
@@ -92,6 +98,8 @@ Return ONLY valid JSON matching this exact shape. No prose before/after, no code
 }
 
 Rules:
+- VOICE: every prose field (narrative, aeoMomNarrative, aeoCompetitiveNarrative, ppcEquivalent.narrative, whatNext, aeoStrategy.zeroOpportunity) is written TO the client, in second person ("your") and first-person plural ("we"/"our"). NEVER refer to the client by name in the third person. WRONG: "Digital Parks Africa's focus on data sovereignty is paying dividends." RIGHT: "Your focus on data sovereignty is paying dividends." or "Our work on data-sovereignty positioning is paying dividends in search visibility." Mentioning the brand name once conversationally is fine; describing the brand from the outside is not.
+- Don't write like a press release or third-party briefing. The reader works at the client company — they don't want to be told about themselves.
 - Use the real numbers from the user's payload, not made-up ones.
 - Only include sections for services the client actually has.
 - aeoMomNarrative + aeoCompetitiveNarrative are short stories the microsite renders alongside auto-built tables. The tables get built from raw probe data — you only write the prose.
@@ -99,7 +107,7 @@ Rules:
 - aeoStrategy.zeroOpportunity: pick 2-3 zero-visibility queries from the payload that look like high-volume category terms ("pallet racking", "industrial shelving") and frame them as the next month's foundation play.
 - If no AEO data, omit aeoMomNarrative, aeoCompetitiveNarrative, aeoStrategy.
 - If no click data for PPC estimate, set ppcEquivalent.show = false.
-- workDone.show = false if no work data is provided.
+- workDone: ONLY populate items from the explicit "=== WHAT SYTE DID THIS MONTH ===" section in the user payload. If that section says "NO WORK DATA AVAILABLE" or contains no concrete numbers (articles, fixes, optimizations, verified changes), set workDone.show = false and workDone.items = []. NEVER invent generic strategy items like "Complete site assessment" or "SEO roadmap development". Each card must correspond to a specific line in the payload — no inferences from the brand or industry.
 - Highlights: 3-6 metrics, pick the MOST POSITIVE ones for this client. Prefer MoM delta-positive metrics first (visibility +X%, citations +Y%).
 - topPages: up to 5, mirror what's in the payload.`;
 
@@ -109,6 +117,7 @@ export const QA_SYSTEM = `You are a senior copy reviewer at Syte Digital Agency.
   "readyToSend": true,
   "checks": [
     { "label": "Sounds human, not AI-generated", "pass": true, "note": "" },
+    { "label": "Written TO the client (your / we), not ABOUT them in third person", "pass": true, "note": "fails if the email refers to the client by name in third person, e.g. 'Digital Parks Africa is seeing strong growth' instead of 'You're seeing strong growth'" },
     { "label": "Opens with client-specific win", "pass": true, "note": "" },
     { "label": "No clichés or filler phrases", "pass": true, "note": "" },
     { "label": "Data cited naturally in prose", "pass": true, "note": "" },
@@ -152,6 +161,11 @@ OPENING LINES (pick the strongest available, in this priority order):
 2. "[Brand] gained X citations and Y mentions across AI engines this month — a +Z% jump on last month." (if MoM positive)
 3. "[Brand] is showing up in [Engine] for [N] head-of-category queries including '[query]'." (if active wins exist)
 4. "Month 1 of AEO tracking is in. We now have a baseline across [N] queries × [M] engines, and the highest-yield queries are already mapped for next month's push." (true first-month with no wins)
+
+VOICE & POINT OF VIEW (NEVER BREAK):
+- Write TO the client, not ABOUT them. Second person ("your", "you've") and first-person plural ("we", "we've", "our") only.
+- Never refer to the client by name in the third person. "Krost is showing up in ChatGPT for X queries" reads as a briefing about Krost; write "You're showing up in ChatGPT for X queries" or "We're seeing you cited in ChatGPT for X queries".
+- Mentioning the brand name once for clarity is fine; describing the brand from the outside is not. The reader works at the client company.
 
 WRITING RULES:
 - No bullet points. Flowing paragraphs only.
@@ -335,14 +349,24 @@ export function buildAlicePayload(form, aeo, workSummary) {
   }
 
   // --- What Syte did this month (auto-pulled from suite) ---
+  // An empty section header invites the model to invent generic items
+  // ("Complete site assessment", "SEO roadmap development") to fill the
+  // void. Build the list first; emit a hard "NO WORK DATA" sentinel when
+  // empty so the prompt enforces workDone.show = false.
+  const workLines = [];
   if (workSummary) {
-    lines.push('\n=== WHAT SYTE DID THIS MONTH ===');
-    if (workSummary.content.summary)         lines.push('Content: ' + workSummary.content.summary);
-    if (workSummary.content.topics?.length)   lines.push('  Topics: ' + workSummary.content.topics.join(', '));
-    if (workSummary.technical.summary)        lines.push('Technical: ' + workSummary.technical.summary);
-    if (workSummary.aeo.summary)             lines.push('AEO: ' + workSummary.aeo.summary);
-    if (workSummary.implementations.summary) lines.push('Verified: ' + workSummary.implementations.summary);
-    if (form.additionalWork)                 lines.push('Other work: ' + form.additionalWork);
+    if (workSummary.content.summary)         workLines.push('Content: ' + workSummary.content.summary);
+    if (workSummary.content.topics?.length)   workLines.push('  Topics: ' + workSummary.content.topics.join(', '));
+    if (workSummary.technical.summary)        workLines.push('Technical: ' + workSummary.technical.summary);
+    if (workSummary.aeo.summary)             workLines.push('AEO: ' + workSummary.aeo.summary);
+    if (workSummary.implementations.summary) workLines.push('Verified: ' + workSummary.implementations.summary);
+  }
+  if (form.additionalWork) workLines.push('Other work: ' + form.additionalWork);
+  lines.push('\n=== WHAT SYTE DID THIS MONTH ===');
+  if (workLines.length > 0) {
+    workLines.forEach(l => lines.push(l));
+  } else {
+    lines.push('NO WORK DATA AVAILABLE for this client/month. workDone.show MUST be false. DO NOT invent items. The microsite must omit this section entirely.');
   }
 
   // --- SEO metrics (from Looker paste) ---

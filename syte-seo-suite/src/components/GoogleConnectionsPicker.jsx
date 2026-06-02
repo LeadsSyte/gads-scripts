@@ -18,9 +18,27 @@ import {
 
 // Combined GA4 + GSC picker for the client edit modal.
 // Props:
-//   ga4Value / onChangeGa4  — current GA4 Property ID string
-//   gscValue / onChangeGsc  — current GSC Property string
-export default function GoogleConnectionsPicker({ ga4Value, onChangeGa4, gscValue, onChangeGsc }) {
+//   ga4Value / onChangeGa4  — current GA4 Property ID string. onChangeGa4
+//                             takes (propertyId, accountEmail) — the
+//                             email is set when the operator picks from
+//                             the dropdown so the parent can bind that
+//                             API to the picked-from account.
+//   gscValue / onChangeGsc  — same shape, for Search Console.
+//   savedEmail / onChangeEmail
+//                           — legacy single google_account_email binding;
+//                             still used as a fallback hint when the
+//                             per-API ga4/gsc binding is unset.
+//   savedGa4Email / savedGscEmail
+//                           — per-API account binding shown as a small
+//                             badge under each property dropdown so the
+//                             operator can see which account this
+//                             client's GA4 vs GSC live in.
+export default function GoogleConnectionsPicker({
+  ga4Value, onChangeGa4,
+  gscValue, onChangeGsc,
+  savedEmail, onChangeEmail,
+  savedGa4Email, savedGscEmail
+}) {
   const [signedIn, setSignedIn] = useState(!!getToken());
   const [email, setEmail] = useState(null);
 
@@ -83,12 +101,19 @@ export default function GoogleConnectionsPicker({ ga4Value, onChangeGa4, gscValu
     setApiErrors(errors);
     if (genericErr) setErr(genericErr);
     setLoading(false);
+    // First-time auto-bind only — if the client has no saved email yet,
+    // remember whichever account is currently signed in. Subsequent re-binding
+    // happens via doSwitch or the explicit "Use this account" button so we
+    // never silently overwrite a known-good email.
+    if (e && onChangeEmail && !savedEmail) onChangeEmail(e);
   }
 
   async function doSignIn() {
     setErr('');
     try {
-      await requestToken(ALL_READ_SCOPES);
+      // Hint with the saved email so Google pre-selects it when the user
+      // already has multiple accounts in the chooser.
+      await requestToken(ALL_READ_SCOPES, { loginHint: savedEmail || null });
       setSignedIn(true);
     } catch (e) { setErr(e.message); }
   }
@@ -99,7 +124,21 @@ export default function GoogleConnectionsPicker({ ga4Value, onChangeGa4, gscValu
     try {
       await switchAccount(ALL_READ_SCOPES);
       setSignedIn(true);
+      // After a deliberate switch, capture the new email — even when there
+      // was already a saved one. The whole point of switching is to re-bind.
+      const newEmail = await getCurrentEmail();
+      if (newEmail && onChangeEmail) onChangeEmail(newEmail);
+      // signedIn was already true, so the useEffect won't re-fire — reload
+      // properties explicitly to populate the dropdowns from the new account.
+      loadProperties({ bypassCache: true });
     } catch (e) { setErr(e.message); }
+  }
+
+  // Explicit "Use this account for this client" button. Shown when the
+  // signed-in email differs from the saved one — gives the operator a clear
+  // way to re-bind without having to go through Switch account.
+  function bindCurrentEmail() {
+    if (email && onChangeEmail) onChangeEmail(email);
   }
 
   async function doSignOut() {
@@ -148,6 +187,14 @@ export default function GoogleConnectionsPicker({ ga4Value, onChangeGa4, gscValu
     return g;
   }, [ga4Props]);
 
+  // True when the client has a saved GA4 / GSC value that isn't visible in
+  // the currently signed-in account's property list. Without surfacing this
+  // the dropdown silently shows "— pick a property —" and a careless Save
+  // would wipe the stored ID. We render the saved value as a synthetic
+  // option (and a warning) so it stays preserved + obvious.
+  const ga4SavedMissing = !!ga4Value && !ga4Props.some(p => p.id === ga4Value);
+  const gscSavedMissing = !!gscValue && !gscSites.some(s => s.siteUrl === gscValue);
+
   return (
     <div className="card" style={{ marginTop: 14 }}>
       <div className="row" style={{ justifyContent: 'space-between', marginBottom: 10, flexWrap: 'wrap', gap: 8 }}>
@@ -179,6 +226,27 @@ export default function GoogleConnectionsPicker({ ga4Value, onChangeGa4, gscValu
         or enter them manually below. Your clients are spread across 6 accounts — use Switch account
         to sign into each one when setting up clients.
       </div>
+
+      {savedEmail && (
+        <div style={{
+          marginBottom: 10,
+          padding: 10,
+          background: 'var(--surface-2)',
+          border: '1px solid var(--border)',
+          borderRadius: 'var(--radius)',
+          fontSize: 12
+        }}>
+          <strong>Saved Google account for this client:</strong>{' '}
+          <span className="mono">{savedEmail}</span>
+          {signedIn && email && email.toLowerCase() !== savedEmail.toLowerCase() && (
+            <div style={{ marginTop: 8, color: 'var(--orange)', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              You're signed in as <span className="mono">{email}</span> — properties below will be from that account, not the saved one.
+              <button onClick={doSwitch} style={{ fontSize: 11, padding: '4px 10px' }}>Switch to {savedEmail}</button>
+              <button onClick={bindCurrentEmail} style={{ fontSize: 11, padding: '4px 10px' }}>Use {email} instead</button>
+            </div>
+          )}
+        </div>
+      )}
 
       {apiErrors.map((ae, i) => (
         <div key={i} style={{
@@ -245,18 +313,33 @@ export default function GoogleConnectionsPicker({ ga4Value, onChangeGa4, gscValu
           </button>
         </div>
         {signedIn && !manualGa4 && ga4Props.length > 0 ? (
-          <select value={ga4Value || ''} onChange={e => onChangeGa4(e.target.value)}>
-            <option value="">— pick a property —</option>
-            {Object.entries(ga4Groups).map(([account, props]) => (
-              <optgroup key={account} label={account}>
-                {props.map(p => (
-                  <option key={p.id} value={p.id}>
-                    {p.name} · {p.id}
-                  </option>
-                ))}
-              </optgroup>
-            ))}
-          </select>
+          <>
+            <select value={ga4Value || ''} onChange={e => onChangeGa4(e.target.value, e.target.value ? email : null)}>
+              <option value="">— pick a property —</option>
+              {ga4SavedMissing && (
+                <option value={ga4Value}>Saved · {ga4Value} (not visible to {email || 'this account'})</option>
+              )}
+              {Object.entries(ga4Groups).map(([account, props]) => (
+                <optgroup key={account} label={account}>
+                  {props.map(p => (
+                    <option key={p.id} value={p.id}>
+                      {p.name} · {p.id}
+                    </option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
+            {ga4SavedMissing && (
+              <div style={{ color: 'var(--orange)', fontSize: 11, marginTop: 4 }}>
+                The saved property <span className="mono">{ga4Value}</span> isn't in this Google account's list. It's still preserved — Switch account if you need to repick.
+              </div>
+            )}
+            {savedGa4Email && (
+              <div className="muted" style={{ fontSize: 10, marginTop: 4 }}>
+                GA4 fetches use <span className="mono">{savedGa4Email}</span>
+              </div>
+            )}
+          </>
         ) : (
           <>
             <input
@@ -302,15 +385,29 @@ export default function GoogleConnectionsPicker({ ga4Value, onChangeGa4, gscValu
           </button>
         </div>
         {signedIn && !manualGsc && gscSites.length > 0 ? (
-          <select value={gscValue || ''} onChange={e => onChangeGsc(e.target.value)}>
+          <select value={gscValue || ''} onChange={e => onChangeGsc(e.target.value, e.target.value ? email : null)}>
             <option value="">— pick a property —</option>
+            {gscSavedMissing && (
+              <option value={gscValue}>Saved · {gscValue} (not visible to {email || 'this account'})</option>
+            )}
             {gscSites.map(s => (
               <option key={s.siteUrl} value={s.siteUrl}>
                 {s.siteUrl} ({s.permissionLevel})
               </option>
             ))}
           </select>
-        ) : (
+        ) : null}
+        {signedIn && !manualGsc && gscSites.length > 0 && gscSavedMissing && (
+          <div style={{ color: 'var(--orange)', fontSize: 11, marginTop: 4 }}>
+            The saved property <span className="mono">{gscValue}</span> isn't in this Google account's list. It's still preserved — Switch account if you need to repick.
+          </div>
+        )}
+        {savedGscEmail && (
+          <div className="muted" style={{ fontSize: 10, marginTop: 4 }}>
+            Search Console fetches use <span className="mono">{savedGscEmail}</span>
+          </div>
+        )}
+        {!(signedIn && !manualGsc && gscSites.length > 0) && (
           <>
             <input
               value={gscLocal}

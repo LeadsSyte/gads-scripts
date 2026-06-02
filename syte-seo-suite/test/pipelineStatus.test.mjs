@@ -185,5 +185,51 @@ await t('content: client without GSC is credentials-missing regardless of brand 
   assertEq(r.section, 'credentials-missing', 'content no GSC');
 });
 
+// =========================================================================
+// REGRESSION — content pipeline detail message must use the actual
+// written count, not pages_per_month. Prevents the "3 written · All 2
+// articles written…" mismatch that surfaced in the Articles Written
+// section when more than the quota had been generated.
+// =========================================================================
+await t('content: detail uses actual written count (not pages_per_month)', async () => {
+  // Quota = 2, but 3 articles exist for this month.
+  const c = { ...C_FULL_CONTENT, pages_per_month: 2 };
+  const month = '2026-05';
+  const history = [
+    { client_id: c.id, generated_at: month + '-01T00:00:00Z' },
+    { client_id: c.id, generated_at: month + '-02T00:00:00Z' },
+    { client_id: c.id, generated_at: month + '-03T00:00:00Z' }
+  ];
+  const r = contentPipelineStatus(c, [], month, history);
+  assertEq(r.section, 'articles-written');
+  // Summary uses the actual written count (3).
+  if (!/3 written/.test(r.summary)) throw new Error('summary should report 3 written: ' + r.summary);
+  // Detail must NOT say "All 2 articles written" (the old bug). It should
+  // say "All 3 articles written" since 3 actually exist.
+  if (/All 2 articles written/.test(r.detail)) {
+    throw new Error('REGRESSION: detail still uses pages_per_month: ' + r.detail);
+  }
+  if (!/All 3 articles written/.test(r.detail)) {
+    throw new Error('detail should say "All 3 articles written": ' + r.detail);
+  }
+});
+
+await t('content: verified detail also uses actual written count', async () => {
+  const c = { ...C_FULL_CONTENT, id: 'cwx', pages_per_month: 2 };
+  const month = '2026-05';
+  const history = [
+    { client_id: 'cwx', generated_at: month + '-01T00:00:00Z' },
+    { client_id: 'cwx', generated_at: month + '-02T00:00:00Z' },
+    { client_id: 'cwx', generated_at: month + '-03T00:00:00Z' }
+  ];
+  const impls = [
+    { client_id: 'cwx', module: 'content', verification_status: 'verified',
+      title: 'A', implemented_at: month + '-04T00:00:00Z' }
+  ];
+  const r = contentPipelineStatus(c, impls, month, history);
+  // 1 of 3 verified — message should reflect 3, not 2.
+  if (!/of 3/.test(r.detail)) throw new Error('verified detail should reference 3 (the written count): ' + r.detail);
+});
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 if (fail > 0) process.exit(1);
