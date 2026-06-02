@@ -16,6 +16,12 @@ import ReportDashboard from './ReportDashboard.jsx';
 
 const ACCENT = '#a78bfa';
 
+// Cap for the live AEO probe that runs inside "Generate Full Report" when a
+// client has no saved snapshot for the month. Each query is swept across
+// every engine × iterations as live LLM calls, so an uncapped run over a
+// large probe-query list takes many minutes and looks like a frozen tab.
+const LIVE_PROBE_MAX_QUERIES = 25;
+
 // Reports always default to the PREVIOUS month (you're reporting on last month's work).
 function previousMonth() {
   const d = new Date();
@@ -170,27 +176,40 @@ export default function MonthlyReport() {
   async function autoFetchMetrics(c, m, forceRefresh = false) {
     if (!c) return;
 
+    // Per-API account bindings: a client can have GA4 in one Google account
+    // and GSC in another. Each API uses its own binding; both fall back to
+    // the legacy single google_account_email if the per-API field isn't set
+    // yet (clients created before this split). Computed up front so the cache
+    // check below can invalidate when the binding changes, not just the
+    // property IDs.
+    const ga4Email = c.ga4_account_email || c.google_account_email || null;
+    const gscEmail = c.gsc_account_email || c.google_account_email || null;
+
     // Check cache first (unless forced refresh).
     if (!forceRefresh) {
       try {
         const cached = await getCachedReportData(c.id, m);
         const isCurrentVersion = cached?.data?.version === REPORT_DATA_VERSION;
-        // Cache is also stale if the client's GA4/GSC properties have
-        // changed since the cached fetch — otherwise fixing a wrong
-        // property URL leaves the old permission error stuck on screen.
+        // Cache is also stale if the client's GA4/GSC properties OR the
+        // Google account they're bound to have changed since the cached
+        // fetch — otherwise fixing a wrong property URL, or re-binding a
+        // client to a working Google account after its credentials went
+        // stale, leaves the old data / permission error stuck on screen.
         const propsMatch = cached?.data
           && cached.data.ga4_property_id === (c.ga4_property_id || null)
-          && cached.data.gsc_property === (c.gsc_property || null);
+          && cached.data.gsc_property === (c.gsc_property || null)
+          && (cached.data.ga4_account_email ?? null) === ga4Email
+          && (cached.data.gsc_account_email ?? null) === gscEmail;
         if (cached?.data && isCurrentVersion && propsMatch) {
           setReportData(cached.data);
           setFetchStatus('Loaded from cache (fetched ' + new Date(cached.fetched_at).toLocaleDateString() + ') · Click Refresh Data to re-fetch');
           return;
         }
         if (cached?.data && isCurrentVersion && !propsMatch) {
-          // Properties changed on the client — drop the cached result
-          // entirely and fall through to a fresh fetch.
+          // Properties or account binding changed on the client — drop the
+          // cached result entirely and fall through to a fresh fetch.
           setReportData(null);
-          setFetchStatus('GA4/GSC property changed — refetching…');
+          setFetchStatus('GA4/GSC property or Google account changed — refetching…');
         } else if (cached?.data && !isCurrentVersion) {
           // Old-shape cache exists. Show it as a fallback so the page
           // isn't blank, then silently try to refresh in the background
@@ -206,12 +225,8 @@ export default function MonthlyReport() {
     }
 
     // ── Auth handling ──
-    // Per-API bindings: a client can have GA4 in one Google account and
-    // GSC in another. Each API uses its own binding; both fall back to
-    // the legacy single google_account_email if the per-API field isn't
-    // set yet (clients created before this split).
-    const ga4Email = c.ga4_account_email || c.google_account_email || null;
-    const gscEmail = c.gsc_account_email || c.google_account_email || null;
+    // ga4Email / gscEmail were resolved above (the per-API bindings, with a
+    // fallback to the legacy single google_account_email).
     const needsGa4 = !!c.ga4_property_id;
     const needsGsc = !!c.gsc_property;
     const needsGoogle = needsGa4 || needsGsc;
@@ -289,6 +304,10 @@ export default function MonthlyReport() {
       data.version = REPORT_DATA_VERSION;
       data.ga4_property_id = c.ga4_property_id || null;
       data.gsc_property = c.gsc_property || null;
+      // Stamp the account binding this pull used so a later re-bind (after
+      // stale credentials are re-added) is detected as a cache miss.
+      data.ga4_account_email = ga4Email;
+      data.gsc_account_email = gscEmail;
       setReportData(data);
       // Cache for future visits.
       setCachedReportData(c.id, m, data).catch(() => {});
@@ -497,13 +516,26 @@ export default function MonthlyReport() {
     }, aeoSnap, workSummary);
 
     try {
-      // 0. Live AEO probe — run probe queries against available AI engines
-      // to check brand visibility. Uses existing snapshot infrastructure.
+      // 0. Live AEO probe — ONLY when there's no saved AEO snapshot for this
+      // month. A live probe is (probe queries × engines × iterations) live
+      // LLM calls; for a client with a large probe-query list that's many
+      // minutes of sequential work, which made "Generate Full Report" look
+      // frozen. When a snapshot already exists the report renders every AEO
+      // section from it (micrositeHtml prefers liveAeoProbe, then falls back
+      // to aeoSnap; the Alice payload uses aeoSnap directly), so re-probing
+      // live on each generate is pure waste — skip it. Use the dedicated AEO
+      // Snapshot tool, or the "Generate AEO Report" button, to pull fresh
+      // probe data on demand.
       const preflight = snapshotPreflight(client);
-      if (preflight.canRun) {
+      if (!aeoSnap && preflight.canRun) {
         setPhase('aeo-probe');
         try {
+          // Cap the in-report fallback probe so a client with a large
+          // probe-query list can't turn Generate into a many-minute sweep.
+          // The full set is available via the AEO Snapshot tool / Generate
+          // AEO Report.
           const probeResult = await runSnapshot(client, {
+            maxQueries: LIVE_PROBE_MAX_QUERIES,
             onProgress: (p) => setPhase('aeo-probe: ' + (p.engine || '') + ' — ' + (p.query || '').slice(0, 40))
           });
           setLiveAeoProbe(probeResult);
