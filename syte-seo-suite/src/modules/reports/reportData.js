@@ -10,6 +10,7 @@ import { ensureToken, SCOPES } from '../technical/googleAuth.js';
 import { querySearchAnalytics } from '../technical/gsc.js';
 import { buildKeywordBuckets, classifyKeywords } from './keywordBuckets.js';
 import { fetchWithTimeout } from '../../lib/http.js';
+import { serverAuthEnabled, proxyGoogleFetch } from '../../lib/googleServerAuth.js';
 
 // Cap GA4 calls so a stalled Analytics endpoint surfaces as an error in the
 // report's errors[] instead of hanging the whole fetch behind Promise.all.
@@ -39,8 +40,6 @@ function getReportPeriods(year, month) {
 // supports the per-API binding where GA4 lives under a different Google
 // account than GSC for the same client.
 async function fetchGA4Period(propertyId, dateRange, clientType, expectedEmail = null) {
-  const token = await ensureToken([SCOPES.ga4], { expectedEmail });
-
   // Base metrics always needed.
   const metrics = [
     { name: 'totalUsers' },
@@ -56,28 +55,38 @@ async function fetchGA4Period(propertyId, dateRange, clientType, expectedEmail =
     metrics.push({ name: 'keyEvents' });
   }
 
-  const res = await fetchWithTimeout(
-    `https://analyticsdata.googleapis.com/v1beta/properties/${propertyId}:runReport`,
-    {
-      method: 'POST',
-      headers: {
-        Authorization: 'Bearer ' + token.access_token,
-        'Content-Type': 'application/json'
+  const url = `https://analyticsdata.googleapis.com/v1beta/properties/${propertyId}:runReport`;
+  const reqBody = {
+    dateRanges: [dateRange],
+    dimensions: [{ name: 'sessionDefaultChannelGroup' }],
+    metrics,
+    dimensionFilter: {
+      filter: {
+        fieldName: 'sessionDefaultChannelGroup',
+        stringFilter: { matchType: 'EXACT', value: 'Organic Search' }
+      }
+    }
+  };
+
+  let res;
+  if (serverAuthEnabled()) {
+    // Server-side flow: the proxy attaches the account's token server-side.
+    res = await proxyGoogleFetch(url, { method: 'POST', body: reqBody }, expectedEmail);
+  } else {
+    const token = await ensureToken([SCOPES.ga4], { expectedEmail });
+    res = await fetchWithTimeout(
+      url,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer ' + token.access_token,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(reqBody)
       },
-      body: JSON.stringify({
-        dateRanges: [dateRange],
-        dimensions: [{ name: 'sessionDefaultChannelGroup' }],
-        metrics,
-        dimensionFilter: {
-          filter: {
-            fieldName: 'sessionDefaultChannelGroup',
-            stringFilter: { matchType: 'EXACT', value: 'Organic Search' }
-          }
-        }
-      })
-    },
-    GA4_TIMEOUT_MS
-  );
+      GA4_TIMEOUT_MS
+    );
+  }
   if (!res.ok) {
     const txt = await res.text().catch(() => '');
     throw new Error('GA4 ' + res.status + ': ' + txt.slice(0, 200));
