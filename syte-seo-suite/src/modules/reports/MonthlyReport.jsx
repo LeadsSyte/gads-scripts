@@ -84,6 +84,12 @@ export default function MonthlyReport() {
   const [htmlOverride, setHtmlOverride] = useState(null);
   const [editingMicro, setEditingMicro] = useState(false);
   const microIframeRef = useRef(null);
+  // Guards autoFetchMetrics against re-entrancy. Auth (ensureToken /
+  // silentRefresh) persists tokens, which dispatches TOKEN_EVENT, which the
+  // listener below turns back into an autoFetchMetrics(force) call — and the
+  // listener reads a stale fetchStatus closure, so that fed back on itself
+  // into a loop that re-popped the Google auth tab and froze the report view.
+  const fetchInFlightRef = useRef(false);
 
   const [savedReportLoaded, setSavedReportLoaded] = useState(false);
 
@@ -157,6 +163,10 @@ export default function MonthlyReport() {
     if (!client?.id) return;
     const onTokenChange = () => {
       if (!getToken()?.access_token) return;
+      // Never react to a token change while a fetch/auth cycle is already
+      // running — otherwise the token writes that cycle performs feed back
+      // into another fetch and the report view locks up.
+      if (fetchInFlightRef.current) return;
       // Only react when we're currently in an unconnected / mismatched
       // state. If a fetch is already in progress or data is already
       // loaded, the in-flight cycle will handle it.
@@ -182,7 +192,22 @@ export default function MonthlyReport() {
   const REPORT_DATA_VERSION = 3;
 
   // Pull all report data (GA4 traffic + conversions + GSC keywords) via reportData.js.
+  // Re-entrancy guard wrapper: a single fetch/auth cycle can dispatch several
+  // TOKEN_EVENTs (each persisted token fires one). Without this guard the
+  // token listener re-enters here mid-cycle and the calls pile up until the
+  // tab freezes. While one cycle is running, further calls are no-ops; the
+  // running cycle already picks up whatever token just landed.
   async function autoFetchMetrics(c, m, forceRefresh = false) {
+    if (fetchInFlightRef.current) return;
+    fetchInFlightRef.current = true;
+    try {
+      await runAutoFetchMetrics(c, m, forceRefresh);
+    } finally {
+      fetchInFlightRef.current = false;
+    }
+  }
+
+  async function runAutoFetchMetrics(c, m, forceRefresh = false) {
     if (!c) return;
 
     // Per-API account bindings: a client can have GA4 in one Google account
