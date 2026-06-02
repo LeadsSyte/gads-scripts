@@ -500,16 +500,17 @@ export default function MonthlyReport() {
     }, aeoSnap, workSummary);
 
     try {
-      // 0. Live AEO probe — only when we DON'T already have a saved snapshot
-      // for this month. A fresh probe queries every engine with every probe
-      // query (× iterations), each call a slow web-search LLM round-trip, so
-      // it can run for minutes. If the AEO Snapshot module already captured
-      // one (aeoSnap), reuse it instead of blocking report generation on a
-      // re-probe. When we DO probe, run a single fast iteration and cap the
-      // whole thing with a hard time budget so the report can never hang on
-      // it — on timeout we fall back to whatever snapshot we have and carry on.
+      // 0. Live AEO probe — only for clients that have AEO ticked, and only
+      // when we DON'T already have a saved snapshot for this month. A fresh
+      // probe queries every engine with every probe query (× iterations), each
+      // call a slow web-search LLM round-trip, so it can run for minutes. If
+      // the AEO Snapshot module already captured one (aeoSnap), reuse it
+      // instead of re-probing. When we DO probe, run a single fast iteration
+      // and cap the whole thing with a hard time budget so the report can
+      // never hang on it — on timeout we fall back to saved data and carry on.
+      const hasAeo = client.does_aeo !== false;
       const preflight = snapshotPreflight(client);
-      if (!aeoSnap && preflight.canRun) {
+      if (hasAeo && !aeoSnap && preflight.canRun) {
         setPhase('aeo-probe');
         let probeTimer;
         try {
