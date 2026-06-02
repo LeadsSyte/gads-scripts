@@ -15,6 +15,7 @@ import {
   normalizeGscProperty,
   clearPropertyCache
 } from '../lib/googleProperties.js';
+import { serverAuthEnabled, listConnectedAccounts } from '../lib/googleServerAuth.js';
 
 // Combined GA4 + GSC picker for the client edit modal.
 // Props:
@@ -37,10 +38,23 @@ export default function GoogleConnectionsPicker({
   ga4Value, onChangeGa4,
   gscValue, onChangeGsc,
   savedEmail, onChangeEmail,
-  savedGa4Email, savedGscEmail
+  savedGa4Email, savedGscEmail,
+  onBindAccount
 }) {
   const [signedIn, setSignedIn] = useState(!!getToken());
   const [email, setEmail] = useState(null);
+  // Server-auth: the list of accounts connected once on the backend. In that
+  // mode binding a client = picking one of these from a dropdown, instead of
+  // signing into Google in this browser.
+  const serverAuth = serverAuthEnabled();
+  const [connectedAccounts, setConnectedAccounts] = useState([]);
+  useEffect(() => {
+    if (!serverAuth) return;
+    listConnectedAccounts()
+      .then(a => setConnectedAccounts((a || []).filter(x => !x.revoked).map(x => x.email)))
+      .catch(() => {});
+  }, [serverAuth]);
+  const boundAccount = savedGa4Email || savedGscEmail || savedEmail || '';
 
   // The picker is often rendered before App.jsx's background silent
   // refresh has finished. Re-check signed-in state whenever the auth
@@ -203,12 +217,12 @@ export default function GoogleConnectionsPicker({
       <div className="row" style={{ justifyContent: 'space-between', marginBottom: 10, flexWrap: 'wrap', gap: 8 }}>
         <strong>Google Connections</strong>
         <div className="row" style={{ gap: 8 }}>
-          {!signedIn && (
+          {!serverAuth && !signedIn && (
             <button onClick={doSignIn} style={{ borderColor: '#4F8EF7', color: '#4F8EF7' }}>
               Sign in with Google
             </button>
           )}
-          {signedIn && (
+          {!serverAuth && signedIn && (
             <>
               <span className="muted" style={{ fontSize: 11 }}>
                 <span className="dot" style={{ background: 'var(--green)', marginRight: 6 }} />
@@ -224,11 +238,35 @@ export default function GoogleConnectionsPicker({
         </div>
       </div>
 
-      <div className="muted" style={{ fontSize: 12, marginBottom: 12 }}>
-        Sign in with Google to pick GA4 properties and Search Console sites from a dropdown,
-        or enter them manually below. Your clients are spread across 6 accounts — use Switch account
-        to sign into each one when setting up clients.
-      </div>
+      {serverAuth ? (
+        <div style={{ marginBottom: 12 }}>
+          <label style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--text-dim)' }}>
+            Google account for this client
+          </label>
+          <select
+            value={boundAccount}
+            onChange={e => onBindAccount?.(e.target.value)}
+            style={{ width: '100%', marginTop: 4 }}
+          >
+            <option value="">— select a connected account —</option>
+            {connectedAccounts.map(em => <option key={em} value={em}>{em}</option>)}
+            {boundAccount && !connectedAccounts.includes(boundAccount) && (
+              <option value={boundAccount}>{boundAccount} (not connected — connect it in Suite Settings)</option>
+            )}
+          </select>
+          <div className="muted" style={{ fontSize: 11, marginTop: 6 }}>
+            Reports pull this client's GA4 + GSC through the account selected here. Connect accounts once
+            under <strong>Suite Settings → Connected Google Accounts</strong>. Enter the GA4 property ID and
+            Search Console URL manually below.
+          </div>
+        </div>
+      ) : (
+        <div className="muted" style={{ fontSize: 12, marginBottom: 12 }}>
+          Sign in with Google to pick GA4 properties and Search Console sites from a dropdown,
+          or enter them manually below. Your clients are spread across 6 accounts — use Switch account
+          to sign into each one when setting up clients.
+        </div>
+      )}
 
       {savedEmail && (
         <div style={{
