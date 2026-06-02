@@ -500,15 +500,36 @@ export default function MonthlyReport() {
     }, aeoSnap, workSummary);
 
     try {
-      // 0. Live AEO probe — run probe queries against available AI engines
-      // to check brand visibility. Uses existing snapshot infrastructure.
+      // 0. Live AEO probe — only when we DON'T already have a saved snapshot
+      // for this month. A fresh probe queries every engine with every probe
+      // query (× iterations), each call a slow web-search LLM round-trip, so
+      // it can run for minutes. If the AEO Snapshot module already captured
+      // one (aeoSnap), reuse it instead of blocking report generation on a
+      // re-probe. When we DO probe, run a single fast iteration and cap the
+      // whole thing with a hard time budget so the report can never hang on
+      // it — on timeout we fall back to whatever snapshot we have and carry on.
       const preflight = snapshotPreflight(client);
-      if (preflight.canRun) {
+      if (!aeoSnap && preflight.canRun) {
         setPhase('aeo-probe');
+        let probeTimer;
         try {
-          const probeResult = await runSnapshot(client, {
-            onProgress: (p) => setPhase('aeo-probe: ' + (p.engine || '') + ' — ' + (p.query || '').slice(0, 40))
+          const PROBE_BUDGET_MS = 90000;
+          const budget = new Promise((_, reject) => {
+            probeTimer = setTimeout(
+              () => reject(new Error('AEO probe exceeded ' + (PROBE_BUDGET_MS / 1000) + 's — using saved data')),
+              PROBE_BUDGET_MS
+            );
           });
+          const probeResult = await Promise.race([
+            runSnapshot(client, {
+              iterations: 1,
+              onProgress: (p) => setPhase(
+                'aeo-probe: ' + (p.engine || '') + ' — ' + (p.query || '').slice(0, 40) +
+                (p.total ? ' (' + (p.index || 0) + '/' + p.total + ')' : '')
+              )
+            }),
+            budget
+          ]);
           setLiveAeoProbe(probeResult);
           // Feed probe results into form for Alice email
           setForm(prev => ({
@@ -519,7 +540,9 @@ export default function MonthlyReport() {
             aeoCitations: probeResult.per_query?.filter(r => r.mentioned).length + ' of ' + probeResult.per_query?.length
           }));
         } catch (e) {
-          console.warn('[Report] AEO probe failed:', e.message);
+          console.warn('[Report] AEO probe skipped:', e.message);
+        } finally {
+          clearTimeout(probeTimer);
         }
       }
 
@@ -989,6 +1012,21 @@ export default function MonthlyReport() {
             ))}
           </div>
         </div>
+        {phase !== 'idle' && phase !== 'review' && (
+          <div className="row" style={{ marginTop: 10, gap: 8, fontSize: 12, color: 'var(--text-muted)', alignItems: 'center' }}>
+            <span className="spinner" style={{ width: 12, height: 12, borderWidth: 2 }} />
+            <span>
+              {phase.startsWith('aeo-probe')
+                ? (phase.includes(':')
+                    ? 'Checking AI visibility — ' + phase.split(':').slice(1).join(':').trim()
+                    : 'Running AEO probe…')
+                : phase === 'alice' ? 'Writing the client email…'
+                : phase === 'micro' ? 'Building the report microsite…'
+                : phase === 'qa' ? 'Running QA checks…'
+                : 'Working…'}
+            </span>
+          </div>
+        )}
         {err && <div style={{ color: 'var(--red)', marginTop: 10 }}>{err}</div>}
       </div>
 
