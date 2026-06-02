@@ -368,6 +368,16 @@ Return ONLY valid JSON: { "queries": ["...", "..."] }`;
           onChangeEmail={v => update('google_account_email', v)}
           savedGa4Email={f.ga4_account_email}
           savedGscEmail={f.gsc_account_email}
+          onBindAccount={email => {
+            // Server-auth: bind the whole client to one connected account.
+            // Set all three fields so the report's per-API lookup
+            // (ga4_account_email / gsc_account_email, falling back to
+            // google_account_email) resolves to this account, and any earlier
+            // wrong per-API binding is overwritten.
+            update('google_account_email', email);
+            update('ga4_account_email', email);
+            update('gsc_account_email', email);
+          }}
         />
 
         {/* Reporting & AEO */}
