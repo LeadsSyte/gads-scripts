@@ -170,27 +170,40 @@ export default function MonthlyReport() {
   async function autoFetchMetrics(c, m, forceRefresh = false) {
     if (!c) return;
 
+    // Per-API account bindings: a client can have GA4 in one Google account
+    // and GSC in another. Each API uses its own binding; both fall back to
+    // the legacy single google_account_email if the per-API field isn't set
+    // yet (clients created before this split). Computed up front so the cache
+    // check below can invalidate when the binding changes, not just the
+    // property IDs.
+    const ga4Email = c.ga4_account_email || c.google_account_email || null;
+    const gscEmail = c.gsc_account_email || c.google_account_email || null;
+
     // Check cache first (unless forced refresh).
     if (!forceRefresh) {
       try {
         const cached = await getCachedReportData(c.id, m);
         const isCurrentVersion = cached?.data?.version === REPORT_DATA_VERSION;
-        // Cache is also stale if the client's GA4/GSC properties have
-        // changed since the cached fetch — otherwise fixing a wrong
-        // property URL leaves the old permission error stuck on screen.
+        // Cache is also stale if the client's GA4/GSC properties OR the
+        // Google account they're bound to have changed since the cached
+        // fetch — otherwise fixing a wrong property URL, or re-binding a
+        // client to a working Google account after its credentials went
+        // stale, leaves the old data / permission error stuck on screen.
         const propsMatch = cached?.data
           && cached.data.ga4_property_id === (c.ga4_property_id || null)
-          && cached.data.gsc_property === (c.gsc_property || null);
+          && cached.data.gsc_property === (c.gsc_property || null)
+          && (cached.data.ga4_account_email ?? null) === ga4Email
+          && (cached.data.gsc_account_email ?? null) === gscEmail;
         if (cached?.data && isCurrentVersion && propsMatch) {
           setReportData(cached.data);
           setFetchStatus('Loaded from cache (fetched ' + new Date(cached.fetched_at).toLocaleDateString() + ') · Click Refresh Data to re-fetch');
           return;
         }
         if (cached?.data && isCurrentVersion && !propsMatch) {
-          // Properties changed on the client — drop the cached result
-          // entirely and fall through to a fresh fetch.
+          // Properties or account binding changed on the client — drop the
+          // cached result entirely and fall through to a fresh fetch.
           setReportData(null);
-          setFetchStatus('GA4/GSC property changed — refetching…');
+          setFetchStatus('GA4/GSC property or Google account changed — refetching…');
         } else if (cached?.data && !isCurrentVersion) {
           // Old-shape cache exists. Show it as a fallback so the page
           // isn't blank, then silently try to refresh in the background
@@ -206,12 +219,8 @@ export default function MonthlyReport() {
     }
 
     // ── Auth handling ──
-    // Per-API bindings: a client can have GA4 in one Google account and
-    // GSC in another. Each API uses its own binding; both fall back to
-    // the legacy single google_account_email if the per-API field isn't
-    // set yet (clients created before this split).
-    const ga4Email = c.ga4_account_email || c.google_account_email || null;
-    const gscEmail = c.gsc_account_email || c.google_account_email || null;
+    // ga4Email / gscEmail were resolved above (the per-API bindings, with a
+    // fallback to the legacy single google_account_email).
     const needsGa4 = !!c.ga4_property_id;
     const needsGsc = !!c.gsc_property;
     const needsGoogle = needsGa4 || needsGsc;
@@ -289,6 +298,10 @@ export default function MonthlyReport() {
       data.version = REPORT_DATA_VERSION;
       data.ga4_property_id = c.ga4_property_id || null;
       data.gsc_property = c.gsc_property || null;
+      // Stamp the account binding this pull used so a later re-bind (after
+      // stale credentials are re-added) is detected as a cache miss.
+      data.ga4_account_email = ga4Email;
+      data.gsc_account_email = gscEmail;
       setReportData(data);
       // Cache for future visits.
       setCachedReportData(c.id, m, data).catch(() => {});
