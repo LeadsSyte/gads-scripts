@@ -8,8 +8,14 @@
 
 import { loadSettings } from '../../lib/settings.js';
 import { getStoredApiKey } from '../../lib/auth.js';
+import { fetchWithTimeout } from '../../lib/http.js';
 
 const MAX_TOKENS = 500;
+
+// Per-engine request timeout. A single stalled provider must not hang the
+// whole probe sweep — on timeout ask() returns { error } and the sweep
+// carries on, exactly like any other engine error.
+const ENGINE_TIMEOUT_MS = 45000;
 
 // ------- ChatGPT / OpenAI --------------------------------------------------
 export const chatgpt = {
@@ -20,7 +26,7 @@ export const chatgpt = {
   async ask(query) {
     const { openaiKey } = loadSettings();
     try {
-      const res = await fetch('https://api.openai.com/v1/chat/completions', {
+      const res = await fetchWithTimeout('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -34,7 +40,7 @@ export const chatgpt = {
             { role: 'user', content: query }
           ]
         })
-      });
+      }, ENGINE_TIMEOUT_MS);
       if (!res.ok) {
         const txt = await res.text().catch(() => '');
         return { error: 'OpenAI ' + res.status + ' ' + txt.slice(0, 200) };
@@ -55,7 +61,7 @@ export const perplexity = {
   async ask(query) {
     const { perplexityKey } = loadSettings();
     try {
-      const res = await fetch('https://api.perplexity.ai/chat/completions', {
+      const res = await fetchWithTimeout('https://api.perplexity.ai/chat/completions', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -69,7 +75,7 @@ export const perplexity = {
             { role: 'user', content: query }
           ]
         })
-      });
+      }, ENGINE_TIMEOUT_MS);
       if (!res.ok) {
         const txt = await res.text().catch(() => '');
         return { error: 'Perplexity ' + res.status + ' ' + txt.slice(0, 200) };
@@ -92,13 +98,13 @@ export const gemini = {
     try {
       const url = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key='
         + encodeURIComponent(googleAiKey);
-      const res = await fetch(url, {
+      const res = await fetchWithTimeout(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           contents: [{ parts: [{ text: query }] }]
         })
-      });
+      }, ENGINE_TIMEOUT_MS);
       if (!res.ok) {
         const txt = await res.text().catch(() => '');
         return { error: 'Gemini ' + res.status + ' ' + txt.slice(0, 200) };
@@ -119,7 +125,7 @@ export const claude = {
   async ask(query) {
     const key = getStoredApiKey();
     try {
-      const res = await fetch('https://api.anthropic.com/v1/messages', {
+      const res = await fetchWithTimeout('https://api.anthropic.com/v1/messages', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -132,7 +138,7 @@ export const claude = {
           max_tokens: MAX_TOKENS,
           messages: [{ role: 'user', content: query }]
         })
-      });
+      }, ENGINE_TIMEOUT_MS);
       if (!res.ok) {
         const txt = await res.text().catch(() => '');
         return { error: 'Claude ' + res.status + ' ' + txt.slice(0, 200) };

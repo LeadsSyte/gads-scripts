@@ -1,7 +1,13 @@
 import { getStoredApiKey } from './auth.js';
+import { fetchWithTimeout } from './http.js';
 
 export const CLAUDE_MODEL = 'claude-sonnet-4-20250514';
 const API_URL = 'https://api.anthropic.com/v1/messages';
+
+// Non-streaming generation (Alice email, microsite JSON, QA) can legitimately
+// take a while, but a stalled connection must not hang the report pipeline.
+// Cap each call so a dead socket rejects instead of freezing on "Working…".
+const COMPLETE_TIMEOUT_MS = 90000;
 
 function headers() {
   const key = getStoredApiKey();
@@ -16,11 +22,11 @@ function headers() {
 
 // Non-streaming single-shot call. Returns plain text.
 export async function claudeComplete({ system, messages, max_tokens = 4096, temperature = 0.7, model = CLAUDE_MODEL }) {
-  const res = await fetch(API_URL, {
+  const res = await fetchWithTimeout(API_URL, {
     method: 'POST',
     headers: headers(),
     body: JSON.stringify({ model, max_tokens, temperature, system, messages })
-  });
+  }, COMPLETE_TIMEOUT_MS);
   if (!res.ok) {
     const txt = await res.text();
     throw new Error('Claude API error: ' + res.status + ' ' + txt);
