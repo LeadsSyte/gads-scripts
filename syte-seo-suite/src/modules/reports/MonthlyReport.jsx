@@ -510,10 +510,18 @@ export default function MonthlyReport() {
     }, aeoSnap, workSummary);
 
     try {
-      // 0. Live AEO probe — run probe queries against available AI engines
-      // to check brand visibility. Uses existing snapshot infrastructure.
+      // 0. Live AEO probe — ONLY when there's no saved AEO snapshot for this
+      // month. A live probe is (probe queries × engines × iterations) live
+      // LLM calls; for a client with a large probe-query list that's many
+      // minutes of sequential work, which made "Generate Full Report" look
+      // frozen. When a snapshot already exists the report renders every AEO
+      // section from it (micrositeHtml prefers liveAeoProbe, then falls back
+      // to aeoSnap; the Alice payload uses aeoSnap directly), so re-probing
+      // live on each generate is pure waste — skip it. Use the dedicated AEO
+      // Snapshot tool, or the "Generate AEO Report" button, to pull fresh
+      // probe data on demand.
       const preflight = snapshotPreflight(client);
-      if (preflight.canRun) {
+      if (!aeoSnap && preflight.canRun) {
         setPhase('aeo-probe');
         try {
           const probeResult = await runSnapshot(client, {
