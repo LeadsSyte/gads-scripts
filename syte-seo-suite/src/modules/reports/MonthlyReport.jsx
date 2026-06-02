@@ -16,6 +16,12 @@ import ReportDashboard from './ReportDashboard.jsx';
 
 const ACCENT = '#a78bfa';
 
+// Cap for the live AEO probe that runs inside "Generate Full Report" when a
+// client has no saved snapshot for the month. Each query is swept across
+// every engine × iterations as live LLM calls, so an uncapped run over a
+// large probe-query list takes many minutes and looks like a frozen tab.
+const LIVE_PROBE_MAX_QUERIES = 25;
+
 // Reports always default to the PREVIOUS month (you're reporting on last month's work).
 function previousMonth() {
   const d = new Date();
@@ -524,7 +530,12 @@ export default function MonthlyReport() {
       if (!aeoSnap && preflight.canRun) {
         setPhase('aeo-probe');
         try {
+          // Cap the in-report fallback probe so a client with a large
+          // probe-query list can't turn Generate into a many-minute sweep.
+          // The full set is available via the AEO Snapshot tool / Generate
+          // AEO Report.
           const probeResult = await runSnapshot(client, {
+            maxQueries: LIVE_PROBE_MAX_QUERIES,
             onProgress: (p) => setPhase('aeo-probe: ' + (p.engine || '') + ' — ' + (p.query || '').slice(0, 40))
           });
           setLiveAeoProbe(probeResult);

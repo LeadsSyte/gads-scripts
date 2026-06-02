@@ -95,17 +95,29 @@ async function probeOne(eng, query, client, brandList, competitorList) {
 }
 
 // onProgress gets called with { phase, engine, query, index, total }.
-export async function runSnapshot(client, { onProgress, iterations } = {}) {
+// maxQueries (optional) caps how many probe queries are swept. The full
+// snapshot is queries × engines × iterations live LLM calls, so an
+// uncapped run over a very large probe-query list takes many minutes. The
+// dedicated AEO Snapshot tool runs the full set; callers that just want a
+// quick freshness probe (e.g. the in-report fallback) pass a cap so they
+// can't kick off an unbounded sweep that locks up the UI.
+export async function runSnapshot(client, { onProgress, iterations, maxQueries } = {}) {
   if (!client?.id) {
     throw new Error('runSnapshot called without a valid client.id — pick a client first.');
   }
   const engines = activeEngines();
-  const queries = parseQueries(client.aeo_probe_queries);
+  let queries = parseQueries(client.aeo_probe_queries);
   const competitorList = parseCompetitors(client.competitors);
   const N = Math.max(1, Math.min(10, Number(iterations) || DEFAULT_ITERATIONS));
 
   if (!engines.length) throw new Error('No AI engines configured. Open Suite Settings.');
   if (!queries.length) throw new Error('This client has no AEO probe queries. Edit the client to add some.');
+
+  // Cap the sweep when asked. Keep the first N queries — the probe-query
+  // list is authored most-important-first (head terms before long-tail).
+  if (maxQueries && queries.length > maxQueries) {
+    queries = queries.slice(0, maxQueries);
+  }
 
   const total = queries.length * engines.length * N;
   let done = 0;
