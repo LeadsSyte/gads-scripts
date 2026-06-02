@@ -22,6 +22,15 @@ const ACCENT = '#a78bfa';
 // large probe-query list takes many minutes and looks like a frozen tab.
 const LIVE_PROBE_MAX_QUERIES = 25;
 
+// Hard ceiling on the HTML we'll inline into the microsite preview iframe.
+// A srcDoc iframe renders on the SAME main thread as the app, so a multi-MB
+// document locks the whole tab while it parses + lays out. A freshly built
+// microsite is well under this, but a persisted microsite_html_override is a
+// raw stored blob that bypasses the in-builder row caps — one saved before
+// those caps existed can be many MB and freeze the report view on load.
+// Above this size we don't inline it; we offer download / rebuild instead.
+const MAX_INLINE_REPORT_HTML = 1_800_000;
+
 // Reports always default to the PREVIOUS month (you're reporting on last month's work).
 function previousMonth() {
   const d = new Date();
@@ -390,6 +399,17 @@ export default function MonthlyReport() {
   // edits if any, otherwise the freshly built microsite. Override is
   // cleared when client/month change.
   const displayHtml = htmlOverride || micrositeHtml;
+
+  // Guard the inline preview against an oversized HTML blob (almost always a
+  // stale microsite_html_override saved before the per-table row caps). If
+  // the override is too big to inline safely, preview the freshly built
+  // (capped) microsite instead — the original is still downloadable and can
+  // be dropped with "Discard edits". previewTooLarge is the final backstop:
+  // if even the rebuilt HTML somehow exceeds the ceiling we skip the iframe
+  // entirely rather than freeze the tab.
+  const overrideTooLarge = !!htmlOverride && htmlOverride.length > MAX_INLINE_REPORT_HTML;
+  const previewHtml = overrideTooLarge ? (micrositeHtml || '') : displayHtml;
+  const previewTooLarge = previewHtml.length > MAX_INLINE_REPORT_HTML;
 
   // Generate AEO-only report — skips SEO data, focuses on AI visibility.
   async function generateAeoOnly() {
@@ -1133,18 +1153,35 @@ export default function MonthlyReport() {
                   <button onClick={() => setShowMicroFull(v => !v)}>{showMicroFull ? 'Collapse' : 'Open full screen'}</button>
                 </div>
               </div>
-              <iframe
-                ref={microIframeRef}
-                title="microsite"
-                srcDoc={displayHtml}
-                style={{
-                  width: '100%',
-                  height: showMicroFull ? '80vh' : 520,
-                  border: editingMicro ? '2px solid ' + ACCENT : '1px solid var(--border)',
-                  borderRadius: 'var(--radius)',
-                  background: 'var(--bg)'
-                }}
-              />
+              {overrideTooLarge && (
+                <div className="muted" style={{ fontSize: 12, marginBottom: 10, padding: '8px 10px', border: '1px solid var(--orange)', borderRadius: 8, color: 'var(--orange)' }}>
+                  This report has large saved manual edits ({Math.round(htmlOverride.length / 1024)} KB). Previewing the freshly built version instead to keep the page responsive — the saved edits are still in your downloads, or click <strong>Discard edits</strong> to drop them.
+                </div>
+              )}
+              {previewTooLarge ? (
+                <div style={{ padding: 24, border: '1px dashed var(--border)', borderRadius: 'var(--radius)', textAlign: 'center', background: 'var(--bg)' }}>
+                  <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 6 }}>Preview skipped — report too large to render inline</div>
+                  <div className="muted" style={{ fontSize: 12, marginBottom: 14 }}>
+                    This report is {Math.round(previewHtml.length / 1024)} KB, which would lock the page if rendered here. Use the buttons above to download the .html or PDF, where it opens in its own window.
+                  </div>
+                  {htmlOverride && (
+                    <button onClick={discardMicroEdits} style={{ color: 'var(--red)' }}>Discard manual edits and rebuild</button>
+                  )}
+                </div>
+              ) : (
+                <iframe
+                  ref={microIframeRef}
+                  title="microsite"
+                  srcDoc={previewHtml}
+                  style={{
+                    width: '100%',
+                    height: showMicroFull ? '80vh' : 520,
+                    border: editingMicro ? '2px solid ' + ACCENT : '1px solid var(--border)',
+                    borderRadius: 'var(--radius)',
+                    background: 'var(--bg)'
+                  }}
+                />
+              )}
             </div>
           )}
 
