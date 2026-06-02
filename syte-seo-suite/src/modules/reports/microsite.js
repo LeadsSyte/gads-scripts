@@ -649,7 +649,21 @@ export function buildMicrositeHtml({ micro, client, monthLabel, previousMonthLab
       ` : ''}
     </section>` : ''}
 
-    ${probe.per_query?.length > 0 ? `
+    ${probe.per_query?.length > 0 ? (() => {
+      // Every other table in this report is row-capped; this granular
+      // detail table was not, so a saved snapshot with a large probe-query
+      // list (queries × engines rows) produced a multi-hundred-row table.
+      // Baked into the iframe srcDoc alongside everything else that was
+      // enough to lock the tab on render. Cap it like its siblings and note
+      // the remainder — the full per-query data lives in the AEO Snapshot.
+      const MAX_DETAIL_ROWS = 200;
+      const allRows = probe.per_query
+        .filter(r => !r.error)
+        .slice()
+        .sort((a, b) => (b.visibility || 0) - (a.visibility || 0));
+      const rows = allRows.slice(0, MAX_DETAIL_ROWS);
+      const hidden = allRows.length - rows.length;
+      return `
     <section>
       <h2>Query × Engine Visibility Detail</h2>
       <p style="color:var(--muted);font-size:13px;margin-bottom:14px;">Per-engine visibility for every probe query — the granular data behind the scores above.</p>
@@ -665,10 +679,7 @@ export function buildMicrositeHtml({ micro, client, monthLabel, previousMonthLab
           </tr>
         </thead>
         <tbody>
-          ${probe.per_query
-            .filter(r => !r.error)
-            .slice()
-            .sort((a, b) => (b.visibility || 0) - (a.visibility || 0))
+          ${rows
             .map(r => {
               const v = r.visibility ?? (r.mentioned ? 100 : 0);
               const visColour = v >= 70 ? 'var(--green)' : v >= 30 ? 'var(--orange)' : 'var(--muted)';
@@ -683,7 +694,9 @@ export function buildMicrositeHtml({ micro, client, monthLabel, previousMonthLab
             }).join('')}
         </tbody>
       </table>
-    </section>` : ''}
+      ${hidden > 0 ? `<p style="color:var(--muted);font-size:12px;margin-top:10px;">+${hidden} more query × engine rows — see the full AEO Snapshot for the complete set.</p>` : ''}
+    </section>`;
+    })() : ''}
 
     ${micro?.whatNext ? `
     <section>
