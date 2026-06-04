@@ -122,8 +122,25 @@ export async function runSnapshot(client, { onProgress, iterations, maxQueries }
   const total = queries.length * engines.length * N;
   let done = 0;
 
+  // --- Diagnostic timing (console only; no effect on the snapshot data) ---
+  // The full sweep is queries × engines × iterations sequential LLM calls,
+  // and a slow/retrying engine (Gemini's model-fallback chain) or a long
+  // sentiment pass can make a run take many minutes with no visible
+  // progress. These timers print exactly where the wall-clock goes so we
+  // can target the real bottleneck instead of guessing.
+  const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+  const fmt = (ms) => (ms / 1000).toFixed(1) + 's';
+  const t0 = now();
+  const engineMs = {};    // engine.label → total ms spent awaiting that engine
+  const engineCalls = {}; // engine.label → number of probe calls
+  const tick = (label, ms) => {
+    engineMs[label] = (engineMs[label] || 0) + ms;
+    engineCalls[label] = (engineCalls[label] || 0) + 1;
+  };
+
   // Phase 1: probe each (query, engine) N times. Iterations are sequential
   // per engine to keep within rate limits; engines run in parallel per query.
+  const phase1Start = now();
   const rawResults = [];
   for (const query of queries) {
     const enginePromises = engines.map(async (eng) => {
@@ -133,7 +150,9 @@ export async function runSnapshot(client, { onProgress, iterations, maxQueries }
           phase: 'query', engine: eng.label, query,
           index: done, total, iteration: i + 1, iterations: N
         });
+        const callStart = now();
         const row = await probeOne(eng, query, client, [], competitorList);
+        tick(eng.label, now() - callStart);
         done++;
         onProgress?.({
           phase: 'done', engine: eng.label, query,
@@ -146,15 +165,35 @@ export async function runSnapshot(client, { onProgress, iterations, maxQueries }
     const batches = await Promise.all(enginePromises);
     for (const batch of batches) rawResults.push(...batch);
   }
+  const phase1Ms = now() - phase1Start;
 
   // Phase 2: sentiment for cited brand mentions. One Haiku call each,
   // sequential to spare rate limits. Skip if not mentioned or errored.
+  const phase2Start = now();
+  let sentimentCalls = 0;
   for (const r of rawResults) {
     if (r.error || !r.brand?.mentioned) continue;
     onProgress?.({ phase: 'sentiment', query: r.query, engine: r.engineLabel });
     r.brand.sentiment = await sentimentOf(r.brand.excerpt, client.name);
     r.brand.score = scoreMention({ ...r.brand, sentiment: r.brand.sentiment });
+    sentimentCalls++;
   }
+  const phase2Ms = now() - phase2Start;
+
+  // Print the breakdown. Per-engine cumulative time is summed across the
+  // parallel branches, so engineMs can exceed phase1Ms — the useful signal
+  // is which engine dominates and its avg per-call latency.
+  try {
+    const engineRows = Object.keys(engineMs)
+      .sort((a, b) => engineMs[b] - engineMs[a])
+      .map(label => `${label}: ${fmt(engineMs[label])} over ${engineCalls[label]} calls (avg ${fmt(engineMs[label] / engineCalls[label])})`);
+    console.info(
+      `[AEO timing] ${client.name}: total ${fmt(now() - t0)} · ` +
+      `Phase1 probes ${fmt(phase1Ms)} (${rawResults.length} calls) · ` +
+      `Phase2 sentiment ${fmt(phase2Ms)} (${sentimentCalls} calls)\n` +
+      `[AEO timing] per-engine cumulative:\n  ` + engineRows.join('\n  ')
+    );
+  } catch {}
 
   // Phase 3: per-query aggregation across iterations and engines.
   // For each (query, engine) we compute visibility = hits / iterations.
