@@ -11,6 +11,32 @@ import { getStoredApiKey } from '../../lib/auth.js';
 
 const MAX_TOKENS = 500;
 
+// Per-request timeout (ms). AI engines with web search (Perplexity sonar,
+// gpt-4o) can legitimately take 20-30s, so we give a generous bound — but
+// a bound is essential: a bare fetch() can hang indefinitely if the API
+// holds the connection open. Because runSnapshot awaits Promise.all() over
+// all engines per query, a single stalled request would otherwise freeze
+// the entire sweep on "Running…" with no progress (the 30-min hang).
+const REQUEST_TIMEOUT_MS = 60000;
+
+// fetch() wrapper that aborts after REQUEST_TIMEOUT_MS. On timeout the
+// AbortError surfaces through each engine's try/catch as { error }, which
+// the runner already treats as a single-probe failure (the sweep continues).
+async function fetchWithTimeout(url, options = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (e) {
+    if (e.name === 'AbortError') {
+      throw new Error(`request timed out after ${Math.round(timeoutMs / 1000)}s`);
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // ------- ChatGPT / OpenAI --------------------------------------------------
 export const chatgpt = {
   id: 'chatgpt',
@@ -20,7 +46,7 @@ export const chatgpt = {
   async ask(query) {
     const { openaiKey } = loadSettings();
     try {
-      const res = await fetch('https://api.openai.com/v1/chat/completions', {
+      const res = await fetchWithTimeout('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -55,7 +81,7 @@ export const perplexity = {
   async ask(query) {
     const { perplexityKey } = loadSettings();
     try {
-      const res = await fetch('https://api.perplexity.ai/chat/completions', {
+      const res = await fetchWithTimeout('https://api.perplexity.ai/chat/completions', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -92,7 +118,7 @@ export const gemini = {
     try {
       const url = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key='
         + encodeURIComponent(googleAiKey);
-      const res = await fetch(url, {
+      const res = await fetchWithTimeout(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -119,7 +145,7 @@ export const claude = {
   async ask(query) {
     const key = getStoredApiKey();
     try {
-      const res = await fetch('https://api.anthropic.com/v1/messages', {
+      const res = await fetchWithTimeout('https://api.anthropic.com/v1/messages', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
