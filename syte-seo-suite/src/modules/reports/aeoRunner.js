@@ -17,6 +17,25 @@ import { detectBrand, sentimentOf, scoreMention, countCitations } from './brandD
 // enough resolution to spot partial wins without 9× the API cost of 10.
 const DEFAULT_ITERATIONS = 3;
 
+// Run `fn` over `items` with at most `concurrency` in flight at once. Used to
+// parallelize the probe and sentiment passes: the per-call latency of
+// web-search engines (tens of seconds) dominates, so doing the work one item
+// at a time made a healthy run sit on "Working…" for many minutes. A bounded
+// pool cuts wall-clock by ~the concurrency factor while staying polite to
+// provider rate limits. Resolves once every item is processed; individual
+// failures are the caller's concern (probeOne never throws).
+async function mapWithConcurrency(items, concurrency, fn) {
+  let idx = 0;
+  const width = Math.max(1, Math.min(concurrency, items.length));
+  const workers = Array.from({ length: width }, async () => {
+    while (idx < items.length) {
+      const cur = idx++;
+      await fn(items[cur], cur);
+    }
+  });
+  await Promise.all(workers);
+}
+
 function parseQueries(raw) {
   return (raw || '')
     .split('\n')
@@ -144,59 +163,68 @@ export async function runSnapshot(client, { onProgress, iterations, maxQueries }
     engineCalls[label] = (engineCalls[label] || 0) + 1;
   };
 
-  // Phase 1: probe each (query, engine) N times. Iterations are sequential
-  // per engine to keep within rate limits; engines run in parallel per query.
+  // Phase 1: probe each (query × engine) N times, through a bounded-concurrency
+  // pool rather than one wave per query. The dominant cost is slow web-search
+  // engines (OpenAI Responses + web_search via the proxy, Perplexity sonar) at
+  // tens of seconds each; running 10 queries × 3 iterations strictly
+  // sequentially is what left a healthy run on "Working…" for 15+ minutes. A
+  // small pool overlaps those waits and cuts wall-clock by ~the concurrency
+  // factor while staying within provider rate limits.
   //
-  // Circuit breaker: when an engine returns an error that won't recover
-  // within the run — a rate-limit (429, quota exhausted) or a config/auth
-  // error (400/401/403, bad or wrong-type key) — every further call would
-  // just fail, sometimes after wasting backoff time. Once that happens we
-  // record the engine in `disabledEngines` and skip it for all remaining
-  // iterations/queries, pushing a quick synthetic error row so aggregation
-  // still scores it 0%. This is what stops a quota-exhausted or misconfigured
-  // Gemini from adding dead waiting to every round (the "stuck on Working"
-  // freeze).
-  const disabledEngines = new Map(); // engine.id → reason ('rate-limited (429)' | 'config/auth error')
+  // Circuit breaker: when an engine returns an error that won't recover within
+  // the run — rate-limit (429, quota) or config/auth (400/401/403, bad or
+  // wrong-type key) — we stop probing it. Config/auth trips on the first
+  // failure (deterministic). Rate-limit trips on the second: under concurrency
+  // a single transient 429 shouldn't kill an otherwise-working engine, but
+  // persistent quota exhaustion (e.g. Gemini) still bails after one more call.
+  // Skipped probes get a quick synthetic error row so aggregation scores the
+  // engine 0% instead of the run hanging.
+  const PROBE_CONCURRENCY = 5;
+  const disabledEngines = new Map(); // engine.id → reason
+  const rateLimitHits = new Map();   // engine.id → count of 429s seen so far
+  const tasks = [];
+  for (const query of queries) {
+    for (const eng of engines) {
+      for (let i = 0; i < N; i++) tasks.push({ query, eng, i });
+    }
+  }
   const phase1Start = now();
   const rawResults = [];
-  for (const query of queries) {
-    const enginePromises = engines.map(async (eng) => {
-      const runs = [];
-      for (let i = 0; i < N; i++) {
-        if (disabledEngines.has(eng.id)) {
-          done++;
-          onProgress?.({
-            phase: 'done', engine: eng.label, query,
-            index: done, total, iteration: i + 1, iterations: N
-          });
-          runs.push({
-            engine: eng.id, engineLabel: eng.label, query,
-            error: eng.label + ' ' + disabledEngines.get(eng.id) + ' — skipped for rest of run',
-            rateLimited: true
-          });
-          continue;
-        }
-        onProgress?.({
-          phase: 'query', engine: eng.label, query,
-          index: done, total, iteration: i + 1, iterations: N
-        });
-        const callStart = now();
-        const row = await probeOne(eng, query, client, [], competitorList);
-        tick(eng.label, now() - callStart);
-        if (row.rateLimited) disabledEngines.set(eng.id, 'rate-limited (429)');
-        else if (row.configError) disabledEngines.set(eng.id, 'config/auth error (check API key)');
-        done++;
-        onProgress?.({
-          phase: 'done', engine: eng.label, query,
-          index: done, total, iteration: i + 1, iterations: N
-        });
-        runs.push(row);
-      }
-      return runs;
+  await mapWithConcurrency(tasks, PROBE_CONCURRENCY, async ({ query, eng, i }) => {
+    if (disabledEngines.has(eng.id)) {
+      done++;
+      onProgress?.({
+        phase: 'done', engine: eng.label, query,
+        index: done, total, iteration: i + 1, iterations: N
+      });
+      rawResults.push({
+        engine: eng.id, engineLabel: eng.label, query,
+        error: eng.label + ' ' + disabledEngines.get(eng.id) + ' — skipped for rest of run',
+        rateLimited: true
+      });
+      return;
+    }
+    onProgress?.({
+      phase: 'query', engine: eng.label, query,
+      index: done, total, iteration: i + 1, iterations: N
     });
-    const batches = await Promise.all(enginePromises);
-    for (const batch of batches) rawResults.push(...batch);
-  }
+    const callStart = now();
+    const row = await probeOne(eng, query, client, [], competitorList);
+    tick(eng.label, now() - callStart);
+    if (row.configError) {
+      disabledEngines.set(eng.id, 'config/auth error (check API key)');
+    } else if (row.rateLimited) {
+      const hits = (rateLimitHits.get(eng.id) || 0) + 1;
+      rateLimitHits.set(eng.id, hits);
+      if (hits >= 2) disabledEngines.set(eng.id, 'rate-limited (429)');
+    }
+    done++;
+    onProgress?.({
+      phase: 'done', engine: eng.label, query,
+      index: done, total, iteration: i + 1, iterations: N
+    });
+    rawResults.push(row);
+  });
   const phase1Ms = now() - phase1Start;
   if (disabledEngines.size) {
     try {
@@ -205,17 +233,20 @@ export async function runSnapshot(client, { onProgress, iterations, maxQueries }
     } catch {}
   }
 
-  // Phase 2: sentiment for cited brand mentions. One Haiku call each,
-  // sequential to spare rate limits. Skip if not mentioned or errored.
+  // Phase 2: sentiment for cited brand mentions — one Haiku call each, run
+  // through a small pool. These all hit Claude, so keep concurrency modest to
+  // respect its rate limit. Sequential here was a second hidden time sink on
+  // well-mentioned brands (one back-to-back call per mention, up to one per
+  // probe response).
+  const SENTIMENT_CONCURRENCY = 4;
   const phase2Start = now();
-  let sentimentCalls = 0;
-  for (const r of rawResults) {
-    if (r.error || !r.brand?.mentioned) continue;
+  const needSentiment = rawResults.filter(r => !r.error && r.brand?.mentioned);
+  await mapWithConcurrency(needSentiment, SENTIMENT_CONCURRENCY, async (r) => {
     onProgress?.({ phase: 'sentiment', query: r.query, engine: r.engineLabel });
     r.brand.sentiment = await sentimentOf(r.brand.excerpt, client.name);
     r.brand.score = scoreMention({ ...r.brand, sentiment: r.brand.sentiment });
-    sentimentCalls++;
-  }
+  });
+  const sentimentCalls = needSentiment.length;
   const phase2Ms = now() - phase2Start;
 
   // Print the breakdown. Per-engine cumulative time is summed across the

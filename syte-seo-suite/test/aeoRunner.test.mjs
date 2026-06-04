@@ -51,6 +51,9 @@ function assertEq(a, b, label) {
 function assertGT(a, b, label) {
   if (!(a > b)) throw new Error((label || '') + ' expected > ' + b + ' got ' + a);
 }
+function assertLT(a, b, label) {
+  if (!(a < b)) throw new Error((label || '') + ' expected < ' + b + ' got ' + a);
+}
 async function expectThrow(fn, regex, label) {
   try { await fn(); }
   catch (e) {
@@ -241,10 +244,13 @@ await t('runSnapshot: competitors get their own visibility metrics', async () =>
   for (const c of result.competitors) assertEq(c.visibility, 100, c.name + ' visibility');
 });
 
-await t('runSnapshot: rate-limited engine is disabled after first 429 (circuit breaker)', async () => {
-  // Engine 429s on its very first call. With 3 queries × 3 iterations there
-  // would be 9 calls without the breaker; the breaker must stop after the
-  // first failure so the quota-exhausted engine never wastes another call.
+await t('runSnapshot: rate-limited engine is disabled mid-run (circuit breaker)', async () => {
+  // Engine 429s on every call. Without the breaker, 8 queries × 3 iterations
+  // = 24 calls; the breaker must disable the engine well before that so a
+  // quota-exhausted engine doesn't get hammered for the whole run. Under the
+  // concurrency pool a handful of calls may be in flight before it trips
+  // (rate-limit needs 2 hits), so we assert "far fewer than total" rather than
+  // an exact count.
   let askCalls = 0;
   globalThis.__activeEngines = () => [{
     id: 'gemini', label: 'Gemini', isConfigured: () => true,
@@ -253,19 +259,20 @@ await t('runSnapshot: rate-limited engine is disabled after first 429 (circuit b
   globalThis.__detectBrand = () => ({ mentioned: false });
 
   const result = await mod.runSnapshot(
-    { ...CLIENT, aeo_probe_queries: 'q1\nq2\nq3' },
+    { ...CLIENT, aeo_probe_queries: 'q1\nq2\nq3\nq4\nq5\nq6\nq7\nq8' },
     { iterations: 3 }
   );
-  // Only ONE real ask() should have happened — the rest are skipped.
-  assertEq(askCalls, 1, 'engine called exactly once before circuit-breaks');
+  assertGT(askCalls, 1, 'rate-limit needs ≥2 hits to trip');
+  assertLT(askCalls, 10, 'breaker stops the engine far short of all 24 calls');
   // Engine scores 0 (all rate-limited), sweep still completes with all rows.
   assertEq(result.engine_scores.gemini, 0, 'rate-limited engine scores 0');
-  assertEq(result.per_query.length, 3, 'all 3 queries still produce rows');
+  assertEq(result.per_query.length, 8, 'all 8 queries still produce rows');
 });
 
-await t('runSnapshot: config/auth error (400) also trips the circuit breaker', async () => {
-  // A wrong-type key (e.g. Vertex "AQ." key on the AI Studio endpoint) 400s
-  // on every call — disable the engine after the first failure.
+await t('runSnapshot: config/auth error (400) trips the breaker on first failure', async () => {
+  // A wrong-type key (e.g. Vertex "AQ." key on the AI Studio endpoint) 400s on
+  // every call. Config errors are deterministic, so the breaker trips on the
+  // first one — only the in-flight pool calls slip through before it disables.
   let askCalls = 0;
   globalThis.__activeEngines = () => [{
     id: 'gemini', label: 'Gemini', isConfigured: () => true,
@@ -274,10 +281,10 @@ await t('runSnapshot: config/auth error (400) also trips the circuit breaker', a
   globalThis.__detectBrand = () => ({ mentioned: false });
 
   const result = await mod.runSnapshot(
-    { ...CLIENT, aeo_probe_queries: 'q1\nq2\nq3' },
+    { ...CLIENT, aeo_probe_queries: 'q1\nq2\nq3\nq4\nq5\nq6\nq7\nq8' },
     { iterations: 2 }
   );
-  assertEq(askCalls, 1, 'engine called once before config-error breaks');
+  assertLT(askCalls, 8, 'breaker stops the engine far short of all 16 calls');
   assertEq(result.engine_scores.gemini, 0, 'misconfigured engine scores 0');
 });
 
@@ -290,8 +297,11 @@ await t('runSnapshot: 429 detected from error text even without explicit flag', 
   }];
   globalThis.__detectBrand = () => ({ mentioned: false });
 
-  await mod.runSnapshot({ ...CLIENT, aeo_probe_queries: 'q1\nq2' }, { iterations: 2 });
-  assertEq(askCalls, 1, 'breaker trips on 429 in error text too');
+  await mod.runSnapshot(
+    { ...CLIENT, aeo_probe_queries: 'q1\nq2\nq3\nq4\nq5\nq6\nq7\nq8' },
+    { iterations: 2 }
+  );
+  assertLT(askCalls, 10, 'breaker trips on a 429 in error text too');
 });
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
