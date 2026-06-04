@@ -58,11 +58,13 @@ export function snapshotPreflight(client) {
 async function probeOne(eng, query, client, brandList, competitorList) {
   const resp = await eng.ask(query);
   if (resp.error) {
-    // Surface rate-limit (429) failures so the runner can stop probing this
-    // engine for the rest of the sweep instead of paying the cost on every
-    // remaining round. Detect both the explicit flag and a 429 in the text.
+    // Surface failures that won't recover within the run so the runner can
+    // stop probing this engine instead of paying the cost on every remaining
+    // round. Two kinds: rate-limit (429, quota) and config/auth (400/401/403,
+    // bad or wrong-type key). Detect explicit flags or the status in the text.
     const rateLimited = !!resp.rateLimited || /\b429\b/.test(resp.error || '');
-    return { engine: eng.id, engineLabel: eng.label, query, error: resp.error, rateLimited };
+    const configError = !!resp.configError || /\b(400|401|403)\b/.test(resp.error || '');
+    return { engine: eng.id, engineLabel: eng.label, query, error: resp.error, rateLimited, configError };
   }
   const text = resp.text || '';
 
@@ -145,21 +147,23 @@ export async function runSnapshot(client, { onProgress, iterations, maxQueries }
   // Phase 1: probe each (query, engine) N times. Iterations are sequential
   // per engine to keep within rate limits; engines run in parallel per query.
   //
-  // Circuit breaker: when an engine returns a rate-limit (429) error, its
-  // quota is exhausted for the run — every further call would just fail after
-  // wasting backoff time. Once an engine rate-limits we add it to
-  // `rateLimitedEngines` and skip it for all remaining iterations/queries,
-  // recording a quick synthetic error row so aggregation still scores it 0%.
-  // This is what stops a quota-exhausted Gemini from adding minutes of dead
-  // waiting to every round (the reported "stuck on Working" freeze).
-  const rateLimitedEngines = new Set();
+  // Circuit breaker: when an engine returns an error that won't recover
+  // within the run — a rate-limit (429, quota exhausted) or a config/auth
+  // error (400/401/403, bad or wrong-type key) — every further call would
+  // just fail, sometimes after wasting backoff time. Once that happens we
+  // record the engine in `disabledEngines` and skip it for all remaining
+  // iterations/queries, pushing a quick synthetic error row so aggregation
+  // still scores it 0%. This is what stops a quota-exhausted or misconfigured
+  // Gemini from adding dead waiting to every round (the "stuck on Working"
+  // freeze).
+  const disabledEngines = new Map(); // engine.id → reason ('rate-limited (429)' | 'config/auth error')
   const phase1Start = now();
   const rawResults = [];
   for (const query of queries) {
     const enginePromises = engines.map(async (eng) => {
       const runs = [];
       for (let i = 0; i < N; i++) {
-        if (rateLimitedEngines.has(eng.id)) {
+        if (disabledEngines.has(eng.id)) {
           done++;
           onProgress?.({
             phase: 'done', engine: eng.label, query,
@@ -167,7 +171,7 @@ export async function runSnapshot(client, { onProgress, iterations, maxQueries }
           });
           runs.push({
             engine: eng.id, engineLabel: eng.label, query,
-            error: eng.label + ' rate-limited (429) — skipped for rest of run',
+            error: eng.label + ' ' + disabledEngines.get(eng.id) + ' — skipped for rest of run',
             rateLimited: true
           });
           continue;
@@ -179,7 +183,8 @@ export async function runSnapshot(client, { onProgress, iterations, maxQueries }
         const callStart = now();
         const row = await probeOne(eng, query, client, [], competitorList);
         tick(eng.label, now() - callStart);
-        if (row.rateLimited) rateLimitedEngines.add(eng.id);
+        if (row.rateLimited) disabledEngines.set(eng.id, 'rate-limited (429)');
+        else if (row.configError) disabledEngines.set(eng.id, 'config/auth error (check API key)');
         done++;
         onProgress?.({
           phase: 'done', engine: eng.label, query,
@@ -193,8 +198,11 @@ export async function runSnapshot(client, { onProgress, iterations, maxQueries }
     for (const batch of batches) rawResults.push(...batch);
   }
   const phase1Ms = now() - phase1Start;
-  if (rateLimitedEngines.size) {
-    try { console.warn('[AEO] rate-limited engines disabled mid-run:', [...rateLimitedEngines].join(', ')); } catch {}
+  if (disabledEngines.size) {
+    try {
+      const summary = [...disabledEngines.entries()].map(([id, reason]) => `${id} (${reason})`).join(', ');
+      console.warn('[AEO] engines disabled mid-run:', summary);
+    } catch {}
   }
 
   // Phase 2: sentiment for cited brand mentions. One Haiku call each,

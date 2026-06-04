@@ -195,7 +195,11 @@ export const gemini = {
       // (401, 403 etc.) 404 means *this* model is retired/unavailable; the
       // next model in the chain might still work, so don't bail on 404.
       if (r.permanent && r.status !== 404) {
-        return { error: r.error };
+        // 400/401/403 = bad/wrong-type key or auth — won't recover this run,
+        // so flag it so the runner disables the engine (e.g. a Vertex "AQ."
+        // key on the AI Studio endpoint returns 400 on every call).
+        const configError = r.status === 400 || r.status === 401 || r.status === 403;
+        return { error: r.error, configError };
       }
     }
     return { error: lastErr || 'Gemini failed across all fallback models' };

@@ -263,6 +263,24 @@ await t('runSnapshot: rate-limited engine is disabled after first 429 (circuit b
   assertEq(result.per_query.length, 3, 'all 3 queries still produce rows');
 });
 
+await t('runSnapshot: config/auth error (400) also trips the circuit breaker', async () => {
+  // A wrong-type key (e.g. Vertex "AQ." key on the AI Studio endpoint) 400s
+  // on every call — disable the engine after the first failure.
+  let askCalls = 0;
+  globalThis.__activeEngines = () => [{
+    id: 'gemini', label: 'Gemini', isConfigured: () => true,
+    ask: async () => { askCalls++; return { error: 'Gemini 400 API key not valid', configError: true }; }
+  }];
+  globalThis.__detectBrand = () => ({ mentioned: false });
+
+  const result = await mod.runSnapshot(
+    { ...CLIENT, aeo_probe_queries: 'q1\nq2\nq3' },
+    { iterations: 2 }
+  );
+  assertEq(askCalls, 1, 'engine called once before config-error breaks');
+  assertEq(result.engine_scores.gemini, 0, 'misconfigured engine scores 0');
+});
+
 await t('runSnapshot: 429 detected from error text even without explicit flag', async () => {
   let askCalls = 0;
   globalThis.__activeEngines = () => [{
