@@ -58,7 +58,11 @@ export function snapshotPreflight(client) {
 async function probeOne(eng, query, client, brandList, competitorList) {
   const resp = await eng.ask(query);
   if (resp.error) {
-    return { engine: eng.id, engineLabel: eng.label, query, error: resp.error };
+    // Surface rate-limit (429) failures so the runner can stop probing this
+    // engine for the rest of the sweep instead of paying the cost on every
+    // remaining round. Detect both the explicit flag and a 429 in the text.
+    const rateLimited = !!resp.rateLimited || /\b429\b/.test(resp.error || '');
+    return { engine: eng.id, engineLabel: eng.label, query, error: resp.error, rateLimited };
   }
   const text = resp.text || '';
 
@@ -140,12 +144,34 @@ export async function runSnapshot(client, { onProgress, iterations, maxQueries }
 
   // Phase 1: probe each (query, engine) N times. Iterations are sequential
   // per engine to keep within rate limits; engines run in parallel per query.
+  //
+  // Circuit breaker: when an engine returns a rate-limit (429) error, its
+  // quota is exhausted for the run — every further call would just fail after
+  // wasting backoff time. Once an engine rate-limits we add it to
+  // `rateLimitedEngines` and skip it for all remaining iterations/queries,
+  // recording a quick synthetic error row so aggregation still scores it 0%.
+  // This is what stops a quota-exhausted Gemini from adding minutes of dead
+  // waiting to every round (the reported "stuck on Working" freeze).
+  const rateLimitedEngines = new Set();
   const phase1Start = now();
   const rawResults = [];
   for (const query of queries) {
     const enginePromises = engines.map(async (eng) => {
       const runs = [];
       for (let i = 0; i < N; i++) {
+        if (rateLimitedEngines.has(eng.id)) {
+          done++;
+          onProgress?.({
+            phase: 'done', engine: eng.label, query,
+            index: done, total, iteration: i + 1, iterations: N
+          });
+          runs.push({
+            engine: eng.id, engineLabel: eng.label, query,
+            error: eng.label + ' rate-limited (429) — skipped for rest of run',
+            rateLimited: true
+          });
+          continue;
+        }
         onProgress?.({
           phase: 'query', engine: eng.label, query,
           index: done, total, iteration: i + 1, iterations: N
@@ -153,6 +179,7 @@ export async function runSnapshot(client, { onProgress, iterations, maxQueries }
         const callStart = now();
         const row = await probeOne(eng, query, client, [], competitorList);
         tick(eng.label, now() - callStart);
+        if (row.rateLimited) rateLimitedEngines.add(eng.id);
         done++;
         onProgress?.({
           phase: 'done', engine: eng.label, query,
@@ -166,6 +193,9 @@ export async function runSnapshot(client, { onProgress, iterations, maxQueries }
     for (const batch of batches) rawResults.push(...batch);
   }
   const phase1Ms = now() - phase1Start;
+  if (rateLimitedEngines.size) {
+    try { console.warn('[AEO] rate-limited engines disabled mid-run:', [...rateLimitedEngines].join(', ')); } catch {}
+  }
 
   // Phase 2: sentiment for cited brand mentions. One Haiku call each,
   // sequential to spare rate limits. Skip if not mentioned or errored.

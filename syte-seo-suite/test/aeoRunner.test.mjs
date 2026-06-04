@@ -241,5 +241,40 @@ await t('runSnapshot: competitors get their own visibility metrics', async () =>
   for (const c of result.competitors) assertEq(c.visibility, 100, c.name + ' visibility');
 });
 
+await t('runSnapshot: rate-limited engine is disabled after first 429 (circuit breaker)', async () => {
+  // Engine 429s on its very first call. With 3 queries × 3 iterations there
+  // would be 9 calls without the breaker; the breaker must stop after the
+  // first failure so the quota-exhausted engine never wastes another call.
+  let askCalls = 0;
+  globalThis.__activeEngines = () => [{
+    id: 'gemini', label: 'Gemini', isConfigured: () => true,
+    ask: async () => { askCalls++; return { error: 'Gemini 429 quota exceeded', rateLimited: true }; }
+  }];
+  globalThis.__detectBrand = () => ({ mentioned: false });
+
+  const result = await mod.runSnapshot(
+    { ...CLIENT, aeo_probe_queries: 'q1\nq2\nq3' },
+    { iterations: 3 }
+  );
+  // Only ONE real ask() should have happened — the rest are skipped.
+  assertEq(askCalls, 1, 'engine called exactly once before circuit-breaks');
+  // Engine scores 0 (all rate-limited), sweep still completes with all rows.
+  assertEq(result.engine_scores.gemini, 0, 'rate-limited engine scores 0');
+  assertEq(result.per_query.length, 3, 'all 3 queries still produce rows');
+});
+
+await t('runSnapshot: 429 detected from error text even without explicit flag', async () => {
+  let askCalls = 0;
+  globalThis.__activeEngines = () => [{
+    id: 'gpt', label: 'ChatGPT', isConfigured: () => true,
+    // No rateLimited flag — only a 429 in the message string.
+    ask: async () => { askCalls++; return { error: 'OpenAI 429 Too Many Requests' }; }
+  }];
+  globalThis.__detectBrand = () => ({ mentioned: false });
+
+  await mod.runSnapshot({ ...CLIENT, aeo_probe_queries: 'q1\nq2' }, { iterations: 2 });
+  assertEq(askCalls, 1, 'breaker trips on 429 in error text too');
+});
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 if (fail > 0) process.exit(1);
