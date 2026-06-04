@@ -121,7 +121,13 @@ export const perplexity = {
 // `model` exported below is the primary; fallbacks are tried in order.
 const GEMINI_PRIMARY = 'gemini-2.5-flash';
 const GEMINI_FALLBACKS = ['gemini-2.0-flash', 'gemini-flash-latest'];
-const RETRYABLE_GEMINI_STATUS = new Set([429, 500, 502, 503, 504]);
+// 429 is deliberately NOT here. A 429 is quota/rate-limit exhaustion, not a
+// transient server blip — retrying it (and fanning across sibling models that
+// draw on the *same* project quota) just burns ~21s of backoff per call and
+// never succeeds. We treat 429 as a fast-fail rate-limit signal instead, so
+// the runner can disable the engine for the rest of the sweep. 5xx codes are
+// genuine server overload where a short retry/fallback is worthwhile.
+const RETRYABLE_GEMINI_STATUS = new Set([500, 502, 503, 504]);
 const GEMINI_RETRY_DELAYS_MS = [1000, 2000, 4000];
 
 function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
@@ -143,6 +149,12 @@ async function geminiCall(model, body, apiKey) {
         return { ok: true, text, model };
       }
       const txt = await res.text().catch(() => '');
+      // Quota/rate-limit: bail immediately and flag it. Sibling models share
+      // the same project quota, so trying them is futile — the runner uses
+      // rateLimited to disable Gemini for the remainder of the sweep.
+      if (res.status === 429) {
+        return { ok: false, permanent: true, rateLimited: true, status: 429, error: 'Gemini 429 ' + txt.slice(0, 200) };
+      }
       // Auth / bad-request / not-found: permanent — caller should try next model
       // (404 typically means "this model id is retired", which is exactly what
       // the fallback chain is for).
@@ -174,11 +186,20 @@ export const gemini = {
       const r = await geminiCall(model, body, googleAiKey);
       if (r.ok) return { text: r.text };
       lastErr = r.error;
+      // Quota 429: every model shares the project quota, so don't try the
+      // rest — surface the rate-limit flag so the runner stops calling Gemini.
+      if (r.rateLimited) {
+        return { error: r.error, rateLimited: true };
+      }
       // 4xx auth/billing errors will be permanent on every model — bail.
       // (401, 403 etc.) 404 means *this* model is retired/unavailable; the
       // next model in the chain might still work, so don't bail on 404.
       if (r.permanent && r.status !== 404) {
-        return { error: r.error };
+        // 400/401/403 = bad/wrong-type key or auth — won't recover this run,
+        // so flag it so the runner disables the engine (e.g. a Vertex "AQ."
+        // key on the AI Studio endpoint returns 400 on every call).
+        const configError = r.status === 400 || r.status === 401 || r.status === 403;
+        return { error: r.error, configError };
       }
     }
     return { error: lastErr || 'Gemini failed across all fallback models' };
