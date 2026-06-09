@@ -53,7 +53,7 @@ const MODULES = [
 const SUB_NAVS = {
   clients:   ['All Clients', 'Approvals', 'Implementation Progress'],
   content:   ['Auto Write', 'Topic Research', 'New Article', 'Rewrite & Expand', 'Metadata & Schema', 'Editorial Feedback', 'Clients', 'History'],
-  technical: ['Dashboard', 'Task Board', 'New Scan', 'Clients', 'Team', 'Settings'],
+  technical: ['Dashboard', 'Task Board', 'New Scan', 'External Work', 'Clients', 'Team', 'Settings'],
   aeo:       ['Run Optimizations', 'Query Discovery', 'Latest Results', 'Clients', 'Settings', 'History'],
   reports:   ['Monthly Report', 'AEO Snapshot', 'History'],
   cms:       ['Connector', 'Push History']

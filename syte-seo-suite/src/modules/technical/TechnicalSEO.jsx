@@ -5,10 +5,11 @@ import { corsFetchText } from '../../lib/corsProxy.js';
 import PushToCmsButton from '../../components/PushToCmsButton.jsx';
 import MarkImplementedButton from '../../components/MarkImplementedButton.jsx';
 import PipelineView from '../../components/PipelineView.jsx';
+import ExternalWork from '../../components/ExternalWork.jsx';
 import { technicalPipelineStatus, monthOptions } from '../../lib/pipelineStatus.js';
 import { getAudit, syncWebceoClients, webceoDiagnose } from './webceo.js';
 import { crawlSiteForIssues, summarizeCrawlForAI } from './crawler.js';
-import { upsertClient, listAllImplementations, saveTseoTasks, loadTseoTasks, updateTseoTask, listTseoRejections, saveTseoRejection } from '../../lib/supabase.js';
+import { upsertClient, listAllImplementations, saveTseoTasks, loadTseoTasks, updateTseoTask, logImplementation, updateImplementation, listTseoRejections, saveTseoRejection } from '../../lib/supabase.js';
 import { checkOffPageTask, isOffPageTask } from '../../lib/verification.js';
 import { querySearchAnalytics } from './gsc.js';
 import { ensureToken, SCOPES, getToken, clearToken } from './googleAuth.js';
@@ -21,6 +22,11 @@ const LEGACY_KEY = 'syte-tseo-tasks';
 const STATUS_ORDER = ['open', 'done', 'verified', 'failed'];
 const PRIORITIES   = ['critical', 'high', 'medium', 'low'];
 const STALE_DAYS = 30;
+
+// Defaults for the configurable scan depth / suggestion count (overridable
+// per-scan from the New Scan screen).
+const DEFAULT_CRAWL_DEPTH = 100;
+const DEFAULT_SUGGESTIONS = 15;
 
 function loadTasks() {
   // One-time migration of legacy key.
@@ -89,10 +95,11 @@ function saveTeam(t) {
   try { localStorage.setItem(TEAM_KEY, JSON.stringify(t)); } catch {}
 }
 
-const TRIAGE_SYSTEM = `
+function buildTriageSystem(limit = DEFAULT_SUGGESTIONS) {
+  return `
 You are a senior technical SEO engineer. You receive raw site-audit data (WebCEO audit JSON or Google Search Console data) and must produce a prioritised task list.
 
-CRITICAL RULE: Every task MUST reference a SPECIFIC page URL from the audit data — never wildcards like /products/* or generic paths. If the audit shows 50 product pages missing alt text, create tasks for the TOP 5 most important ones by name with the exact URL. Never generalize into one "fix all products" task.
+CRITICAL RULE: Every task MUST reference a SPECIFIC page URL from the audit data — never wildcards like /products/* or generic paths. If the audit shows 50 product pages missing alt text, create tasks for the TOP ${limit} most important ones by name with the exact URL. Never generalize into one "fix all products" task.
 
 Return ONLY valid JSON in this shape:
 {
@@ -113,7 +120,7 @@ Return ONLY valid JSON in this shape:
 RULES:
 - Every page_url must be a real, complete URL found in the audit data. NEVER use wildcards (*), generic paths, or invented URLs.
 - Every copy_paste_fix must be FINISHED — ready to paste. No [PLACEHOLDER] values. Use the actual page title, product name, or content from the audit data. For alt text, describe what the image shows based on the filename/context.
-- If the audit shows the same issue on many pages, pick the 3-5 MOST IMPORTANT pages (homepage, high-traffic pages, key service/product pages) and create individual tasks for each.
+- If the audit shows the same issue on many pages, pick the MOST IMPORTANT pages (homepage, high-traffic pages, key service/product pages) and create individual tasks for each.
 - For image alt text issues: include the specific image URL and the specific page where it's found, with a real descriptive alt text based on the image filename and page context.
 - For missing meta titles/descriptions: write the actual title/description for that specific page.
 - For missing schema: write the complete JSON-LD for that specific page using real data from the audit.
@@ -130,10 +137,11 @@ PRIORITIZATION (biggest wins first):
 - Medium = weak meta descriptions, missing alt text on important images, thin content pages, slow pages, missing breadcrumb schema.
 - Low = minor polish, cosmetic heading issues, optional schema types.
 - Sort: critical first, then high + quick effort, then high + moderate, then medium, then low.
-- Generate exactly 5 tasks — the 5 MOST IMPACTFUL issues to fix THIS MONTH. Quality over quantity. Pick the fixes that will move the needle most for rankings and user experience. If there are critical issues, those come first. Otherwise, pick the highest-ROI quick wins.
+- Generate up to ${limit} tasks — the MOST IMPACTFUL issues to fix, ordered biggest-win first. Quality over quantity: only create a task for a real, fixable issue present in the audit data. If there are fewer than ${limit} meaningful issues, return only the real ones — never pad the list. Critical issues come first, then the highest-ROI quick wins.
 `.trim();
+}
 
-async function triageAudit(auditData, clientUrl) {
+async function triageAudit(auditData, clientUrl, taskLimit = DEFAULT_SUGGESTIONS) {
   // auditData is now a pre-summarized string from the crawler (plus optional
   // GSC JSON appended). When it's a string, pass it through verbatim — Claude
   // reads the PAGE / issue / fix lines directly and creates tasks from them.
@@ -142,7 +150,7 @@ async function triageAudit(auditData, clientUrl) {
     : JSON.stringify(auditData).slice(0, 80000);
 
   const text = await claudeComplete({
-    system: TRIAGE_SYSTEM,
+    system: buildTriageSystem(taskLimit),
     messages: [{
       role: 'user',
       content: `Client URL: ${clientUrl}
@@ -150,9 +158,9 @@ async function triageAudit(auditData, clientUrl) {
 Crawler findings (each PAGE block lists specific issues found on that URL with suggested fixes):
 ${dataText.slice(0, 80000)}
 
-Create one task per MEANINGFUL issue on a SPECIFIC page. Use the exact URLs shown. When the crawler suggests a fix, use it as the copy_paste_fix (refine if needed). Prioritize critical issues (noindex, missing titles) first.`
+Create one task per MEANINGFUL issue on a SPECIFIC page, up to ${taskLimit} tasks. Use the exact URLs shown. When the crawler suggests a fix, use it as the copy_paste_fix (refine if needed). Prioritize critical issues (noindex, missing titles) first.`
     }],
-    max_tokens: 10000,
+    max_tokens: 16000,
     temperature: 0.3
   });
   const parsed = extractJSON(text);
@@ -230,7 +238,7 @@ function statusClass(s) {
 // domain — without this, the verifier used the topbar-selected client,
 // which led to "robots.txt is not reachable at https://bamdiy.com/..."
 // when the user was working on a Syte task with bamdiy.com selected.
-function TaskCard({ task: t, onUpdate, onVerify, onReject, busy, buildPushItem, onVerified, taskClient }) {
+function TaskCard({ task: t, onUpdate, onMarkDone, onVerify, onReject, busy, buildPushItem, onVerified, taskClient }) {
   const [open, setOpen] = React.useState(false);
   const copyFix = () => navigator.clipboard.writeText(t.copy_paste_fix || '').catch(() => {});
 
@@ -304,7 +312,7 @@ function TaskCard({ task: t, onUpdate, onVerify, onReject, busy, buildPushItem, 
             </div>
           )}
           <div className="row" style={{ gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
-            {t.status === 'open' && <button onClick={() => onUpdate(t.id, { status: 'done' })} style={{ fontSize: 11, padding: '4px 10px' }}>Mark Done</button>}
+            {t.status === 'open' && <button onClick={() => onMarkDone(t)} style={{ fontSize: 11, padding: '4px 10px' }}>Mark Done</button>}
             {t.status === 'done' && <button onClick={() => onVerify(t)} disabled={busy} style={{ fontSize: 11, padding: '4px 10px' }}>Verify</button>}
             {t.copy_paste_fix && <PushToCmsButton item={buildPushItem(t)} label="Push to CMS" />}
             <MarkImplementedButton
@@ -345,6 +353,9 @@ export default function TechnicalSEO({ sub }) {
   const [err, setErr] = useState('');
   const [syncResult, setSyncResult] = useState(null);
   const [customMethod, setCustomMethod] = useState('');
+  // Per-scan tuning (request: "crawl deeper" + more than 5 suggestions).
+  const [crawlDepth, setCrawlDepth] = useState(DEFAULT_CRAWL_DEPTH);
+  const [suggestionCount, setSuggestionCount] = useState(DEFAULT_SUGGESTIONS);
   // Set of rejected dedup keys ("clientId|pageUrl|title"). Filtered out of
   // the visible task list and from any future scan-generated tasks so a
   // rejected optimization doesn't reappear next month.
@@ -433,7 +444,7 @@ export default function TechnicalSEO({ sub }) {
       setMsg(`Step 1/3 — Crawling ${c.name}…`);
       try {
         const crawl = await crawlSiteForIssues(c, {
-          maxPages: 50,
+          maxPages: crawlDepth,
           onProgress: (done, total) => setMsg(`Step 1/3 — Crawling ${c.name}: ${done}/${total} pages`)
         });
         auditData = summarizeCrawlForAI(crawl);
@@ -461,7 +472,7 @@ export default function TechnicalSEO({ sub }) {
 
       // STEP 2: AI triage — send crawl findings to Claude for prioritized task generation
       setMsg(`Step 2/3 — AI analyzing ${dataSource} data for ${c.name} (biggest wins first)…`);
-      const triaged = await triageAudit(auditData, c.url);
+      const triaged = await triageAudit(auditData, c.url, suggestionCount);
 
       if (!triaged.length) {
         setMsg(`No issues found for ${c.name} — site looks clean from ${dataSource} data.`);
@@ -517,7 +528,7 @@ export default function TechnicalSEO({ sub }) {
     setBusy(true); setErr(''); setMsg('');
     try {
       setMsg(`Step 1/2 — AI analyzing pasted audit data for ${c.name}…`);
-      const triaged = await triageAudit(pastedText, c.url);
+      const triaged = await triageAudit(pastedText, c.url, suggestionCount);
 
       if (!triaged.length) {
         setMsg(`No actionable issues found in pasted data for ${c.name}.`);
@@ -566,6 +577,43 @@ export default function TechnicalSEO({ sub }) {
     updateTseoTask(id, patch).catch(() => {}); // persist to Supabase
   }
 
+  // Persist a completed task to the permanent implementations record so it
+  // survives re-scans and shows in Implementation Progress + the weekly email.
+  // Links the impl back to the task via impl_id to avoid duplicate rows on
+  // re-verify.
+  async function logTaskProgress(task, status, detail) {
+    const verified = status === 'verified';
+    try {
+      if (task.impl_id) {
+        await updateImplementation(task.impl_id, {
+          verification_status: verified ? 'verified' : 'pending',
+          verification_detail: detail || null,
+          verified_at: verified ? new Date().toISOString() : null
+        });
+      } else {
+        const impl = await logImplementation({
+          client_id: task.client_id,
+          module: 'technical',
+          change_type: task.fix_type || 'fix',
+          page_url: task.page_url || client?.url || '',
+          title: task.title || 'Technical SEO fix',
+          description: (task.copy_paste_fix || task.description || '').slice(0, 2000),
+          implemented_by: task.assignee || 'Team member',
+          verification_status: verified ? 'verified' : 'pending',
+          verification_detail: detail || null,
+          verified_at: verified ? new Date().toISOString() : null
+        });
+        if (impl?.id) updateTask(task.id, { impl_id: impl.id });
+      }
+      refreshTechImpls();
+    } catch { /* best-effort — the task status itself is already saved */ }
+  }
+
+  function markDone(task) {
+    updateTask(task.id, { status: 'done' });
+    logTaskProgress(task, 'done');
+  }
+
   async function handleVerify(task) {
     setBusy(true); setErr(''); setMsg('');
     try {
@@ -584,6 +632,10 @@ export default function TechnicalSEO({ sub }) {
       } else {
         updateTask(task.id, { status: r.status });
         if (r.detail) setMsg(r.detail);
+        // Record completed/verified work permanently so a re-scan can't erase it.
+        if (r.status === 'verified' || r.status === 'done') {
+          logTaskProgress(task, r.status, r.detail);
+        }
       }
     } catch (e) { setErr(e.message); }
     finally { setBusy(false); }
@@ -764,17 +816,19 @@ export default function TechnicalSEO({ sub }) {
             if (cTasks.length === 0) {
               return <div className="muted" style={{ padding: 12, fontSize: 12 }}>No tasks yet. Click Run Scan to generate.</div>;
             }
-            // Show top 10 highest priority tasks with expandable fixes.
-            const topTasks = cTasks.slice(0, 10);
+            // Show highest-priority tasks with expandable fixes (cap high to
+            // accommodate deeper scans without rendering an unbounded list).
+            const topTasks = cTasks.slice(0, 50);
             return (
               <div>
                 <div className="muted" style={{ padding: '8px 14px 4px', fontSize: 11 }}>
-                  Showing top {topTasks.length} of {cTasks.length} tasks (highest priority first)
+                  Showing {topTasks.length === cTasks.length ? 'all' : 'top'} {topTasks.length} of {cTasks.length} tasks (highest priority first)
                 </div>
                 {topTasks.map(t => (
                   <TaskCard
                     key={t.id} task={t}
                     onUpdate={updateTask}
+                    onMarkDone={markDone}
                     onVerify={handleVerify}
                     onReject={rejectTask}
                     busy={busy}
@@ -836,7 +890,7 @@ export default function TechnicalSEO({ sub }) {
                     {t.assignee && <span className="badge">{t.assignee}</span>}
                   </div>
                   <div className="row" style={{ marginTop: 8, gap: 6, flexWrap: 'wrap' }}>
-                    {status === 'open' && <button onClick={() => updateTask(t.id, { status: 'done' })}>Mark Done</button>}
+                    {status === 'open' && <button onClick={() => markDone(t)}>Mark Done</button>}
                     {status === 'done' && <button onClick={() => handleVerify(t)} disabled={busy}>Verify</button>}
                     {t.copy_paste_fix && (
                       <PushToCmsButton item={buildPushItem(t)} label="Push to CMS" />
@@ -882,10 +936,51 @@ export default function TechnicalSEO({ sub }) {
     );
   }
 
+  if (sub === 'External Work') {
+    return <ExternalWork />;
+  }
+
   if (sub === 'New Scan') {
     return (
       <div className="content-area">
         <h2 style={{ marginTop: 0 }}>New Scan</h2>
+
+        {/* Scan depth / suggestion count — applies to both options below. */}
+        <div className="card" style={{ marginBottom: 14 }}>
+          <strong>Scan Depth</strong>
+          <p className="muted" style={{ fontSize: 11, marginBottom: 10 }}>
+            Control how deep the crawl goes and how many fixes to generate. Higher values find more issues but take longer and cost more in AI tokens.
+          </p>
+          <div className="row" style={{ gap: 16, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+            <div style={{ minWidth: 180 }}>
+              <label>Pages to crawl (max)</label>
+              <input
+                type="number"
+                min={1}
+                max={500}
+                value={crawlDepth}
+                onChange={e => setCrawlDepth(Math.max(1, Math.min(500, parseInt(e.target.value, 10) || DEFAULT_CRAWL_DEPTH)))}
+                disabled={busy}
+                style={{ width: '100%' }}
+              />
+            </div>
+            <div style={{ minWidth: 180 }}>
+              <label>Number of suggestions</label>
+              <input
+                type="number"
+                min={1}
+                max={50}
+                value={suggestionCount}
+                onChange={e => setSuggestionCount(Math.max(1, Math.min(50, parseInt(e.target.value, 10) || DEFAULT_SUGGESTIONS)))}
+                disabled={busy}
+                style={{ width: '100%' }}
+              />
+            </div>
+            <span className="muted" style={{ fontSize: 11 }}>
+              Crawling up to {crawlDepth} pages · generating up to {suggestionCount} prioritised fixes.
+            </span>
+          </div>
+        </div>
 
         {/* Option 1: In-house crawler + GSC enrichment */}
         <div className="card" style={{ marginBottom: 14 }}>
@@ -894,7 +989,7 @@ export default function TechnicalSEO({ sub }) {
             Client: <strong style={{ color: 'var(--text)' }}>{client?.name || 'none selected'}</strong>
           </p>
           <p className="muted" style={{ fontSize: 11, lineHeight: 1.5 }}>
-            Fetches the sitemap, crawls up to 50 pages, parses each HTML response, and detects specific issues with exact URLs: missing meta titles/descriptions, missing H1s, images without alt text (with the specific image URL), missing canonicals, noindex tags, missing schema, thin content, and more. No external API dependency.
+            Fetches the sitemap, crawls up to {crawlDepth} pages, parses each HTML response, and detects specific issues with exact URLs: missing meta titles/descriptions, missing H1s, images without alt text (with the specific image URL), missing canonicals, noindex tags, missing schema, thin content, and more. No external API dependency.
             {client?.gsc_property && ' GSC traffic data is merged in for traffic context.'}
           </p>
           <div className="row">
