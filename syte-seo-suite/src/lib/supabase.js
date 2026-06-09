@@ -317,6 +317,61 @@ export async function listAllImplementations() {
 }
 
 // ---------------------------------------------------------------------------
+// External work log — work done OUTSIDE the suite (WebCEO, Google Search
+// Console, Screaming Frog, Ahrefs, etc.). Manually logged with an optional
+// screenshot as proof, so it counts toward the client's progress record.
+// ---------------------------------------------------------------------------
+
+const EXTERNAL_WORK_KEY = LS_PREFIX + 'external_work';
+
+export async function logExternalWork(row) {
+  if (supabase) {
+    const { data, error } = await supabase
+      .from('syte_suite_external_work')
+      .insert(row)
+      .select()
+      .single();
+    if (error) throw error;
+    return data;
+  }
+  const list = JSON.parse(localStorage.getItem(EXTERNAL_WORK_KEY) || '[]');
+  const saved = {
+    id: crypto.randomUUID(),
+    ...row,
+    work_date: row.work_date || new Date().toISOString().slice(0, 10),
+    created_at: new Date().toISOString()
+  };
+  list.unshift(saved);
+  localStorage.setItem(EXTERNAL_WORK_KEY, JSON.stringify(list));
+  return saved;
+}
+
+export async function listExternalWork(clientId) {
+  if (supabase) {
+    let q = supabase
+      .from('syte_suite_external_work')
+      .select('*')
+      .order('work_date', { ascending: false });
+    if (clientId) q = q.eq('client_id', clientId);
+    const { data, error } = await q;
+    if (error) throw error;
+    return data || [];
+  }
+  const list = JSON.parse(localStorage.getItem(EXTERNAL_WORK_KEY) || '[]');
+  return clientId ? list.filter(r => r.client_id === clientId) : list;
+}
+
+export async function deleteExternalWork(id) {
+  if (supabase) {
+    const { error } = await supabase.from('syte_suite_external_work').delete().eq('id', id);
+    if (error) throw error;
+    return;
+  }
+  const list = JSON.parse(localStorage.getItem(EXTERNAL_WORK_KEY) || '[]');
+  localStorage.setItem(EXTERNAL_WORK_KEY, JSON.stringify(list.filter(r => r.id !== id)));
+}
+
+// ---------------------------------------------------------------------------
 // Technical SEO tasks — persisted to Supabase so scans survive page reloads.
 // Falls back to localStorage if Supabase isn't configured.
 // ---------------------------------------------------------------------------
@@ -348,6 +403,7 @@ export async function saveTseoTasks(tasks) {
           status: t.status || 'open',
           assignee: t.assignee,
           data_source: t.data_source,
+          impl_id: t.impl_id || null,
           created_at: t.created_at || new Date().toISOString()
         }))
       );
