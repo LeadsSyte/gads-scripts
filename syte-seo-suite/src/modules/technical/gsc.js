@@ -1,15 +1,31 @@
 import { ensureToken, SCOPES } from './googleAuth.js';
+import { fetchWithTimeout } from '../../lib/http.js';
+import { serverAuthEnabled, proxyGoogleFetch } from '../../lib/googleServerAuth.js';
 
-async function gscFetch(path, init = {}) {
-  const token = await ensureToken([SCOPES.gsc]);
-  const res = await fetch('https://searchconsole.googleapis.com' + path, {
-    ...init,
-    headers: {
-      ...(init.headers || {}),
-      Authorization: 'Bearer ' + token.access_token,
-      'Content-Type': 'application/json'
-    }
-  });
+// Cap each GSC request. The report pulls up to 10k keyword rows by paging
+// 2500 at a time across two periods — a single stalled page would otherwise
+// hang the whole report behind that await. On timeout the call rejects and
+// the report records it in errors[] instead of freezing.
+const GSC_TIMEOUT_MS = 45000;
+
+async function gscFetch(path, init = {}, { expectedEmail = null } = {}) {
+  const url = 'https://searchconsole.googleapis.com' + path;
+  let res;
+  if (serverAuthEnabled()) {
+    // Server-side flow: the proxy attaches the account's token. Returns a
+    // Response-like object so the error handling below is unchanged.
+    res = await proxyGoogleFetch(url, { method: init.method || 'GET', body: init.body }, expectedEmail);
+  } else {
+    const token = await ensureToken([SCOPES.gsc], { expectedEmail });
+    res = await fetchWithTimeout(url, {
+      ...init,
+      headers: {
+        ...(init.headers || {}),
+        Authorization: 'Bearer ' + token.access_token,
+        'Content-Type': 'application/json'
+      }
+    }, GSC_TIMEOUT_MS);
+  }
   if (!res.ok) {
     const txt = await res.text().catch(() => '');
     // Surface the API-disabled error with the same hint as the picker.
@@ -37,13 +53,17 @@ export async function listSites() {
 
 // Generic keyword/page query. `dimensions` is an array like ['query'],
 // ['page'], or ['query', 'page']. Caller decides timeframe and row limit.
+// `expectedEmail` pins which Google account's cached token gets used —
+// lets a single client pull GSC from one account while GA4 lives in
+// another.
 export async function querySearchAnalytics(siteUrl, {
   days = 90,
   dimensions = ['query'],
   rowLimit = 1000,
   startRow = 0,
   startDate,
-  endDate
+  endDate,
+  expectedEmail = null
 } = {}) {
   const ed = endDate || new Date().toISOString().slice(0, 10);
   const sd = startDate || new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
@@ -56,7 +76,7 @@ export async function querySearchAnalytics(siteUrl, {
       rowLimit,
       startRow
     })
-  });
+  }, { expectedEmail });
 }
 
 // Convenience wrappers used by the Content Engine topic researcher.

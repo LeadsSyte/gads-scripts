@@ -4,3 +4,8 @@ dist
 .env.local
 .DS_Store
 *.log
+
+# Test artifacts
+test-results
+playwright-report
+.last-run.json

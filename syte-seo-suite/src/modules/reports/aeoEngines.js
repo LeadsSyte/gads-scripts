@@ -8,10 +8,22 @@
 
 import { loadSettings } from '../../lib/settings.js';
 import { getStoredApiKey } from '../../lib/auth.js';
+import { fetchWithTimeout } from '../../lib/http.js';
 
 const MAX_TOKENS = 500;
 
+// Per-engine request timeout. A single stalled provider must not hang the
+// whole probe sweep — on timeout ask() returns { error } and the sweep
+// carries on, exactly like any other engine error.
+const ENGINE_TIMEOUT_MS = 45000;
+
 // ------- ChatGPT / OpenAI --------------------------------------------------
+// Uses the Responses API (not Chat Completions) with the web_search_preview
+// tool enabled. Without web search, gpt-4o relies on stale training data
+// and reliably refuses to recommend specific brands or hallucinates ones
+// that don't exist — the result is "ChatGPT 0% on every query" because
+// no SA brand name ever appears. Web search makes ChatGPT actually look
+// at current pages, so brand mentions track real visibility.
 export const chatgpt = {
   id: 'chatgpt',
   label: 'ChatGPT',
@@ -20,27 +32,40 @@ export const chatgpt = {
   async ask(query) {
     const { openaiKey } = loadSettings();
     try {
-      const res = await fetch('https://api.openai.com/v1/chat/completions', {
+      const res = await fetchWithTimeout('/.netlify/functions/openai-proxy', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: 'Bearer ' + openaiKey
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          model: 'gpt-4o',
-          max_tokens: MAX_TOKENS,
-          messages: [
-            { role: 'system', content: 'You are a helpful assistant. Answer naturally.' },
-            { role: 'user', content: query }
-          ]
+          apiKey: openaiKey,
+          endpoint: 'responses',
+          body: {
+            model: 'gpt-4o',
+            input: query,
+            tools: [{ type: 'web_search_preview' }],
+            max_output_tokens: MAX_TOKENS
+          }
         })
-      });
+      }, ENGINE_TIMEOUT_MS);
       if (!res.ok) {
         const txt = await res.text().catch(() => '');
         return { error: 'OpenAI ' + res.status + ' ' + txt.slice(0, 200) };
       }
       const data = await res.json();
-      const text = data.choices?.[0]?.message?.content || '';
+      // Responses API returns output[].content[].text + structured URL
+      // citations in annotations. We collapse text parts into one string
+      // for the brand detector — the citations get appended so the
+      // detector also picks up domain mentions that only appear in the
+      // citation list (the gold-tier signal).
+      const parts = [];
+      for (const item of data.output || []) {
+        for (const c of item.content || []) {
+          if (typeof c.text === 'string') parts.push(c.text);
+          for (const a of c.annotations || []) {
+            if (a.type === 'url_citation' && a.url) parts.push(a.url);
+          }
+        }
+      }
+      const text = parts.join('\n').trim();
       return { text };
     } catch (e) { return { error: e.message }; }
   }
@@ -55,7 +80,7 @@ export const perplexity = {
   async ask(query) {
     const { perplexityKey } = loadSettings();
     try {
-      const res = await fetch('https://api.perplexity.ai/chat/completions', {
+      const res = await fetchWithTimeout('https://api.perplexity.ai/chat/completions', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -69,7 +94,7 @@ export const perplexity = {
             { role: 'user', content: query }
           ]
         })
-      });
+      }, ENGINE_TIMEOUT_MS);
       if (!res.ok) {
         const txt = await res.text().catch(() => '');
         return { error: 'Perplexity ' + res.status + ' ' + txt.slice(0, 200) };
@@ -82,31 +107,102 @@ export const perplexity = {
 };
 
 // ------- Gemini ------------------------------------------------------------
+// History: gemini-1.5-flash was retired mid-2025 (404 for new calls),
+// gemini-2.5-flash is current but its shared / free tier 503s under
+// load with "high demand" messaging. That zeroed ~30/45 iterations on
+// recent snapshots.
+//
+// Strategy: each ask() tries a chain of model IDs, with exponential
+// backoff per model. We start with the cheap fast model the suite is
+// configured for, then fall back to alternates. Anything 4xx that isn't
+// a quota issue is treated as permanent and bails immediately so we
+// don't burn the snapshot waiting on a misconfigured key.
+//
+// `model` exported below is the primary; fallbacks are tried in order.
+const GEMINI_PRIMARY = 'gemini-2.5-flash';
+const GEMINI_FALLBACKS = ['gemini-2.0-flash', 'gemini-flash-latest'];
+// 429 is deliberately NOT here. A 429 is quota/rate-limit exhaustion, not a
+// transient server blip — retrying it (and fanning across sibling models that
+// draw on the *same* project quota) just burns ~21s of backoff per call and
+// never succeeds. We treat 429 as a fast-fail rate-limit signal instead, so
+// the runner can disable the engine for the rest of the sweep. 5xx codes are
+// genuine server overload where a short retry/fallback is worthwhile.
+const RETRYABLE_GEMINI_STATUS = new Set([500, 502, 503, 504]);
+const GEMINI_RETRY_DELAYS_MS = [1000, 2000, 4000];
+
+function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+async function geminiCall(model, body, apiKey) {
+  const url = 'https://generativelanguage.googleapis.com/v1beta/models/'
+    + model + ':generateContent?key=' + encodeURIComponent(apiKey);
+  let lastErr = null;
+  for (let attempt = 0; attempt <= GEMINI_RETRY_DELAYS_MS.length; attempt++) {
+    try {
+      const res = await fetchWithTimeout(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body
+      }, ENGINE_TIMEOUT_MS);
+      if (res.ok) {
+        const data = await res.json();
+        const text = data.candidates?.[0]?.content?.parts?.map(p => p.text).join('') || '';
+        return { ok: true, text, model };
+      }
+      const txt = await res.text().catch(() => '');
+      // Quota/rate-limit: bail immediately and flag it. Sibling models share
+      // the same project quota, so trying them is futile — the runner uses
+      // rateLimited to disable Gemini for the remainder of the sweep.
+      if (res.status === 429) {
+        return { ok: false, permanent: true, rateLimited: true, status: 429, error: 'Gemini 429 ' + txt.slice(0, 200) };
+      }
+      // Auth / bad-request / not-found: permanent — caller should try next model
+      // (404 typically means "this model id is retired", which is exactly what
+      // the fallback chain is for).
+      if (!RETRYABLE_GEMINI_STATUS.has(res.status)) {
+        return { ok: false, permanent: true, status: res.status, error: 'Gemini ' + res.status + ' ' + txt.slice(0, 200) };
+      }
+      lastErr = 'Gemini ' + res.status + ' ' + txt.slice(0, 200);
+    } catch (e) {
+      lastErr = e.message;
+    }
+    if (attempt < GEMINI_RETRY_DELAYS_MS.length) {
+      await wait(GEMINI_RETRY_DELAYS_MS[attempt]);
+    }
+  }
+  return { ok: false, permanent: false, error: lastErr || 'Gemini retries exhausted' };
+}
+
 export const gemini = {
   id: 'gemini',
   label: 'Gemini',
-  model: 'gemini-1.5-flash',
+  model: GEMINI_PRIMARY,
   isConfigured: () => !!loadSettings().googleAiKey,
   async ask(query) {
     const { googleAiKey } = loadSettings();
-    try {
-      const url = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key='
-        + encodeURIComponent(googleAiKey);
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: query }] }]
-        })
-      });
-      if (!res.ok) {
-        const txt = await res.text().catch(() => '');
-        return { error: 'Gemini ' + res.status + ' ' + txt.slice(0, 200) };
+    const body = JSON.stringify({ contents: [{ parts: [{ text: query }] }] });
+    const chain = [GEMINI_PRIMARY, ...GEMINI_FALLBACKS];
+    let lastErr = null;
+    for (const model of chain) {
+      const r = await geminiCall(model, body, googleAiKey);
+      if (r.ok) return { text: r.text };
+      lastErr = r.error;
+      // Quota 429: every model shares the project quota, so don't try the
+      // rest — surface the rate-limit flag so the runner stops calling Gemini.
+      if (r.rateLimited) {
+        return { error: r.error, rateLimited: true };
       }
-      const data = await res.json();
-      const text = data.candidates?.[0]?.content?.parts?.map(p => p.text).join('') || '';
-      return { text };
-    } catch (e) { return { error: e.message }; }
+      // 4xx auth/billing errors will be permanent on every model — bail.
+      // (401, 403 etc.) 404 means *this* model is retired/unavailable; the
+      // next model in the chain might still work, so don't bail on 404.
+      if (r.permanent && r.status !== 404) {
+        // 400/401/403 = bad/wrong-type key or auth — won't recover this run,
+        // so flag it so the runner disables the engine (e.g. a Vertex "AQ."
+        // key on the AI Studio endpoint returns 400 on every call).
+        const configError = r.status === 400 || r.status === 401 || r.status === 403;
+        return { error: r.error, configError };
+      }
+    }
+    return { error: lastErr || 'Gemini failed across all fallback models' };
   }
 };
 
@@ -119,7 +215,7 @@ export const claude = {
   async ask(query) {
     const key = getStoredApiKey();
     try {
-      const res = await fetch('https://api.anthropic.com/v1/messages', {
+      const res = await fetchWithTimeout('https://api.anthropic.com/v1/messages', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -132,7 +228,7 @@ export const claude = {
           max_tokens: MAX_TOKENS,
           messages: [{ role: 'user', content: query }]
         })
-      });
+      }, ENGINE_TIMEOUT_MS);
       if (!res.ok) {
         const txt = await res.text().catch(() => '');
         return { error: 'Claude ' + res.status + ' ' + txt.slice(0, 200) };
