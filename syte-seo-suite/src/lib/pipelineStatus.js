@@ -136,33 +136,42 @@ export function technicalPipelineStatus(client, implementations, tasks, month) {
     i => i.client_id === client.id && i.module === 'technical' &&
       (i.implemented_at || i.created_at || '').slice(0, 7) === m
   );
-  const verified = monthImpls.filter(i => i.verification_status === 'verified');
+  const verifiedImpls = monthImpls.filter(i => i.verification_status === 'verified');
 
   const clientTasks = (tasks || []).filter(
     t => t.client_id === client.id && (t.created_at || '').slice(0, 7) === m
   );
+  const verifiedTasks = clientTasks.filter(t => t.status === 'verified');
   const open = clientTasks.filter(t => t.status === 'open').length;
   const done = clientTasks.filter(t => t.status === 'done' || t.status === 'verified').length;
   const allTasksDone = clientTasks.length > 0 && open === 0;
 
-  // "Verified on Site" when at least 1 implementation is verified on the live site.
-  if (verified.length > 0) {
+  // A fix counts as verified-on-site if it has a verified IMPLEMENTATION row
+  // OR its task is marked verified. The team verifies tasks directly (the
+  // task "Verify" button) and the matching impl-row write is best-effort —
+  // it's wrapped in a swallowed try/catch — so the dashboard must not depend
+  // on that row existing, or genuinely-verified work shows as "not done".
+  // The two sources overlap (a verified task usually has a verified impl), so
+  // take the larger count rather than summing to avoid double-counting.
+  const verifiedCount = Math.max(verifiedImpls.length, verifiedTasks.length);
+
+  // "Verified on Site" when at least 1 fix is verified on the live site.
+  if (verifiedCount > 0) {
     const parts = [clientTasks.length + ' tasks'];
-    if (verified.length > 0) parts.push(verified.length + ' verified');
+    parts.push(verifiedCount + ' verified');
     if (open > 0) parts.push(open + ' open');
     return {
       section: 'verified-on-site',
       summary: parts.join(' · '),
       detail: allTasksDone
-        ? 'All ' + verified.length + ' fixes verified on site'
-        : verified.length + ' of ' + clientTasks.length + ' verified · ' + open + ' still open'
+        ? 'All ' + verifiedCount + ' fixes verified on site'
+        : verifiedCount + ' of ' + clientTasks.length + ' verified · ' + open + ' still open'
     };
   }
 
   if (clientTasks.length > 0) {
     const parts = [clientTasks.length + ' tasks'];
     if (done > 0) parts.push(done + ' done');
-    if (verified.length > 0) parts.push(verified.length + ' verified');
     if (open > 0) parts.push(open + ' open');
     return {
       // "fixes-generated" = a scan was run and tasks exist (regardless of

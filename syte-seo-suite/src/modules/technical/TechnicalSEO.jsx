@@ -324,7 +324,14 @@ function TaskCard({ task: t, onUpdate, onMarkDone, onVerify, onReject, busy, bui
               pageUrl={t.page_url}
               title={t.title}
               description={t.copy_paste_fix || t.description || ''}
-              onVerified={onVerified}
+              onVerified={() => {
+                // Marking implemented + verified must also flip the task's own
+                // status, otherwise the badge stays at its last value (e.g.
+                // FAILED) while a verified impl row exists — the two sources of
+                // truth disagree and the pipeline card looks unverified.
+                onUpdate(t.id, { status: 'verified' });
+                onVerified?.();
+              }}
             />
             {t.status === 'open' && onReject && (
               <button
@@ -926,7 +933,12 @@ export default function TechnicalSEO({ sub }) {
                         pageUrl={t.page_url}
                         title={t.title}
                         description={t.copy_paste_fix || t.description || ''}
-                        onVerified={refreshTechImpls}
+                        onVerified={() => {
+                          // Keep the task badge and the verified impl row in
+                          // sync — see the note on the pipeline TaskCard above.
+                          updateTask(t.id, { status: 'verified' });
+                          refreshTechImpls();
+                        }}
                       />
                     </div>
                   )}
