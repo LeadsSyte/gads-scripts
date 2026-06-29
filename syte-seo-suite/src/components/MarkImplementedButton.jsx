@@ -17,10 +17,18 @@ import { verifyImplementation, verifyImplementationFromHtml, verifyImplementatio
 //   title:       short description of what was implemented
 //   description: longer detail (the actual change content)
 //   disabled?:   boolean
+//   client?:     the client this change belongs to. REQUIRED in multi-client
+//                views (pipeline cards, "all clients" lists) where there is no
+//                single globally-selected client — without it the button falls
+//                back to the global current() which may be null (button shows a
+//                disabled / not-allowed cursor and can't be clicked) or, worse,
+//                logs the verification against the wrong client. When omitted it
+//                falls back to the globally-selected client.
 export default function MarkImplementedButton({
-  module, changeType, pageUrl, title, description, disabled, onVerified
+  module, changeType, pageUrl, title, description, disabled, onVerified, client: clientProp
 }) {
-  const client = useClients(s => s.current());
+  const currentClient = useClients(s => s.current());
+  const client = clientProp || currentClient;
   const [phase, setPhase] = useState('idle'); // idle | logging | verifying | done
   const [result, setResult] = useState(null); // { status, detail, impl }
   const [err, setErr] = useState('');

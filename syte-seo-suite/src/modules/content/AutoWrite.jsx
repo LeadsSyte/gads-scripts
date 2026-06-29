@@ -294,6 +294,7 @@ export default function AutoWrite() {
                       <MarkImplementedButton
                         module="content"
                         changeType="article"
+                        client={client}
                         pageUrl={pushedUrls[a.id || i] || client.url || ''}
                         title={a.topic || a.keyword || 'Article'}
                         description={`Article: ${a.topic || ''}`}

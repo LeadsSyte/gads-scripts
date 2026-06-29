@@ -169,7 +169,7 @@ function statusClass(s) {
 
 // Expandable task card for the pipeline view — shows priority, description,
 // copy-paste fix in a code block, and action buttons.
-function TaskCard({ task: t, onUpdate, onVerify, busy, buildPushItem, onVerified }) {
+function TaskCard({ task: t, onUpdate, onVerify, busy, buildPushItem, onVerified, client }) {
   const [open, setOpen] = React.useState(false);
   const copyFix = () => navigator.clipboard.writeText(t.copy_paste_fix || '').catch(() => {});
 
@@ -242,6 +242,7 @@ function TaskCard({ task: t, onUpdate, onVerify, busy, buildPushItem, onVerified
             <MarkImplementedButton
               module="technical"
               changeType={t.fix_type || 'fix'}
+              client={client}
               pageUrl={t.page_url}
               title={t.title}
               description={t.copy_paste_fix || t.description || ''}
@@ -540,7 +541,7 @@ export default function TechnicalSEO({ sub }) {
                   Showing top {topTasks.length} of {cTasks.length} tasks (highest priority first)
                 </div>
                 {topTasks.map(t => (
-                  <TaskCard key={t.id} task={t} onUpdate={updateTask} onVerify={handleVerify} busy={busy} buildPushItem={buildPushItem} onVerified={refreshTechImpls} />
+                  <TaskCard key={t.id} task={t} client={c} onUpdate={updateTask} onVerify={handleVerify} busy={busy} buildPushItem={buildPushItem} onVerified={refreshTechImpls} />
                 ))}
               </div>
             );
@@ -612,6 +613,7 @@ export default function TechnicalSEO({ sub }) {
                       <MarkImplementedButton
                         module="technical"
                         changeType={t.fix_type || 'fix'}
+                        client={client}
                         pageUrl={t.page_url}
                         title={t.title}
                         description={t.copy_paste_fix || t.description || ''}
