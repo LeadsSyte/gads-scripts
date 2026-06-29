@@ -12,6 +12,7 @@
 
 import { ALL_ENGINES, activeEngines } from './aeoEngines.js';
 import { detectBrand, sentimentOf, scoreMention, countCitations } from './brandDetection.js';
+import { intentMap, shareOfVoice, INTENT_BUCKETS } from './aeoCensus.js';
 
 // Default iterations per (query × engine). 3 gives bands of 0/33/66/100% —
 // enough resolution to spot partial wins without 9× the API cost of 10.
@@ -114,6 +115,9 @@ export async function runSnapshot(client, { onProgress, iterations, maxQueries }
   const engines = activeEngines();
   let queries = parseQueries(client.aeo_probe_queries);
   const competitorList = parseCompetitors(client.competitors);
+  // query → intent lookup from the saved census (if any). Lets us tag each
+  // result with its buyer-intent bucket and compute per-intent visibility.
+  const qIntent = intentMap(client);
   const N = Math.max(1, Math.min(10, Number(iterations) || DEFAULT_ITERATIONS));
 
   if (!engines.length) throw new Error('No AI engines configured. Open Suite Settings.');
@@ -268,6 +272,7 @@ export async function runSnapshot(client, { onProgress, iterations, maxQueries }
     const dominantSentiment = mostFrequent(agg.sentiments) || (agg.hits ? 'neutral' : null);
     return {
       query: agg.query,
+      intent: qIntent[agg.query.toLowerCase().trim()] || null,
       engine: agg.engine,
       engine_label: agg.engineLabel,
       iterations: agg.runs,
@@ -446,6 +451,31 @@ export async function runSnapshot(client, { onProgress, iterations, maxQueries }
   keywordWins.active.sort((a, b) => b.visibility - a.visibility);
   keywordWins.emerging.sort((a, b) => b.visibility - a.visibility);
 
+  // Phase 7: Share of Voice — the headline metric that replaces "cited for
+  // X of N probes". Of all the brand-naming the AI engines did across this
+  // census, what fraction was the client vs the tracked competitors?
+  const sov = shareOfVoice(brandHits.length, competitors);
+
+  // Per-intent visibility breakdown across the census. Lets the report show
+  // "you're strong on commercial prompts, thin on comparison" instead of one
+  // flat number. Queries with no census intent fall into 'uncategorized'.
+  const intentAgg = {};
+  for (const b of INTENT_BUCKETS) intentAgg[b.id] = { hits: 0, runs: 0, queries: new Set() };
+  for (const pq of perQuery) {
+    const intent = pq.intent || 'uncategorized';
+    if (!intentAgg[intent]) intentAgg[intent] = { hits: 0, runs: 0, queries: new Set() };
+    intentAgg[intent].hits += pq.hits;
+    intentAgg[intent].runs += pq.iterations;
+    intentAgg[intent].queries.add(pq.query);
+  }
+  const intentBreakdown = Object.entries(intentAgg)
+    .filter(([, v]) => v.runs > 0)
+    .map(([intent, v]) => ({
+      intent,
+      queries: v.queries.size,
+      visibility: v.runs ? Math.round((v.hits / v.runs) * 1000) / 10 : 0
+    }));
+
   const month = new Date().toISOString().slice(0, 7); // YYYY-MM
 
   return {
@@ -461,6 +491,8 @@ export async function runSnapshot(client, { onProgress, iterations, maxQueries }
       sentiment:  Math.round(sentimentComponent)
     },
     visibility_score: visibilityScore,    // % of all responses where brand mentioned
+    share_of_voice: sov.sov,              // brand mentions / (brand + competitor mentions) across the census
+    sov_detail: sov,                      // { sov, brand, competitorTotal, totalMentions }
     detection_rate: detectionRate,        // % of queries hit at least once
     top3_rate: top3Rate,                  // % of responses where brand in top 3
     avg_position: avgBrandPosition,
@@ -487,6 +519,9 @@ export async function runSnapshot(client, { onProgress, iterations, maxQueries }
 
     // Categorized strategy buckets
     keyword_wins: keywordWins,
+
+    // Per-intent visibility across the census (census-based reporting)
+    intent_breakdown: intentBreakdown,
 
     // Raw text excerpts for the response-excerpts panel
     excerpts: rawResults

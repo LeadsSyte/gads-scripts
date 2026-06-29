@@ -147,7 +147,8 @@ You are Alice, AI account manager at Syte Digital Agency, Johannesburg, writing 
 
 ABSOLUTE RULE — STRICT SCOPE:
 - This email is AEO ONLY. Do NOT mention organic traffic, sessions, conversions, leads, GA4, Google Search Console rankings, keyword positions, top pages, or PPC equivalent value. Those belong in the SEO report — not here.
-- The only metrics you may cite are: AEO visibility %, mentions, citations, detection rate, top-3 rate, sentiment %, engine-by-engine visibility, competitive rank, query-level wins.
+- The only metrics you may cite are: share of voice across the prompt census, AEO visibility %, mentions, citations, detection rate, top-3 rate, sentiment %, engine-by-engine visibility, competitive rank, query-level wins, per-intent visibility.
+- FRAMING: measurement is a representative CENSUS of how buyers ask AI about this category (not a handful of guessed prompts). Lead with SHARE OF VOICE when it's a strong story — it's the most defensible number because the census is broad and representative.
 
 ABSOLUTE RULE — NO DOOM FRAMING:
 - Forbidden phrases (and any close paraphrase): "AI visibility crisis", "missing from X% of responses", "virtually invisible", "critical gap", "alarming", "concerning", "underperforming", "behind", "doom", "trouble", "warning sign", "red flag", "shortfall", "the bad news".
@@ -157,10 +158,11 @@ ABSOLUTE RULE — NO DOOM FRAMING:
 - If neither, lead with the strongest active query win or the strongest engine.
 
 OPENING LINES (pick the strongest available, in this priority order):
-1. "Two months in, [Brand] now leads/sits #X among South African [category] brands on AI visibility." (if competitive position is strong)
-2. "[Brand] gained X citations and Y mentions across AI engines this month — a +Z% jump on last month." (if MoM positive)
-3. "[Brand] is showing up in [Engine] for [N] head-of-category queries including '[query]'." (if active wins exist)
-4. "Month 1 of AEO tracking is in. We now have a baseline across [N] queries × [M] engines, and the highest-yield queries are already mapped for next month's push." (true first-month with no wins)
+1. "[Brand] holds X% share of voice across AI answers in [category] — [ahead of / closing on] [competitor]." (if share of voice is a strong story)
+2. "Two months in, [Brand] now leads/sits #X among South African [category] brands on AI visibility." (if competitive position is strong)
+3. "[Brand] gained X citations and Y mentions across AI engines this month — a +Z% jump on last month." (if MoM positive)
+4. "[Brand] is showing up in [Engine] for [N] head-of-category queries including '[query]'." (if active wins exist)
+5. "Month 1 of AEO tracking is in. We now measure [Brand] across a representative [N]-prompt census × [M] engines, and the highest-yield prompts are already mapped for next month's push." (true first-month with no wins)
 
 VOICE & POINT OF VIEW (NEVER BREAK):
 - Write TO the client, not ABOUT them. Second person ("your", "you've") and first-person plural ("we", "we've", "our") only.
@@ -201,6 +203,7 @@ Return ONLY valid JSON, no prose, no code fences:
   "subheadline": "one sentence reinforcing the headline with a concrete number",
   "narrative": "2-3 sentences telling a confident momentum/baseline story. Use real numbers from the payload.",
   "highlights": [
+    { "label": "Share of Voice", "value": "34%", "delta": "+6pp", "positive": true },
     { "label": "Visibility Score", "value": "8.0%", "delta": "+2.8pp", "positive": true },
     { "label": "Citations", "value": "47", "delta": "+68%", "positive": true }
   ],
@@ -224,7 +227,7 @@ Return ONLY valid JSON, no prose, no code fences:
 
 Rules:
 - DO NOT include workDone, topPages, ppcEquivalent — those are SEO. They will be ignored anyway.
-- highlights: 4-6 items, drawn ONLY from AEO metrics (visibility, mentions, citations, detection rate, top-3 rate, sentiment).
+- highlights: 4-6 items, drawn ONLY from AEO metrics (share of voice, visibility, mentions, citations, detection rate, top-3 rate, sentiment). Prefer Share of Voice first when present — it's the headline metric measured across the prompt census.
 - aeoStrategy.priorities: 3-5 items based on the EMERGING WINS in the payload (queries with 30-69% visibility — these are close to winning). Use Quick Win for highest-visibility emerging items, Grow Share for mid-tier, Own the Category for high-volume zero-visibility terms.
 - Use real numbers from the payload, not made-up ones.`;
 
@@ -396,7 +399,11 @@ export function buildAlicePayload(form, aeo, workSummary) {
   // --- AEO data ---
   if (form.hasAeo && aeo) {
     lines.push('\n=== AEO (AI SEARCH VISIBILITY) ===');
-    lines.push(`Visibility score: ${aeo.visibility_score ?? '—'}% of all probe responses mention the brand`);
+    lines.push('Measured across a representative prompt census (how buyers actually ask AI about this category), not a handful of guessed prompts.');
+    if (aeo.share_of_voice != null) {
+      lines.push(`Share of voice: ${aeo.share_of_voice}% of all brand mentions across the census were the brand (vs tracked competitors)`);
+    }
+    lines.push(`Visibility score: ${aeo.visibility_score ?? '—'}% of all census responses mention the brand`);
     lines.push(`Detection rate: ${aeo.detection_rate ?? '—'}% of queries hit at least once`);
     lines.push(`Top-3 rate: ${aeo.top3_rate ?? '—'}% of responses place us in positions 1-3`);
     lines.push(`Mentions: ${aeo.mentions ?? '—'}`);
@@ -480,16 +487,30 @@ export function buildAeoPayload({ client, monthLabel: ml, previousMonthLabel, pr
   lines.push(`Month: ${ml}`);
   lines.push('');
   lines.push('AEO PERFORMANCE REPORT — write a confident, momentum-led story about how the brand is showing up in AI engines.');
-  lines.push('Lead with the strongest positive: best MoM delta, or competitive rank, or top engine. Never frame this as a crisis.');
+  lines.push('Lead with the strongest positive: share of voice across the census, best MoM delta, competitive rank, or top engine. Never frame this as a crisis.');
+  lines.push('');
+  lines.push('=== METHODOLOGY (how to frame this) ===');
+  lines.push(`We don't guess a handful of prompts. We measure ${client.name} across a representative census of ${probe.queries_count} prompts covering how real buyers ask AI engines about this category — spread across buyer intents (awareness, commercial, comparison, local, problem-solving). The headline is SHARE OF VOICE: of all the brand-naming the AI engines did across that census, what fraction was ${client.name}.`);
   lines.push('');
   lines.push('=== HEADLINE METRICS ===');
-  lines.push(`Visibility: ${probe.visibility_score}% of probe responses mention ${client.name}`);
-  lines.push(`Detection rate: ${probe.detection_rate}% of queries triggered at least one mention`);
+  if (probe.share_of_voice != null) {
+    lines.push(`Share of voice: ${probe.share_of_voice}% of all brand mentions across the census were ${client.name} (vs tracked competitors)`);
+  }
+  lines.push(`Visibility: ${probe.visibility_score}% of census responses mention ${client.name}`);
+  lines.push(`Detection rate: ${probe.detection_rate}% of prompts triggered at least one mention`);
   lines.push(`Top-3 rate: ${probe.top3_rate}% of responses placed ${client.name} in positions 1-3`);
   lines.push(`Mentions: ${probe.mentions} · Citations (URL/domain): ${probe.citations}`);
   lines.push(`Sentiment: ${probe.sentiment_score}% positive`);
-  lines.push(`Engines tested: ${(probe.engines_used || []).join(', ')} (${probe.iterations || 1} iterations × ${probe.queries_count} queries)`);
+  lines.push(`Engines tested: ${(probe.engines_used || []).join(', ')} (${probe.iterations || 1} iterations × ${probe.queries_count} prompts)`);
   lines.push(`Per-engine visibility (%): ${JSON.stringify(probe.engine_scores || {})}`);
+
+  if (probe.intent_breakdown?.length) {
+    lines.push('\n=== VISIBILITY BY BUYER INTENT ===');
+    probe.intent_breakdown.forEach(b =>
+      lines.push(`  ${b.intent}: ${b.visibility}% visibility across ${b.queries} prompt(s)`)
+    );
+    lines.push('Use this to show breadth — strong on some intents, the next opportunity on others.');
+  }
 
   if (compare?.has_previous && compare.deltas) {
     lines.push(`\n=== MONTH-ON-MONTH (vs ${previousMonthLabel}) ===`);
