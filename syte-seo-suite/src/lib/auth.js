@@ -4,7 +4,11 @@
 export const ENCRYPTED_KEY_B64 =
   'XOQMdgQ9C42E1F4wGt9aaRQWmNLBD4QBy4SAhES1uqbv5MR8uY5PjNavx0u58cy6RpqORVnDkYXDtrfeIiEwgQJY+HTEjl+D1JhVeN8A6iUnwMvLisjW6rto21YBpbRdfPzMdPNBK/Pk42PZa9iIYB5zo07UC6xxcwjrDgaVR3bP6wcum8/N3TPz6axf2UPaBtH/+taFL7s=';
 
-const SESSION_KEY = 'syte-suite-api-key';
+// Persist the decrypted key across browser sessions. Was sessionStorage —
+// which forced a password re-prompt every time the tab/window was closed.
+// We're already trusting localStorage for every other piece of suite state
+// (Google tokens, clients, settings) so the trust boundary is the same.
+const STORAGE_KEY = 'syte-suite-api-key';
 
 function b64ToBytes(b64) {
   const bin = atob(b64);
@@ -38,13 +42,24 @@ export async function decryptApiKey(password) {
 }
 
 export function getStoredApiKey() {
-  return sessionStorage.getItem(SESSION_KEY);
+  // Migrate any legacy sessionStorage value to localStorage so users who
+  // were already unlocked don't lose their session on first load after
+  // this change.
+  const legacy = sessionStorage.getItem(STORAGE_KEY);
+  if (legacy && !localStorage.getItem(STORAGE_KEY)) {
+    localStorage.setItem(STORAGE_KEY, legacy);
+    sessionStorage.removeItem(STORAGE_KEY);
+  }
+  return localStorage.getItem(STORAGE_KEY);
 }
 
 export function setStoredApiKey(k) {
-  sessionStorage.setItem(SESSION_KEY, k);
+  localStorage.setItem(STORAGE_KEY, k);
+  // Wipe legacy sessionStorage entry if present.
+  sessionStorage.removeItem(STORAGE_KEY);
 }
 
 export function clearStoredApiKey() {
-  sessionStorage.removeItem(SESSION_KEY);
+  localStorage.removeItem(STORAGE_KEY);
+  sessionStorage.removeItem(STORAGE_KEY);
 }

@@ -5,6 +5,10 @@
 alter table syte_suite_clients add column if not exists reporting_email    text;
 alter table syte_suite_clients add column if not exists start_date         date;
 alter table syte_suite_clients add column if not exists aeo_probe_queries  text;
+-- Structured AEO prompt census (intent-bucketed prompts + grounding metadata).
+-- The flat run list still lives in aeo_probe_queries; this holds the structure
+-- the report uses for intent coverage + share-of-voice framing.
+alter table syte_suite_clients add column if not exists aeo_census         jsonb;
 alter table syte_suite_clients add column if not exists competitors        text;
 alter table syte_suite_clients add column if not exists rankscale_url      text;
 alter table syte_suite_clients add column if not exists internal_notes     text;
@@ -42,8 +46,27 @@ create table if not exists syte_suite_report_log (
   created_at timestamptz default now()
 );
 
-alter table syte_suite_aeo_history disable row level security;
-alter table syte_suite_report_log  disable row level security;
+-- 3b. Generated reports log — records when a report microsite was built
+-- (independent of sent state). One row per client per month, updated on
+-- regeneration. Lets the Reports view surface "Generated but not sent" cards.
+create table if not exists syte_suite_report_generated_log (
+  id uuid primary key default gen_random_uuid(),
+  client_id uuid references syte_suite_clients(id) on delete cascade,
+  month text not null,
+  generated_at timestamptz default now(),
+  qa_score int,
+  email_subject text,
+  report_type text,                     -- 'full' | 'aeo'
+  created_at timestamptz default now(),
+  unique (client_id, month)
+);
+
+create index if not exists syte_suite_report_generated_log_client_month_idx
+  on syte_suite_report_generated_log(client_id, month desc);
+
+alter table syte_suite_aeo_history             disable row level security;
+alter table syte_suite_report_log              disable row level security;
+alter table syte_suite_report_generated_log    disable row level security;
 
 -- Content rules: always-enforced restrictions per client (e.g. gambling
 -- compliance for play.co.za, factual constraints for Kruger Gate).
