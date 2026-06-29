@@ -238,6 +238,8 @@ function statusClass(s) {
 // domain — without this, the verifier used the topbar-selected client,
 // which led to "robots.txt is not reachable at https://bamdiy.com/..."
 // when the user was working on a Syte task with bamdiy.com selected.
+// (This is also what left the Mark-as-Implemented button disabled / showing
+// the not-allowed cursor when no client was selected in the topbar.)
 function TaskCard({ task: t, onUpdate, onMarkDone, onVerify, onReject, busy, buildPushItem, onVerified, taskClient }) {
   const [open, setOpen] = React.useState(false);
   const copyFix = () => navigator.clipboard.writeText(t.copy_paste_fix || '').catch(() => {});
@@ -318,10 +320,10 @@ function TaskCard({ task: t, onUpdate, onMarkDone, onVerify, onReject, busy, bui
             <MarkImplementedButton
               module="technical"
               changeType={t.fix_type || 'fix'}
+              client={taskClient}
               pageUrl={t.page_url}
               title={t.title}
               description={t.copy_paste_fix || t.description || ''}
-              client={taskClient}
               onVerified={onVerified}
             />
             {t.status === 'open' && onReject && (
@@ -920,6 +922,7 @@ export default function TechnicalSEO({ sub }) {
                       <MarkImplementedButton
                         module="technical"
                         changeType={t.fix_type || 'fix'}
+                        client={client}
                         pageUrl={t.page_url}
                         title={t.title}
                         description={t.copy_paste_fix || t.description || ''}

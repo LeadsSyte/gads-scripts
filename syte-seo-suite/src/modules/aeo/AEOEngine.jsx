@@ -411,10 +411,10 @@ function OptPageCard({ result: r, onDelete, onVerified, optClient, rejectedOptKe
               <MarkImplementedButton
                 module="aeo"
                 changeType={o.type || 'aeo_optimization'}
+                client={optClient}
                 pageUrl={r.url}
                 title={o.name || o.title || 'AEO Optimization'}
                 description={code.slice(0, 500)}
-                client={optClient}
                 onVerified={onVerified}
               />
               {onRejectOpt && (
