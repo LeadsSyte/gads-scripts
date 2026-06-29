@@ -403,11 +403,22 @@ export async function updateImplementation(id, patch) {
   return list[idx];
 }
 
+// Columns safe to pull in bulk. Deliberately EXCLUDES verification_detail —
+// the "Upload screenshot" verification path embeds a base64 image inside that
+// column ([SCREENSHOT]…[/SCREENSHOT]), so selecting it for every row made
+// listAllImplementations() balloon to multiple MB and time out server-side
+// (HTTP 500: "…/syte_suite_implementations?select=*&order=created_at.desc").
+// The dashboards only need status + dates; the explanation/screenshot is
+// fetched per row, on demand, via getImplementationDetail().
+const IMPL_LIST_COLS =
+  'id, client_id, module, change_type, page_url, title, description, ' +
+  'implemented_by, implemented_at, verification_status, verified_at, created_at';
+
 export async function listImplementations(clientId) {
   if (supabase) {
     let q = supabase
       .from('syte_suite_implementations')
-      .select('*')
+      .select(IMPL_LIST_COLS)
       .order('created_at', { ascending: false });
     if (clientId) q = q.eq('client_id', clientId);
     const { data, error } = await q;
@@ -420,6 +431,24 @@ export async function listImplementations(clientId) {
 
 export async function listAllImplementations() {
   return listImplementations(null);
+}
+
+// Fetch the heavy verification_detail (Claude's explanation + any embedded
+// base64 proof screenshot) for a SINGLE implementation, on demand. Kept out
+// of the bulk list query above so screenshots never bloat the dashboard read.
+export async function getImplementationDetail(id) {
+  if (!id) return null;
+  if (supabase) {
+    const { data, error } = await supabase
+      .from('syte_suite_implementations')
+      .select('id, verification_detail')
+      .eq('id', id)
+      .single();
+    if (error) throw error;
+    return data?.verification_detail || '';
+  }
+  const list = JSON.parse(localStorage.getItem(LS_PREFIX + 'implementations') || '[]');
+  return (list.find(r => r.id === id) || {}).verification_detail || '';
 }
 
 // ---------------------------------------------------------------------------
