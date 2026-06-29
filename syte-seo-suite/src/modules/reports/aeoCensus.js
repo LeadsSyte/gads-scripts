@@ -24,7 +24,6 @@
 //     recommended for by an AI engine, given the above?
 
 import { claudeComplete, extractJSON } from '../../lib/anthropic.js';
-import { classifyKeyword } from './keywordBuckets.js';
 
 // The buyer-intent taxonomy the census is built around. Every generated
 // prompt is tagged with exactly one of these. Coverage across all five is
@@ -57,18 +56,38 @@ const INTENT_MIX = {
 // category authority). They tell the generator which product/topic areas the
 // brand is genuinely credible in, so the census centers there.
 //
-// Note: branded filtering uses classifyKeyword, which treats any token of the
-// brand name as a brand signal. For brands named after their own category
-// (e.g. "Krost Shelving") this can over-drop legitimate category rankings that
-// share the generic word ("shelving"). That's a conservative bias — better to
-// lose a seed than to seed the census with brand terms — and the LLM still has
-// industry/context to fall back on. The likely-topics pass also backfills.
+// Branded filtering keys off DISTINCTIVE brand tokens — brand-name words that
+// aren't also generic category words (derived from the client's industry). So
+// a brand named after its category ("Krost Shelving" in industrial storage)
+// still drops "krost racking" as branded but KEEPS "industrial shelving" as a
+// legitimate category ranking, instead of nuking every "...shelving" query.
 // ---------------------------------------------------------------------------
-export function topRankingSeeds(gscKeywords, brandName, { limit = 15, maxPosition = 3.5, minImpressions = 5 } = {}) {
+function tokenize(s) {
+  return (s || '').toLowerCase().replace(/[^\w\s&-]/g, ' ').split(/\s+/).filter(Boolean);
+}
+
+// Brand-name tokens that actually identify the brand, excluding any token that
+// also appears in the category/industry text (those are generic, not branded).
+function distinctiveBrandTokens(brandName, category = '') {
+  const generic = new Set(tokenize(category));
+  const toks = tokenize(brandName);
+  const out = new Set();
+  for (const t of toks) if (t.length >= 4 && !generic.has(t)) out.add(t);
+  const concat = toks.join('');
+  if (concat.length >= 5) out.add(concat); // catch "krostshelving"
+  return out;
+}
+
+function isBrandedQuery(query, brandTokenSet) {
+  const toks = tokenize(query);
+  return toks.some(t => brandTokenSet.has(t)) || brandTokenSet.has(toks.join(''));
+}
+
+export function topRankingSeeds(gscKeywords, brandName, { limit = 15, maxPosition = 3.5, minImpressions = 5, category = '' } = {}) {
+  const brandTokenSet = distinctiveBrandTokens(brandName, category);
   const seeds = (gscKeywords || [])
-    .map(kw => ({ ...kw, classification: classifyKeyword(kw, brandName) }))
     .filter(kw =>
-      !kw.classification.branded &&
+      !isBrandedQuery(kw.query || '', brandTokenSet) &&
       (kw.position || 99) > 0 &&
       (kw.position || 99) <= maxPosition &&
       (kw.impressions || 0) >= minImpressions

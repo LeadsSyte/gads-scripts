@@ -50,6 +50,16 @@ t('topRankingSeeds: keeps non-branded #1-3 with signal, sorted by impressions', 
   assertEq(seeds[0].query, 'pallet racking', 'highest impressions first');
 });
 
+t('topRankingSeeds: category-word brand name keeps category rankings', () => {
+  // Brand "Krost Shelving" is named after its category. "shelving" is generic
+  // (it's in the category), so "industrial shelving" must be KEPT, while
+  // "krost racking" (distinctive token "krost") is still dropped as branded.
+  const seeds = topRankingSeeds(GSC, 'Krost Shelving', { category: 'industrial shelving storage' });
+  const queries = seeds.map(s => s.query);
+  assert(queries.includes('industrial shelving'), 'keeps category ranking despite brand name overlap');
+  assert(!queries.includes('krost racking'), 'still drops distinctively-branded query');
+});
+
 t('topRankingSeeds: respects limit', () => {
   const seeds = topRankingSeeds(GSC, 'Krost Shelving', { limit: 1 });
   assertEq(seeds.length, 1, 'limit honoured');

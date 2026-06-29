@@ -165,7 +165,10 @@ export default function ClientModal({ initial, onClose }) {
         try {
           setGenMsg('Reading your top Google rankings…');
           const gscKeywords = await topQueriesByImpression(f.gsc_property, 90);
-          rankingSeeds = topRankingSeeds(gscKeywords, f.name);
+          // Pass the industry as the "category" so generic category words in
+          // the brand name (e.g. "Shelving" in "Krost Shelving") aren't treated
+          // as branded and don't drop legitimate category rankings.
+          rankingSeeds = topRankingSeeds(gscKeywords, f.name, { category: f.industry });
         } catch (e) {
           // GSC not connected / no permission — fall back to context-only.
           rankingSeeds = [];
