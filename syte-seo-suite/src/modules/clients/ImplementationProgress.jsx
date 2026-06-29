@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useClients } from '../../store/useClients.js';
-import { listAllImplementations } from '../../lib/supabase.js';
+import { listAllImplementations, getImplementationDetail } from '../../lib/supabase.js';
 import { verifyImplementation } from '../../lib/verification.js';
 
 // In-app view of the same data the weekly email shows. Lets Michael and
@@ -21,6 +21,25 @@ export default function ImplementationProgress() {
   const [filter, setFilter] = useState('all'); // all | verified | failed | pending
   const [moduleFilter, setModuleFilter] = useState('all');
   const [verifyingId, setVerifyingId] = useState(null);
+  // Per-row verification detail, fetched on demand. The bulk list no longer
+  // pulls verification_detail (it can hold a multi-MB base64 screenshot that
+  // timed out the whole query), so we load each row's explanation/screenshot
+  // only when the user expands it. Map<id, { loading, text }>.
+  const [details, setDetails] = useState({});
+
+  async function toggleDetail(id) {
+    if (details[id]) { // currently shown → hide
+      setDetails(prev => { const n = { ...prev }; delete n[id]; return n; });
+      return;
+    }
+    setDetails(prev => ({ ...prev, [id]: { loading: true } }));
+    try {
+      const text = await getImplementationDetail(id);
+      setDetails(prev => ({ ...prev, [id]: { loading: false, text } }));
+    } catch {
+      setDetails(prev => ({ ...prev, [id]: { loading: false, text: '(could not load details)' } }));
+    }
+  }
 
   async function load() {
     setLoading(true);
@@ -191,45 +210,60 @@ export default function ImplementationProgress() {
                         {impl.page_url}
                       </div>
                     )}
-                    {impl.verification_detail && (() => {
-                      // Split out the inline base64 screenshot (added by
-                      // MarkImplementedButton's "Upload screenshot" path)
-                      // and render it as an actual image with a click-to-
-                      // open-fullsize link. Without this, historic rows
-                      // showed a huge wall of base64 text instead of the
-                      // proof shot.
-                      const m = String(impl.verification_detail)
-                        .match(/\[SCREENSHOT\]([\s\S]+?)\[\/SCREENSHOT\]/);
-                      const text = m ? impl.verification_detail.replace(m[0], '').trim() : impl.verification_detail;
-                      const screenshot = m ? m[1] : '';
-                      return (
-                        <div style={{
-                          fontSize: 11, marginTop: 4, padding: '4px 8px',
-                          background: 'var(--surface-2)', borderRadius: 4,
-                          borderLeft: '2px solid ' + st.color,
-                          color: 'var(--text-muted)'
-                        }}>
-                          <div style={{ whiteSpace: 'pre-wrap' }}>{text}</div>
-                          {screenshot && (
-                            <div style={{ marginTop: 6 }}>
-                              <a href={screenshot} target="_blank" rel="noreferrer">
-                                <img
-                                  src={screenshot}
-                                  alt="Verification proof screenshot"
-                                  style={{
-                                    maxWidth: '100%', maxHeight: 200,
-                                    border: '1px solid var(--border)', borderRadius: 4
-                                  }}
-                                />
-                              </a>
-                              <div className="muted" style={{ fontSize: 9, marginTop: 3 }}>
-                                Click to open full size · Uploaded screenshot proof
+                    {/* Verification explanation + proof screenshot, loaded on
+                        demand (kept out of the bulk list to avoid the base64
+                        timeout). */}
+                    <div style={{ marginTop: 4 }}>
+                      <button
+                        onClick={() => toggleDetail(impl.id)}
+                        style={{ fontSize: 10, padding: '2px 8px' }}
+                      >
+                        {details[impl.id] ? 'Hide details' : 'Show details'}
+                      </button>
+                      {details[impl.id]?.loading && (
+                        <span className="muted" style={{ fontSize: 10, marginLeft: 6 }}>Loading…</span>
+                      )}
+                      {details[impl.id] && !details[impl.id].loading && (() => {
+                        const raw = details[impl.id].text || '';
+                        if (!raw) {
+                          return <span className="muted" style={{ fontSize: 10, marginLeft: 6 }}>No detail recorded.</span>;
+                        }
+                        // Split out the inline base64 screenshot (added by
+                        // MarkImplementedButton's "Upload screenshot" path)
+                        // and render it as an actual image with a click-to-
+                        // open-fullsize link.
+                        const m = String(raw).match(/\[SCREENSHOT\]([\s\S]+?)\[\/SCREENSHOT\]/);
+                        const text = m ? raw.replace(m[0], '').trim() : raw;
+                        const screenshot = m ? m[1] : '';
+                        return (
+                          <div style={{
+                            fontSize: 11, marginTop: 4, padding: '4px 8px',
+                            background: 'var(--surface-2)', borderRadius: 4,
+                            borderLeft: '2px solid ' + st.color,
+                            color: 'var(--text-muted)'
+                          }}>
+                            <div style={{ whiteSpace: 'pre-wrap' }}>{text}</div>
+                            {screenshot && (
+                              <div style={{ marginTop: 6 }}>
+                                <a href={screenshot} target="_blank" rel="noreferrer">
+                                  <img
+                                    src={screenshot}
+                                    alt="Verification proof screenshot"
+                                    style={{
+                                      maxWidth: '100%', maxHeight: 200,
+                                      border: '1px solid var(--border)', borderRadius: 4
+                                    }}
+                                  />
+                                </a>
+                                <div className="muted" style={{ fontSize: 9, marginTop: 3 }}>
+                                  Click to open full size · Uploaded screenshot proof
+                                </div>
                               </div>
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })()}
+                            )}
+                          </div>
+                        );
+                      })()}
+                    </div>
                   </div>
                   <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4, flexShrink: 0 }}>
                     <span className={'badge ' + st.badge} style={{ fontSize: 10 }}>
