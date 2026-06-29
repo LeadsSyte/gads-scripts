@@ -26,7 +26,13 @@ const PATCHED = SRC
            "const detectBrand = (...a) => globalThis.__detectBrand(...a); " +
            "const sentimentOf = (...a) => globalThis.__sentimentOf(...a); " +
            "const scoreMention = (...a) => globalThis.__scoreMention(...a); " +
-           "const countCitations = (...a) => globalThis.__countCitations(...a);");
+           "const countCitations = (...a) => globalThis.__countCitations(...a);")
+  // Inline the pure aeoCensus helpers so the patched tmp module needs no
+  // relative import (it lives in os.tmpdir(), not src/modules/reports/).
+  .replace("import { intentMap, shareOfVoice, INTENT_BUCKETS } from './aeoCensus.js';",
+           "const intentMap = (c) => { try { const r = c?.aeo_census; const o = typeof r === 'string' ? JSON.parse(r) : r; const m = {}; (o?.prompts || []).forEach(p => m[p.query.toLowerCase().trim()] = p.intent); return m; } catch { return {}; } }; " +
+           "const shareOfVoice = (b, comps) => { const brand = Math.max(0, Number(b) || 0); const ct = (comps || []).reduce((a, c) => a + (Number(c.mentions) || 0), 0); const d = brand + ct; return d === 0 ? { sov: 0, brand, competitorTotal: ct, totalMentions: 0 } : { sov: Math.round((brand / d) * 1000) / 10, brand, competitorTotal: ct, totalMentions: d }; }; " +
+           "const INTENT_BUCKETS = [{ id: 'awareness' }, { id: 'commercial' }, { id: 'comparison' }, { id: 'local' }, { id: 'problem' }];");
 
 const tmp = path.join(os.tmpdir(), 'aeoRunner-' + Date.now() + '.mjs');
 fs.writeFileSync(tmp, PATCHED);
@@ -154,6 +160,8 @@ await t('runSnapshot: complete probe → snapshot has all expected fields', asyn
   assertEq(result.engines_used.length, 1, 'engines_used');
   assertEq(result.mentions, 2, 'mentions (1 per query)');
   assertEq(result.visibility_score, 100, 'visibility=100% (mentioned every time)');
+  // Share of voice: brand mentioned, no competitor mentions in the text → 100%.
+  assertEq(result.share_of_voice, 100, 'share_of_voice=100% (no competitor mentions)');
   assertEq(result.detection_rate, 100, 'detection rate=100% (every query had ≥1 hit)');
   assertEq(result.top3_rate, 100, 'top3 rate=100% (position 1 every time)');
   assertEq(result.sentiment_score, 100, 'sentiment 100% positive');
@@ -239,6 +247,42 @@ await t('runSnapshot: competitors get their own visibility metrics', async () =>
   assertEq(result.competitors.length, 2, 'two competitors tracked');
   // BetaCorp + GammaLtd both mentioned → 100% visibility each.
   for (const c of result.competitors) assertEq(c.visibility, 100, c.name + ' visibility');
+  // Brand never mentioned but both competitors were → share of voice is 0%.
+  assertEq(result.share_of_voice, 0, 'share_of_voice=0% (brand absent, competitors present)');
+});
+
+// ============================================================================
+// Census intent tagging — per_query rows carry their buyer-intent bucket,
+// and intent_breakdown aggregates visibility per bucket.
+// ============================================================================
+await t('runSnapshot: tags per_query intent + builds intent_breakdown from census', async () => {
+  globalThis.__activeEngines = () => [{
+    id: 'gpt', label: 'GPT', isConfigured: () => true,
+    ask: async () => ({ text: 'Acme is a top widget maker.' })
+  }];
+  globalThis.__detectBrand = (text, { name }) =>
+    text.includes(name) ? { mentioned: true, position: 1, excerpt: 'Acme' } : { mentioned: false };
+  globalThis.__sentimentOf = async () => 'positive';
+  globalThis.__scoreMention = () => 100;
+  globalThis.__countCitations = () => 0;
+
+  const census = {
+    prompts: [
+      { query: 'best widgets', intent: 'commercial' },
+      { query: 'buy widgets cape town', intent: 'local' }
+    ]
+  };
+  const result = await mod.runSnapshot(
+    { ...CLIENT, aeo_census: census },
+    { iterations: 1 }
+  );
+  const byQuery = Object.fromEntries(result.per_query.map(r => [r.query, r.intent]));
+  assertEq(byQuery['best widgets'], 'commercial', 'commercial intent tagged');
+  assertEq(byQuery['buy widgets cape town'], 'local', 'local intent tagged');
+  // intent_breakdown should have one entry per populated bucket.
+  const intents = result.intent_breakdown.map(b => b.intent).sort();
+  assertEq(intents.join(','), 'commercial,local', 'breakdown buckets');
+  for (const b of result.intent_breakdown) assertEq(b.visibility, 100, b.intent + ' visibility');
 });
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');

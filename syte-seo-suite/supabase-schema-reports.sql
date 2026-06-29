@@ -5,6 +5,10 @@
 alter table syte_suite_clients add column if not exists reporting_email    text;
 alter table syte_suite_clients add column if not exists start_date         date;
 alter table syte_suite_clients add column if not exists aeo_probe_queries  text;
+-- Structured AEO prompt census (intent-bucketed prompts + grounding metadata).
+-- The flat run list still lives in aeo_probe_queries; this holds the structure
+-- the report uses for intent coverage + share-of-voice framing.
+alter table syte_suite_clients add column if not exists aeo_census         jsonb;
 alter table syte_suite_clients add column if not exists competitors        text;
 alter table syte_suite_clients add column if not exists rankscale_url      text;
 alter table syte_suite_clients add column if not exists internal_notes     text;

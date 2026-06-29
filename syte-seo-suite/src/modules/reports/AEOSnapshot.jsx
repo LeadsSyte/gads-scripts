@@ -7,6 +7,7 @@ import { ALL_ENGINES } from './aeoEngines.js';
 import { readinessFor } from '../../lib/clientReadiness.js';
 import { probeCandidatesFromGSC, mergeProbeQueries } from './keywordBuckets.js';
 import { buildDiscoveryQueries, runDiscoverySweep } from './aeoDiscovery.js';
+import { parseCensus, intentCoverage, INTENT_BUCKETS } from './aeoCensus.js';
 
 const ACCENT = '#a78bfa';
 
@@ -276,6 +277,9 @@ export default function AEOSnapshot() {
   }));
 
   const queries = (client.aeo_probe_queries || '').split('\n').map(s => s.trim()).filter(Boolean);
+  const census = parseCensus(client);
+  const coverage = census ? intentCoverage(census) : null;
+  const intentLabel = id => (INTENT_BUCKETS.find(b => b.id === id)?.label) || id;
 
   const today = new Date();
   const isAfterFirst = today.getDate() >= 1; // always true, kept for clarity
@@ -388,8 +392,22 @@ export default function AEOSnapshot() {
           <div>
             <strong>{client.name}</strong>
             <div className="muted" style={{ fontSize: 12 }}>
-              {queries.length} probe {queries.length === 1 ? 'query' : 'queries'} · tracking {(client.competitors || '').split(',').filter(Boolean).length} competitor(s)
+              {coverage
+                ? `${coverage.total}-prompt census · tracking ${(client.competitors || '').split(',').filter(Boolean).length} competitor(s)`
+                : `${queries.length} probe ${queries.length === 1 ? 'query' : 'queries'} · tracking ${(client.competitors || '').split(',').filter(Boolean).length} competitor(s)`}
             </div>
+            {coverage && (
+              <div className="row" style={{ gap: 5, flexWrap: 'wrap', marginTop: 5 }}>
+                {coverage.buckets.filter(b => b.count > 0).map(b => (
+                  <span key={b.id} title={b.hint} style={{
+                    fontSize: 10, padding: '1px 7px', borderRadius: 10,
+                    border: '1px solid var(--border)', color: 'var(--text-muted)'
+                  }}>
+                    {b.label} {b.count}
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
           <div className="row" style={{ gap: 14, flexWrap: 'wrap' }}>
             {engineRow.map(e => (
@@ -608,14 +626,14 @@ export default function AEOSnapshot() {
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(120px, 1fr))', gap: 12, flex: 1, minWidth: 280 }}>
                 {[
+                  { label: 'Share of Voice', value: (snapshot.share_of_voice ?? 0) + '%', hint: 'your share of all brand mentions across the census, vs tracked competitors' },
                   { label: 'Mentions',       value: snapshot.mentions ?? 0 },
                   { label: 'Citations',      value: snapshot.citations ?? 0 },
                   { label: 'Detection rate', value: (snapshot.detection_rate ?? 0) + '%' },
                   { label: 'Top-3 rate',     value: (snapshot.top3_rate ?? 0) + '%' },
-                  { label: 'Sentiment',      value: (snapshot.sentiment_score ?? 0) + '%' },
-                  { label: 'Iterations',     value: snapshot.iterations ?? 1 }
+                  { label: 'Sentiment',      value: (snapshot.sentiment_score ?? 0) + '%' }
                 ].map(m => (
-                  <div key={m.label} style={{ padding: 10, background: 'var(--surface-2)', borderRadius: 8 }}>
+                  <div key={m.label} title={m.hint} style={{ padding: 10, background: 'var(--surface-2)', borderRadius: 8 }}>
                     <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '.05em' }}>{m.label}</div>
                     <div style={{ fontSize: 18, fontWeight: 600, marginTop: 2 }}>{m.value}</div>
                   </div>
@@ -670,6 +688,22 @@ export default function AEOSnapshot() {
               </table>
             </div>
           </div>
+
+          {snapshot.intent_breakdown?.length > 0 && (
+            <div className="card" style={{ marginBottom: 14 }}>
+              <strong>Visibility by Buyer Intent</strong>
+              <div className="muted" style={{ fontSize: 11, marginTop: 4, marginBottom: 8 }}>
+                Where you show up across the census — strong on some intents, room to grow on others.
+              </div>
+              {snapshot.intent_breakdown.map(b => (
+                <ScoreBar
+                  key={b.intent}
+                  label={`${intentLabel(b.intent)} · ${b.queries} ${b.queries === 1 ? 'prompt' : 'prompts'}`}
+                  value={b.visibility}
+                />
+              ))}
+            </div>
+          )}
 
           {snapshot.competitors.length > 0 && (
             <div className="card" style={{ marginBottom: 14 }}>

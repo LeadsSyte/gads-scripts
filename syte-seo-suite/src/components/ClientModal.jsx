@@ -1,8 +1,12 @@
 import React, { useState, useMemo } from 'react';
 import { useClients } from '../store/useClients.js';
-import { claudeComplete, extractJSON } from '../lib/anthropic.js';
 import { normalizeGa4Id, normalizeGscProperty } from '../lib/googleProperties.js';
 import GoogleConnectionsPicker from './GoogleConnectionsPicker.jsx';
+import {
+  generateCensus, inferLikelyTopics, topRankingSeeds, censusToProbeList,
+  parseCensus, intentCoverage, DEFAULT_CENSUS_TARGET
+} from '../modules/reports/aeoCensus.js';
+import { topQueriesByImpression } from '../modules/technical/gsc.js';
 
 // Brand voice presets — the dropdown contents. Picking Custom… reveals the
 // free text box so you can still type something bespoke.
@@ -124,6 +128,12 @@ export default function ClientModal({ initial, onClose }) {
 
   function update(k, v) { setF(prev => ({ ...prev, [k]: v })); }
 
+  // Intent coverage of the currently-loaded census (if any) — drives the
+  // coverage chips under the prompt list so the user can see the census is
+  // representative across buyer intents, not a one-sided guess.
+  const census = useMemo(() => parseCensus(f), [f.aeo_census]);
+  const coverage = useMemo(() => census ? intentCoverage(census) : null, [census]);
+
   // Highlight any competitor entries that don't look like a domain.
   const competitorIssues = useMemo(() => {
     const list = parseCompetitorList(f.competitors);
@@ -132,55 +142,61 @@ export default function ClientModal({ initial, onClose }) {
       .filter(x => !x.ok);
   }, [f.competitors]);
 
+  // Generate the AEO prompt census — a grounded, intent-structured set of the
+  // prompts real buyers type into AI engines for this category. This replaces
+  // the old "guess ~40 probe queries" generator. It grounds generation in two
+  // real signals so the census centers on what the brand is credible for:
+  //   1. The brand's top NON-branded Google rankings (pulled from GSC if a
+  //      property is connected) — proof of category authority.
+  //   2. An LLM "direction" pass that names the topics the brand is most
+  //      likely to be recommended for, given those rankings.
+  // The structured census is stored on `aeo_census`; the flat newline list is
+  // kept in sync on `aeo_probe_queries` for the runner.
   async function generateQueries() {
     if (!f.industry && !f.context) {
-      setErr('Fill in Industry (or Brand Context) first so the generator has something to work with.');
+      setErr('Fill in Industry (or Brand Context) first so the census generator has direction.');
       return;
     }
     setGenBusy(true); setGenMsg(''); setErr('');
     try {
-      const prompt = `Client: ${f.name || '(unnamed)'}
-Industry: ${f.industry || ''}
-Location / service area: ${f.location || ''}
-Target audience: ${f.audience || ''}
-Brand context: ${f.context || ''}
-Website: ${f.url || ''}
-Competitors: ${f.competitors || ''}
-
-Generate 40 probe queries that a potential customer would ask an AI assistant (ChatGPT, Perplexity, Gemini, Claude). The goal is to test whether THIS SPECIFIC brand gets mentioned in AI recommendations across a broad enough surface to capture its real visibility footprint.
-
-QUERY TYPES TO INCLUDE (mix of all):
-1. Pure head terms — single product/service nouns ("pallet racking", "industrial shelving", "mezzanine floors") — no qualifiers, no location (8-10 of these)
-2. "Best [service/product] in [location]" — direct recommendation queries (5-6 of these)
-3. "Top [industry] companies/suppliers in [country]" — list queries where brands appear (4-5 of these)
-4. "[Brand name] vs [competitor]" — direct comparison queries (2-3 of these)
-5. "Is [brand name] good?" / "[brand name] reviews" / "[brand name] alternatives" — reputation queries (2 of these)
-6. Problem-first queries: "I need [specific service] for [use case]" — where AI might recommend providers (5-6 of these)
-7. Category-specific: "where to buy [specific product] in [location]" — purchase intent (4-5 of these)
-8. Use-case queries: "[product] for [industry/setting]" e.g. "shelving for warehouses", "racking for cold storage" (4-5 of these)
-
-RULES:
-- Queries MUST be the kind where AI engines naturally recommend specific brands/companies
-- Include the location in at least 4 queries (AI engines use location to recommend local businesses)
-- Include at least 1 query with the brand name directly (to test if AI knows about them)
-- Short and natural (4-12 words each)
-- Lower-case, one per entry
-
-Return ONLY valid JSON: { "queries": ["...", "..."] }`;
-      const text = await claudeComplete({
-        system: 'You generate AEO probe queries. Output ONLY valid JSON — no code fences, no prose.',
-        messages: [{ role: 'user', content: prompt }],
-        max_tokens: 1800,
-        temperature: 0.7
-      });
-      const parsed = extractJSON(text);
-      if (!parsed?.queries || !Array.isArray(parsed.queries)) {
-        throw new Error('Generator returned unexpected output. Try again.');
+      // 1. Ground on real rankings (best-effort — skip silently if no GSC).
+      let rankingSeeds = [];
+      if (f.gsc_property) {
+        try {
+          setGenMsg('Reading your top Google rankings…');
+          const gscKeywords = await topQueriesByImpression(f.gsc_property, 90);
+          rankingSeeds = topRankingSeeds(gscKeywords, f.name);
+        } catch (e) {
+          // GSC not connected / no permission — fall back to context-only.
+          rankingSeeds = [];
+        }
       }
-      update('aeo_probe_queries', parsed.queries.join('\n'));
-      setGenMsg(`Generated ${parsed.queries.length} queries ✓`);
+
+      // 2. Direction pass — what is this brand likely recommended for?
+      setGenMsg('Working out what AI engines would recommend you for…');
+      let likelyTopics = [];
+      try {
+        likelyTopics = await inferLikelyTopics({ client: f, rankingSeeds });
+      } catch { likelyTopics = []; }
+
+      // 3. Generate the intent-structured census.
+      setGenMsg(`Building a ${DEFAULT_CENSUS_TARGET}-prompt census across buyer intents…`);
+      const census = await generateCensus({ client: f, rankingSeeds, likelyTopics });
+
+      // Persist both the structured census and the flat run list.
+      setF(prev => ({
+        ...prev,
+        aeo_census: census,
+        aeo_probe_queries: censusToProbeList(census)
+      }));
+
+      const cov = intentCoverage(census);
+      const groundNote = rankingSeeds.length
+        ? `grounded on ${rankingSeeds.length} of your top Google rankings`
+        : 'grounded on your brand context (connect Search Console for ranking-grounded prompts)';
+      setGenMsg(`Census ready: ${cov.total} prompts across ${cov.buckets.filter(b => b.count > 0).length} intent buckets — ${groundNote} ✓`);
     } catch (e) {
-      setErr('Query generation failed: ' + e.message);
+      setErr('Census generation failed: ' + e.message);
     } finally {
       setGenBusy(false);
     }
@@ -374,13 +390,13 @@ Return ONLY valid JSON: { "queries": ["...", "..."] }`;
           ))}
         </div>
 
-        {/* AEO probe queries with auto-generate */}
+        {/* AEO prompt census with grounded auto-generate */}
         <div style={{ marginTop: 12 }}>
           <div className="row" style={{ justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 4 }}>
             <label style={{ margin: 0 }}>
-              AEO Probe Queries{' '}
+              AEO Prompt Census{' '}
               <span className="muted" style={{ textTransform: 'none', letterSpacing: 0, fontSize: 11 }}>
-                (one per line — things a customer might ask an AI assistant)
+                (a representative set of how buyers ask AI about your category — we measure your share of voice across it)
               </span>
             </label>
             <button
@@ -388,20 +404,45 @@ Return ONLY valid JSON: { "queries": ["...", "..."] }`;
               onClick={generateQueries}
               disabled={genBusy}
               style={{ padding: '4px 10px', fontSize: 11, borderColor: 'var(--mod-reports)', color: 'var(--mod-reports)' }}
+              title="Grounds on your top non-branded Google rankings + an AI direction pass, then builds an intent-structured census."
             >
-              {genBusy ? 'Generating…' : '✨ Generate from brand context'}
+              {genBusy ? 'Generating…' : (census ? '✨ Regenerate census' : '✨ Generate census')}
             </button>
           </div>
+
+          {/* Intent coverage chips — proof the census spans buyer intents. */}
+          {coverage && coverage.total > 0 && (
+            <div className="row" style={{ gap: 6, flexWrap: 'wrap', margin: '2px 0 8px' }}>
+              <span className="muted" style={{ fontSize: 11 }}>{coverage.total} prompts ·</span>
+              {coverage.buckets.map(b => (
+                <span
+                  key={b.id}
+                  title={b.hint + (b.thin ? ' — thin coverage' : '')}
+                  style={{
+                    fontSize: 10, padding: '2px 7px', borderRadius: 10,
+                    border: '1px solid ' + (b.thin ? 'var(--orange)' : 'var(--border)'),
+                    color: b.thin ? 'var(--orange)' : 'var(--text-muted)'
+                  }}
+                >
+                  {b.label} {b.count}
+                </span>
+              ))}
+            </div>
+          )}
+
           <textarea
             value={f.aeo_probe_queries || ''}
             onChange={e => update('aeo_probe_queries', e.target.value)}
-            rows={5}
+            rows={6}
             placeholder={
               f.industry && f.location
-                ? `e.g. best ${f.industry.toLowerCase()} in ${f.location.toLowerCase()}`
-                : 'e.g. best digital marketing agency johannesburg'
+                ? `Click "Generate census", or type prompts like: what's the best ${f.industry.toLowerCase()} company in ${f.location.toLowerCase()}?`
+                : 'Click "Generate census", or type prompts one per line'
             }
           />
+          <div className="muted" style={{ fontSize: 10, marginTop: 3 }}>
+            Editing the list manually won't retag intents — regenerate to refresh the census structure.
+          </div>
           {genMsg && <div style={{ color: 'var(--green)', fontSize: 11, marginTop: 4 }}>{genMsg}</div>}
         </div>
 
