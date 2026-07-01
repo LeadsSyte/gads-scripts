@@ -230,6 +230,13 @@ await t('runSnapshot: errored engine response does not abort the sweep', async (
   assertEq(result.engine_scores.e2, 100);
   // detection rate = 100% (any engine hit on the query).
   assertEq(result.detection_rate, 100, 'detection rate 100');
+  // engine_health surfaces the failure so the report UI can explain it:
+  // E1 fully failed, E2 was healthy.
+  assertEq(result.engine_health.e1.all_failed, true, 'e1 all_failed');
+  assertEq(result.engine_health.e1.errors, 1, 'e1 one error');
+  assertEq(result.engine_health.e1.sample_error, 'rate limit', 'e1 sample_error captured');
+  assertEq(result.engine_health.e2.all_failed, false, 'e2 not all_failed');
+  assertEq(result.engine_health.e2.errors, 0, 'e2 no errors');
 });
 
 await t('runSnapshot: competitors get their own visibility metrics', async () => {

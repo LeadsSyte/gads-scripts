@@ -1003,13 +1003,16 @@ export async function loadContentHistory() {
 
 export async function getCachedReportData(clientId, month) {
   if (supabase) {
+    // maybeSingle() (not single()) — a missing cache row is the normal
+    // first-run case, and single() answers "no rows" with an HTTP 406 that
+    // shows up as a scary console error. maybeSingle() returns null instead.
     const { data } = await supabase
       .from('syte_suite_report_cache')
       .select('data, fetched_at')
       .eq('client_id', clientId)
       .eq('month', month)
       .limit(1)
-      .single();
+      .maybeSingle();
     return data || null;
   }
   try {

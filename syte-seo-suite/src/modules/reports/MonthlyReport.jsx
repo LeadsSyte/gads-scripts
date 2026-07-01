@@ -45,6 +45,35 @@ function monthLabel(m) {
   return d.toLocaleString('en-US', { month: 'long', year: 'numeric' });
 }
 
+// Turn a probe result's per-engine health into human-readable warning lines
+// so a timed-out / rate-limited / bad-key engine is visible in the UI instead
+// of silently showing up as "0% visibility". Reads the engine_health map that
+// runSnapshot returns ({ [id]: { label, runs, errors, sample_error, all_failed } }).
+function summarizeProbeIssues(probe) {
+  const health = probe?.engine_health;
+  if (!health) return [];
+  const engines = Object.values(health);
+  const failing = engines.filter(h => h.errors > 0);
+  if (!failing.length) return [];
+
+  const out = [];
+  const withData = engines.filter(h => h.runs > 0 && !h.all_failed).length;
+  if (engines.length > 0 && withData === 0) {
+    out.push('Every AI engine failed to respond — the AEO numbers below are all zero because no engine returned data, not because visibility is actually zero.');
+  }
+  for (const h of failing) {
+    const sample = (h.sample_error || 'failed').trim();
+    const reason = /timed out/i.test(sample) ? 'timed out'
+      : /\b(401|403)\b|unauthor|invalid.*key|x-api-key/i.test(sample) ? 'auth failed (check API key in Suite Settings)'
+      : /\b429\b|rate.?limit|quota/i.test(sample) ? 'rate limited / quota exhausted'
+      : /\b400\b/.test(sample) ? 'bad request (check the API key type in Suite Settings)'
+      : sample.slice(0, 120);
+    const label = h.label || 'Engine';
+    out.push(`${label}: ${reason}${h.all_failed ? ' — no usable responses' : ` (${h.errors} of ${h.runs} probes failed)`}`);
+  }
+  return out;
+}
+
 function parseAliceOutput(text) {
   if (!text) return { subject: '', body: '' };
   const lines = text.split('\n');
@@ -79,6 +108,7 @@ export default function MonthlyReport() {
   const [liveAeoProbe, setLiveAeoProbe] = useState(null);
   const [previousAeoSnap, setPreviousAeoSnap] = useState(null);
   const [aeoOnly, setAeoOnly] = useState(false);
+  const [probeWarnings, setProbeWarnings] = useState([]);
   // In-place visual editing state. When set, renders verbatim instead of
   // rebuilding from microJson — that's how operator edits to copy/figures
   // survive download / PDF / saved-report reload.
@@ -102,7 +132,7 @@ export default function MonthlyReport() {
     setMicroJson(null); setQa(null); setSent(false); setPhase('idle'); setErr('');
     setAeoOnly(false);
     setSavedReportLoaded(false);
-    setLiveAeoProbe(null);
+    setLiveAeoProbe(null); setProbeWarnings([]);
     setHtmlOverride(null); setEditingMicro(false);
     const hasSeo = client?.does_content !== false || client?.does_technical !== false;
     const hasAeo = client?.does_aeo !== false;
@@ -446,7 +476,7 @@ export default function MonthlyReport() {
   async function generateAeoOnly() {
     if (!client) return;
     setErr(''); setEmail({ subject: '', body: '' }); setMicroJson(null); setQa(null); setSent(false); setLiveAeoProbe(null);
-    setAeoOnly(true);
+    setAeoOnly(true); setProbeWarnings([]);
 
     try {
       // Step 1: Run AEO probe
@@ -460,6 +490,7 @@ export default function MonthlyReport() {
         onProgress: (p) => setPhase('aeo-probe: ' + (p.engine || '') + ' — ' + (p.query || '').slice(0, 40))
       });
       setLiveAeoProbe(probeResult);
+      setProbeWarnings(summarizeProbeIssues(probeResult));
 
       // Step 2: Generate AEO-focused email
       setPhase('alice');
@@ -543,7 +574,7 @@ export default function MonthlyReport() {
   async function generate() {
     if (!client) return;
     setErr(''); setEmail({ subject: '', body: '' }); setMicroJson(null); setQa(null); setSent(false);
-    setAeoOnly(false);
+    setAeoOnly(false); setProbeWarnings([]);
 
     // Compute MoM comparison and ranking from saved snapshot if we have one,
     // so Alice can lead with momentum metrics ("+68% citations MoM") even
@@ -590,6 +621,7 @@ export default function MonthlyReport() {
             onProgress: (p) => setPhase('aeo-probe: ' + (p.engine || '') + ' — ' + (p.query || '').slice(0, 40))
           });
           setLiveAeoProbe(probeResult);
+          setProbeWarnings(summarizeProbeIssues(probeResult));
           // Feed probe results into form for Alice email
           setForm(prev => ({
             ...prev,
@@ -1070,6 +1102,22 @@ export default function MonthlyReport() {
           </div>
         </div>
         {err && <div style={{ color: 'var(--red)', marginTop: 10 }}>{err}</div>}
+
+        {/* AEO probe health — explains why the probe was thin/zeroed
+            (timeout, bad key, rate limit) instead of failing silently. */}
+        {probeWarnings.length > 0 && (
+          <div style={{
+            marginTop: 12, padding: '10px 14px', borderRadius: 10,
+            background: 'rgba(255,159,67,.08)', border: '1px solid rgba(255,159,67,.3)'
+          }}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--orange)', marginBottom: 6 }}>
+              ⚠ AEO probe ran with issues
+            </div>
+            <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: 'var(--text-muted)' }}>
+              {probeWarnings.map((w, i) => <li key={i} style={{ marginBottom: 2 }}>{w}</li>)}
+            </ul>
+          </div>
+        )}
       </div>
 
       {/* Review section */}
