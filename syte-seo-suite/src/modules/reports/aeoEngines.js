@@ -17,6 +17,47 @@ const MAX_TOKENS = 500;
 // carries on, exactly like any other engine error.
 const ENGINE_TIMEOUT_MS = 45000;
 
+// Transient statuses worth retrying with backoff before giving up:
+//   429           per-minute rate limit — usually clears within seconds
+//   500/502/503   upstream server hiccups
+//   504           gateway timeout (e.g. the openai-proxy Netlify function
+//                 returning an "Inactivity Timeout" HTML page when OpenAI's
+//                 web_search_preview call runs long) — occasional and
+//                 per-call, so a retry typically lands on a faster response
+//   529           Anthropic "overloaded"
+// A single stalled/timed-out probe used to fail its whole iteration with no
+// retry (ChatGPT, Claude and Perplexity all called fetch once). That is the
+// "1 of 24 probes failed" flake. Retrying transient errors here recovers
+// most of them. If the FINAL attempt is still 429, the caller flags it as a
+// rate-limit so the runner disables the engine for the rest of the sweep.
+// (Gemini keeps its own bespoke fast-fail path below: its 429 is per-project
+// daily quota that will not recover mid-run, so retrying it just burns time.)
+const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504, 529]);
+const RETRY_DELAYS_MS = [1000, 2000, 4000];
+
+function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// POST with transient-error retry + backoff. Retries on a network/timeout
+// error or a retryable status, then returns the final Response (whatever its
+// status) so the caller can read the body and classify the error itself.
+// Throws only if every attempt threw before producing a Response.
+async function fetchJsonWithRetry(url, options, timeoutMs = ENGINE_TIMEOUT_MS) {
+  let lastRes = null, lastErr = null;
+  for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt++) {
+    try {
+      const res = await fetchWithTimeout(url, options, timeoutMs);
+      // Success or a non-retryable failure (4xx auth/bad-request): done.
+      if (res.ok || !RETRYABLE_STATUS.has(res.status)) return res;
+      lastRes = res; // transient — remember it in case we run out of retries
+    } catch (e) {
+      lastErr = e;   // network / timeout — worth another attempt
+    }
+    if (attempt < RETRY_DELAYS_MS.length) await wait(RETRY_DELAYS_MS[attempt]);
+  }
+  if (lastRes) return lastRes; // exhausted retries on a transient status
+  throw lastErr || new Error('request failed after retries');
+}
+
 // ------- ChatGPT / OpenAI --------------------------------------------------
 // Uses the Responses API (not Chat Completions) with the web_search_preview
 // tool enabled. Without web search, gpt-4o relies on stale training data
@@ -32,7 +73,7 @@ export const chatgpt = {
   async ask(query) {
     const { openaiKey } = loadSettings();
     try {
-      const res = await fetchWithTimeout('/.netlify/functions/openai-proxy', {
+      const res = await fetchJsonWithRetry('/.netlify/functions/openai-proxy', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -45,10 +86,13 @@ export const chatgpt = {
             max_output_tokens: MAX_TOKENS
           }
         })
-      }, ENGINE_TIMEOUT_MS);
+      });
       if (!res.ok) {
         const txt = await res.text().catch(() => '');
-        return { error: 'OpenAI ' + res.status + ' ' + txt.slice(0, 200) };
+        // A 429 that survived the retries is a sustained rate-limit — flag it
+        // so the runner disables ChatGPT for the rest of the sweep instead of
+        // hammering the proxy on every remaining probe.
+        return { error: 'OpenAI ' + res.status + ' ' + txt.slice(0, 200), rateLimited: res.status === 429 };
       }
       const data = await res.json();
       // Responses API returns output[].content[].text + structured URL
@@ -80,7 +124,7 @@ export const perplexity = {
   async ask(query) {
     const { perplexityKey } = loadSettings();
     try {
-      const res = await fetchWithTimeout('https://api.perplexity.ai/chat/completions', {
+      const res = await fetchJsonWithRetry('https://api.perplexity.ai/chat/completions', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -94,10 +138,10 @@ export const perplexity = {
             { role: 'user', content: query }
           ]
         })
-      }, ENGINE_TIMEOUT_MS);
+      });
       if (!res.ok) {
         const txt = await res.text().catch(() => '');
-        return { error: 'Perplexity ' + res.status + ' ' + txt.slice(0, 200) };
+        return { error: 'Perplexity ' + res.status + ' ' + txt.slice(0, 200), rateLimited: res.status === 429 };
       }
       const data = await res.json();
       const text = data.choices?.[0]?.message?.content || '';
@@ -129,8 +173,6 @@ const GEMINI_FALLBACKS = ['gemini-2.0-flash', 'gemini-flash-latest'];
 // genuine server overload where a short retry/fallback is worthwhile.
 const RETRYABLE_GEMINI_STATUS = new Set([500, 502, 503, 504]);
 const GEMINI_RETRY_DELAYS_MS = [1000, 2000, 4000];
-
-function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 async function geminiCall(model, body, apiKey) {
   const url = 'https://generativelanguage.googleapis.com/v1beta/models/'
@@ -215,7 +257,7 @@ export const claude = {
   async ask(query) {
     const key = getStoredApiKey();
     try {
-      const res = await fetchWithTimeout('https://api.anthropic.com/v1/messages', {
+      const res = await fetchJsonWithRetry('https://api.anthropic.com/v1/messages', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -228,10 +270,10 @@ export const claude = {
           max_tokens: MAX_TOKENS,
           messages: [{ role: 'user', content: query }]
         })
-      }, ENGINE_TIMEOUT_MS);
+      });
       if (!res.ok) {
         const txt = await res.text().catch(() => '');
-        return { error: 'Claude ' + res.status + ' ' + txt.slice(0, 200) };
+        return { error: 'Claude ' + res.status + ' ' + txt.slice(0, 200), rateLimited: res.status === 429 };
       }
       const data = await res.json();
       const text = (data.content || []).map(b => b.text || '').join('');
