@@ -115,6 +115,7 @@ export default function MonthlyReport() {
   const [aeoSnap, setAeoSnap] = useState(null);
   const [workSummary, setWorkSummary] = useState(null);
   const [phase, setPhase] = useState('idle'); // idle | fetching | alice | micro | qa | review
+  const [aeoProgress, setAeoProgress] = useState(null); // { index, total, engine, query, iteration, iterations }
   const [err, setErr] = useState('');
   const [fetchStatus, setFetchStatus] = useState('');
   const [email, setEmail] = useState({ subject: '', body: '' });
@@ -521,7 +522,7 @@ export default function MonthlyReport() {
       if (groundedClient !== client && groundedClient.aeo_probes) saveClient(groundedClient).catch(() => {});
       const probeResult = await runSnapshot(groundedClient, {
         onRuns: (records, raws) => persistAeoRuns(records, raws).catch(() => {}),
-        onProgress: (p) => setPhase('aeo-probe: ' + (p.engine || '') + ' — ' + (p.query || '').slice(0, 40))
+        onProgress: (p) => { setPhase('aeo-probe'); setAeoProgress(p); }
       });
       setLiveAeoProbe(probeResult);
       setProbeWarnings(summarizeProbeIssues(probeResult));
@@ -657,7 +658,7 @@ export default function MonthlyReport() {
           const probeResult = await runSnapshot(groundedClient, {
             maxQueries: LIVE_PROBE_MAX_QUERIES,
             onRuns: (records, raws) => persistAeoRuns(records, raws).catch(() => {}),
-            onProgress: (p) => setPhase('aeo-probe: ' + (p.engine || '') + ' — ' + (p.query || '').slice(0, 40))
+            onProgress: (p) => { setPhase('aeo-probe'); setAeoProgress(p); }
           });
           setLiveAeoProbe(probeResult);
           setProbeWarnings(summarizeProbeIssues(probeResult));
@@ -1141,6 +1142,24 @@ export default function MonthlyReport() {
             ))}
           </div>
         </div>
+        {/* Live progress while the AEO probe sweeps the engines — the long
+            phase. Shows it's working, not frozen. */}
+        {phase === 'aeo-probe' && aeoProgress && aeoProgress.total > 0 && (
+          <div style={{ marginTop: 12 }}>
+            <div className="row" style={{ justifyContent: 'space-between', fontSize: 11, color: 'var(--text-muted)', marginBottom: 4, gap: 8 }}>
+              <span>Probing AI engines… {aeoProgress.index} / {aeoProgress.total} responses</span>
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '55%' }}>
+                {aeoProgress.engine}{aeoProgress.query ? ' · ' + aeoProgress.query.slice(0, 48) : ''}
+              </span>
+            </div>
+            <div style={{ height: 7, background: 'var(--surface-2)', borderRadius: 4, overflow: 'hidden' }}>
+              <div style={{ width: Math.round((aeoProgress.index / aeoProgress.total) * 100) + '%', height: '100%', background: ACCENT, transition: 'width .3s' }} />
+            </div>
+            <div className="muted" style={{ fontSize: 10, marginTop: 4 }}>
+              This is the slow step (live calls to every AI engine). Leave it running — it does not hang.
+            </div>
+          </div>
+        )}
         {err && <div style={{ color: 'var(--red)', marginTop: 10 }}>{err}</div>}
 
         {/* AEO probe health — explains why the probe was thin/zeroed
