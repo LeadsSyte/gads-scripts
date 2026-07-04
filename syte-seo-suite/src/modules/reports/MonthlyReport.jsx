@@ -9,19 +9,20 @@ import {
 } from './reportPrompts.js';
 import { buildMicrositeHtml, downloadMicrosite, downloadMicrositePdf } from './microsite.js';
 import { sanitizeEmail } from './sanitize.js';
-import { probeCandidatesFromGSC } from './keywordBuckets.js';
+import { probeCandidatesFromGSC, gscBuyerPrompts } from './keywordBuckets.js';
 import { parseProbes, migrateClientProbes, addProbes, probesToProbeList } from './aeoProbes.js';
 
 // Ground a client's probe set in the GSC head-terms already fetched for the
-// report, so the AEO probe runs against what the brand actually ranks for on
-// Google instead of guessed generic terms. Returns a client object to run with.
+// report, RESHAPED into buyer prompts, so the AEO probe runs against what the
+// brand actually ranks for on Google (as vendor questions) instead of guessed
+// generic terms. Returns a client object to run with.
 function groundClientInGsc(c, reportData) {
   const kws = reportData?.keywords;
   if (!c || !kws?.length) return c;
   const existing = parseProbes(c) || migrateClientProbes(c);
   if (existing.some(p => p.source === 'gsc')) return { ...c, aeo_probes: existing };
-  const cands = probeCandidatesFromGSC(kws, c.name, { limit: 25 })
-    .map(q => ({ query: q, tier: 1, type: 'category', intent: 'commercial', source: 'gsc', active: true }));
+  const prompts = gscBuyerPrompts(probeCandidatesFromGSC(kws, c.name, { limit: 40 }), { geo: c.location || c.market, limit: 20 });
+  const cands = prompts.map(q => ({ query: q, tier: 1, type: 'category', intent: 'commercial', source: 'gsc', active: true }));
   const { probes } = addProbes(existing, cands);
   return { ...c, aeo_probes: probes, aeo_probe_queries: probesToProbeList(probes) };
 }
@@ -609,6 +610,7 @@ export default function MonthlyReport() {
       clientName: client.name,
       industry: client.industry || '',
       goals: client.context,
+      startDate: client.start_date,
       month: monthLabel(month),
       previousMonthLabel: previousAeoSnap ? monthLabel(previousAeoSnap.month) : null,
       algorithmContext: algContext,

@@ -171,7 +171,7 @@ OPENING LINES (pick the strongest available, in this priority order):
 2. "[Brand] holds X% share of voice across AI answers in [category], [ahead of / closing on] [competitor]." (if share of voice is a strong story)
 3. "Two months in, [Brand] now leads/sits #X among South African [category] brands on AI visibility." (if competitive position is strong)
 4. "[Brand] is showing up in [Engine] for [N] head-of-category prompts including '[query]'." (if active wins exist)
-5. "Month 1 of AEO tracking is in. We now measure [Brand] across [Y] buyer prompts x [M] engines and discovered [K] new prompt themes worth tracking, all mapped for next month's push." (true first-month)
+5. "We've now added AI-visibility measurement to your program. [Brand] is tracked across [Y] buyer prompts x [M] engines, with [K] new prompt themes mapped for next month." (first AEO snapshot — do NOT say "Month 1" or imply the client is new unless the payload's ENGAGEMENT CONTEXT confirms it)
 
 VOICE & POINT OF VIEW (NEVER BREAK):
 - Write TO the client, not ABOUT them. Second person ("your", "you've") and first-person plural ("we", "we've", "our") only.
@@ -352,12 +352,36 @@ export function getWorkSummary(clientId, month) {
 // Build the user-message payload for Alice and the Microsite.
 // ---------------------------------------------------------------------------
 
+// Engagement context: how long the client has been with us, and whether this
+// is genuinely their first month. A missing prior AEO snapshot means the first
+// AEO MEASUREMENT, not the client's first month — keep those distinct so the
+// copy never calls a long-standing client "Month 1".
+export function engagementNote(startDate, monthLabel) {
+  if (!startDate) return null;
+  const start = new Date(startDate);
+  if (isNaN(start.getTime())) return null;
+  let end = new Date();
+  const m = /([A-Za-z]+)\s+(\d{4})/.exec(monthLabel || '');
+  if (m) { const d = new Date(m[1] + ' 1, ' + m[2]); if (!isNaN(d.getTime())) end = d; }
+  const months = (end.getFullYear() - start.getFullYear()) * 12 + (end.getMonth() - start.getMonth()) + 1;
+  return { start: startDate, months: Math.max(1, months) };
+}
+
+function engagementLine(client, monthLabel) {
+  const e = engagementNote(client?.start_date, monthLabel);
+  if (!e) return null;
+  if (e.months <= 1) return null; // genuinely new client — "month 1" is fine
+  return `ENGAGEMENT CONTEXT: this client has been with Syte since ${e.start}, so ${monthLabel || 'this month'} is month ${e.months} of the engagement. This is the FIRST AEO snapshot, but NOT the client's first month. Do NOT call it "Month 1", a "month-1 campaign", or imply the relationship is new. Frame it as: we have now added AI-visibility (AEO) measurement to your existing program, establishing the baseline we track from here.`;
+}
+
 export function buildAlicePayload(form, aeo, workSummary) {
   const lines = [];
   lines.push(`Client: ${form.clientName}`);
   if (form.industry) lines.push(`Industry: ${form.industry}`);
   if (form.goals)    lines.push(`Client goals / context: ${form.goals}`);
   lines.push(`Month: ${form.month}`);
+  const aliceEng = engagementLine({ start_date: form.startDate }, form.month);
+  if (aliceEng) lines.push(aliceEng);
   lines.push('');
   lines.push('TONE INSTRUCTION: Always lead with the biggest positive. If traffic is down MoM, check if YoY is up. If everything is down, lead with work done (articles, fixes, AEO improvements). NEVER make this read like bad news.');
 
@@ -446,7 +470,7 @@ export function buildAlicePayload(form, aeo, workSummary) {
       lines.push(`  Top-3 rate: ${fmt(d.top3)}`);
       lines.push(`  Sentiment: ${fmt(d.sentiment)}`);
     } else {
-      lines.push('\nThis is the first AEO snapshot — no MoM comparison available.');
+      lines.push('\nThis is the first AEO snapshot (first AEO measurement, not necessarily the client\'s first month — see ENGAGEMENT CONTEXT). No MoM comparison available yet.');
     }
 
     // Competitive ranking — gives Alice rank + closest rival.
@@ -512,6 +536,8 @@ export function buildAeoPayload({ client, monthLabel: ml, previousMonthLabel, pr
   if (client.industry) lines.push(`Industry: ${client.industry}`);
   if (client.url)      lines.push(`URL: ${client.url}`);
   lines.push(`Month: ${ml}`);
+  const engLine = engagementLine(client, ml);
+  if (engLine) lines.push(engLine);
   lines.push('');
   lines.push('AEO PERFORMANCE REPORT — write a confident, momentum-led story about how the brand is showing up in AI engines.');
   lines.push('Lead with the strongest positive: share of voice across the census, best MoM delta, competitive rank, or top engine. Never frame this as a crisis.');
@@ -558,7 +584,7 @@ export function buildAeoPayload({ client, monthLabel: ml, previousMonthLabel, pr
     lines.push(`Sentiment:  ${compare.previous?.sentiment ?? '—'}% → ${compare.current?.sentiment ?? '—'}% (${fmt(d.sentiment)})`);
     lines.push('LEAD WITH THE STRONGEST POSITIVE DELTA — citations and mentions are the gold-standard metrics.');
   } else {
-    lines.push('\nThis is the first AEO snapshot — no MoM comparison. Frame it as the baseline we are now attacking.');
+    lines.push('\nThis is the first AEO SNAPSHOT (the first AEO measurement, not necessarily the client\'s first month — see ENGAGEMENT CONTEXT above). No MoM comparison yet; frame it as the measurement baseline we now track from here.');
   }
 
   if (ranking?.length && brandRank) {
