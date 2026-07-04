@@ -772,6 +772,11 @@ export default function AEOSnapshot() {
 
           <div className="card" style={{ marginBottom: 14 }}>
             <strong>Query × Engine</strong>
+            <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>
+              Big number is <strong>retrieval</strong> visibility (web search on) with avg. position when named.
+              The grey <em>web off</em> line is <strong>parametric</strong> visibility (no web search) — shown for
+              ChatGPT and Claude only, and never blended into the score.
+            </div>
             <div style={{ overflowX: 'auto', marginTop: 10 }}>
               <table>
                 <thead>
@@ -791,13 +796,18 @@ export default function AEOSnapshot() {
                         if (!row) return <td key={eng.id} className="muted">—</td>;
                         if (row.error) return <td key={eng.id} className="muted" title={row.error}>err</td>;
                         const v = row.visibility ?? (row.mentioned ? 100 : 0);
-                        if (v === 0) return <td key={eng.id}><span className="badge" title={`0/${row.iterations || 1} iterations`}>0%</span></td>;
+                        const off = row.modes?.search_off;
+                        const paramPct = off ? Math.round((off.appearanceRate || 0) * 100) : null;
+                        const paramLine = paramPct != null
+                          ? <div className="muted" style={{ fontSize: 9, marginTop: 2 }} title="parametric: brand named without web search">web off {paramPct}%</div>
+                          : null;
                         const color = v >= 70 ? 'green' : v >= 30 ? 'orange' : 'blue';
                         return (
                           <td key={eng.id}>
-                            <span className={'badge ' + color} title={(row.excerpt || '') + ' · ' + (row.hits || 0) + '/' + (row.iterations || 1) + ' iterations'}>
-                              {v}% · #{row.avg_position ?? row.position ?? '—'}
+                            <span className={v === 0 ? 'badge' : 'badge ' + color} title={(row.excerpt || '') + ' · ' + (row.hits || 0) + '/' + (row.iterations || 1) + ' retrieval runs'}>
+                              {v}%{v > 0 ? ' · #' + (row.avg_position ?? row.position ?? '—') : ''}
                             </span>
+                            {paramLine}
                           </td>
                         );
                       })}
