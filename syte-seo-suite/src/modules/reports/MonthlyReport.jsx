@@ -92,6 +92,13 @@ function summarizeProbeIssues(probe) {
   return out;
 }
 
+function fmtEta(ms) {
+  if (!isFinite(ms) || ms <= 0) return '';
+  const s = Math.round(ms / 1000);
+  const m = Math.floor(s / 60);
+  return m > 0 ? `~${m}m ${s % 60}s left` : `~${s}s left`;
+}
+
 function parseAliceOutput(text) {
   if (!text) return { subject: '', body: '' };
   const lines = text.split('\n');
@@ -140,6 +147,7 @@ export default function MonthlyReport() {
   // listener reads a stale fetchStatus closure, so that fed back on itself
   // into a loop that re-popped the Google auth tab and froze the report view.
   const fetchInFlightRef = useRef(false);
+  const probeStartRef = useRef(0); // wall-clock start of the AEO probe, for ETA
 
   const [savedReportLoaded, setSavedReportLoaded] = useState(false);
 
@@ -522,7 +530,7 @@ export default function MonthlyReport() {
       if (groundedClient !== client && groundedClient.aeo_probes) saveClient(groundedClient).catch(() => {});
       const probeResult = await runSnapshot(groundedClient, {
         onRuns: (records, raws) => persistAeoRuns(records, raws).catch(() => {}),
-        onProgress: (p) => { setPhase('aeo-probe'); setAeoProgress(p); }
+        onProgress: (p) => { if (!p.index) probeStartRef.current = Date.now(); setPhase('aeo-probe'); setAeoProgress(p); }
       });
       setLiveAeoProbe(probeResult);
       setProbeWarnings(summarizeProbeIssues(probeResult));
@@ -658,7 +666,7 @@ export default function MonthlyReport() {
           const probeResult = await runSnapshot(groundedClient, {
             maxQueries: LIVE_PROBE_MAX_QUERIES,
             onRuns: (records, raws) => persistAeoRuns(records, raws).catch(() => {}),
-            onProgress: (p) => { setPhase('aeo-probe'); setAeoProgress(p); }
+            onProgress: (p) => { if (!p.index) probeStartRef.current = Date.now(); setPhase('aeo-probe'); setAeoProgress(p); }
           });
           setLiveAeoProbe(probeResult);
           setProbeWarnings(summarizeProbeIssues(probeResult));
@@ -1147,7 +1155,15 @@ export default function MonthlyReport() {
         {phase === 'aeo-probe' && aeoProgress && aeoProgress.total > 0 && (
           <div style={{ marginTop: 12 }}>
             <div className="row" style={{ justifyContent: 'space-between', fontSize: 11, color: 'var(--text-muted)', marginBottom: 4, gap: 8 }}>
-              <span>Probing AI engines… {aeoProgress.index} / {aeoProgress.total} responses</span>
+              <span>
+                Probing AI engines… {aeoProgress.index} / {aeoProgress.total} responses
+                {(() => {
+                  if (!probeStartRef.current || !aeoProgress.index) return '';
+                  const per = (Date.now() - probeStartRef.current) / aeoProgress.index;
+                  const eta = fmtEta((aeoProgress.total - aeoProgress.index) * per);
+                  return eta ? ' · ' + eta : '';
+                })()}
+              </span>
               <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '55%' }}>
                 {aeoProgress.engine}{aeoProgress.query ? ' · ' + aeoProgress.query.slice(0, 48) : ''}
               </span>
