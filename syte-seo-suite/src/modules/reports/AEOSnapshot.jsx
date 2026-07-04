@@ -8,6 +8,8 @@ import { readinessFor } from '../../lib/clientReadiness.js';
 import { probeCandidatesFromGSC, mergeProbeQueries } from './keywordBuckets.js';
 import { buildDiscoveryQueries, runDiscoverySweep } from './aeoDiscovery.js';
 import { parseCensus, intentCoverage, INTENT_BUCKETS } from './aeoCensus.js';
+import { generateFanout } from './aeoFanout.js';
+import { parseProbes, migrateClientProbes, addProbes, probesToProbeList } from './aeoProbes.js';
 
 const ACCENT = '#a78bfa';
 
@@ -59,6 +61,9 @@ export default function AEOSnapshot() {
   const [bulkProgress, setBulkProgress] = useState(null);
   const [pendingMonthly, setPendingMonthly] = useState([]);
   const [iterations, setIterations] = useState(3);
+  // Fan-out "Discovered prompts" approval queue.
+  const [fanoutProposals, setFanoutProposals] = useState([]);
+  const [fanoutBusy, setFanoutBusy] = useState(false);
 
   // Compute the list of AEO-enabled clients that haven't had a snapshot
   // yet this month. Runs once when clients load.
@@ -209,12 +214,55 @@ export default function AEOSnapshot() {
       });
       setSnapshot(result);
       setProgress({ phase: 'complete', index: result.per_query.length, total: result.per_query.length });
+      generateProposals(result);
     } catch (e) {
       setErr(e.message);
       setProgress(null);
     } finally {
       setBusy(false);
     }
+  }
+
+  // After a snapshot, fan out from what the engines said about the brand and
+  // propose the most novel new probes for approval (Requirement 4).
+  async function generateProposals(snap) {
+    if (!client || !snap) return;
+    setFanoutBusy(true); setFanoutProposals([]);
+    try {
+      const existing = parseProbes(client) || migrateClientProbes(client);
+      // Merge branches exhausted this snapshot with any previously flagged, so
+      // we stop proposing children from dead branches (Requirement 4).
+      const freshExhausted = Object.entries(snap.branch_exhaustion || {})
+        .filter(([, v]) => v.exhausted).map(([k]) => k);
+      const exhaustedParents = [...new Set([...(client.aeo_exhausted_branches || []), ...freshExhausted])]
+        .filter(k => k && k !== '__root__');
+      const { candidates } = await generateFanout({ snapshot: snap, client, existingProbes: existing, exhaustedParents });
+      setFanoutProposals(candidates);
+      if (freshExhausted.some(k => k !== '__root__' && !(client.aeo_exhausted_branches || []).includes(k))) {
+        saveClient({ ...client, aeo_exhausted_branches: exhaustedParents }).catch(() => {});
+      }
+    } catch { /* non-fatal — proposals are optional */ }
+    finally { setFanoutBusy(false); }
+  }
+
+  // Approve candidates → add as ACTIVE tier-2 probes. Append-only: tier-1 is
+  // never touched, so month-over-month trend comparability is preserved.
+  async function approveProbes(cands) {
+    if (!client || !cands.length) return;
+    try {
+      const existing = parseProbes(client) || migrateClientProbes(client);
+      const { probes, added } = addProbes(existing, cands.map(c => ({ ...c, active: true })));
+      await saveClient({ ...client, aeo_probes: probes, aeo_probe_queries: probesToProbeList(probes) });
+      const approved = new Set(cands.map(c => c.query));
+      setFanoutProposals(prev => prev.filter(p => !approved.has(p.query)));
+      setMsg(`Approved ${added} discovered prompt${added === 1 ? '' : 's'} as active tier-2 probe${added === 1 ? '' : 's'}`);
+    } catch (e) {
+      setErr('Could not approve: ' + e.message);
+    }
+  }
+
+  function dismissProbe(cand) {
+    setFanoutProposals(prev => prev.filter(p => p.query !== cand.query));
   }
 
   async function handleSave() {
@@ -781,6 +829,44 @@ export default function AEOSnapshot() {
             </div>
           </div>
         </>
+      )}
+
+      {(fanoutBusy || fanoutProposals.length > 0) && (
+        <div className="card" style={{ marginBottom: 14, borderLeft: '4px solid ' + ACCENT }}>
+          <div className="row" style={{ justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+            <div>
+              <strong>Discovered prompts</strong>
+              <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
+                Fanned out from the segment labels, reasons and competitors the engines attached to {client.name}.
+                Approve to add as active tier-2 probes — the tier-1 panel stays untouched for trend comparability.
+              </div>
+            </div>
+            {fanoutProposals.length > 0 && (
+              <button onClick={() => approveProbes(fanoutProposals)} style={{ borderColor: ACCENT, color: ACCENT, whiteSpace: 'nowrap' }}>
+                Approve all ({fanoutProposals.length})
+              </button>
+            )}
+          </div>
+          {fanoutBusy && <div className="muted" style={{ fontSize: 12, marginTop: 10 }}>Generating proposals…</div>}
+          {fanoutProposals.length > 0 && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 10, maxHeight: 380, overflowY: 'auto' }}>
+              {fanoutProposals.map(p => (
+                <div key={p.query} className="row" style={{ justifyContent: 'space-between', gap: 10, padding: '8px 10px', background: 'var(--surface-2)', borderRadius: 6 }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 13, fontWeight: 600 }}>{p.query}</div>
+                    <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
+                      {p.type} · {p.intent} · novelty {Math.round((p.novelty || 0) * 100)}%{p.parentProbeId ? ' · from ' + p.parentProbeId : ''}
+                    </div>
+                  </div>
+                  <div className="row" style={{ gap: 6 }}>
+                    <button onClick={() => approveProbes([p])} style={{ fontSize: 11, padding: '4px 10px', borderColor: 'var(--green)', color: 'var(--green)' }}>Approve</button>
+                    <button onClick={() => dismissProbe(p)} style={{ fontSize: 11, padding: '4px 10px' }}>Dismiss</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       )}
       </>}
     </div>

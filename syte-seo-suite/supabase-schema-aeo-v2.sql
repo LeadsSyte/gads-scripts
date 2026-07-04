@@ -9,6 +9,10 @@
 --    stay in sync for back-compat, but aeo_probes is the source of truth.
 alter table syte_suite_clients add column if not exists aeo_probes jsonb;
 
+-- Fan-out branches (parentProbeId values) flagged exhausted — the engine stops
+-- proposing children from these. Array of probe ids.
+alter table syte_suite_clients add column if not exists aeo_exhausted_branches jsonb;
+
 -- 2. Per-run result capture. One row per (probe x engine x runIndex x runMode).
 --    The full raw response is stored keyed by hash and retained for 90 days
 --    (see the retention statement at the bottom — run it on a schedule).

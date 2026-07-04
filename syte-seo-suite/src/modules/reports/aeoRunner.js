@@ -271,7 +271,8 @@ export async function runSnapshot(client, opts = {}) {
       const ar = appearanceRate(allRuns);
       const avgPos = avgPositionWhenAppearing(allRuns);
       probeAgg.push({
-        probeId: probe.id, query: probe.query, intent: probe.intent, type: probe.type,
+        probeId: probe.id, parentProbeId: probe.parentProbeId || null,
+        query: probe.query, intent: probe.intent, type: probe.type,
         runs: allRuns.length,
         appearances: allRuns.filter(r => r.appeared).length,
         appearanceRate: Math.round(ar * 100) / 100,
@@ -391,6 +392,22 @@ export async function runSnapshot(client, opts = {}) {
   const month = (now ? new Date(now) : new Date()).toISOString().slice(0, 7);
   const newThemes = countNewThemesSince(allProbes, sinceISO);
 
+  // Branch exhaustion (Requirement 4 stopping rule): per fan-out parent, the
+  // fraction of its probes covered this snapshot. Consumers stop proposing
+  // children from a branch that comes in under 10%.
+  const byParent = {};
+  for (const p of probeAgg) {
+    const key = p.parentProbeId || '__root__';
+    (byParent[key] || (byParent[key] = { total: 0, covered: 0 }));
+    byParent[key].total++;
+    if (p.appearanceRate > 0) byParent[key].covered++;
+  }
+  const branchExhaustion = {};
+  for (const [k, v] of Object.entries(byParent)) {
+    const rate = v.total ? v.covered / v.total : 0;
+    branchExhaustion[k] = { total: v.total, covered: v.covered, rate: Math.round(rate * 100) / 100, exhausted: rate < 0.1 };
+  }
+
   return {
     client_id: client.id,
     month,
@@ -402,6 +419,7 @@ export async function runSnapshot(client, opts = {}) {
     prompt_coverage: coverage,         // named in X of Y
     scorable_probes: probeAgg.length,
     new_themes: newThemes,
+    branch_exhaustion: branchExhaustion,
     share_of_voice: sov.sov,
     sov_detail: sov,
 
