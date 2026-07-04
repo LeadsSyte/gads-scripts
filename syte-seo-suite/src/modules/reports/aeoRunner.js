@@ -95,6 +95,17 @@ function hostMatchesBrand(url, brandUrl, brandName) {
   return false;
 }
 
+// Headline metrics are RETRIEVAL-first. If a (probe, engine) has web-search
+// (search_on) runs, score ONLY those and report the parametric (search_off)
+// runs as a separate signal. Without this, the near-zero parametric runs halve
+// the visibility of the toggle-capable engines (ChatGPT, Claude) relative to
+// the retrieval-native ones (Perplexity, Gemini) — which is exactly why
+// ChatGPT reads ~0 in the automated tool while it shows up in manual runs.
+function retrievalPreferred(runs) {
+  const on = (runs || []).filter(r => r.runMode === 'search_on');
+  return on.length ? on : (runs || []);
+}
+
 // Resolve the probe set the snapshot runs against.
 export function resolveProbes(client, { now, includeReverse = true } = {}) {
   const stored = parseProbes(client);
@@ -304,6 +315,7 @@ export async function runSnapshot(client, opts = {}) {
 
   const probeResults = [];   // one row per (probe, engine), with per-mode splits
   const probeAgg = [];       // one aggregate per scorable probe (for portfolio)
+  const brandAppearedRuns = []; // scorable appeared runs (retrieval-preferred) for brand-level top3/sentiment
   const fanoutSignals = { segmentLabels: [], reasonPhrases: [], competitorsNamed: [] };
 
   for (const { probe, groups: pgroups } of byProbe.values()) {
@@ -325,10 +337,12 @@ export async function runSnapshot(client, opts = {}) {
 
     for (const { engine, byMode } of byEngine.values()) {
       const allRuns = [].concat(...Object.values(byMode));
+      const scoredRuns = retrievalPreferred(allRuns);        // headline = web-search runs
+      const parametricRuns = byMode['search_off'] || [];
       const modes = {};
       for (const [m, rs] of Object.entries(byMode)) modes[m] = scoreRunGroup(rs);
-      const combined = scoreRunGroup(allRuns);
-      const top3 = allRuns.filter(r => r.appeared && r.position && r.position <= 3).length;
+      const combined = scoreRunGroup(scoredRuns);
+      const top3 = scoredRuns.filter(r => r.appeared && r.position && r.position <= 3).length;
       const brandCites = allRuns.reduce((a, r) =>
         a + (r.citedUrls || []).filter(u => hostMatchesBrand(u, client.url, brandName)).length, 0);
       probeResults.push({
@@ -339,23 +353,27 @@ export async function runSnapshot(client, opts = {}) {
         avgPositionWhenAppearing: combined.avgPositionWhenAppearing,
         visibilityScore: combined.visibilityScore,
         top3_rate: combined.runs ? Math.round((top3 / combined.runs) * 1000) / 10 : 0,
+        // Parametric (no web search) kept separate — never blended into the headline.
+        parametric_appearance_rate: parametricRuns.length ? scoreRunGroup(parametricRuns).appearanceRate : null,
         modes,   // { search_off: {...}|undefined, search_on: {...}|undefined }
         citations: brandCites,
-        segmentLabels: [...new Set(allRuns.filter(r => r.appeared && r.segmentLabel).map(r => r.segmentLabel))],
-        sentiment: dominant(allRuns.filter(r => r.appeared).map(r => r.sentiment)) || (combined.appearances ? 'neutral' : null)
+        segmentLabels: [...new Set(scoredRuns.filter(r => r.appeared && r.segmentLabel).map(r => r.segmentLabel))],
+        sentiment: dominant(scoredRuns.filter(r => r.appeared).map(r => r.sentiment)) || (combined.appearances ? 'neutral' : null)
       });
     }
 
-    // Probe-level aggregate across all engines/modes (scorable only).
+    // Probe-level aggregate across engines (scorable only, retrieval-preferred).
     if (probe.type !== 'reverse') {
       const allRuns = [].concat(...pgroups.map(g => g.runs));
-      const ar = appearanceRate(allRuns);
-      const avgPos = avgPositionWhenAppearing(allRuns);
+      const scoredRuns = retrievalPreferred(allRuns);
+      for (const r of scoredRuns) if (r.appeared) brandAppearedRuns.push(r);
+      const ar = appearanceRate(scoredRuns);
+      const avgPos = avgPositionWhenAppearing(scoredRuns);
       probeAgg.push({
         probeId: probe.id, parentProbeId: probe.parentProbeId || null,
         query: probe.query, intent: probe.intent, type: probe.type,
-        runs: allRuns.length,
-        appearances: allRuns.filter(r => r.appeared).length,
+        runs: scoredRuns.length,
+        appearances: scoredRuns.filter(r => r.appeared).length,
         appearanceRate: Math.round(ar * 100) / 100,
         avgPositionWhenAppearing: avgPos,
         visibilityScore: visibilityScore(ar, avgPos),
@@ -400,8 +418,9 @@ export async function runSnapshot(client, opts = {}) {
   const sov = inline_shareOfVoice(brandAppearances, competitors);
   const citeDensity = citationDensity(brandCitationsTotal, scorableRuns);
 
-  const appearedRuns = [];
-  for (const g of groups) if (g.probe.type !== 'reverse') for (const r of g.runs) if (r.appeared) appearedRuns.push(r);
+  // Brand-level top3 / sentiment come from the retrieval-preferred appeared
+  // runs collected during aggregation (not the parametric no-search runs).
+  const appearedRuns = brandAppearedRuns;
   const positiveCount = appearedRuns.filter(r => r.sentiment === 'positive').length;
   const sentimentPct = appearedRuns.length ? Math.round((positiveCount / appearedRuns.length) * 1000) / 10 : 0;
   const top3Runs = appearedRuns.filter(r => r.position && r.position <= 3).length;
