@@ -8,6 +8,7 @@ import {
   buildAlicePayload, getWorkSummary, buildAeoPayload
 } from './reportPrompts.js';
 import { buildMicrositeHtml, downloadMicrosite } from './microsite.js';
+import { sanitizeEmail } from './sanitize.js';
 import { runSnapshot, snapshotPreflight } from './aeoRunner.js';
 import { compareSnapshots, rankBrandWithCompetitors, normalizeSnapshot } from './aeoCompare.js';
 import { ensureToken, SCOPES, getToken, switchAccount, silentRefresh } from '../technical/googleAuth.js';
@@ -275,7 +276,7 @@ export default function MonthlyReport() {
         max_tokens: 1200,
         temperature: 0.7
       });
-      setEmail(parseAliceOutput(aliceText));
+      setEmail(sanitizeEmail(parseAliceOutput(aliceText)));
 
       // Step 3: Generate microsite JSON (AEO-only shape)
       setPhase('micro');
@@ -378,7 +379,7 @@ export default function MonthlyReport() {
         max_tokens: 1000,
         temperature: 0.7
       });
-      const parsed = parseAliceOutput(aliceText);
+      const parsed = sanitizeEmail(parseAliceOutput(aliceText));
       setEmail(parsed);
 
       // 2. Microsite JSON

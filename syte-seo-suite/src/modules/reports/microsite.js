@@ -1,6 +1,8 @@
 // Generate a self-contained, downloadable HTML string for the client
 // monthly report microsite. No external JS, only Google Fonts via CDN.
 
+import { stripDashes } from './sanitize.js';
+
 function esc(s = '') {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
@@ -242,7 +244,8 @@ export function buildMicrositeHtml({ micro, client, monthLabel, previousMonthLab
 
   const overallScore = aeo.score != null ? String(aeo.score) : '';
 
-  return `<!DOCTYPE html>
+  // House rule: strip every em/en dash from the final client-facing HTML.
+  return stripDashes(`<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -454,18 +457,18 @@ export function buildMicrositeHtml({ micro, client, monthLabel, previousMonthLab
 
     ${probe.per_query?.length > 0 ? `
     <section>
-      <h2>AI Visibility — Headline Metrics</h2>
+      <h2>AI Visibility: Headline Metrics</h2>
       <p style="color:var(--muted);font-size:13px;margin-bottom:16px;">
         Probed ${probe.engines_used?.length || 0} AI engine${(probe.engines_used?.length || 0) > 1 ? 's' : ''}
-        (${(probe.engines_used || []).join(', ')}) across ${probe.queries_count || new Set(probe.per_query.map(r => r.query)).size} queries × ${probe.iterations || 1} iterations = ${probe.total_runs || probe.per_query.length} total responses.
+        (${(probe.engines_used || []).join(', ')}) across ${probe.scorable_probes || probe.queries_count || new Set(probe.per_query.map(r => r.query)).size} buyer prompts × ${probe.iterations || 1} iterations = ${probe.total_runs || probe.per_query.length} total responses.
       </p>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-bottom:20px;">
         ${[
-          { label: 'Visibility Score', value: (probe.visibility_score ?? 0) + '%', delta: cmp?.deltas?.visibility, deltaSuffix: 'pp' },
-          { label: 'Mentions',        value: fmt(probe.mentions),                  delta: cmp?.deltas?.mentions,   deltaSuffix: '' },
+          { label: 'Named In', value: `${probe.prompt_coverage ?? 0} of ${probe.scorable_probes ?? (probe.queries_count || 0)}`, sub: 'buyer prompts', delta: cmp?.deltas?.coverage, deltaSuffix: 'pp' },
+          { label: 'Coverage Rate',   value: Math.round((probe.coverage_rate ?? 0) * 100) + '%', delta: cmp?.deltas?.coverage,   deltaSuffix: 'pp' },
+          { label: 'Share of Voice',  value: (probe.share_of_voice ?? 0) + '%',    delta: null },
+          { label: 'AEO Index',       value: String(probe.composite_index ?? probe.overall_score ?? 0), delta: cmp?.deltas?.composite, deltaSuffix: '' },
           { label: 'Citations',       value: fmt(probe.citations),                 delta: cmp?.deltas?.citations,  deltaSuffix: '' },
-          { label: 'Detection Rate',  value: (probe.detection_rate ?? 0) + '%',    delta: cmp?.deltas?.detection,  deltaSuffix: 'pp' },
-          { label: 'Top-3 Rate',      value: (probe.top3_rate ?? 0) + '%',         delta: cmp?.deltas?.top3,       deltaSuffix: 'pp' },
           { label: 'Sentiment',       value: (probe.sentiment_score ?? 0) + '%',   delta: cmp?.deltas?.sentiment,  deltaSuffix: 'pp' }
         ].map(m => `
           <div style="padding:18px;background:var(--surface);border:1px solid var(--border);border-radius:12px;">
@@ -653,7 +656,7 @@ export function buildMicrositeHtml({ micro, client, monthLabel, previousMonthLab
             <th style="padding:8px 10px;color:var(--muted);font-size:10px;text-transform:uppercase;">Engine</th>
             <th style="padding:8px 10px;text-align:center;color:var(--muted);font-size:10px;text-transform:uppercase;">Visibility</th>
             <th style="padding:8px 10px;text-align:center;color:var(--muted);font-size:10px;text-transform:uppercase;">Top-3 Rate</th>
-            <th style="padding:8px 10px;text-align:center;color:var(--muted);font-size:10px;text-transform:uppercase;">Avg Pos</th>
+            <th style="padding:8px 10px;text-align:center;color:var(--muted);font-size:10px;text-transform:uppercase;">Avg. position when named</th>
             <th style="padding:8px 10px;color:var(--muted);font-size:10px;text-transform:uppercase;">Sentiment</th>
           </tr>
         </thead>
@@ -769,7 +772,7 @@ export function buildMicrositeHtml({ micro, client, monthLabel, previousMonthLab
     </footer>
   </div>
 </body>
-</html>`;
+</html>`);
 }
 
 export function downloadMicrosite(html, filename) {

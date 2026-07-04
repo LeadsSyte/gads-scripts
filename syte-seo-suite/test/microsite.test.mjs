@@ -82,7 +82,7 @@ await t('aeoOnly mode hides SEO sections', () => {
     }
   });
   // Organic Performance table should NOT appear in aeoOnly mode.
-  assertNotContains(html, 'Organic Performance — Detailed Comparison', 'no organic table');
+  assertNotContains(html, 'Organic Performance, Detailed Comparison', 'no organic table');
   assertNotContains(html, 'Top Pages by Organic Clicks', 'no top pages table');
 });
 
@@ -112,7 +112,7 @@ await t('renders the traffic comparison table when traffic.current is present', 
       topPages: []
     }
   });
-  assertContains(html, 'Organic Performance — Detailed Comparison', 'traffic table');
+  assertContains(html, 'Organic Performance, Detailed Comparison', 'traffic table');
   assertContains(html, '1,000', 'current users formatted');
   assertContains(html, '▲ 25%', 'positive MoM arrow');
 });
