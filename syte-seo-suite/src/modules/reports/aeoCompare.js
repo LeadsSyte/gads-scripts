@@ -20,8 +20,8 @@ function pct(n) { return Number.isFinite(n) ? Number(n) : 0; }
 //   competitors      = augmented with visibility computed from appearances
 export function normalizeSnapshot(snap) {
   if (!snap) return snap;
-  // Already new shape — nothing to do.
-  if (snap.visibility_score != null && snap.keyword_wins) return snap;
+  // Already the v2 shape — nothing to do.
+  if (snap.coverage_rate != null && snap.probe_results) return snap;
 
   const out = { ...snap };
   const perQuery = Array.isArray(snap.per_query) ? snap.per_query : [];
@@ -109,10 +109,69 @@ export function normalizeSnapshot(snap) {
     out.keyword_wins = { active, emerging: [], zero };
   }
 
+  // ── v2 fields (Requirement 3) ────────────────────────────────
+  // Map an old single-shot snapshot into the recursive-engine shape so History
+  // and the new renderer work without errors: N=1, appearanceRate = cited?1:0,
+  // avgPositionWhenAppearing = the old position.
+  if (out.coverage_rate == null) {
+    out.coverage_rate = out.detection_rate != null
+      ? Math.round((out.detection_rate / 100) * 100) / 100
+      : 0;
+  }
+  if (out.prompt_coverage == null) {
+    const hitQueries = new Set(mentionedRows.map(r => r.query));
+    out.prompt_coverage = hitQueries.size;
+  }
+  if (out.scorable_probes == null) {
+    out.scorable_probes = new Set(perQuery.map(r => r.query)).size;
+  }
+  // Old composite lived in overall_score (a 0-100 number), so reuse it.
+  if (out.composite_index == null) out.composite_index = out.overall_score ?? 0;
+  if (out.new_themes == null) out.new_themes = 0;
+
+  if (!out.probe_results) {
+    out.probe_results = perQuery.map(r => {
+      const ar = r.mentioned ? 1 : 0;
+      const avgPos = r.mentioned ? (r.position ?? r.avg_position ?? null) : null;
+      const vis = avgPos ? Math.min(100, Math.round(ar * (1 / avgPos) * 100)) : 0;
+      return {
+        probeId: r.probeId || null,
+        query: r.query, tier: 1, type: 'qualified', intent: r.intent || null,
+        engine: r.engine, engine_label: r.engine_label || r.engine,
+        runs: r.iterations ?? 1,
+        appearances: r.mentioned ? (r.hits ?? 1) : 0,
+        appearanceRate: ar,
+        avgPositionWhenAppearing: avgPos,
+        visibilityScore: vis,
+        top3_rate: r.top3_rate ?? (r.mentioned && avgPos && avgPos <= 3 ? 100 : 0),
+        modes: { search_on: null },      // pre-v2 had no mode split
+        citations: r.citations ?? 0,
+        segmentLabels: [],
+        sentiment: r.sentiment || null,
+        _legacy: true
+      };
+    });
+  }
+
   // Mark this so callers can show a small "legacy snapshot — derived
   // metrics" hint if they want.
   out._legacy = true;
   return out;
+}
+
+// Snapshot-level coverage as a percentage (0..100), preferring the v2 field.
+function coverageFrom(snap) {
+  if (!snap) return null;
+  if (snap.coverage_rate != null) return Math.round(snap.coverage_rate * 1000) / 10;
+  if (snap.detection_rate != null) return pct(snap.detection_rate);
+  return null;
+}
+
+function compositeFrom(snap) {
+  if (!snap) return null;
+  if (snap.composite_index != null) return snap.composite_index;
+  if (snap.overall_score != null) return snap.overall_score;
+  return null;
 }
 
 function visibilityFrom(snap) {
@@ -174,7 +233,9 @@ export function compareSnapshots(current, previous) {
     sentiment:  sentimentFrom(current),
     detection:  detectionFrom(current),
     top3:       top3From(current),
-    overall:    current?.overall_score ?? null
+    coverage:   coverageFrom(current),
+    composite:  compositeFrom(current),
+    overall:    compositeFrom(current)
   };
   const p = previous ? {
     visibility: visibilityFrom(previous),
@@ -183,7 +244,9 @@ export function compareSnapshots(current, previous) {
     sentiment:  sentimentFrom(previous),
     detection:  detectionFrom(previous),
     top3:       top3From(previous),
-    overall:    previous?.overall_score ?? null
+    coverage:   coverageFrom(previous),
+    composite:  compositeFrom(previous),
+    overall:    compositeFrom(previous)
   } : null;
 
   function delta(curr, prev) {
@@ -205,6 +268,8 @@ export function compareSnapshots(current, previous) {
       sentiment:  delta(c.sentiment,  p.sentiment),
       detection:  delta(c.detection,  p.detection),
       top3:       delta(c.top3,       p.top3),
+      coverage:   delta(c.coverage,   p.coverage),
+      composite:  delta(c.composite,  p.composite),
       overall:    delta(c.overall,    p.overall)
     } : null
   };
