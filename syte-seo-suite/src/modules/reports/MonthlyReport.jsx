@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useClients } from '../../store/useClients.js';
 import { claudeComplete, extractJSON } from '../../lib/anthropic.js';
-import { listAeoSnapshots, logReportSent, logReportGenerated, getCachedReportData, setCachedReportData } from '../../lib/supabase.js';
+import { listAeoSnapshots, logReportSent, logReportGenerated, getCachedReportData, setCachedReportData, persistAeoRuns } from '../../lib/supabase.js';
 import {
   ALICE_SYSTEM, MICROSITE_SYSTEM, QA_SYSTEM,
   ALICE_AEO_SYSTEM, MICROSITE_AEO_SYSTEM, QA_AEO_SYSTEM,
@@ -248,6 +248,7 @@ export default function MonthlyReport() {
       }
       setPhase('aeo-probe');
       const probeResult = await runSnapshot(client, {
+        onRuns: (records, raws) => persistAeoRuns(records, raws).catch(() => {}),
         onProgress: (p) => setPhase('aeo-probe: ' + (p.engine || '') + ' — ' + (p.query || '').slice(0, 40))
       });
       setLiveAeoProbe(probeResult);
@@ -351,6 +352,7 @@ export default function MonthlyReport() {
         setPhase('aeo-probe');
         try {
           const probeResult = await runSnapshot(client, {
+            onRuns: (records, raws) => persistAeoRuns(records, raws).catch(() => {}),
             onProgress: (p) => setPhase('aeo-probe: ' + (p.engine || '') + ' — ' + (p.query || '').slice(0, 40))
           });
           setLiveAeoProbe(probeResult);

@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { useClients } from '../../store/useClients.js';
 import { snapshotPreflight, runSnapshot } from './aeoRunner.js';
 import { normalizeSnapshot } from './aeoCompare.js';
-import { saveAeoSnapshot, listAeoSnapshots, getCachedReportData } from '../../lib/supabase.js';
+import { saveAeoSnapshot, listAeoSnapshots, getCachedReportData, persistAeoRuns } from '../../lib/supabase.js';
 import { ALL_ENGINES } from './aeoEngines.js';
 import { readinessFor } from '../../lib/clientReadiness.js';
 import { probeCandidatesFromGSC, mergeProbeQueries } from './keywordBuckets.js';
@@ -204,7 +204,8 @@ export default function AEOSnapshot() {
     try {
       const result = await runSnapshot(client, {
         iterations,
-        onProgress: (p) => setProgress(p)
+        onProgress: (p) => setProgress(p),
+        onRuns: (records, raws) => persistAeoRuns(records, raws).catch(() => {})
       });
       setSnapshot(result);
       setProgress({ phase: 'complete', index: result.per_query.length, total: result.per_query.length });
@@ -243,6 +244,7 @@ export default function AEOSnapshot() {
       setBulkProgress({ index: i, total, clientName: c.name, status: 'running' });
       try {
         const result = await runSnapshot(c, {
+          onRuns: (records, raws) => persistAeoRuns(records, raws).catch(() => {}),
           onProgress: (p) => {
             setBulkProgress({
               index: i, total, clientName: c.name,

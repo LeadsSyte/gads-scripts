@@ -265,6 +265,38 @@ export async function saveAeoRuns(rows) {
   localStorage.setItem(AEO_RUNS_KEY, JSON.stringify(list));
 }
 
+// Convenience: persist a snapshot's per-run records + deduped raw bodies.
+// Wired to runSnapshot's onRuns callback. Maps camelCase runner records to the
+// snake_case aeo_runs columns.
+export async function persistAeoRuns(records, rawEntries) {
+  const rows = (records || []).map(r => ({
+    client_id: r.client_id,
+    month: r.month,
+    probe_id: r.probeId,
+    engine: r.engine,
+    run_index: r.runIndex,
+    run_mode: r.runMode,
+    appeared: r.appeared,
+    position: r.position,
+    list_length: r.listLength,
+    segment_label: r.segmentLabel,
+    reason_phrase: r.reasonPhrase,
+    sentiment: r.sentiment,
+    competitors_named: r.competitorsNamed || [],
+    cited_urls: r.citedUrls || [],
+    raw_response_hash: r.rawResponseHash,
+    timestamp: r.timestamp
+  }));
+  await saveAeoRuns(rows);
+  // Dedupe raw bodies by hash before writing.
+  const seen = new Set();
+  for (const e of (rawEntries || [])) {
+    if (!e.hash || seen.has(e.hash)) continue;
+    seen.add(e.hash);
+    await saveRawResponse({ hash: e.hash, client_id: e.client_id, engine: e.engine, run_mode: e.run_mode, raw_response: e.raw_response });
+  }
+}
+
 export async function listAeoRuns(clientId, month) {
   if (supabase) {
     try {
