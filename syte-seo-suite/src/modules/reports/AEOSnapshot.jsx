@@ -5,7 +5,7 @@ import { normalizeSnapshot } from './aeoCompare.js';
 import { saveAeoSnapshot, listAeoSnapshots, getCachedReportData, persistAeoRuns } from '../../lib/supabase.js';
 import { ALL_ENGINES } from './aeoEngines.js';
 import { readinessFor } from '../../lib/clientReadiness.js';
-import { probeCandidatesFromGSC, gscBuyerPrompts } from './keywordBuckets.js';
+import { probeCandidatesFromGSC, groundedProbeSet } from './keywordBuckets.js';
 import { buildDiscoveryQueries, runDiscoverySweep, extractSitePhrases } from './aeoDiscovery.js';
 import { parseCensus, intentCoverage, INTENT_BUCKETS } from './aeoCensus.js';
 import { generateFanout } from './aeoFanout.js';
@@ -136,8 +136,9 @@ export default function AEOSnapshot() {
       // Update the append-only probe model (what the snapshot actually runs),
       // and keep the flat list in sync for back-compat.
       const existing = parseProbes(client) || migrateClientProbes(client);
-      const prompts = gscBuyerPrompts(gscCandidates, { geo: client.location || client.market, limit: 25 });
-      const { probes, added } = addProbes(existing, candProbes(prompts, { tier: 1, type: 'category', source: 'gsc' }));
+      const competitors = (client.competitors || '').split(/[,\n]/).map(s => s.trim()).filter(Boolean);
+      const set = groundedProbeSet(gscCandidates, { geo: client.location || client.market, competitors, limit: 25 });
+      const { probes, added } = addProbes(existing, set);
       if (added === 0) {
         setMsg('No new queries — all GSC head terms are already in the probe set.');
       } else {
@@ -241,8 +242,9 @@ export default function AEOSnapshot() {
     const existingProbes = parseProbes(client) || migrateClientProbes(client);
     const alreadyGrounded = existingProbes.some(p => p.source === 'gsc');
     if (!alreadyGrounded && gscCandidates.length) {
-      const gscPrompts = gscBuyerPrompts(gscCandidates, { geo: client.location || client.market, limit: 25 });
-      const { probes, added } = addProbes(existingProbes, candProbes(gscPrompts, { tier: 1, type: 'category', source: 'gsc' }));
+      const competitors = (client.competitors || '').split(/[,\n]/).map(s => s.trim()).filter(Boolean);
+      const set = groundedProbeSet(gscCandidates, { geo: client.location || client.market, competitors, limit: 25 });
+      const { probes, added } = addProbes(existingProbes, set);
       if (added > 0) {
         runClient = { ...client, aeo_probes: probes, aeo_probe_queries: probesToProbeList(probes) };
         saveClient(runClient).catch(() => {});

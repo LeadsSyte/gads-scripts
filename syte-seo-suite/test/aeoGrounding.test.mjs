@@ -29,6 +29,18 @@ t('gscBuyerPrompts: dedupes and respects limit', () => {
   eq(new Set(out).size, out.length, 'deduped');
 });
 
+t('groundedProbeSet: covers category + comparison + qualified + conversational', () => {
+  const set = kb.groundedProbeSet(['business central', 'ai consultancy dublin'], { geo: 'Ireland', competitors: ['Codec', 'Storm Technology'] });
+  const types = new Set(set.map(p => p.type));
+  ok(types.has('category'), 'category');
+  ok(types.has('comparison'), 'comparison');
+  ok(types.has('qualified'), 'qualified');
+  ok(types.has('conversational'), 'conversational');
+  ok(set.some(p => /alternatives to codec/i.test(p.query)), 'competitor comparison probe');
+  ok(set.some(p => /mid-market/i.test(p.query)), 'qualified mid-market probe');
+  ok(set.every(p => p.tier === 1 && p.source === 'gsc' && p.active === true), 'all tier-1 gsc active');
+});
+
 t('engagementNote: May start, June report → month 2', () => {
   const e = rp.engagementNote('2026-05-01', 'June 2026');
   eq(e.months, 2, 'two months in');

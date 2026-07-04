@@ -78,7 +78,9 @@ export const chatgpt = {
     const { openaiKey } = loadSettings();
     const searchMode = search ? 'search_on' : 'search_off';
     const reqBody = { model: 'gpt-4o', input: query, max_output_tokens: MAX_TOKENS };
-    if (search) reqBody.tools = [{ type: 'web_search_preview' }];
+    // search_context_size:'low' does a lighter, faster web search so the call
+    // finishes inside Netlify's 10s function limit instead of 504-ing.
+    if (search) reqBody.tools = [{ type: 'web_search_preview', search_context_size: 'low' }];
     try {
       const res = await fetchJsonWithRetry('/.netlify/functions/openai-proxy', {
         method: 'POST',

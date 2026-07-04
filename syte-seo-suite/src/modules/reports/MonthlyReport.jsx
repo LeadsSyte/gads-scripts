@@ -9,21 +9,21 @@ import {
 } from './reportPrompts.js';
 import { buildMicrositeHtml, downloadMicrosite, downloadMicrositePdf } from './microsite.js';
 import { sanitizeEmail } from './sanitize.js';
-import { probeCandidatesFromGSC, gscBuyerPrompts } from './keywordBuckets.js';
+import { probeCandidatesFromGSC, groundedProbeSet } from './keywordBuckets.js';
 import { parseProbes, migrateClientProbes, addProbes, probesToProbeList } from './aeoProbes.js';
 
 // Ground a client's probe set in the GSC head-terms already fetched for the
-// report, RESHAPED into buyer prompts, so the AEO probe runs against what the
-// brand actually ranks for on Google (as vendor questions) instead of guessed
-// generic terms. Returns a client object to run with.
+// report, as a BALANCED typed set (category + comparison + qualified +
+// conversational) so it covers the same breadth as a hand-built panel. Returns
+// a client object to run with.
 function groundClientInGsc(c, reportData) {
   const kws = reportData?.keywords;
   if (!c || !kws?.length) return c;
   const existing = parseProbes(c) || migrateClientProbes(c);
   if (existing.some(p => p.source === 'gsc')) return { ...c, aeo_probes: existing };
-  const prompts = gscBuyerPrompts(probeCandidatesFromGSC(kws, c.name, { limit: 40 }), { geo: c.location || c.market, limit: 20 });
-  const cands = prompts.map(q => ({ query: q, tier: 1, type: 'category', intent: 'commercial', source: 'gsc', active: true }));
-  const { probes } = addProbes(existing, cands);
+  const competitors = (c.competitors || '').split(/[,\n]/).map(s => s.trim()).filter(Boolean);
+  const set = groundedProbeSet(probeCandidatesFromGSC(kws, c.name, { limit: 40 }), { geo: c.location || c.market, competitors, limit: 24 });
+  const { probes } = addProbes(existing, set);
   return { ...c, aeo_probes: probes, aeo_probe_queries: probesToProbeList(probes) };
 }
 import { runSnapshot, snapshotPreflight } from './aeoRunner.js';
