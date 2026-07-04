@@ -78,6 +78,23 @@ await t('AC2: probe_results carry appearanceRate/avgPos/visibilityScore; portfol
   eq(snap.overall_score, snap.composite_index, 'overall == composite');
 });
 
+// ── Segment labels + reasons surfaced (the qualitative core) ─
+await t('probe_results + per_query carry segment labels, reasons and avg list length', async () => {
+  const extractRich = async () => ({
+    appeared: true, position: 2, listLength: 8, segmentLabel: 'Best for Copilot Studio agents',
+    reasonPhrase: 'strong Dataverse integration', sentiment: 'positive', competitorsNamed: []
+  });
+  const snap = await mod.runSnapshot(CLIENT, { engines: [gptStub()], extract: extractRich, iterations: 2, now: NOW });
+  const pr = snap.probe_results.find(r => r.type !== 'reverse');
+  ok(pr.segmentLabels.includes('Best for Copilot Studio agents'), 'segment label captured');
+  ok(pr.reasons.includes('strong Dataverse integration'), 'reason captured');
+  eq(pr.avgListLength, 8, 'avg list length');
+  const pq = snap.per_query.find(r => r.mentioned);
+  ok(pq.segment_labels.includes('Best for Copilot Studio agents'), 'per_query segment label');
+  eq(pq.reason, 'strong Dataverse integration', 'per_query reason');
+  eq(pq.avg_list_length, 8, 'per_query avg list length');
+});
+
 // ── AC5: dual-mode — search_on and search_off stored separately ─
 await t('AC5: tier-1 probe on ChatGPT produces separate search_off + search_on results', async () => {
   const runs = [];

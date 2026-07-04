@@ -357,7 +357,15 @@ export async function runSnapshot(client, opts = {}) {
         parametric_appearance_rate: parametricRuns.length ? scoreRunGroup(parametricRuns).appearanceRate : null,
         modes,   // { search_off: {...}|undefined, search_on: {...}|undefined }
         citations: brandCites,
+        // Qualitative core: the exact segment label + reason phrase the engine
+        // attached to the brand (this is what makes the report actionable).
         segmentLabels: [...new Set(scoredRuns.filter(r => r.appeared && r.segmentLabel).map(r => r.segmentLabel))],
+        reasons: [...new Set(scoredRuns.filter(r => r.appeared && r.reasonPhrase).map(r => r.reasonPhrase))],
+        // Average size of the brand list when named ("#4.2 of 8").
+        avgListLength: (() => {
+          const lens = scoredRuns.filter(r => r.appeared && r.listLength).map(r => r.listLength);
+          return lens.length ? Math.round((lens.reduce((a, b) => a + b, 0) / lens.length) * 10) / 10 : null;
+        })(),
         sentiment: dominant(scoredRuns.filter(r => r.appeared).map(r => r.sentiment)) || (combined.appearances ? 'neutral' : null)
       });
     }
@@ -473,10 +481,14 @@ export async function runSnapshot(client, opts = {}) {
     avg_position_when_named: r.avgPositionWhenAppearing,
     mentioned: r.appearanceRate > 0,
     position: r.avgPositionWhenAppearing,
-    excerpt: r.segmentLabels[0] || '',
+    avg_list_length: r.avgListLength,
+    segment_labels: r.segmentLabels,
+    reason: (r.reasons && r.reasons[0]) || '',
+    excerpt: r.segmentLabels[0] || (r.reasons && r.reasons[0]) || '',
     sentiment: r.sentiment,
     citations: r.citations,
     visibility_score: r.visibilityScore,
+    parametric_appearance_rate: r.parametric_appearance_rate,
     modes: r.modes,
     error: null,
     text: r.segmentLabels[0] || ''
