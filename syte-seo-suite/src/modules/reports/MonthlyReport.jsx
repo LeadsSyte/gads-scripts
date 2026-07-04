@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useClients } from '../../store/useClients.js';
 import { claudeComplete, extractJSON } from '../../lib/anthropic.js';
-import { listAeoSnapshots, logReportSent, logReportGenerated, getGeneratedReport, getCachedReportData, setCachedReportData, persistAeoRuns } from '../../lib/supabase.js';
+import { listAeoSnapshots, logReportSent, logReportGenerated, getGeneratedReport, getCachedReportData, setCachedReportData, persistAeoRuns, saveAeoSnapshot } from '../../lib/supabase.js';
 import {
   ALICE_SYSTEM, MICROSITE_SYSTEM, QA_SYSTEM,
   ALICE_AEO_SYSTEM, MICROSITE_AEO_SYSTEM, QA_AEO_SYSTEM,
@@ -491,6 +491,18 @@ export default function MonthlyReport() {
   const previewTooLarge = previewHtml.length > MAX_INLINE_REPORT_HTML;
 
   // Generate AEO-only report — skips SEO data, focuses on AI visibility.
+  // Auto-save this month's probe as a snapshot so next month has a baseline to
+  // compare against (this is what turns "first snapshot" into MoM deltas).
+  // Only saves once per client per report-month; the report month is used so the
+  // History timeline lines up with the reports.
+  async function autoSaveSnapshot(probeResult) {
+    if (!client || !probeResult || aeoSnap) return; // already have a snapshot this month
+    try {
+      const saved = await saveAeoSnapshot({ ...probeResult, client_id: client.id, month });
+      setAeoSnap(saved);
+    } catch { /* non-fatal — report still works without the saved baseline */ }
+  }
+
   async function generateAeoOnly() {
     if (!client) return;
     setErr(''); setEmail({ subject: '', body: '' }); setMicroJson(null); setQa(null); setSent(false); setLiveAeoProbe(null);
@@ -513,6 +525,7 @@ export default function MonthlyReport() {
       });
       setLiveAeoProbe(probeResult);
       setProbeWarnings(summarizeProbeIssues(probeResult));
+      autoSaveSnapshot(probeResult);
 
       // Step 2: Generate AEO-focused email
       setPhase('alice');
@@ -648,6 +661,7 @@ export default function MonthlyReport() {
           });
           setLiveAeoProbe(probeResult);
           setProbeWarnings(summarizeProbeIssues(probeResult));
+          autoSaveSnapshot(probeResult);
           // Feed probe results into form for Alice email
           setForm(prev => ({
             ...prev,
