@@ -124,18 +124,24 @@ export default function AEOSnapshot() {
     })();
   }, [client?.id]);
 
+  // Build probe objects from a list of queries (for the append-only model).
+  function candProbes(queries, { tier = 1, type = 'category', source = 'gsc' } = {}) {
+    return (queries || []).map(q => ({ query: q, tier, type, intent: 'commercial', source, active: true }));
+  }
+
   async function expandProbeFromGSC() {
     if (!client || !gscCandidates.length) return;
     setExpandBusy(true); setErr(''); setMsg('');
     try {
-      const { merged, addedCount, totalCount } = mergeProbeQueries(
-        client.aeo_probe_queries, gscCandidates
-      );
-      if (addedCount === 0) {
-        setMsg('No new queries — all GSC head terms are already in the probe list.');
+      // Update the append-only probe model (what the snapshot actually runs),
+      // and keep the flat list in sync for back-compat.
+      const existing = parseProbes(client) || migrateClientProbes(client);
+      const { probes, added } = addProbes(existing, candProbes(gscCandidates, { tier: 1, type: 'category', source: 'gsc' }));
+      if (added === 0) {
+        setMsg('No new queries — all GSC head terms are already in the probe set.');
       } else {
-        await saveClient({ ...client, aeo_probe_queries: merged });
-        setMsg(`Added ${addedCount} GSC head-term queries · probe list now ${totalCount}`);
+        await saveClient({ ...client, aeo_probes: probes, aeo_probe_queries: probesToProbeList(probes) });
+        setMsg(`Added ${added} GSC head-term probes · probe set now ${probes.length}`);
       }
     } catch (e) {
       setErr('Could not save: ' + e.message);
@@ -195,14 +201,13 @@ export default function AEOSnapshot() {
     if (!client || !discoveryResult || discoverySelected.size === 0) return;
     const toAdd = [...discoverySelected];
     try {
-      const { merged, addedCount, totalCount } = mergeProbeQueries(
-        client.aeo_probe_queries, toAdd
-      );
-      if (addedCount === 0) {
-        setMsg('No new queries — all selected discovery queries are already in the probe list.');
+      const existing = parseProbes(client) || migrateClientProbes(client);
+      const { probes, added } = addProbes(existing, candProbes(toAdd, { tier: 2, type: 'niche', source: 'discovery' }));
+      if (added === 0) {
+        setMsg('No new queries — all selected discovery queries are already in the probe set.');
       } else {
-        await saveClient({ ...client, aeo_probe_queries: merged });
-        setMsg(`Added ${addedCount} discovered queries · probe list now ${totalCount}`);
+        await saveClient({ ...client, aeo_probes: probes, aeo_probe_queries: probesToProbeList(probes) });
+        setMsg(`Added ${added} discovered probes · probe set now ${probes.length}`);
         setDiscoveryResult(null);
       }
     } catch (e) {
@@ -225,8 +230,26 @@ export default function AEOSnapshot() {
 
   async function run() {
     if (!client) return;
+
+    // Auto-ground the probe set in the Search Console head-terms the tool
+    // already has (top 25 by impressions), if it isn't grounded yet. This is
+    // the biggest quality lever: the client's real Google rankings become AI
+    // probes instead of guessed generic terms. Persists so the monthly report
+    // uses the same grounded set.
+    let runClient = client;
+    const existingProbes = parseProbes(client) || migrateClientProbes(client);
+    const alreadyGrounded = existingProbes.some(p => p.source === 'gsc');
+    if (!alreadyGrounded && gscCandidates.length) {
+      const { probes, added } = addProbes(existingProbes, candProbes(gscCandidates.slice(0, 25), { tier: 1, type: 'category', source: 'gsc' }));
+      if (added > 0) {
+        runClient = { ...client, aeo_probes: probes, aeo_probe_queries: probesToProbeList(probes) };
+        saveClient(runClient).catch(() => {});
+        setMsg(`Grounded the probe set in ${added} Search Console head-terms before running.`);
+      }
+    }
+
     // Cost preview + confirm (Requirement 7): block runs above the budget.
-    const est = estimateRunCost(client, { iterations });
+    const est = estimateRunCost(runClient, { iterations });
     if (est.totalCalls > (Number(callBudget) || 0)) {
       const go = window.confirm(
         `Cost preview: about ${est.totalCalls} model calls this run ` +
@@ -236,10 +259,10 @@ export default function AEOSnapshot() {
       );
       if (!go) return;
     }
-    setBusy(true); setErr(''); setMsg(''); setSnapshot(null);
+    setBusy(true); setErr(''); setSnapshot(null);
     setProgress({ phase: 'starting', index: 0, total: 0 });
     try {
-      const result = await runSnapshot(client, {
+      const result = await runSnapshot(runClient, {
         iterations,
         onProgress: (p) => setProgress(p),
         onRuns: (records, raws) => persistAeoRuns(records, raws).catch(() => {})
