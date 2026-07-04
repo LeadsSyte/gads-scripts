@@ -6,7 +6,7 @@ import { saveAeoSnapshot, listAeoSnapshots, getCachedReportData, persistAeoRuns 
 import { ALL_ENGINES } from './aeoEngines.js';
 import { readinessFor } from '../../lib/clientReadiness.js';
 import { probeCandidatesFromGSC, mergeProbeQueries } from './keywordBuckets.js';
-import { buildDiscoveryQueries, runDiscoverySweep } from './aeoDiscovery.js';
+import { buildDiscoveryQueries, runDiscoverySweep, extractSitePhrases } from './aeoDiscovery.js';
 import { parseCensus, intentCoverage, INTENT_BUCKETS } from './aeoCensus.js';
 import { generateFanout } from './aeoFanout.js';
 import { parseProbes, migrateClientProbes, addProbes, probesToProbeList } from './aeoProbes.js';
@@ -144,19 +144,38 @@ export default function AEOSnapshot() {
     }
   }
 
-  // Discovery: run a wide net of broad category × city queries to find
-  // the ones AI engines actually cite this brand for. Then surface them
-  // so the user can pick which to add to the saved probe list.
+  // Fetch a client's website server-side (page-proxy) so we can ground
+  // discovery in what they actually say they do. Returns '' on any failure.
+  async function fetchSiteHtml(url) {
+    if (!url) return '';
+    try {
+      const r = await fetch('/.netlify/functions/page-proxy', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url })
+      });
+      if (!r.ok) return '';
+      const d = await r.json();
+      return d.html || '';
+    } catch { return ''; }
+  }
+
+  // Discovery: dig for everything the AI engines cite this brand for, grounded
+  // in Search Console head-terms + the client's own website, then surface the
+  // list so the user can add the winners to the tracked probe set.
   async function runDiscovery() {
     if (!client) return;
-    const queries = buildDiscoveryQueries(client);
-    if (!queries.length) {
-      setErr('Set client industry first — discovery needs a category to probe with.');
-      return;
-    }
     setDiscoveryBusy(true); setErr(''); setMsg(''); setDiscoveryResult(null);
     setDiscoverySelected(new Set());
     try {
+      setDiscoveryProgress({ index: 0, total: 1, query: 'reading website + Search Console…', engine: '' });
+      const html = await fetchSiteHtml(client.url);
+      const sitePhrases = extractSitePhrases(html);
+      const queries = buildDiscoveryQueries(client, { gscSeeds: gscCandidates, sitePhrases });
+      if (!queries.length) {
+        setErr('Discovery needs a signal to work from: connect Search Console, add an industry, or make sure the website URL is set.');
+        setDiscoveryBusy(false); setDiscoveryProgress(null);
+        return;
+      }
       const result = await runDiscoverySweep(client, {
         queries,
         onProgress: (p) => setDiscoveryProgress(p)
@@ -563,9 +582,9 @@ export default function AEOSnapshot() {
           justifyContent: 'space-between', flexWrap: 'wrap', gap: 10
         }}>
           <div style={{ fontSize: 12, flex: 1, minWidth: 280 }}>
-            <strong>Discovery sweep</strong> — find queries AI engines actually cite this brand for.
+            <strong>Discover everything you appear for</strong> — grounded in Search Console + your website.
             <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
-              Probes ~{buildDiscoveryQueries(client).length} broad category × city queries (e.g. "shelving companies in Durban") and reports which ones cite {client.name}. Works as a reverse-scrape of real visibility.
+              Reads {client.name}'s Search Console head-terms{gscCandidates.length ? ` (${gscCandidates.length} loaded)` : ''} and their website, builds a broad prompt net from what they actually rank for and offer, then reports which prompts the AI engines cite {client.name} for. This is the real list, not guessed terms.
             </div>
           </div>
           <button
