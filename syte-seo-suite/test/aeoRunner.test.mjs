@@ -181,6 +181,29 @@ await t('concurrency cap: never more than 2 requests in-flight per engine', asyn
   ok(maxSeen <= 2 && maxSeen > 0, 'peak in-flight was ' + maxSeen + ' (<=2)');
 });
 
+// ── Retrieval-first scoring: parametric runs must not dilute the score ─
+await t('parametric no-search runs do not dilute the engine score (retrieval is the headline)', async () => {
+  const eng = {
+    id: 'chatgpt', label: 'ChatGPT', model: 'gpt-4o', retrievalNative: false, supportsSearchOff: true, isConfigured: () => true,
+    ask: async (q, { search } = {}) => ({
+      text: search ? 'Acme is a top pick. WEB' : 'I do not have enough information.',
+      raw: {}, searchMode: search ? 'search_on' : 'search_off'
+    })
+  };
+  // Appears only when web search is on (like ChatGPT in real life).
+  const extractByMode = async ({ text }) => text.includes('WEB')
+    ? { appeared: true, position: 1, listLength: 3, segmentLabel: 'best for X', reasonPhrase: 'good', sentiment: 'positive', competitorsNamed: [] }
+    : { appeared: false, position: null, listLength: null, segmentLabel: null, reasonPhrase: null, sentiment: 'neutral', competitorsNamed: [] };
+  const snap = await mod.runSnapshot(CLIENT, { engines: [eng], extract: extractByMode, iterations: 3, now: NOW });
+  // 3/3 retrieval runs appear, 0/3 parametric. Headline = 100 (retrieval), not
+  // 50 (the blend that made ChatGPT look broken).
+  eq(snap.engine_scores.chatgpt, 100, 'engine score is retrieval-only (100), not blended (50)');
+  const row = snap.probe_results.find(r => r.type !== 'reverse' && r.engine === 'chatgpt');
+  eq(row.appearanceRate, 1, 'headline appearanceRate from retrieval');
+  eq(row.parametric_appearance_rate, 0, 'parametric reported separately as 0');
+  eq(snap.coverage_rate, 1, 'coverage counts the retrieval win');
+});
+
 // ── Cost preview ────────────────────────────────────────────
 await t('estimateRunCost: totals probes×engines×modes×N', async () => {
   const est = mod.estimateRunCost(CLIENT, { engines: [gptStub()], iterations: 3 });
