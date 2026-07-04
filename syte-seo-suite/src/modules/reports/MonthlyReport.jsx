@@ -529,6 +529,7 @@ export default function MonthlyReport() {
       const groundedClient = groundClientInGsc(client, reportData);
       if (groundedClient !== client && groundedClient.aeo_probes) saveClient(groundedClient).catch(() => {});
       const probeResult = await runSnapshot(groundedClient, {
+        retrievalOnly: true, // headline is retrieval-first; skip the parametric pass to halve engine calls
         onRuns: (records, raws) => persistAeoRuns(records, raws).catch(() => {}),
         onProgress: (p) => { if (!p.index) probeStartRef.current = Date.now(); setPhase('aeo-probe'); setAeoProgress(p); }
       });
@@ -665,6 +666,7 @@ export default function MonthlyReport() {
           if (groundedClient !== client && groundedClient.aeo_probes) saveClient(groundedClient).catch(() => {});
           const probeResult = await runSnapshot(groundedClient, {
             maxQueries: LIVE_PROBE_MAX_QUERIES,
+            retrievalOnly: true, // headline is retrieval-first; skip the parametric pass to halve engine calls
             onRuns: (records, raws) => persistAeoRuns(records, raws).catch(() => {}),
             onProgress: (p) => { if (!p.index) probeStartRef.current = Date.now(); setPhase('aeo-probe'); setAeoProgress(p); }
           });

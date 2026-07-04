@@ -26,7 +26,17 @@ import {
 import { buildCitationGaps } from './aeoCitationGaps.js';
 
 const DEFAULT_ITERATIONS = 3;
-const DEFAULT_CONCURRENCY = 2;   // max in-flight requests per engine
+const DEFAULT_CONCURRENCY = 3;   // max in-flight requests per engine
+
+// Resolve run modes for a probe, honouring a run-wide retrieval-only override.
+// Retrieval-only drops the parametric (search_off) pass entirely, so a toggle
+// engine (ChatGPT/Claude) runs half the calls and the sweep finishes faster.
+// The headline score is retrieval-first anyway, so nothing that feeds the top
+// line is lost — only the parametric_appearance_rate diagnostic goes quiet.
+function runModesFor(probeRunMode, engine, retrievalOnly) {
+  if (retrievalOnly) return resolveRunModes('search_on', engine);
+  return resolveRunModes(probeRunMode, engine);
+}
 const DEFAULT_RETRIES = 3;       // on 429
 const DEFAULT_RETRY_MS = 1000;   // base backoff, doubles each attempt
 
@@ -130,7 +140,7 @@ export function snapshotPreflight(client) {
 
 // Cost preview (Requirement 7): total model calls a run will make.
 // callsPerRun = 1 engine ask + 1 Haiku extraction. Reverse probes run too.
-export function estimateRunCost(client, { iterations = DEFAULT_ITERATIONS, engines } = {}) {
+export function estimateRunCost(client, { iterations = DEFAULT_ITERATIONS, engines, retrievalOnly = false } = {}) {
   const engs = engines || activeEngines();
   const { active, scorable, reverse } = resolveProbes(client);
   // Reverse instruments run every snapshot too, so count them in the preview.
@@ -138,7 +148,7 @@ export function estimateRunCost(client, { iterations = DEFAULT_ITERATIONS, engin
   let engineCalls = 0;
   for (const probe of runnable) {
     for (const eng of engs) {
-      engineCalls += resolveRunModes(probe.runMode, eng).length * iterations;
+      engineCalls += runModesFor(probe.runMode, eng, retrievalOnly).length * iterations;
     }
   }
   const extractionCalls = engineCalls; // one extraction per response
@@ -168,6 +178,7 @@ export async function runSnapshot(client, opts = {}) {
     retryDelayMs = DEFAULT_RETRY_MS,
     sleep = defaultSleep,
     temperature = 0.7,
+    retrievalOnly = false,  // drop the parametric search_off pass (faster, retrieval-first headline unchanged)
     maxQueries    // optional cap on scorable probes (bounds the live probe in the full report)
   } = opts;
 
@@ -191,7 +202,7 @@ export async function runSnapshot(client, opts = {}) {
   let total = 0;
   for (const probe of runnableProbes)
     for (const eng of engines)
-      total += resolveRunModes(probe.runMode, eng).length * N;
+      total += runModesFor(probe.runMode, eng, retrievalOnly).length * N;
   let done = 0;
 
   const runRecords = [];   // persisted per-run records
@@ -282,7 +293,7 @@ export async function runSnapshot(client, opts = {}) {
   const groupPromises = [];
   for (const probe of runnableProbes) {
     for (const eng of engines) {
-      for (const mode of resolveRunModes(probe.runMode, eng)) {
+      for (const mode of runModesFor(probe.runMode, eng, retrievalOnly)) {
         const limit = perEngineLimit.get(eng.id);
         groupPromises.push(limit(() => probeGroup(probe, eng, mode)));
       }
