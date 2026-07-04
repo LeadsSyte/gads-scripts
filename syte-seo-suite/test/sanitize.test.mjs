@@ -19,6 +19,13 @@ t('stripDashes: replaces em + en dashes, leaves ascii hyphen', () => {
   ok(out.includes('Top-3'), 'ascii hyphen preserved');
 });
 
+t('stripDashes: a dash alone in a table cell becomes a hyphen, not a comma', () => {
+  const out = s.stripDashes(`<td>${EM}</td><td>#16</td><td> ${EM} </td>`);
+  ok(out.includes('<td>-</td>'), 'cell placeholder → hyphen: ' + out);
+  ok(!out.includes(','), 'no stray commas in cells: ' + out);
+  ok(!s.hasBannedDash(out), 'no banned dashes remain');
+});
+
 t('sanitizeEmail: subject + body cleaned', () => {
   const e = s.sanitizeEmail({ subject: `Big win ${EM} coverage up`, body: `Two things ${EN} more prompts, more citations.` });
   ok(!s.hasBannedDash(e.subject) && !s.hasBannedDash(e.body), 'clean');
