@@ -1,6 +1,8 @@
 // Generate a self-contained, downloadable HTML string for the client
 // monthly report microsite. No external JS, only Google Fonts via CDN.
 
+import { stripDashes } from './sanitize.js';
+
 function esc(s = '') {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
@@ -242,7 +244,8 @@ export function buildMicrositeHtml({ micro, client, monthLabel, previousMonthLab
 
   const overallScore = aeo.score != null ? String(aeo.score) : '';
 
-  return `<!DOCTYPE html>
+  // House rule: strip every em/en dash from the final client-facing HTML.
+  return stripDashes(`<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -454,10 +457,10 @@ export function buildMicrositeHtml({ micro, client, monthLabel, previousMonthLab
 
     ${probe.per_query?.length > 0 ? `
     <section>
-      <h2>AI Visibility — Headline Metrics</h2>
+      <h2>AI Visibility: Headline Metrics</h2>
       <p style="color:var(--muted);font-size:13px;margin-bottom:16px;">
         Probed ${probe.engines_used?.length || 0} AI engine${(probe.engines_used?.length || 0) > 1 ? 's' : ''}
-        (${(probe.engines_used || []).join(', ')}) across ${probe.queries_count || new Set(probe.per_query.map(r => r.query)).size} queries × ${probe.iterations || 1} iterations = ${probe.total_runs || probe.per_query.length} total responses.
+        (${(probe.engines_used || []).join(', ')}) across ${probe.scorable_probes || probe.queries_count || new Set(probe.per_query.map(r => r.query)).size} buyer prompts × ${probe.iterations || 1} iterations = ${probe.total_runs || probe.per_query.length} total responses.
       </p>
       ${(probe.mentions || 0) === 0 && (probe.citations || 0) === 0 && !cmp?.has_previous ? `
       <!-- No signal yet → reframe as "Establishing baseline" rather than blasting six big "0%" panels at the client (which reads as a doom report even though it's a brand-new measurement). The detail table below still shows every query that was probed. -->
@@ -471,11 +474,11 @@ export function buildMicrositeHtml({ micro, client, monthLabel, previousMonthLab
       </div>` : `
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-bottom:20px;">
         ${[
-          { label: 'Visibility Score', value: (probe.visibility_score ?? 0) + '%', delta: cmp?.deltas?.visibility, deltaSuffix: 'pp' },
-          { label: 'Mentions',        value: fmt(probe.mentions),                  delta: cmp?.deltas?.mentions,   deltaSuffix: '' },
+          { label: 'Named In', value: `${probe.prompt_coverage ?? 0} of ${probe.scorable_probes ?? (probe.queries_count || 0)}`, sub: 'buyer prompts', delta: cmp?.deltas?.coverage, deltaSuffix: 'pp' },
+          { label: 'Coverage Rate',   value: Math.round((probe.coverage_rate ?? 0) * 100) + '%', delta: cmp?.deltas?.coverage,   deltaSuffix: 'pp' },
+          { label: 'Share of Voice',  value: (probe.share_of_voice ?? 0) + '%',    delta: null },
+          { label: 'AEO Index',       value: String(probe.composite_index ?? probe.overall_score ?? 0), delta: cmp?.deltas?.composite, deltaSuffix: '' },
           { label: 'Citations',       value: fmt(probe.citations),                 delta: cmp?.deltas?.citations,  deltaSuffix: '' },
-          { label: 'Detection Rate',  value: (probe.detection_rate ?? 0) + '%',    delta: cmp?.deltas?.detection,  deltaSuffix: 'pp' },
-          { label: 'Top-3 Rate',      value: (probe.top3_rate ?? 0) + '%',         delta: cmp?.deltas?.top3,       deltaSuffix: 'pp' },
           { label: 'Sentiment',       value: (probe.sentiment_score ?? 0) + '%',   delta: cmp?.deltas?.sentiment,  deltaSuffix: 'pp' }
         ].map(m => `
           <div style="padding:18px;background:var(--surface);border:1px solid var(--border);border-radius:12px;">
@@ -649,6 +652,33 @@ export function buildMicrositeHtml({ micro, client, monthLabel, previousMonthLab
       ` : ''}
     </section>` : ''}
 
+    ${probe.citation_gaps?.length > 0 ? `
+    <section>
+      <h2>Citation Gaps: Where to Win Next</h2>
+      <p style="color:var(--muted);font-size:13px;margin-bottom:14px;">
+        Commercial prompts where ${esc(client.name)} was absent but competitors were cited. These sources are the growth plan, not a shortfall: earning a presence on them is how coverage grows.
+      </p>
+      ${micro?.citationGapsNarrative ? `<p class="narrative" style="margin-bottom:14px;">${esc(micro.citationGapsNarrative)}</p>` : ''}
+      <table class="data-table" style="width:100%;border-collapse:collapse;font-size:12px;">
+        <thead>
+          <tr style="border-bottom:2px solid var(--border);text-align:left;">
+            <th style="padding:8px 10px;color:var(--muted);font-size:10px;text-transform:uppercase;">Source</th>
+            <th style="padding:8px 10px;text-align:right;color:var(--muted);font-size:10px;text-transform:uppercase;">Hits</th>
+            <th style="padding:8px 10px;color:var(--muted);font-size:10px;text-transform:uppercase;">Competitors surfaced</th>
+            <th style="padding:8px 10px;color:var(--muted);font-size:10px;text-transform:uppercase;">Suggested action</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${probe.citation_gaps.slice(0, 12).map(g => `<tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:6px 10px;font-weight:600;">${esc(g.domain)}</td>
+            <td style="padding:6px 10px;text-align:right;font-family:'JetBrains Mono',monospace;">${g.hitCount}</td>
+            <td style="padding:6px 10px;color:var(--muted);max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc((g.competitors || []).slice(0, 3).join(', '))}</td>
+            <td style="padding:6px 10px;color:var(--muted);">${esc(g.suggestedAction || '')}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    </section>` : ''}
+
     ${probe.per_query?.length > 0 ? (() => {
       // Every other table in this report is row-capped; this granular
       // detail table was not, so a saved snapshot with a large probe-query
@@ -674,7 +704,7 @@ export function buildMicrositeHtml({ micro, client, monthLabel, previousMonthLab
             <th style="padding:8px 10px;color:var(--muted);font-size:10px;text-transform:uppercase;">Engine</th>
             <th style="padding:8px 10px;text-align:center;color:var(--muted);font-size:10px;text-transform:uppercase;">Visibility</th>
             <th style="padding:8px 10px;text-align:center;color:var(--muted);font-size:10px;text-transform:uppercase;">Top-3 Rate</th>
-            <th style="padding:8px 10px;text-align:center;color:var(--muted);font-size:10px;text-transform:uppercase;">Avg Pos</th>
+            <th style="padding:8px 10px;text-align:center;color:var(--muted);font-size:10px;text-transform:uppercase;">Avg. position when named</th>
             <th style="padding:8px 10px;color:var(--muted);font-size:10px;text-transform:uppercase;">Sentiment</th>
           </tr>
         </thead>
@@ -789,7 +819,7 @@ export function buildMicrositeHtml({ micro, client, monthLabel, previousMonthLab
     </footer>
   </div>
 </body>
-</html>`;
+</html>`);
 }
 
 export function downloadMicrosite(html, filename) {

@@ -1,13 +1,14 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useClients } from '../../store/useClients.js';
 import { claudeComplete, extractJSON } from '../../lib/anthropic.js';
-import { listAeoSnapshots, logReportSent, logReportGenerated, getGeneratedReport, getCachedReportData, setCachedReportData } from '../../lib/supabase.js';
+import { listAeoSnapshots, logReportSent, logReportGenerated, getGeneratedReport, getCachedReportData, setCachedReportData, persistAeoRuns } from '../../lib/supabase.js';
 import {
   ALICE_SYSTEM, MICROSITE_SYSTEM, QA_SYSTEM,
   ALICE_AEO_SYSTEM, MICROSITE_AEO_SYSTEM, QA_AEO_SYSTEM,
   buildAlicePayload, getWorkSummary, buildAeoPayload
 } from './reportPrompts.js';
 import { buildMicrositeHtml, downloadMicrosite, downloadMicrositePdf } from './microsite.js';
+import { sanitizeEmail } from './sanitize.js';
 import { runSnapshot, snapshotPreflight } from './aeoRunner.js';
 import { compareSnapshots, rankBrandWithCompetitors, normalizeSnapshot } from './aeoCompare.js';
 import { ensureToken, SCOPES, getToken, switchAccount, silentRefresh, getCurrentEmail, getTokenForEmail, TOKEN_EVENT } from '../technical/googleAuth.js';
@@ -487,6 +488,7 @@ export default function MonthlyReport() {
       }
       setPhase('aeo-probe');
       const probeResult = await runSnapshot(client, {
+        onRuns: (records, raws) => persistAeoRuns(records, raws).catch(() => {}),
         onProgress: (p) => setPhase('aeo-probe: ' + (p.engine || '') + ' — ' + (p.query || '').slice(0, 40))
       });
       setLiveAeoProbe(probeResult);
@@ -514,7 +516,7 @@ export default function MonthlyReport() {
         max_tokens: 1200,
         temperature: 0.7
       });
-      setEmail(parseAliceOutput(aliceText));
+      setEmail(sanitizeEmail(parseAliceOutput(aliceText)));
 
       // Step 3: Generate microsite JSON (AEO-only shape)
       setPhase('micro');
@@ -618,6 +620,7 @@ export default function MonthlyReport() {
           // AEO Report.
           const probeResult = await runSnapshot(client, {
             maxQueries: LIVE_PROBE_MAX_QUERIES,
+            onRuns: (records, raws) => persistAeoRuns(records, raws).catch(() => {}),
             onProgress: (p) => setPhase('aeo-probe: ' + (p.engine || '') + ' — ' + (p.query || '').slice(0, 40))
           });
           setLiveAeoProbe(probeResult);
@@ -644,7 +647,7 @@ export default function MonthlyReport() {
         max_tokens: 1000,
         temperature: 0.7
       });
-      const parsed = parseAliceOutput(aliceText);
+      const parsed = sanitizeEmail(parseAliceOutput(aliceText));
       setEmail(parsed);
 
       // 2. Microsite JSON

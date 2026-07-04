@@ -1,544 +1,564 @@
-// Orchestrates a full AEO snapshot for a client.
+// AEO v2 snapshot runner.
 //
-// For each (query × engine) pair we run N iterations and aggregate the
-// hits into a visibility percentage — this is what produces the rich
-// "76.9% on AI Mode" style numbers that competitive tools (RankScale,
-// Profound, Otterly) lead their reports with. Single-shot probes only
-// give binary cited/not-cited, which understates real visibility.
+// For each active probe x engine x runMode we run N iterations. Every run is
+// captured as a full record (Requirement 2) via ONE structured Haiku
+// extraction call, and citation URLs are pulled from each API's structured
+// citation fields. Scores use appearance rate + average position WHEN
+// APPEARING (Requirement 3) — single-shot position is dead.
 //
-// We track competitors with the same depth as the brand: visibility,
-// detection rate, top-3 rate, mentions, citations (URL hits), sentiment.
-// That gives us the competitive-landscape table the client expects.
+// The runner does NOT import supabase (that keeps it node-importable and lets
+// callers inject stubs). Per-run records + raw bodies are handed to the
+// caller through the `onRuns` callback for persistence, exactly like the UI
+// already owns saveAeoSnapshot.
 
-import { ALL_ENGINES, activeEngines } from './aeoEngines.js';
-import { detectBrand, sentimentOf, scoreMention, countCitations } from './brandDetection.js';
-import { intentMap, shareOfVoice, INTENT_BUCKETS } from './aeoCensus.js';
+import { ALL_ENGINES, activeEngines, resolveRunModes } from './aeoEngines.js';
+import { extractRun, extractCitedUrls, hashResponse } from './aeoExtract.js';
+import { detectBrand, countCitations } from './brandDetection.js';
+import {
+  scoreRunGroup, appearanceRate, avgPositionWhenAppearing, visibilityScore,
+  promptCoverage, coverageRate, meanVisibilityCovered, compositeIndex,
+  citationDensity, bucketByAppearance
+} from './aeoScore.js';
+import {
+  parseProbes, migrateClientProbes, activeProbes, scorableProbes,
+  reverseProbesFor, countNewThemesSince, INTENT_IDS
+} from './aeoProbes.js';
+import { buildCitationGaps } from './aeoCitationGaps.js';
 
-// Default iterations per (query × engine). 3 gives bands of 0/33/66/100% —
-// enough resolution to spot partial wins without 9× the API cost of 10.
 const DEFAULT_ITERATIONS = 3;
+const DEFAULT_CONCURRENCY = 2;   // max in-flight requests per engine
+const DEFAULT_RETRIES = 3;       // on 429
+const DEFAULT_RETRY_MS = 1000;   // base backoff, doubles each attempt
 
-function parseQueries(raw) {
-  return (raw || '')
-    .split('\n')
-    .map(s => s.trim())
-    .filter(Boolean);
+// Tiny concurrency limiter — caps how many of `fn` run at once.
+function pLimit(n) {
+  let active = 0;
+  const queue = [];
+  const next = () => {
+    if (active >= n || !queue.length) return;
+    active++;
+    const { fn, resolve, reject } = queue.shift();
+    Promise.resolve().then(fn).then(resolve, reject).finally(() => { active--; next(); });
+  };
+  return (fn) => new Promise((resolve, reject) => { queue.push({ fn, resolve, reject }); next(); });
+}
+
+const defaultSleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+function is429(resp) {
+  return resp?.error && (resp.status === 429 || /\b429\b|rate limit|too many requests/i.test(resp.error));
+}
+
+// Call eng.ask with exponential backoff on 429. sleep is injectable so tests
+// don't actually wait. Non-429 errors return immediately (skip, don't abort).
+async function askWithBackoff(eng, query, askOpts, { retries, baseMs, sleep }) {
+  let delay = baseMs;
+  for (let attempt = 0; ; attempt++) {
+    const resp = await eng.ask(query, askOpts);
+    // A flagged sustained rate-limit / config error already exhausted the
+    // engine's own retries, so don't hammer it; the runner disables it instead.
+    if (resp?.rateLimited || resp?.configError) return resp;
+    if (!is429(resp) || attempt >= retries) return resp;
+    await sleep(delay);
+    delay *= 2;
+  }
 }
 
 function parseCompetitors(raw) {
   return (raw || '')
-    .split(/[,\n]/)
-    .map(s => s.trim())
-    .filter(Boolean)
+    .split(/[,\n]/).map(s => s.trim()).filter(Boolean)
     .map(entry => {
-      // Allow "Name | https://domain.tld" or "Name (domain.tld)" or just "Name".
-      const sepMatch = entry.match(/^(.+?)\s*[|]\s*(.+)$/) ||
-                       entry.match(/^(.+?)\s*\((.+?)\)\s*$/);
-      if (sepMatch) return { name: sepMatch[1].trim(), url: sepMatch[2].trim() };
-      // If it's a domain on its own, use it as both.
+      const sep = entry.match(/^(.+?)\s*[|]\s*(.+)$/) || entry.match(/^(.+?)\s*\((.+?)\)\s*$/);
+      if (sep) return { name: sep[1].trim(), url: sep[2].trim() };
       if (/^[a-z0-9-]+\.[a-z]{2,}/i.test(entry)) return { name: entry, url: entry };
       return { name: entry, url: '' };
     });
 }
 
+function inline_shareOfVoice(brandMentions, competitors) {
+  const brand = Math.max(0, Number(brandMentions) || 0);
+  const compTotal = (competitors || []).reduce((a, c) => a + (Number(c.mentions) || 0), 0);
+  const denom = brand + compTotal;
+  if (denom === 0) return { sov: 0, brand, competitorTotal: compTotal, totalMentions: 0 };
+  return { sov: Math.round((brand / denom) * 1000) / 10, brand, competitorTotal: compTotal, totalMentions: denom };
+}
+
+function hostMatchesBrand(url, brandUrl, brandName) {
+  const bd = (brandUrl || '').toLowerCase().replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/\/.*$/, '');
+  const slug = (brandName || '').toLowerCase().replace(/\s+/g, '');
+  let host = '';
+  try { host = new URL(url).host.replace(/^www\./, '').toLowerCase(); } catch { return false; }
+  if (bd && (host === bd || host.endsWith('.' + bd))) return true;
+  const root = bd.split('.')[0];
+  if (root && root.length >= 4 && host.includes(root)) return true;
+  if (slug.length >= 4 && host.includes(slug)) return true;
+  return false;
+}
+
+// Resolve the probe set the snapshot runs against.
+export function resolveProbes(client, { now, includeReverse = true } = {}) {
+  const stored = parseProbes(client);
+  const base = (stored && stored.length) ? stored : migrateClientProbes(client, { now });
+  const act = activeProbes(base);
+  const reverse = includeReverse ? reverseProbesFor(client, { now }) : [];
+  return { all: base, active: act, scorable: act.filter(p => p.type !== 'reverse'), reverse };
+}
+
 export function snapshotPreflight(client) {
   const engines = activeEngines();
-  const queries = parseQueries(client?.aeo_probe_queries);
+  const { scorable } = resolveProbes(client, { includeReverse: false });
   const missingEngines = ALL_ENGINES.filter(e => !e.isConfigured());
   return {
     engines,
-    queries,
+    queries: scorable.map(p => p.query),
+    probes: scorable,
     missingEngines,
-    canRun: engines.length > 0 && queries.length > 0
+    canRun: engines.length > 0 && scorable.length > 0
   };
 }
 
-// Run one single (engine, query) ask + brand detect. Returns the raw row
-// before per-query aggregation. Errors are returned as { error } so a
-// single failure does not abort the sweep.
-async function probeOne(eng, query, client, brandList, competitorList) {
-  const resp = await eng.ask(query);
-  if (resp.error) {
-    // Surface failures that won't recover within the run so the runner can
-    // stop probing this engine instead of paying the cost on every remaining
-    // round. Two kinds: rate-limit (429, quota) and config/auth (400/401/403,
-    // bad or wrong-type key). Detect explicit flags or the status in the text.
-    const rateLimited = !!resp.rateLimited || /\b429\b/.test(resp.error || '');
-    const configError = !!resp.configError || /\b(400|401|403)\b/.test(resp.error || '');
-    return { engine: eng.id, engineLabel: eng.label, query, error: resp.error, rateLimited, configError };
+// Cost preview (Requirement 7): total model calls a run will make.
+// callsPerRun = 1 engine ask + 1 Haiku extraction. Reverse probes run too.
+export function estimateRunCost(client, { iterations = DEFAULT_ITERATIONS, engines } = {}) {
+  const engs = engines || activeEngines();
+  const { active, scorable, reverse } = resolveProbes(client);
+  // Reverse instruments run every snapshot too, so count them in the preview.
+  const runnable = active.concat(reverse.filter(r => !active.some(a => a.id === r.id)));
+  let engineCalls = 0;
+  for (const probe of runnable) {
+    for (const eng of engs) {
+      engineCalls += resolveRunModes(probe.runMode, eng).length * iterations;
+    }
   }
-  const text = resp.text || '';
-
-  // Brand detection — does the client appear, where, what was said.
-  const brandHit = detectBrand(text, {
-    name: client.name,
-    url: client.url,
-    competitors: competitorList.map(c => c.name).join(',')
-  });
-
-  // Per-competitor detection — exactly the same logic the client gets.
-  // We treat each competitor as a "self" probe so we can compute the
-  // same metrics for them (position, top-3, citations) as for the brand.
-  const competitorHits = competitorList.map(c => {
-    const hit = detectBrand(text, {
-      name: c.name,
-      url: c.url,
-      competitors: [client.name, ...competitorList.filter(x => x !== c).map(x => x.name)].join(',')
-    });
-    const citations = countCitations(text, c.url, c.name);
-    return { name: c.name, url: c.url, ...hit, citations };
-  });
-
-  const brandCitations = countCitations(text, client.url, client.name);
-
+  const extractionCalls = engineCalls; // one extraction per response
   return {
-    engine: eng.id,
-    engineLabel: eng.label,
-    query,
-    text: text.slice(0, 4000),
-    brand: { ...brandHit, citations: brandCitations },
-    competitorHits
+    probes: runnable.length,
+    scorableProbes: scorable.length,
+    engines: engs.length,
+    iterations,
+    engineCalls,
+    extractionCalls,
+    totalCalls: engineCalls + extractionCalls
   };
 }
 
-// onProgress gets called with { phase, engine, query, index, total }.
-// maxQueries (optional) caps how many probe queries are swept. The full
-// snapshot is queries × engines × iterations live LLM calls, so an
-// uncapped run over a very large probe-query list takes many minutes. The
-// dedicated AEO Snapshot tool runs the full set; callers that just want a
-// quick freshness probe (e.g. the in-report fallback) pass a cap so they
-// can't kick off an unbounded sweep that locks up the UI.
-export async function runSnapshot(client, { onProgress, iterations, maxQueries } = {}) {
+// onProgress({ phase, engine, query, index, total, iteration, iterations })
+// onRuns(records[], rawEntries[]) — caller persists (saveAeoRuns / saveRawResponse)
+export async function runSnapshot(client, opts = {}) {
   if (!client?.id) {
     throw new Error('runSnapshot called without a valid client.id — pick a client first.');
   }
-  const engines = activeEngines();
-  let queries = parseQueries(client.aeo_probe_queries);
-  const competitorList = parseCompetitors(client.competitors);
-  // query → intent lookup from the saved census (if any). Lets us tag each
-  // result with its buyer-intent bucket and compute per-intent visibility.
-  const qIntent = intentMap(client);
-  const N = Math.max(1, Math.min(10, Number(iterations) || DEFAULT_ITERATIONS));
+  const {
+    onProgress, onRuns, iterations, now,
+    engines: engineOverride, extract = extractRun,
+    sinceISO,
+    concurrency = DEFAULT_CONCURRENCY,
+    retries = DEFAULT_RETRIES,
+    retryDelayMs = DEFAULT_RETRY_MS,
+    sleep = defaultSleep,
+    temperature = 0.7,
+    maxQueries    // optional cap on scorable probes (bounds the live probe in the full report)
+  } = opts;
 
+  const engines = engineOverride || activeEngines();
   if (!engines.length) throw new Error('No AI engines configured. Open Suite Settings.');
-  if (!queries.length) throw new Error('This client has no AEO probe queries. Edit the client to add some.');
 
-  // Cap the sweep when asked. Keep the first N queries — the probe-query
-  // list is authored most-important-first (head terms before long-tail).
-  if (maxQueries && queries.length > maxQueries) {
-    queries = queries.slice(0, maxQueries);
-  }
+  const { all: allProbes, active, scorable, reverse } = resolveProbes(client, { now });
+  if (!scorable.length) throw new Error('This client has no active AEO probes. Migrate or add some.');
+  // maxQueries bounds how many scorable probes run (reverse instruments always
+  // run). Used by the full monthly report to keep the inline live probe cheap.
+  const scorableToRun = (maxQueries && Number(maxQueries) > 0)
+    ? active.filter(p => p.type !== 'reverse').slice(0, Number(maxQueries))
+    : active;
+  const runnableProbes = scorableToRun.concat(reverse.filter(r => !scorableToRun.some(a => a.id === r.id)));
 
-  const total = queries.length * engines.length * N;
+  const N = Math.max(1, Math.min(10, Number(iterations) || DEFAULT_ITERATIONS));
+  const competitorList = parseCompetitors(client.competitors);
+  const brandName = client.name;
+
+  // Precount for progress.
+  let total = 0;
+  for (const probe of runnableProbes)
+    for (const eng of engines)
+      total += resolveRunModes(probe.runMode, eng).length * N;
   let done = 0;
 
-  // --- Diagnostic timing (console only; no effect on the snapshot data) ---
-  // The full sweep is queries × engines × iterations sequential LLM calls,
-  // and a slow/retrying engine (Gemini's model-fallback chain) or a long
-  // sentiment pass can make a run take many minutes with no visible
-  // progress. These timers print exactly where the wall-clock goes so we
-  // can target the real bottleneck instead of guessing.
-  const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
-  const fmt = (ms) => (ms / 1000).toFixed(1) + 's';
-  const t0 = now();
-  const engineMs = {};    // engine.label → total ms spent awaiting that engine
-  const engineCalls = {}; // engine.label → number of probe calls
-  const tick = (label, ms) => {
-    engineMs[label] = (engineMs[label] || 0) + ms;
-    engineCalls[label] = (engineCalls[label] || 0) + 1;
-  };
+  const runRecords = [];   // persisted per-run records
+  const rawEntries = [];   // { hash, engine, run_mode, raw_response }
+  const enginesRan = new Set();
+  const disabledEngines = new Set();  // engines a sustained 429 / bad key took out mid-sweep
+  const nowISO = (now ? new Date(now) : new Date()).toISOString();
+  const runMonth = nowISO.slice(0, 7);
 
-  // Phase 1: probe each (query, engine) N times. Iterations are sequential
-  // per engine to keep within rate limits; engines run in parallel per query.
-  //
-  // Circuit breaker: when an engine returns an error that won't recover
-  // within the run — a rate-limit (429, quota exhausted) or a config/auth
-  // error (400/401/403, bad or wrong-type key) — every further call would
-  // just fail, sometimes after wasting backoff time. Once that happens we
-  // record the engine in `disabledEngines` and skip it for all remaining
-  // iterations/queries, pushing a quick synthetic error row so aggregation
-  // still scores it 0%. This is what stops a quota-exhausted or misconfigured
-  // Gemini from adding dead waiting to every round (the "stuck on Working"
-  // freeze).
-  const disabledEngines = new Map(); // engine.id → reason ('rate-limited (429)' | 'config/auth error')
-  const phase1Start = now();
-  const rawResults = [];
-  for (const query of queries) {
-    const enginePromises = engines.map(async (eng) => {
-      const runs = [];
-      for (let i = 0; i < N; i++) {
-        if (disabledEngines.has(eng.id)) {
-          done++;
-          onProgress?.({
-            phase: 'done', engine: eng.label, query,
-            index: done, total, iteration: i + 1, iterations: N
-          });
-          runs.push({
-            engine: eng.id, engineLabel: eng.label, query,
-            error: eng.label + ' ' + disabledEngines.get(eng.id) + ' — skipped for rest of run',
-            rateLimited: true
-          });
-          continue;
-        }
-        onProgress?.({
-          phase: 'query', engine: eng.label, query,
-          index: done, total, iteration: i + 1, iterations: N
-        });
-        const callStart = now();
-        const row = await probeOne(eng, query, client, [], competitorList);
-        tick(eng.label, now() - callStart);
-        if (row.rateLimited) disabledEngines.set(eng.id, 'rate-limited (429)');
-        else if (row.configError) disabledEngines.set(eng.id, 'config/auth error (check API key)');
+  function errorRecord(probe, eng, i, mode, error) {
+    return {
+      client_id: client.id, month: runMonth, probeId: probe.id, engine: eng.id, runIndex: i,
+      timestamp: nowISO, runMode: mode, error,
+      appeared: null, position: null, listLength: null,
+      segmentLabel: null, reasonPhrase: null, sentiment: null,
+      competitorsNamed: [], citedUrls: [], rawResponseHash: null
+    };
+  }
+
+  // Probe one (engine, mode) N times, sequentially (rate-limit friendly).
+  async function probeGroup(probe, eng, mode) {
+    const runs = [];
+    for (let i = 0; i < N; i++) {
+      // Skip an engine that a sustained rate-limit / bad key already took out.
+      if (disabledEngines.has(eng.id)) {
+        runRecords.push(errorRecord(probe, eng, i, mode, 'engine disabled for this sweep'));
         done++;
-        onProgress?.({
-          phase: 'done', engine: eng.label, query,
-          index: done, total, iteration: i + 1, iterations: N
+        continue;
+      }
+      onProgress?.({ phase: 'query', engine: eng.label, query: probe.query, mode, index: done, total, iteration: i + 1, iterations: N });
+      const search = mode === 'search_on';
+      const resp = await askWithBackoff(eng, probe.query, { search }, { retries, baseMs: retryDelayMs, sleep });
+      done++;
+      onProgress?.({ phase: 'done', engine: eng.label, query: probe.query, mode, index: done, total });
+      // A sustained rate-limit or config error takes the engine out for the
+      // rest of the sweep (main's behaviour) instead of paying it every probe.
+      if (resp.rateLimited || resp.configError) disabledEngines.add(eng.id);
+      if (resp.error) {
+        // Errored run: excluded from scored runs, but we note the attempt.
+        runRecords.push({
+          client_id: client.id, month: runMonth, probeId: probe.id, engine: eng.id, runIndex: i,
+          timestamp: nowISO, runMode: mode, error: resp.error,
+          appeared: null, position: null, listLength: null,
+          segmentLabel: null, reasonPhrase: null, sentiment: null,
+          competitorsNamed: [], citedUrls: [], rawResponseHash: null
         });
-        runs.push(row);
+        continue;
       }
-      return runs;
-    });
-    const batches = await Promise.all(enginePromises);
-    for (const batch of batches) rawResults.push(...batch);
-  }
-  const phase1Ms = now() - phase1Start;
-  if (disabledEngines.size) {
-    try {
-      const summary = [...disabledEngines.entries()].map(([id, reason]) => `${id} (${reason})`).join(', ');
-      console.warn('[AEO] engines disabled mid-run:', summary);
-    } catch {}
-  }
-
-  // Phase 2: sentiment for cited brand mentions. One Haiku call each,
-  // sequential to spare rate limits. Skip if not mentioned or errored.
-  const phase2Start = now();
-  let sentimentCalls = 0;
-  for (const r of rawResults) {
-    if (r.error || !r.brand?.mentioned) continue;
-    onProgress?.({ phase: 'sentiment', query: r.query, engine: r.engineLabel });
-    r.brand.sentiment = await sentimentOf(r.brand.excerpt, client.name);
-    r.brand.score = scoreMention({ ...r.brand, sentiment: r.brand.sentiment });
-    sentimentCalls++;
-  }
-  const phase2Ms = now() - phase2Start;
-
-  // Print the breakdown. Per-engine cumulative time is summed across the
-  // parallel branches, so engineMs can exceed phase1Ms — the useful signal
-  // is which engine dominates and its avg per-call latency.
-  try {
-    const engineRows = Object.keys(engineMs)
-      .sort((a, b) => engineMs[b] - engineMs[a])
-      .map(label => `${label}: ${fmt(engineMs[label])} over ${engineCalls[label]} calls (avg ${fmt(engineMs[label] / engineCalls[label])})`);
-    console.info(
-      `[AEO timing] ${client.name}: total ${fmt(now() - t0)} · ` +
-      `Phase1 probes ${fmt(phase1Ms)} (${rawResults.length} calls) · ` +
-      `Phase2 sentiment ${fmt(phase2Ms)} (${sentimentCalls} calls)\n` +
-      `[AEO timing] per-engine cumulative:\n  ` + engineRows.join('\n  ')
-    );
-  } catch {}
-
-  // Phase 3: per-query aggregation across iterations and engines.
-  // For each (query, engine) we compute visibility = hits / iterations.
-  const perQueryEngine = {}; // key: `${query}::${engine}` → aggregate
-  for (const r of rawResults) {
-    const key = r.query + '::' + r.engine;
-    if (!perQueryEngine[key]) {
-      perQueryEngine[key] = {
-        query: r.query, engine: r.engine, engineLabel: r.engineLabel,
-        runs: 0, hits: 0, top3Hits: 0, errors: 0,
-        positions: [], excerpts: [], sentiments: [], citations: 0
+      enginesRan.add(eng.id);
+      const text = resp.text || '';
+      const raw = resp.raw;
+      const hash = hashResponse(text);
+      let ext = await extract({ text, brandName, competitorNames: competitorList.map(c => c.name) });
+      if (!ext) {
+        // Fallback: regex brand detection so the run still records.
+        const hit = detectBrand(text, { name: brandName, url: client.url, competitors: competitorList.map(c => c.name).join(',') });
+        ext = {
+          appeared: !!hit.mentioned, position: hit.mentioned ? (hit.position || 1) : null,
+          listLength: null, segmentLabel: null, reasonPhrase: hit.excerpt ? hit.excerpt.slice(0, 200) : null,
+          sentiment: 'neutral', competitorsNamed: hit.competitorHits || []
+        };
+      }
+      const citedUrls = extractCitedUrls(eng.id, raw, text);
+      const rec = {
+        client_id: client.id, month: runMonth, probeId: probe.id, engine: eng.id, runIndex: i,
+        timestamp: nowISO, runMode: mode,
+        appeared: !!ext.appeared,
+        position: ext.appeared ? (ext.position ?? null) : null,
+        listLength: ext.listLength ?? null,
+        segmentLabel: ext.segmentLabel || null,
+        reasonPhrase: ext.reasonPhrase || null,
+        sentiment: ext.sentiment || 'neutral',
+        competitorsNamed: ext.competitorsNamed || [],
+        citedUrls,
+        rawResponseHash: hash
       };
+      runRecords.push(rec);
+      rawEntries.push({ hash, engine: eng.id, run_mode: mode, raw_response: text, client_id: client.id });
+      runs.push(rec);
     }
-    const agg = perQueryEngine[key];
-    agg.runs++;
-    if (r.error) { agg.errors++; continue; }
-    if (r.brand?.mentioned) {
-      agg.hits++;
-      agg.positions.push(r.brand.position);
-      if (r.brand.position && r.brand.position <= 3) agg.top3Hits++;
-      if (r.brand.excerpt) agg.excerpts.push(r.brand.excerpt);
-      if (r.brand.sentiment) agg.sentiments.push(r.brand.sentiment);
-    }
-    agg.citations += r.brand?.citations || 0;
+    return { probe, engine: eng, mode, runs };
   }
 
-  // Roll up per-query (across engines): used for active/emerging/zero.
-  const perQuery = Object.values(perQueryEngine).map(agg => {
-    const visibility = agg.runs ? Math.round((agg.hits / agg.runs) * 1000) / 10 : 0;
-    const top3Rate = agg.runs ? Math.round((agg.top3Hits / agg.runs) * 1000) / 10 : 0;
-    const avgPosition = agg.positions.length
-      ? Math.round((agg.positions.reduce((a, b) => a + b, 0) / agg.positions.length) * 10) / 10
-      : null;
-    const dominantSentiment = mostFrequent(agg.sentiments) || (agg.hits ? 'neutral' : null);
-    return {
-      query: agg.query,
-      intent: qIntent[agg.query.toLowerCase().trim()] || null,
-      engine: agg.engine,
-      engine_label: agg.engineLabel,
-      iterations: agg.runs,
-      hits: agg.hits,
-      visibility,                          // % of iterations where mentioned
-      top3_rate: top3Rate,
-      avg_position: avgPosition,
-      mentioned: agg.hits > 0,             // back-compat for old microsite renderer
-      position: avgPosition,               // back-compat
-      excerpt: agg.excerpts[0] || '',
-      sentiment: dominantSentiment,
-      citations: agg.citations,
-      score: visibility >= 70 ? 100 : visibility >= 30 ? 50 : (agg.hits > 0 ? 25 : 0),
-      error: agg.errors === agg.runs ? 'all iterations errored' : null,
-      text: agg.excerpts[0] || ''
-    };
-  });
-
-  // Phase 4: per-competitor aggregation. We compute the same metrics for
-  // every competitor as for the brand — visibility, top-3, mentions,
-  // citations, sentiment — so we can rank everyone in one table.
-  const competitorAgg = {};
-  for (const c of competitorList) {
-    competitorAgg[c.name] = {
-      name: c.name, url: c.url,
-      runs: 0, hits: 0, top3Hits: 0,
-      positions: [], mentions: 0, citations: 0
-    };
-  }
-  for (const r of rawResults) {
-    if (r.error) continue;
-    for (const ch of (r.competitorHits || [])) {
-      const agg = competitorAgg[ch.name];
-      if (!agg) continue;
-      agg.runs++;
-      if (ch.mentioned) {
-        agg.hits++;
-        agg.mentions++;
-        if (ch.position) agg.positions.push(ch.position);
-        if (ch.position && ch.position <= 3) agg.top3Hits++;
+  // Per-engine concurrency cap: each engine runs at most `concurrency` groups
+  // at once; engines run independently of each other. Iterations stay
+  // sequential within a group (probeGroup). 429s back off exponentially.
+  const perEngineLimit = new Map(engines.map(e => [e.id, pLimit(Math.max(1, concurrency))]));
+  const groupPromises = [];
+  for (const probe of runnableProbes) {
+    for (const eng of engines) {
+      for (const mode of resolveRunModes(probe.runMode, eng)) {
+        const limit = perEngineLimit.get(eng.id);
+        groupPromises.push(limit(() => probeGroup(probe, eng, mode)));
       }
-      agg.citations += ch.citations || 0;
     }
   }
-  const competitors = Object.values(competitorAgg).map(agg => {
-    const visibility = agg.runs ? Math.round((agg.hits / agg.runs) * 1000) / 10 : 0;
-    const top3 = agg.runs ? Math.round((agg.top3Hits / agg.runs) * 1000) / 10 : 0;
-    const avgPosition = agg.positions.length
-      ? Math.round((agg.positions.reduce((a, b) => a + b, 0) / agg.positions.length) * 10) / 10
-      : null;
-    return {
-      name: agg.name, url: agg.url,
-      visibility, top3_rate: top3,
-      avg_position: avgPosition,
-      mentions: agg.mentions,
-      citations: agg.citations,
-      // Legacy field kept for backwards-compat with older microsite render
-      appearances: agg.hits
-    };
-  });
+  const groups = await Promise.all(groupPromises);
 
-  // Phase 5: brand-level aggregates.
-  const brandRuns = rawResults.filter(r => !r.error);
-  const brandHits = brandRuns.filter(r => r.brand?.mentioned);
-  const brandTop3 = brandHits.filter(r => r.brand.position && r.brand.position <= 3);
-  const brandPositive = brandHits.filter(r => r.brand?.sentiment === 'positive');
-  const brandCitations = brandRuns.reduce((a, b) => a + (b.brand?.citations || 0), 0);
-  const brandPositions = brandHits.map(r => r.brand.position).filter(Boolean);
-  const avgBrandPosition = brandPositions.length
-    ? Math.round((brandPositions.reduce((a, b) => a + b, 0) / brandPositions.length) * 10) / 10
-    : null;
+  // Hand raw runs to the caller for persistence (UI wires DB writers).
+  try { await onRuns?.(runRecords, rawEntries); } catch (e) { console.warn('[aeo] onRuns persistence failed:', e.message); }
 
-  const visibilityScore = brandRuns.length
-    ? Math.round((brandHits.length / brandRuns.length) * 1000) / 10
-    : 0;
-  const top3Rate = brandRuns.length
-    ? Math.round((brandTop3.length / brandRuns.length) * 1000) / 10
-    : 0;
-  const sentimentPct = brandHits.length
-    ? Math.round((brandPositive.length / brandHits.length) * 1000) / 10
-    : 0;
-
-  // Detection rate: % of *queries* (across engines) where brand was hit
-  // at least once. Distinct from visibility (per-iteration rate).
-  const detectionByQuery = {};
-  for (const pq of perQuery) {
-    if (!detectionByQuery[pq.query]) detectionByQuery[pq.query] = false;
-    if (pq.hits > 0) detectionByQuery[pq.query] = true;
-  }
-  const detected = Object.values(detectionByQuery).filter(Boolean).length;
-  const detectionRate = queries.length
-    ? Math.round((detected / queries.length) * 1000) / 10
-    : 0;
-
-  // Engine-level scores using the same visibility metric for consistency.
-  const engineScores = {};
-  for (const eng of engines) {
-    const mine = perQuery.filter(pq => pq.engine === eng.id);
-    const hits = mine.reduce((a, b) => a + b.hits, 0);
-    const runs = mine.reduce((a, b) => a + b.iterations, 0);
-    engineScores[eng.id] = runs ? Math.round((hits / runs) * 100) : 0;
-  }
-
-  // Per-engine health — runs / errors / first error message. Surfaces
-  // engines that are silently failing across every probe (e.g. retired
-  // model, expired API key, proxy down) instead of leaving the operator
-  // wondering why only Claude rows show up in the report.
+  // Per-engine health so the report UI can explain all-zero engines (timeout /
+  // rate-limit / bad key) instead of showing them as "0% visibility".
   const engineHealth = {};
-  for (const eng of engines) {
-    const mineRaw = rawResults.filter(r => r.engine === eng.id);
-    const errored = mineRaw.filter(r => r.error);
-    engineHealth[eng.id] = {
-      label: eng.label,
-      runs: mineRaw.length,
-      errors: errored.length,
-      // Sample first non-empty error message to surface — most diagnostic
-      // value is in seeing it once, not 50 times.
-      sample_error: errored[0]?.error || null,
-      // Convenience flag: every iteration of every query failed for this
-      // engine. That's the "totally broken" case the UI should highlight.
-      all_failed: mineRaw.length > 0 && errored.length === mineRaw.length
-    };
+  for (const eng of engines) engineHealth[eng.id] = { label: eng.label, runs: 0, errors: 0, sample_error: null, all_failed: false };
+  for (const r of runRecords) {
+    const h = engineHealth[r.engine];
+    if (!h) continue;
+    h.runs++;
+    if (r.error) { h.errors++; if (!h.sample_error) h.sample_error = r.error; }
+  }
+  for (const h of Object.values(engineHealth)) h.all_failed = h.runs > 0 && h.errors === h.runs;
+
+  // ── Aggregate ──────────────────────────────────────────────
+  // Index groups by probe.
+  const byProbe = new Map();
+  for (const g of groups) {
+    if (!byProbe.has(g.probe.id)) byProbe.set(g.probe.id, { probe: g.probe, groups: [] });
+    byProbe.get(g.probe.id).groups.push(g);
   }
 
-  // Composite "AEO Performance Index" — a weighted 0-100 number that
-  // balances four quality dimensions instead of being a glorified
-  // mention-count. The visibility-only version was effectively
-  // (citations / total) × constant, which is exactly the "X out of N
-  // cited" framing that makes reports read poorly for clients who are
-  // early on their AEO journey.
-  //
-  // Weights:
-  //   Visibility       40%  — are we showing up at all? (×5 to map low
-  //                           absolute % into the 0-100 range; capped 100)
-  //   Top-3 rate       25%  — when we show up, are we prominent? (×5)
-  //   Citation density 20%  — are URLs being cited? (citations per response)
-  //   Sentiment        15%  — when mentioned, is the language positive?
-  const visibilityComponent = Math.min(100, visibilityScore * 5);
-  const top3Component       = Math.min(100, top3Rate * 5);
-  const citationDensity     = brandRuns.length
-    ? Math.min(100, Math.round((brandCitations / brandRuns.length) * 100))
-    : 0;
-  const sentimentComponent  = sentimentPct;
-  const overallScore = Math.round(
-    visibilityComponent * 0.40 +
-    top3Component       * 0.25 +
-    citationDensity     * 0.20 +
-    sentimentComponent  * 0.15
-  );
+  const probeResults = [];   // one row per (probe, engine), with per-mode splits
+  const probeAgg = [];       // one aggregate per scorable probe (for portfolio)
+  const fanoutSignals = { segmentLabels: [], reasonPhrases: [], competitorsNamed: [] };
 
-  // Phase 6: categorize keyword wins for the strategy section.
-  // Active = ≥70% visibility on at least one engine
-  // Emerging = 30-69% visibility on at least one engine
-  // Zero = no engine has >0%, or all <30% with 0 hits on most
-  const keywordWins = { active: [], emerging: [], zero: [] };
-  for (const query of queries) {
-    const enginesForQ = perQuery.filter(pq => pq.query === query);
-    const best = enginesForQ.reduce((acc, pq) =>
-      pq.visibility > (acc?.visibility || 0) ? pq : acc, null);
-    if (!best) continue;
-    if (best.visibility >= 70) {
-      keywordWins.active.push({
-        query, engine: best.engine, engine_label: best.engine_label,
-        visibility: best.visibility, top3_rate: best.top3_rate
+  for (const { probe, groups: pgroups } of byProbe.values()) {
+    // Collect fan-out signals from every appeared run of this probe.
+    for (const g of pgroups) for (const r of g.runs) {
+      if (r.appeared) {
+        if (r.segmentLabel) fanoutSignals.segmentLabels.push(r.segmentLabel);
+        if (r.reasonPhrase) fanoutSignals.reasonPhrases.push(r.reasonPhrase);
+        for (const c of (r.competitorsNamed || [])) fanoutSignals.competitorsNamed.push(c);
+      }
+    }
+
+    // Per-engine rows.
+    const byEngine = new Map();
+    for (const g of pgroups) {
+      if (!byEngine.has(g.engine.id)) byEngine.set(g.engine.id, { engine: g.engine, byMode: {} });
+      byEngine.get(g.engine.id).byMode[g.mode] = g.runs;
+    }
+
+    for (const { engine, byMode } of byEngine.values()) {
+      const allRuns = [].concat(...Object.values(byMode));
+      const modes = {};
+      for (const [m, rs] of Object.entries(byMode)) modes[m] = scoreRunGroup(rs);
+      const combined = scoreRunGroup(allRuns);
+      const top3 = allRuns.filter(r => r.appeared && r.position && r.position <= 3).length;
+      const brandCites = allRuns.reduce((a, r) =>
+        a + (r.citedUrls || []).filter(u => hostMatchesBrand(u, client.url, brandName)).length, 0);
+      probeResults.push({
+        probeId: probe.id, query: probe.query, tier: probe.tier, type: probe.type, intent: probe.intent,
+        engine: engine.id, engine_label: engine.label,
+        runs: combined.runs, appearances: combined.appearances,
+        appearanceRate: combined.appearanceRate,
+        avgPositionWhenAppearing: combined.avgPositionWhenAppearing,
+        visibilityScore: combined.visibilityScore,
+        top3_rate: combined.runs ? Math.round((top3 / combined.runs) * 1000) / 10 : 0,
+        modes,   // { search_off: {...}|undefined, search_on: {...}|undefined }
+        citations: brandCites,
+        segmentLabels: [...new Set(allRuns.filter(r => r.appeared && r.segmentLabel).map(r => r.segmentLabel))],
+        sentiment: dominant(allRuns.filter(r => r.appeared).map(r => r.sentiment)) || (combined.appearances ? 'neutral' : null)
       });
-    } else if (best.visibility >= 30) {
-      keywordWins.emerging.push({
-        query, engine: best.engine, engine_label: best.engine_label,
-        visibility: best.visibility
+    }
+
+    // Probe-level aggregate across all engines/modes (scorable only).
+    if (probe.type !== 'reverse') {
+      const allRuns = [].concat(...pgroups.map(g => g.runs));
+      const ar = appearanceRate(allRuns);
+      const avgPos = avgPositionWhenAppearing(allRuns);
+      probeAgg.push({
+        probeId: probe.id, parentProbeId: probe.parentProbeId || null,
+        query: probe.query, intent: probe.intent, type: probe.type,
+        runs: allRuns.length,
+        appearances: allRuns.filter(r => r.appeared).length,
+        appearanceRate: Math.round(ar * 100) / 100,
+        avgPositionWhenAppearing: avgPos,
+        visibilityScore: visibilityScore(ar, avgPos),
+        citations: allRuns.reduce((a, r) => a + (r.citedUrls || []).filter(u => hostMatchesBrand(u, client.url, brandName)).length, 0),
+        // best engine for this probe (highest visibilityScore)
+        bestEngine: bestEngineFor(probeResults, probe.id)
       });
-    } else {
-      keywordWins.zero.push({ query, best_visibility: best.visibility });
     }
   }
-  // Sort each bucket by visibility desc.
+
+  // ── Portfolio metrics ──────────────────────────────────────
+  const scorableRuns = probeAgg.reduce((a, p) => a + p.runs, 0);
+  const brandAppearances = probeAgg.reduce((a, p) => a + p.appearances, 0);
+  const brandCitationsTotal = probeAgg.reduce((a, p) => a + p.citations, 0);
+  const coverage = promptCoverage(probeAgg);
+  const covRate = coverageRate(probeAgg);
+  const meanVis = meanVisibilityCovered(probeAgg);
+
+  // Competitor aggregation from extraction across scorable runs.
+  const competitorAgg = {};
+  for (const c of competitorList) competitorAgg[c.name] = { name: c.name, url: c.url, mentions: 0, citations: 0, runs: 0 };
+  for (const g of groups) {
+    if (g.probe.type === 'reverse') continue;
+    for (const r of g.runs) {
+      for (const cn of (r.competitorsNamed || [])) {
+        const match = competitorList.find(c => cn.toLowerCase().includes(c.name.toLowerCase()) || c.name.toLowerCase().includes(cn.toLowerCase()));
+        if (match) competitorAgg[match.name].mentions++;
+      }
+      for (const c of competitorList) {
+        competitorAgg[c.name].runs++;
+        if (c.url) competitorAgg[c.name].citations += (r.citedUrls || []).filter(u => hostMatchesBrand(u, c.url, c.name)).length;
+      }
+    }
+  }
+  const competitors = Object.values(competitorAgg).map(a => ({
+    name: a.name, url: a.url,
+    visibility: a.runs ? Math.round((a.mentions / a.runs) * 1000) / 10 : 0,
+    mentions: a.mentions, citations: a.citations,
+    top3_rate: 0, avg_position: null, appearances: a.mentions
+  }));
+
+  const sov = inline_shareOfVoice(brandAppearances, competitors);
+  const citeDensity = citationDensity(brandCitationsTotal, scorableRuns);
+
+  const appearedRuns = [];
+  for (const g of groups) if (g.probe.type !== 'reverse') for (const r of g.runs) if (r.appeared) appearedRuns.push(r);
+  const positiveCount = appearedRuns.filter(r => r.sentiment === 'positive').length;
+  const sentimentPct = appearedRuns.length ? Math.round((positiveCount / appearedRuns.length) * 1000) / 10 : 0;
+  const top3Runs = appearedRuns.filter(r => r.position && r.position <= 3).length;
+  const brandTop3Rate = scorableRuns ? Math.round((top3Runs / scorableRuns) * 1000) / 10 : 0;
+  const brandVisibility = scorableRuns ? Math.round((brandAppearances / scorableRuns) * 1000) / 10 : 0;
+  const brandAvgPos = avgPositionWhenAppearing(appearedRuns);
+
+  const composite = compositeIndex({ coverageRate: covRate, meanVis, sov: sov.sov, citeDensity, sentiment: sentimentPct });
+
+  // ── Buckets on appearanceRate ──────────────────────────────
+  const keywordWins = { active: [], emerging: [], zero: [] };
+  for (const p of probeAgg) {
+    const bucket = bucketByAppearance(p.appearanceRate);
+    const be = p.bestEngine || {};
+    const entry = { query: p.query, probeId: p.probeId, engine: be.engine, engine_label: be.engine_label, visibility: p.visibilityScore, appearance_rate: Math.round(p.appearanceRate * 100), avg_position: p.avgPositionWhenAppearing };
+    if (bucket === 'active') keywordWins.active.push(entry);
+    else if (bucket === 'emerging') keywordWins.emerging.push(entry);
+    else keywordWins.zero.push({ query: p.query, probeId: p.probeId, best_visibility: p.visibilityScore });
+  }
   keywordWins.active.sort((a, b) => b.visibility - a.visibility);
   keywordWins.emerging.sort((a, b) => b.visibility - a.visibility);
 
-  // Phase 7: Share of Voice — the headline metric that replaces "cited for
-  // X of N probes". Of all the brand-naming the AI engines did across this
-  // census, what fraction was the client vs the tracked competitors?
-  const sov = shareOfVoice(brandHits.length, competitors);
+  // ── Engine scores + intent breakdown ───────────────────────
+  const engineScores = {};
+  for (const eng of engines) {
+    const rows = probeResults.filter(r => r.engine === eng.id && r.type !== 'reverse');
+    const app = rows.reduce((a, r) => a + r.appearances, 0);
+    const rr = rows.reduce((a, r) => a + r.runs, 0);
+    engineScores[eng.id] = rr ? Math.round((app / rr) * 100) : 0;
+  }
 
-  // Per-intent visibility breakdown across the census. Lets the report show
-  // "you're strong on commercial prompts, thin on comparison" instead of one
-  // flat number. Queries with no census intent fall into 'uncategorized'.
   const intentAgg = {};
-  for (const b of INTENT_BUCKETS) intentAgg[b.id] = { hits: 0, runs: 0, queries: new Set() };
-  for (const pq of perQuery) {
-    const intent = pq.intent || 'uncategorized';
-    if (!intentAgg[intent]) intentAgg[intent] = { hits: 0, runs: 0, queries: new Set() };
-    intentAgg[intent].hits += pq.hits;
-    intentAgg[intent].runs += pq.iterations;
-    intentAgg[intent].queries.add(pq.query);
+  for (const id of INTENT_IDS) intentAgg[id] = { hits: 0, runs: 0, queries: new Set() };
+  for (const p of probeAgg) {
+    const it = intentAgg[p.intent] || (intentAgg[p.intent] = { hits: 0, runs: 0, queries: new Set() });
+    it.hits += p.appearances; it.runs += p.runs; it.queries.add(p.query);
   }
   const intentBreakdown = Object.entries(intentAgg)
     .filter(([, v]) => v.runs > 0)
-    .map(([intent, v]) => ({
-      intent,
-      queries: v.queries.size,
-      visibility: v.runs ? Math.round((v.hits / v.runs) * 1000) / 10 : 0
-    }));
+    .map(([intent, v]) => ({ intent, queries: v.queries.size, visibility: v.runs ? Math.round((v.hits / v.runs) * 1000) / 10 : 0 }));
 
-  const month = new Date().toISOString().slice(0, 7); // YYYY-MM
+  // ── Back-compat per_query (one row per scorable probe×engine) ──
+  const perQuery = probeResults.filter(r => r.type !== 'reverse').map(r => ({
+    query: r.query, intent: r.intent, engine: r.engine, engine_label: r.engine_label,
+    iterations: r.runs, hits: r.appearances,
+    visibility: Math.round(r.appearanceRate * 100),
+    appearance_rate: Math.round(r.appearanceRate * 100),
+    top3_rate: r.top3_rate,
+    avg_position: r.avgPositionWhenAppearing,
+    avg_position_when_named: r.avgPositionWhenAppearing,
+    mentioned: r.appearanceRate > 0,
+    position: r.avgPositionWhenAppearing,
+    excerpt: r.segmentLabels[0] || '',
+    sentiment: r.sentiment,
+    citations: r.citations,
+    visibility_score: r.visibilityScore,
+    modes: r.modes,
+    error: null,
+    text: r.segmentLabels[0] || ''
+  }));
+
+  const excerpts = appearedRuns.slice(0, 50).map(r => ({
+    query: (allProbes.find(p => p.id === r.probeId) || {}).query || r.probeId,
+    engine: r.engine,
+    excerpt: r.reasonPhrase || r.segmentLabel || '',
+    sentiment: r.sentiment || 'neutral'
+  }));
+
+  const month = (now ? new Date(now) : new Date()).toISOString().slice(0, 7);
+  const newThemes = countNewThemesSince(allProbes, sinceISO);
+
+  // Branch exhaustion (Requirement 4 stopping rule): per fan-out parent, the
+  // fraction of its probes covered this snapshot. Consumers stop proposing
+  // children from a branch that comes in under 10%.
+  const byParent = {};
+  for (const p of probeAgg) {
+    const key = p.parentProbeId || '__root__';
+    (byParent[key] || (byParent[key] = { total: 0, covered: 0 }));
+    byParent[key].total++;
+    if (p.appearanceRate > 0) byParent[key].covered++;
+  }
+  const branchExhaustion = {};
+  for (const [k, v] of Object.entries(byParent)) {
+    const rate = v.total ? v.covered / v.total : 0;
+    branchExhaustion[k] = { total: v.total, covered: v.covered, rate: Math.round(rate * 100) / 100, exhausted: rate < 0.1 };
+  }
 
   return {
     client_id: client.id,
     month,
 
-    // Hero metrics — what the report leads with
-    overall_score: overallScore,                  // Composite AEO Performance Index
-    score_components: {                           // Transparency on what made up the composite
-      visibility: Math.round(visibilityComponent),
-      top3:       Math.round(top3Component),
-      citations:  citationDensity,
-      sentiment:  Math.round(sentimentComponent)
-    },
-    visibility_score: visibilityScore,    // % of all responses where brand mentioned
-    share_of_voice: sov.sov,              // brand mentions / (brand + competitor mentions) across the census
-    sov_detail: sov,                      // { sov, brand, competitorTotal, totalMentions }
-    detection_rate: detectionRate,        // % of queries hit at least once
-    top3_rate: top3Rate,                  // % of responses where brand in top 3
-    avg_position: avgBrandPosition,
-    mentions: brandHits.length,           // count of times the brand was mentioned
-    citations: brandCitations,            // count of URL/domain references in responses
-    sentiment_score: sentimentPct,        // % positive (numeric)
-    sentiment: sentimentPct + '% positive', // back-compat string
+    // v2 hero
+    composite_index: composite,
+    overall_score: composite,          // back-compat: History/cards read overall_score
+    coverage_rate: covRate,            // 0..1
+    prompt_coverage: coverage,         // named in X of Y
+    scorable_probes: probeAgg.length,
+    new_themes: newThemes,
+    branch_exhaustion: branchExhaustion,
+    share_of_voice: sov.sov,
+    sov_detail: sov,
 
-    // Engine breakdown
+    // per-probe scored results (new)
+    probe_results: probeResults,
+
+    // Per-engine params used this snapshot, persisted so month-over-month
+    // comparisons can flag param changes (Requirement 7).
+    engine_params: engines.map(e => ({
+      id: e.id, model: e.model, retrievalNative: !!e.retrievalNative,
+      temperature, extraction_temperature: 0
+    })),
+    run_config: { iterations: N, concurrency, retries, temperature },
+    run_modes_used: [...new Set(groups.map(g => g.mode))],
+
+    // signals for the fan-out loop (Stage 4)
+    fanout_signals: fanoutSignals,
+
+    // back-compat brand metrics
+    visibility_score: brandVisibility,
+    detection_rate: Math.round(covRate * 1000) / 10,   // == coverage %
+    top3_rate: brandTop3Rate,
+    avg_position: brandAvgPos,
+    mentions: brandAppearances,
+    citations: brandCitationsTotal,
+    sentiment_score: sentimentPct,
+    sentiment: sentimentPct + '% positive',
+
     engine_scores: engineScores,
-    engines_used: engines.map(e => e.id),
+    engines_used: [...enginesRan.size ? enginesRan : new Set(engines.map(e => e.id))],
     engine_health: engineHealth,
 
-    // Run config
     iterations: N,
-    total_runs: rawResults.length,
-    queries_count: queries.length,
+    total_runs: runRecords.filter(r => !r.error).length,
+    queries_count: probeAgg.length,
 
-    // Per-query × engine results (with visibility%)
     per_query: perQuery,
-
-    // Per-competitor full metrics
     competitors,
-
-    // Categorized strategy buckets
     keyword_wins: keywordWins,
-
-    // Per-intent visibility across the census (census-based reporting)
     intent_breakdown: intentBreakdown,
+    excerpts,
 
-    // Raw text excerpts for the response-excerpts panel
-    excerpts: rawResults
-      .filter(r => !r.error && r.brand?.excerpt)
-      .slice(0, 50)
-      .map(r => ({
-        query: r.query,
-        engine: r.engine,
-        excerpt: r.brand.excerpt,
-        sentiment: r.brand.sentiment || 'neutral'
-      }))
+    // Citation gaps — the actionable half: commercial probes where the brand
+    // missed but competitors were cited, grouped by source domain.
+    citation_gaps: buildCitationGaps(runRecords, allProbes, { brandName, brandUrl: client.url })
   };
 }
 
-function mostFrequent(arr) {
+function dominant(arr) {
   if (!arr?.length) return null;
-  const counts = {};
-  for (const v of arr) counts[v] = (counts[v] || 0) + 1;
-  return Object.entries(counts).sort((a, b) => b[1] - a[1])[0][0];
+  const c = {};
+  for (const v of arr) if (v) c[v] = (c[v] || 0) + 1;
+  const e = Object.entries(c).sort((a, b) => b[1] - a[1])[0];
+  return e ? e[0] : null;
+}
+
+function bestEngineFor(probeResults, probeId) {
+  const rows = probeResults.filter(r => r.probeId === probeId);
+  if (!rows.length) return null;
+  return rows.reduce((acc, r) => (r.visibilityScore > (acc?.visibilityScore ?? -1) ? r : acc), null);
 }

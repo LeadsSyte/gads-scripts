@@ -69,37 +69,36 @@ export const chatgpt = {
   id: 'chatgpt',
   label: 'ChatGPT',
   model: 'gpt-4o',
+  // Dual-mode capable: search_on enables the web_search_preview tool
+  // (retrieval visibility); search_off omits it (parametric visibility).
+  retrievalNative: false,
+  supportsSearchOff: true,
   isConfigured: () => !!loadSettings().openaiKey,
-  async ask(query) {
+  async ask(query, { search = true } = {}) {
     const { openaiKey } = loadSettings();
+    const searchMode = search ? 'search_on' : 'search_off';
+    const reqBody = { model: 'gpt-4o', input: query, max_output_tokens: MAX_TOKENS };
+    if (search) reqBody.tools = [{ type: 'web_search_preview' }];
     try {
       const res = await fetchJsonWithRetry('/.netlify/functions/openai-proxy', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          apiKey: openaiKey,
-          endpoint: 'responses',
-          body: {
-            model: 'gpt-4o',
-            input: query,
-            tools: [{ type: 'web_search_preview' }],
-            max_output_tokens: MAX_TOKENS
-          }
-        })
+        body: JSON.stringify({ apiKey: openaiKey, endpoint: 'responses', body: reqBody })
       });
       if (!res.ok) {
         const txt = await res.text().catch(() => '');
         // A 429 that survived the retries is a sustained rate-limit — flag it
         // so the runner disables ChatGPT for the rest of the sweep instead of
         // hammering the proxy on every remaining probe.
-        return { error: 'OpenAI ' + res.status + ' ' + txt.slice(0, 200), rateLimited: res.status === 429 };
+        return { error: 'OpenAI ' + res.status + ' ' + txt.slice(0, 200), rateLimited: res.status === 429, searchMode };
       }
       const data = await res.json();
       // Responses API returns output[].content[].text + structured URL
       // citations in annotations. We collapse text parts into one string
       // for the brand detector — the citations get appended so the
       // detector also picks up domain mentions that only appear in the
-      // citation list (the gold-tier signal).
+      // citation list. The full `data` is returned as `raw` so aeoExtract can
+      // parse structured citations.
       const parts = [];
       for (const item of data.output || []) {
         for (const c of item.content || []) {
@@ -110,8 +109,8 @@ export const chatgpt = {
         }
       }
       const text = parts.join('\n').trim();
-      return { text };
-    } catch (e) { return { error: e.message }; }
+      return { text, raw: data, model: 'gpt-4o', searchMode };
+    } catch (e) { return { error: e.message, searchMode }; }
   }
 };
 
@@ -120,6 +119,8 @@ export const perplexity = {
   id: 'perplexity',
   label: 'Perplexity',
   model: 'sonar',
+  retrievalNative: true,      // always search_on (retrieval-native)
+  supportsSearchOff: false,
   isConfigured: () => !!loadSettings().perplexityKey,
   async ask(query) {
     const { perplexityKey } = loadSettings();
@@ -145,7 +146,7 @@ export const perplexity = {
       }
       const data = await res.json();
       const text = data.choices?.[0]?.message?.content || '';
-      return { text };
+      return { text, raw: data, model: 'sonar', searchMode: 'search_on' };
     } catch (e) { return { error: e.message }; }
   }
 };
@@ -188,7 +189,7 @@ async function geminiCall(model, body, apiKey) {
       if (res.ok) {
         const data = await res.json();
         const text = data.candidates?.[0]?.content?.parts?.map(p => p.text).join('') || '';
-        return { ok: true, text, model };
+        return { ok: true, text, model, data };
       }
       const txt = await res.text().catch(() => '');
       // Quota/rate-limit: bail immediately and flag it. Sibling models share
@@ -218,6 +219,8 @@ export const gemini = {
   id: 'gemini',
   label: 'Gemini',
   model: GEMINI_PRIMARY,
+  retrievalNative: true,      // always search_on (retrieval-native)
+  supportsSearchOff: false,
   isConfigured: () => !!loadSettings().googleAiKey,
   async ask(query) {
     const { googleAiKey } = loadSettings();
@@ -226,7 +229,7 @@ export const gemini = {
     let lastErr = null;
     for (const model of chain) {
       const r = await geminiCall(model, body, googleAiKey);
-      if (r.ok) return { text: r.text };
+      if (r.ok) return { text: r.text, raw: r.data, model: r.model, searchMode: 'search_on' };
       lastErr = r.error;
       // Quota 429: every model shares the project quota, so don't try the
       // rest — surface the rate-limit flag so the runner stops calling Gemini.
@@ -253,9 +256,20 @@ export const claude = {
   id: 'claude',
   label: 'Claude',
   model: 'claude-haiku-4-5-20251001',
+  // Dual-mode capable: search_on enables the web_search tool (retrieval);
+  // search_off is parametric (default for Claude).
+  retrievalNative: false,
+  supportsSearchOff: true,
   isConfigured: () => !!getStoredApiKey(),
-  async ask(query) {
+  async ask(query, { search = false } = {}) {
     const key = getStoredApiKey();
+    const searchMode = search ? 'search_on' : 'search_off';
+    const body = {
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: MAX_TOKENS,
+      messages: [{ role: 'user', content: query }]
+    };
+    if (search) body.tools = [{ type: 'web_search_20250305', name: 'web_search', max_uses: 3 }];
     try {
       const res = await fetchJsonWithRetry('https://api.anthropic.com/v1/messages', {
         method: 'POST',
@@ -265,20 +279,16 @@ export const claude = {
           'anthropic-dangerous-direct-browser-access': 'true',
           'x-api-key': key
         },
-        body: JSON.stringify({
-          model: 'claude-haiku-4-5-20251001',
-          max_tokens: MAX_TOKENS,
-          messages: [{ role: 'user', content: query }]
-        })
+        body: JSON.stringify(body)
       });
       if (!res.ok) {
         const txt = await res.text().catch(() => '');
-        return { error: 'Claude ' + res.status + ' ' + txt.slice(0, 200), rateLimited: res.status === 429 };
+        return { error: 'Claude ' + res.status + ' ' + txt.slice(0, 200), rateLimited: res.status === 429, searchMode };
       }
       const data = await res.json();
       const text = (data.content || []).map(b => b.text || '').join('');
-      return { text };
-    } catch (e) { return { error: e.message }; }
+      return { text, raw: data, model: body.model, searchMode };
+    } catch (e) { return { error: e.message, searchMode }; }
   }
 };
 
@@ -286,4 +296,13 @@ export const ALL_ENGINES = [chatgpt, perplexity, gemini, claude];
 
 export function activeEngines() {
   return ALL_ENGINES.filter(e => e.isConfigured());
+}
+
+// Resolve which run modes a probe runs on an engine (Requirement 5).
+// Retrieval-native engines are hard-coded to search_on regardless of the probe.
+export function resolveRunModes(probeRunMode, engine) {
+  if (engine.retrievalNative || !engine.supportsSearchOff) return ['search_on'];
+  if (probeRunMode === 'search_off') return ['search_off'];
+  if (probeRunMode === 'search_on') return ['search_on'];
+  return ['search_off', 'search_on']; // 'both'
 }

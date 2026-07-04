@@ -1,13 +1,15 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useClients } from '../../store/useClients.js';
-import { snapshotPreflight, runSnapshot } from './aeoRunner.js';
+import { snapshotPreflight, runSnapshot, estimateRunCost } from './aeoRunner.js';
 import { normalizeSnapshot } from './aeoCompare.js';
-import { saveAeoSnapshot, listAeoSnapshots, getCachedReportData } from '../../lib/supabase.js';
+import { saveAeoSnapshot, listAeoSnapshots, getCachedReportData, persistAeoRuns } from '../../lib/supabase.js';
 import { ALL_ENGINES } from './aeoEngines.js';
 import { readinessFor } from '../../lib/clientReadiness.js';
 import { probeCandidatesFromGSC, mergeProbeQueries } from './keywordBuckets.js';
 import { buildDiscoveryQueries, runDiscoverySweep } from './aeoDiscovery.js';
 import { parseCensus, intentCoverage, INTENT_BUCKETS } from './aeoCensus.js';
+import { generateFanout } from './aeoFanout.js';
+import { parseProbes, migrateClientProbes, addProbes, probesToProbeList } from './aeoProbes.js';
 
 const ACCENT = '#a78bfa';
 
@@ -59,6 +61,11 @@ export default function AEOSnapshot() {
   const [bulkProgress, setBulkProgress] = useState(null);
   const [pendingMonthly, setPendingMonthly] = useState([]);
   const [iterations, setIterations] = useState(3);
+  // Fan-out "Discovered prompts" approval queue.
+  const [fanoutProposals, setFanoutProposals] = useState([]);
+  const [fanoutBusy, setFanoutBusy] = useState(false);
+  // Cost preview: block a run above this many model calls until confirmed.
+  const [callBudget, setCallBudget] = useState(400);
 
   // Compute the list of AEO-enabled clients that haven't had a snapshot
   // yet this month. Runs once when clients load.
@@ -199,21 +206,86 @@ export default function AEOSnapshot() {
 
   async function run() {
     if (!client) return;
+    // Cost preview + confirm (Requirement 7): block runs above the budget.
+    const est = estimateRunCost(client, { iterations });
+    if (est.totalCalls > (Number(callBudget) || 0)) {
+      const go = window.confirm(
+        `Cost preview: about ${est.totalCalls} model calls this run ` +
+        `(${est.probes} probes x ${est.engines} engines x ${iterations} iterations across search modes, ` +
+        `${est.engineCalls} engine + ${est.extractionCalls} extraction). ` +
+        `This exceeds your budget of ${callBudget}. Proceed?`
+      );
+      if (!go) return;
+    }
     setBusy(true); setErr(''); setMsg(''); setSnapshot(null);
     setProgress({ phase: 'starting', index: 0, total: 0 });
     try {
       const result = await runSnapshot(client, {
         iterations,
-        onProgress: (p) => setProgress(p)
+        onProgress: (p) => setProgress(p),
+        onRuns: (records, raws) => persistAeoRuns(records, raws).catch(() => {})
       });
       setSnapshot(result);
       setProgress({ phase: 'complete', index: result.per_query.length, total: result.per_query.length });
+      generateProposals(result);
     } catch (e) {
       setErr(e.message);
       setProgress(null);
     } finally {
       setBusy(false);
     }
+  }
+
+  // After a snapshot, fan out from what the engines said about the brand and
+  // propose the most novel new probes for approval (Requirement 4).
+  async function generateProposals(snap) {
+    if (!client || !snap) return;
+    setFanoutBusy(true); setFanoutProposals([]);
+    try {
+      const existing = parseProbes(client) || migrateClientProbes(client);
+      // Merge branches exhausted this snapshot with any previously flagged, so
+      // we stop proposing children from dead branches (Requirement 4).
+      const freshExhausted = Object.entries(snap.branch_exhaustion || {})
+        .filter(([, v]) => v.exhausted).map(([k]) => k);
+      const exhaustedParents = [...new Set([...(client.aeo_exhausted_branches || []), ...freshExhausted])]
+        .filter(k => k && k !== '__root__');
+      const { candidates } = await generateFanout({ snapshot: snap, client, existingProbes: existing, exhaustedParents });
+      setFanoutProposals(candidates);
+      if (freshExhausted.some(k => k !== '__root__' && !(client.aeo_exhausted_branches || []).includes(k))) {
+        saveClient({ ...client, aeo_exhausted_branches: exhaustedParents }).catch(() => {});
+      }
+    } catch { /* non-fatal — proposals are optional */ }
+    finally { setFanoutBusy(false); }
+  }
+
+  // Approve candidates → add as ACTIVE tier-2 probes. Append-only: tier-1 is
+  // never touched, so month-over-month trend comparability is preserved.
+  async function approveProbes(cands) {
+    if (!client || !cands.length) return;
+    try {
+      const existing = parseProbes(client) || migrateClientProbes(client);
+      const { probes, added } = addProbes(existing, cands.map(c => ({ ...c, active: true })));
+      await saveClient({ ...client, aeo_probes: probes, aeo_probe_queries: probesToProbeList(probes) });
+      const approved = new Set(cands.map(c => c.query));
+      setFanoutProposals(prev => prev.filter(p => !approved.has(p.query)));
+      setMsg(`Approved ${added} discovered prompt${added === 1 ? '' : 's'} as active tier-2 probe${added === 1 ? '' : 's'}`);
+    } catch (e) {
+      setErr('Could not approve: ' + e.message);
+    }
+  }
+
+  function dismissProbe(cand) {
+    setFanoutProposals(prev => prev.filter(p => p.query !== cand.query));
+  }
+
+  // Citation gap "brand present?" is user-editable and saved with the snapshot.
+  function setGapBrandPresent(idx, val) {
+    setSnapshot(prev => {
+      if (!prev) return prev;
+      const gaps = (prev.citation_gaps || []).slice();
+      gaps[idx] = { ...gaps[idx], brandPresent: val };
+      return { ...prev, citation_gaps: gaps };
+    });
   }
 
   async function handleSave() {
@@ -243,6 +315,7 @@ export default function AEOSnapshot() {
       setBulkProgress({ index: i, total, clientName: c.name, status: 'running' });
       try {
         const result = await runSnapshot(c, {
+          onRuns: (records, raws) => persistAeoRuns(records, raws).catch(() => {}),
           onProgress: (p) => {
             setBulkProgress({
               index: i, total, clientName: c.name,
@@ -277,6 +350,7 @@ export default function AEOSnapshot() {
   }));
 
   const queries = (client.aeo_probe_queries || '').split('\n').map(s => s.trim()).filter(Boolean);
+  const costEst = preflight?.canRun ? (() => { try { return estimateRunCost(client, { iterations }); } catch { return null; } })() : null;
   const census = parseCensus(client);
   const coverage = census ? intentCoverage(census) : null;
   const intentLabel = id => (INTENT_BUCKETS.find(b => b.id === id)?.label) || id;
@@ -578,6 +652,23 @@ export default function AEOSnapshot() {
                 title="How many times to ask each (query × engine). 3+ gives meaningful visibility percentages."
               />
             </label>
+            <label style={{ fontSize: 11, color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 6 }}>
+              Call budget
+              <input
+                type="number" min={0} step={50}
+                value={callBudget}
+                onChange={e => setCallBudget(Math.max(0, Number(e.target.value) || 0))}
+                style={{ width: 68, padding: '4px 8px', fontSize: 12 }}
+                disabled={busy}
+                title="Runs above this many model calls ask for confirmation first."
+              />
+            </label>
+            {costEst && (
+              <span className="muted" style={{ fontSize: 11, color: costEst.totalCalls > callBudget ? 'var(--orange)' : 'var(--text-muted)' }}
+                title={`${costEst.engineCalls} engine + ${costEst.extractionCalls} extraction calls`}>
+                ~{costEst.totalCalls} calls
+              </span>
+            )}
             <button
               className="primary"
               onClick={run}
@@ -787,6 +878,41 @@ export default function AEOSnapshot() {
             </div>
           )}
 
+          {snapshot.citation_gaps?.length > 0 && (
+            <div className="card" style={{ marginBottom: 14 }}>
+              <strong>Citation Gaps</strong>
+              <div className="muted" style={{ fontSize: 11, marginTop: 4, marginBottom: 8 }}>
+                Commercial prompts where {client.name} was absent but competitors were cited. These sources are the growth plan — earn the brand a presence on them.
+              </div>
+              <div style={{ overflowX: 'auto' }}>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Source domain</th><th>Hits</th><th>Competitors surfaced</th><th>Example prompt</th><th>Brand present?</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {snapshot.citation_gaps.map((g, i) => (
+                      <tr key={g.domain}>
+                        <td style={{ fontWeight: 600 }}>{g.domain}</td>
+                        <td>{g.hitCount}</td>
+                        <td className="muted" style={{ fontSize: 11, maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={g.competitors.join(', ')}>{g.competitors.join(', ') || '—'}</td>
+                        <td className="muted" style={{ fontSize: 11, maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={g.exampleQueries.join(' · ')}>{g.exampleQueries[0] || '—'}</td>
+                        <td>
+                          <select value={g.brandPresent || 'unknown'} onChange={e => setGapBrandPresent(i, e.target.value)} style={{ fontSize: 11, padding: '2px 6px' }}>
+                            <option value="unknown">Unknown</option>
+                            <option value="yes">Yes</option>
+                            <option value="no">No</option>
+                          </select>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
           <div className="card">
             <strong>Response Excerpts</strong>
             <div style={{ marginTop: 10 }}>
@@ -807,6 +933,44 @@ export default function AEOSnapshot() {
             </div>
           </div>
         </>
+      )}
+
+      {(fanoutBusy || fanoutProposals.length > 0) && (
+        <div className="card" style={{ marginBottom: 14, borderLeft: '4px solid ' + ACCENT }}>
+          <div className="row" style={{ justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+            <div>
+              <strong>Discovered prompts</strong>
+              <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
+                Fanned out from the segment labels, reasons and competitors the engines attached to {client.name}.
+                Approve to add as active tier-2 probes — the tier-1 panel stays untouched for trend comparability.
+              </div>
+            </div>
+            {fanoutProposals.length > 0 && (
+              <button onClick={() => approveProbes(fanoutProposals)} style={{ borderColor: ACCENT, color: ACCENT, whiteSpace: 'nowrap' }}>
+                Approve all ({fanoutProposals.length})
+              </button>
+            )}
+          </div>
+          {fanoutBusy && <div className="muted" style={{ fontSize: 12, marginTop: 10 }}>Generating proposals…</div>}
+          {fanoutProposals.length > 0 && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 10, maxHeight: 380, overflowY: 'auto' }}>
+              {fanoutProposals.map(p => (
+                <div key={p.query} className="row" style={{ justifyContent: 'space-between', gap: 10, padding: '8px 10px', background: 'var(--surface-2)', borderRadius: 6 }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 13, fontWeight: 600 }}>{p.query}</div>
+                    <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
+                      {p.type} · {p.intent} · novelty {Math.round((p.novelty || 0) * 100)}%{p.parentProbeId ? ' · from ' + p.parentProbeId : ''}
+                    </div>
+                  </div>
+                  <div className="row" style={{ gap: 6 }}>
+                    <button onClick={() => approveProbes([p])} style={{ fontSize: 11, padding: '4px 10px', borderColor: 'var(--green)', color: 'var(--green)' }}>Approve</button>
+                    <button onClick={() => dismissProbe(p)} style={{ fontSize: 11, padding: '4px 10px' }}>Dismiss</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       )}
       </>}
     </div>
