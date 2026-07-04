@@ -239,6 +239,89 @@ export async function deleteAeoSnapshot(id) {
   localStorage.setItem(LS_PREFIX + 'aeo_history', JSON.stringify(list.filter(r => r.id !== id)));
 }
 
+// ---------------------------------------------------------------------------
+// AEO v2 — per-run result capture + raw-response storage (90-day retention).
+// Runs are append-only; raw bodies are deduped by content hash. Both fall
+// back to localStorage so the runner keeps working offline.
+// ---------------------------------------------------------------------------
+
+const AEO_RUNS_KEY = LS_PREFIX + 'aeo_runs';
+const AEO_RAW_KEY = LS_PREFIX + 'aeo_raw';
+
+export async function saveAeoRuns(rows) {
+  if (!Array.isArray(rows) || rows.length === 0) return;
+  for (const r of rows) assertClientId(r?.client_id, 'saveAeoRuns');
+  if (supabase) {
+    try {
+      const { error } = await supabase.from('syte_suite_aeo_runs').insert(rows);
+      if (error) throw error;
+      return;
+    } catch (e) {
+      console.warn('[aeo] saveAeoRuns DB write failed, using localStorage:', e.message);
+    }
+  }
+  const list = JSON.parse(localStorage.getItem(AEO_RUNS_KEY) || '[]');
+  for (const r of rows) list.push({ id: crypto.randomUUID(), created_at: new Date().toISOString(), ...r });
+  localStorage.setItem(AEO_RUNS_KEY, JSON.stringify(list));
+}
+
+export async function listAeoRuns(clientId, month) {
+  if (supabase) {
+    try {
+      let q = supabase.from('syte_suite_aeo_runs').select('*').order('timestamp', { ascending: false });
+      if (clientId) q = q.eq('client_id', clientId);
+      if (month) q = q.eq('month', month);
+      const { data, error } = await q;
+      if (error) throw error;
+      return data || [];
+    } catch { /* fall through */ }
+  }
+  const list = JSON.parse(localStorage.getItem(AEO_RUNS_KEY) || '[]');
+  return list.filter(r =>
+    (!clientId || r.client_id === clientId) && (!month || r.month === month));
+}
+
+// Store a raw response body keyed by hash. Deduped: if the hash already exists
+// we skip the write. Retention (90 days) is enforced by a scheduled SQL delete
+// (see supabase-schema-aeo-v2.sql).
+export async function saveRawResponse({ hash, client_id, engine, run_mode, raw_response }) {
+  if (!hash) return;
+  if (supabase) {
+    try {
+      const { data: existing } = await supabase
+        .from('syte_suite_aeo_raw').select('hash').eq('hash', hash).limit(1);
+      if (existing?.length) return;
+      await supabase.from('syte_suite_aeo_raw')
+        .insert({ hash, client_id, engine, run_mode, raw_response });
+      return;
+    } catch (e) {
+      console.warn('[aeo] saveRawResponse DB write failed, using localStorage:', e.message);
+    }
+  }
+  try {
+    const store = JSON.parse(localStorage.getItem(AEO_RAW_KEY) || '{}');
+    if (!store[hash]) {
+      store[hash] = { engine, run_mode, raw_response, created_at: new Date().toISOString() };
+      localStorage.setItem(AEO_RAW_KEY, JSON.stringify(store));
+    }
+  } catch {}
+}
+
+export async function getRawResponse(hash) {
+  if (!hash) return null;
+  if (supabase) {
+    try {
+      const { data } = await supabase
+        .from('syte_suite_aeo_raw').select('raw_response').eq('hash', hash).limit(1).single();
+      return data?.raw_response || null;
+    } catch { /* fall through */ }
+  }
+  try {
+    const store = JSON.parse(localStorage.getItem(AEO_RAW_KEY) || '{}');
+    return store[hash]?.raw_response || null;
+  } catch { return null; }
+}
+
 export async function logReportSent(row) {
   assertClientId(row?.client_id, 'logReportSent');
   if (supabase) {
