@@ -213,6 +213,38 @@ export function probeCandidatesFromGSC(keywords, brandName, { limit = 30 } = {})
   return out;
 }
 
+// Reshape raw GSC head-terms into BUYER prompts so probing them surfaces
+// vendor recommendations. A term that already reads commercially (contains
+// consultant/partner/company/agency/services/…) is kept as-is; a bare
+// category term ("business central", "azure document intelligence") becomes
+// "best <term> company in <geo>". Deduped, lowercased, capped at `limit`.
+// Stem match (no trailing boundary) so plurals/suffixes count:
+// consult→consultants/consultancy, compan→companies, service→services, etc.
+const COMMERCIAL_RE = /\b(consult|partner|agenc|compan|firm|provider|service|solution|specialist|vendor|supplier|develop)/i;
+
+export function gscBuyerPrompts(queries, { geo = '', limit = 20 } = {}) {
+  const g = String(geo || '').split(/[,/]/)[0].trim();
+  const seen = new Set();
+  const out = [];
+  for (const raw of (queries || [])) {
+    const q = String(raw || '').toLowerCase().trim();
+    if (!q) continue;
+    let prompt;
+    if (COMMERCIAL_RE.test(q)) {
+      // Already buyer-shaped; add geo only if it names none.
+      prompt = (g && !q.includes(g.toLowerCase())) ? `${q} in ${g.toLowerCase()}` : q;
+    } else {
+      prompt = g ? `best ${q} company in ${g.toLowerCase()}` : `best ${q} company`;
+    }
+    prompt = prompt.replace(/\s+/g, ' ').trim();
+    if (seen.has(prompt)) continue;
+    seen.add(prompt);
+    out.push(prompt);
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
 // Merge new probe queries into an existing newline-separated list,
 // case-insensitive deduping, preserving the existing order. Returns
 // { merged: string, addedCount: number, totalCount: number }.
