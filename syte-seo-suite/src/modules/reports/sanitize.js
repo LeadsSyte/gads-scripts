@@ -15,9 +15,15 @@ const ANY_DASH = new RegExp('[' + DASH_CLASS + ']', 'g');
 
 // Replace every em/en dash with a comma (spaced or not). Collapses the
 // resulting " ," and doubled commas so the copy reads cleanly.
+const CELL_PLACEHOLDER = new RegExp('(>\\s*)[' + DASH_CLASS + '](\\s*<)', 'g');
+
 export function stripDashes(text) {
   if (text == null) return text;
   let s = String(text);
+  // A dash sitting alone in a table cell (between tags) is a "no data"
+  // placeholder — render it as a plain hyphen, not a comma.
+  s = s.replace(CELL_PLACEHOLDER, '$1-$2');
+  // Remaining em/en dashes are prose separators → comma.
   s = s.replace(SPACED_DASH, ', ');
   s = s.replace(ANY_DASH, ', ');            // any stragglers
   s = s.replace(/\s+,/g, ',');              // " ," → ","

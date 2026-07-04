@@ -9,6 +9,22 @@ import {
 } from './reportPrompts.js';
 import { buildMicrositeHtml, downloadMicrosite, downloadMicrositePdf } from './microsite.js';
 import { sanitizeEmail } from './sanitize.js';
+import { probeCandidatesFromGSC } from './keywordBuckets.js';
+import { parseProbes, migrateClientProbes, addProbes, probesToProbeList } from './aeoProbes.js';
+
+// Ground a client's probe set in the GSC head-terms already fetched for the
+// report, so the AEO probe runs against what the brand actually ranks for on
+// Google instead of guessed generic terms. Returns a client object to run with.
+function groundClientInGsc(c, reportData) {
+  const kws = reportData?.keywords;
+  if (!c || !kws?.length) return c;
+  const existing = parseProbes(c) || migrateClientProbes(c);
+  if (existing.some(p => p.source === 'gsc')) return { ...c, aeo_probes: existing };
+  const cands = probeCandidatesFromGSC(kws, c.name, { limit: 25 })
+    .map(q => ({ query: q, tier: 1, type: 'category', intent: 'commercial', source: 'gsc', active: true }));
+  const { probes } = addProbes(existing, cands);
+  return { ...c, aeo_probes: probes, aeo_probe_queries: probesToProbeList(probes) };
+}
 import { runSnapshot, snapshotPreflight } from './aeoRunner.js';
 import { compareSnapshots, rankBrandWithCompetitors, normalizeSnapshot } from './aeoCompare.js';
 import { ensureToken, SCOPES, getToken, switchAccount, silentRefresh, getCurrentEmail, getTokenForEmail, TOKEN_EVENT } from '../technical/googleAuth.js';
@@ -487,7 +503,10 @@ export default function MonthlyReport() {
         return;
       }
       setPhase('aeo-probe');
-      const probeResult = await runSnapshot(client, {
+      // Ground the probe set in the GSC head-terms we already pulled for this report.
+      const groundedClient = groundClientInGsc(client, reportData);
+      if (groundedClient !== client && groundedClient.aeo_probes) saveClient(groundedClient).catch(() => {});
+      const probeResult = await runSnapshot(groundedClient, {
         onRuns: (records, raws) => persistAeoRuns(records, raws).catch(() => {}),
         onProgress: (p) => setPhase('aeo-probe: ' + (p.engine || '') + ' — ' + (p.query || '').slice(0, 40))
       });
@@ -618,7 +637,9 @@ export default function MonthlyReport() {
           // probe-query list can't turn Generate into a many-minute sweep.
           // The full set is available via the AEO Snapshot tool / Generate
           // AEO Report.
-          const probeResult = await runSnapshot(client, {
+          const groundedClient = groundClientInGsc(client, reportData);
+          if (groundedClient !== client && groundedClient.aeo_probes) saveClient(groundedClient).catch(() => {});
+          const probeResult = await runSnapshot(groundedClient, {
             maxQueries: LIVE_PROBE_MAX_QUERIES,
             onRuns: (records, raws) => persistAeoRuns(records, raws).catch(() => {}),
             onProgress: (p) => setPhase('aeo-probe: ' + (p.engine || '') + ' — ' + (p.query || '').slice(0, 40))
