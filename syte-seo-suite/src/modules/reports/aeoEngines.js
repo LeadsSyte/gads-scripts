@@ -74,44 +74,65 @@ export const chatgpt = {
   retrievalNative: false,
   supportsSearchOff: true,
   isConfigured: () => !!loadSettings().openaiKey,
+  // One web-search attempt at a given retrieval depth. Deeper context =
+  // ChatGPT reads more pages = it names more brands (closer to what you see
+  // manually on chatgpt.com), but takes longer. Returns a normalised
+  // { text, raw } on success or { error, status, rateLimited } on failure so
+  // the caller can decide whether to retry shallower.
+  async _searchAt(query, contextSize, openaiKey) {
+    const reqBody = { model: 'gpt-4o', input: query, max_output_tokens: MAX_TOKENS };
+    if (contextSize) reqBody.tools = [{ type: 'web_search_preview', search_context_size: contextSize }];
+    const res = await fetchJsonWithRetry('/.netlify/functions/openai-proxy', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ apiKey: openaiKey, endpoint: 'responses', body: reqBody })
+    });
+    if (!res.ok) {
+      const txt = await res.text().catch(() => '');
+      return { error: 'OpenAI ' + res.status + ' ' + txt.slice(0, 200), status: res.status, rateLimited: res.status === 429 };
+    }
+    const data = await res.json();
+    // Responses API returns output[].content[].text + structured URL
+    // citations in annotations. We collapse text parts into one string
+    // for the brand detector — the citations get appended so the detector
+    // also picks up domain mentions that only appear in the citation list.
+    const parts = [];
+    for (const item of data.output || []) {
+      for (const c of item.content || []) {
+        if (typeof c.text === 'string') parts.push(c.text);
+        for (const a of c.annotations || []) {
+          if (a.type === 'url_citation' && a.url) parts.push(a.url);
+        }
+      }
+    }
+    return { text: parts.join('\n').trim(), raw: data };
+  },
   async ask(query, { search = true } = {}) {
     const { openaiKey } = loadSettings();
     const searchMode = search ? 'search_on' : 'search_off';
-    const reqBody = { model: 'gpt-4o', input: query, max_output_tokens: MAX_TOKENS };
-    // search_context_size:'low' does a lighter, faster web search so the call
-    // finishes inside Netlify's 10s function limit instead of 504-ing.
-    if (search) reqBody.tools = [{ type: 'web_search_preview', search_context_size: 'low' }];
     try {
-      const res = await fetchJsonWithRetry('/.netlify/functions/openai-proxy', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ apiKey: openaiKey, endpoint: 'responses', body: reqBody })
-      });
-      if (!res.ok) {
-        const txt = await res.text().catch(() => '');
-        // A 429 that survived the retries is a sustained rate-limit — flag it
-        // so the runner disables ChatGPT for the rest of the sweep instead of
-        // hammering the proxy on every remaining probe.
-        return { error: 'OpenAI ' + res.status + ' ' + txt.slice(0, 200), rateLimited: res.status === 429, searchMode };
+      if (!search) {
+        // Parametric: no web search, straight to the model.
+        const r = await this._searchAt(query, null, openaiKey);
+        if (r.error) return { ...r, searchMode };
+        return { text: r.text, raw: r.raw, model: 'gpt-4o', searchMode };
       }
-      const data = await res.json();
-      // Responses API returns output[].content[].text + structured URL
-      // citations in annotations. We collapse text parts into one string
-      // for the brand detector — the citations get appended so the
-      // detector also picks up domain mentions that only appear in the
-      // citation list. The full `data` is returned as `raw` so aeoExtract can
-      // parse structured citations.
-      const parts = [];
-      for (const item of data.output || []) {
-        for (const c of item.content || []) {
-          if (typeof c.text === 'string') parts.push(c.text);
-          for (const a of c.annotations || []) {
-            if (a.type === 'url_citation' && a.url) parts.push(a.url);
-          }
-        }
+      // Retrieval: try a deeper 'medium' web search first so ChatGPT surfaces
+      // small/local brands the way it does for you manually. 'low' starves
+      // recall (that was the "ChatGPT 0% on everything" symptom). If 'medium'
+      // times out on Netlify's 10s function limit (504/502/timeout), fall back
+      // to 'low' once so we still return real data instead of benching the
+      // engine to all-zeros.
+      let r = await this._searchAt(query, 'medium', openaiKey);
+      if (r.error && !r.rateLimited && (r.status === 504 || r.status === 502 || /timeout|timed out/i.test(r.error))) {
+        r = await this._searchAt(query, 'low', openaiKey);
       }
-      const text = parts.join('\n').trim();
-      return { text, raw: data, model: 'gpt-4o', searchMode };
+      if (r.error) {
+        // A 429 that survived retries is a sustained rate-limit — flag it so
+        // the runner benches ChatGPT for the rest of the sweep.
+        return { error: r.error, rateLimited: r.rateLimited, searchMode };
+      }
+      return { text: r.text, raw: r.raw, model: 'gpt-4o', searchMode };
     } catch (e) { return { error: e.message, searchMode }; }
   }
 };
