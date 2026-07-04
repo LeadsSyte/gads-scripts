@@ -265,6 +265,16 @@ export default function AEOSnapshot() {
     setFanoutProposals(prev => prev.filter(p => p.query !== cand.query));
   }
 
+  // Citation gap "brand present?" is user-editable and saved with the snapshot.
+  function setGapBrandPresent(idx, val) {
+    setSnapshot(prev => {
+      if (!prev) return prev;
+      const gaps = (prev.citation_gaps || []).slice();
+      gaps[idx] = { ...gaps[idx], brandPresent: val };
+      return { ...prev, citation_gaps: gaps };
+    });
+  }
+
   async function handleSave() {
     if (!snapshot) return;
     const month = snapshot.month;
@@ -806,6 +816,41 @@ export default function AEOSnapshot() {
                     ))}
                 </tbody>
               </table>
+            </div>
+          )}
+
+          {snapshot.citation_gaps?.length > 0 && (
+            <div className="card" style={{ marginBottom: 14 }}>
+              <strong>Citation Gaps</strong>
+              <div className="muted" style={{ fontSize: 11, marginTop: 4, marginBottom: 8 }}>
+                Commercial prompts where {client.name} was absent but competitors were cited. These sources are the growth plan — earn the brand a presence on them.
+              </div>
+              <div style={{ overflowX: 'auto' }}>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Source domain</th><th>Hits</th><th>Competitors surfaced</th><th>Example prompt</th><th>Brand present?</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {snapshot.citation_gaps.map((g, i) => (
+                      <tr key={g.domain}>
+                        <td style={{ fontWeight: 600 }}>{g.domain}</td>
+                        <td>{g.hitCount}</td>
+                        <td className="muted" style={{ fontSize: 11, maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={g.competitors.join(', ')}>{g.competitors.join(', ') || '—'}</td>
+                        <td className="muted" style={{ fontSize: 11, maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={g.exampleQueries.join(' · ')}>{g.exampleQueries[0] || '—'}</td>
+                        <td>
+                          <select value={g.brandPresent || 'unknown'} onChange={e => setGapBrandPresent(i, e.target.value)} style={{ fontSize: 11, padding: '2px 6px' }}>
+                            <option value="unknown">Unknown</option>
+                            <option value="yes">Yes</option>
+                            <option value="no">No</option>
+                          </select>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
           )}
 

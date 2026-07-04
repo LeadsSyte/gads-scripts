@@ -23,6 +23,7 @@ import {
   parseProbes, migrateClientProbes, activeProbes, scorableProbes,
   reverseProbesFor, countNewThemesSince, INTENT_IDS
 } from './aeoProbes.js';
+import { buildCitationGaps } from './aeoCitationGaps.js';
 
 const DEFAULT_ITERATIONS = 3;
 
@@ -456,8 +457,9 @@ export async function runSnapshot(client, opts = {}) {
     intent_breakdown: intentBreakdown,
     excerpts,
 
-    // citation gaps filled in Stage 5
-    citation_gaps: []
+    // Citation gaps — the actionable half: commercial probes where the brand
+    // missed but competitors were cited, grouped by source domain.
+    citation_gaps: buildCitationGaps(runRecords, allProbes, { brandName, brandUrl: client.url })
   };
 }
 

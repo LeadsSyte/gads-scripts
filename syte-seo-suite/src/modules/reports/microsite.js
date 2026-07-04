@@ -615,6 +615,33 @@ export function buildMicrositeHtml({ micro, client, monthLabel, previousMonthLab
       ` : ''}
     </section>` : ''}
 
+    ${probe.citation_gaps?.length > 0 ? `
+    <section>
+      <h2>Citation Gaps: Where to Win Next</h2>
+      <p style="color:var(--muted);font-size:13px;margin-bottom:14px;">
+        Commercial prompts where ${esc(client.name)} was absent but competitors were cited. These sources are the growth plan, not a shortfall: earning a presence on them is how coverage grows.
+      </p>
+      ${micro?.citationGapsNarrative ? `<p class="narrative" style="margin-bottom:14px;">${esc(micro.citationGapsNarrative)}</p>` : ''}
+      <table class="data-table" style="width:100%;border-collapse:collapse;font-size:12px;">
+        <thead>
+          <tr style="border-bottom:2px solid var(--border);text-align:left;">
+            <th style="padding:8px 10px;color:var(--muted);font-size:10px;text-transform:uppercase;">Source</th>
+            <th style="padding:8px 10px;text-align:right;color:var(--muted);font-size:10px;text-transform:uppercase;">Hits</th>
+            <th style="padding:8px 10px;color:var(--muted);font-size:10px;text-transform:uppercase;">Competitors surfaced</th>
+            <th style="padding:8px 10px;color:var(--muted);font-size:10px;text-transform:uppercase;">Suggested action</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${probe.citation_gaps.slice(0, 12).map(g => `<tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:6px 10px;font-weight:600;">${esc(g.domain)}</td>
+            <td style="padding:6px 10px;text-align:right;font-family:'JetBrains Mono',monospace;">${g.hitCount}</td>
+            <td style="padding:6px 10px;color:var(--muted);max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc((g.competitors || []).slice(0, 3).join(', '))}</td>
+            <td style="padding:6px 10px;color:var(--muted);">${esc(g.suggestedAction || '')}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    </section>` : ''}
+
     ${probe.per_query?.length > 0 ? `
     <section>
       <h2>Query × Engine Visibility Detail</h2>
