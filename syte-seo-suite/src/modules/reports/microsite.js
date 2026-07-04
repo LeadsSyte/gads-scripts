@@ -652,6 +652,38 @@ export function buildMicrositeHtml({ micro, client, monthLabel, previousMonthLab
       ` : ''}
     </section>` : ''}
 
+    ${(() => {
+      const named = (probe.per_query || []).filter(r => r.mentioned && ((r.segment_labels || []).length || r.reason));
+      if (!named.length) return '';
+      named.sort((a, b) => (b.visibility || 0) - (a.visibility || 0));
+      const seen = new Set();
+      const items = [];
+      for (const r of named) {
+        for (const label of (r.segment_labels || [])) {
+          const key = label.toLowerCase();
+          if (seen.has(key)) continue;
+          seen.add(key);
+          items.push({ label, query: r.query, engine: r.engine_label || r.engine, reason: r.reason });
+        }
+        if (items.length >= 10) break;
+      }
+      if (!items.length) return '';
+      return `
+    <section>
+      <h2>How AI Engines Describe You</h2>
+      <p style="color:var(--muted);font-size:13px;margin-bottom:14px;">The exact segments the AI engines place ${esc(client.name)} in when they recommend you. These are the angles you already win, in the engine's own words.</p>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px;">
+        ${items.map(it => `
+          <div style="padding:14px 16px;background:var(--surface);border:1px solid rgba(74,222,128,.25);border-left:3px solid var(--green);border-radius:8px;">
+            <div style="font-size:14px;font-weight:600;color:var(--text);">${esc(it.label)}</div>
+            ${it.reason ? `<div style="font-size:12px;color:var(--muted);margin-top:6px;">${esc(it.reason)}</div>` : ''}
+            <div style="font-size:11px;color:var(--muted);margin-top:8px;">${esc(it.engine)} · "${esc(it.query)}"</div>
+          </div>
+        `).join('')}
+      </div>
+    </section>`;
+    })()}
+
     ${probe.citation_gaps?.length > 0 ? `
     <section>
       <h2>Citation Gaps: Where to Win Next</h2>

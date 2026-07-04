@@ -278,6 +278,31 @@ export default function AEOSnapshot() {
     setFanoutProposals(prev => prev.filter(p => p.query !== cand.query));
   }
 
+  // Export the per (probe × engine) results as CSV — mirrors the prototype's
+  // export so the panel doubles as a scorecard.
+  function exportCsv() {
+    if (!snapshot?.per_query?.length) return;
+    const head = ['query', 'engine', 'appearance_rate', 'avg_pos_when_appearing', 'avg_list_length', 'visibility_score', 'parametric_rate', 'segment_labels', 'reason'];
+    const rows = snapshot.per_query.slice()
+      .sort((a, b) => (b.visibility || 0) - (a.visibility || 0))
+      .map(r => [
+        r.query, r.engine_label || r.engine,
+        (r.appearance_rate ?? r.visibility ?? 0) + '%',
+        r.avg_position != null ? '#' + r.avg_position : '',
+        r.avg_list_length ?? '',
+        r.visibility_score ?? '',
+        r.parametric_appearance_rate != null ? Math.round(r.parametric_appearance_rate * 100) + '%' : '',
+        (r.segment_labels || []).join('; '),
+        r.reason || ''
+      ]);
+    const csv = [head, ...rows].map(row => row.map(c => '"' + String(c ?? '').replace(/"/g, '""') + '"').join(',')).join('\n');
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+    a.download = (client.name || 'brand').replace(/[^a-z0-9]+/gi, '-') + '-aeo-results.csv';
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }
+
   // Citation gap "brand present?" is user-editable and saved with the snapshot.
   function setGapBrandPresent(idx, val) {
     setSnapshot(prev => {
@@ -805,7 +830,7 @@ export default function AEOSnapshot() {
                         return (
                           <td key={eng.id}>
                             <span className={v === 0 ? 'badge' : 'badge ' + color} title={(row.excerpt || '') + ' · ' + (row.hits || 0) + '/' + (row.iterations || 1) + ' retrieval runs'}>
-                              {v}%{v > 0 ? ' · #' + (row.avg_position ?? row.position ?? '—') : ''}
+                              {v}%{v > 0 ? ' · #' + (row.avg_position ?? row.position ?? '—') + (row.avg_list_length ? ' of ' + row.avg_list_length : '') : ''}
                             </span>
                             {paramLine}
                           </td>
@@ -817,6 +842,44 @@ export default function AEOSnapshot() {
               </table>
             </div>
           </div>
+
+          {snapshot.per_query?.some(r => r.mentioned) && (
+            <div className="card" style={{ marginBottom: 14 }}>
+              <div className="row" style={{ justifyContent: 'space-between', alignItems: 'baseline', flexWrap: 'wrap', gap: 8 }}>
+                <strong>What the engines recommend you for</strong>
+                <button onClick={exportCsv} style={{ fontSize: 11, padding: '4px 12px' }}>Export CSV</button>
+              </div>
+              <div className="muted" style={{ fontSize: 11, marginTop: 4, marginBottom: 8 }}>
+                The exact segment label and reason each engine attached to {client.name}. This is the actionable core: the angles you already win, in the engine's own words.
+              </div>
+              <div style={{ overflowX: 'auto' }}>
+                <table>
+                  <thead>
+                    <tr><th>Prompt</th><th>Engine</th><th>Appears</th><th>Avg pos when named</th><th>Segment / reason</th></tr>
+                  </thead>
+                  <tbody>
+                    {snapshot.per_query
+                      .filter(r => r.mentioned)
+                      .slice()
+                      .sort((a, b) => (b.visibility || 0) - (a.visibility || 0))
+                      .map((r, i) => (
+                        <tr key={i}>
+                          <td style={{ maxWidth: 240 }}>{r.query}</td>
+                          <td>{r.engine_label || r.engine}</td>
+                          <td className="pos">{r.appearance_rate ?? r.visibility}%</td>
+                          <td className="muted">{r.avg_position != null ? '#' + r.avg_position + (r.avg_list_length ? ' of ' + r.avg_list_length : '') : '—'}</td>
+                          <td style={{ maxWidth: 340, fontSize: 12 }}>
+                            {(r.segment_labels || []).length > 0 && <div style={{ color: 'var(--green)', fontWeight: 600 }}>{r.segment_labels.join(' · ')}</div>}
+                            {r.reason && <div className="muted" style={{ marginTop: 2 }}>{r.reason}</div>}
+                            {!(r.segment_labels || []).length && !r.reason && <span className="muted">—</span>}
+                          </td>
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
 
           {snapshot.intent_breakdown?.length > 0 && (
             <div className="card" style={{ marginBottom: 14 }}>
