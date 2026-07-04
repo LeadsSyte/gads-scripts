@@ -370,9 +370,33 @@ export default function ClientModal({ initial, onClose }) {
         {/* Google connections (GA4 + GSC) */}
         <GoogleConnectionsPicker
           ga4Value={f.ga4_property_id}
-          onChangeGa4={v => update('ga4_property_id', v)}
+          onChangeGa4={(v, acc) => {
+            update('ga4_property_id', v);
+            // Auto-bind the GA4 API to whichever Google account the
+            // operator was using when they picked. Only set when the
+            // value is non-empty — clearing the property shouldn't drop
+            // the account binding (the user may pick again immediately).
+            if (acc && v) update('ga4_account_email', acc);
+          }}
           gscValue={f.gsc_property}
-          onChangeGsc={v => update('gsc_property', v)}
+          onChangeGsc={(v, acc) => {
+            update('gsc_property', v);
+            if (acc && v) update('gsc_account_email', acc);
+          }}
+          savedEmail={f.google_account_email}
+          onChangeEmail={v => update('google_account_email', v)}
+          savedGa4Email={f.ga4_account_email}
+          savedGscEmail={f.gsc_account_email}
+          onBindAccount={email => {
+            // Server-auth: bind the whole client to one connected account.
+            // Set all three fields so the report's per-API lookup
+            // (ga4_account_email / gsc_account_email, falling back to
+            // google_account_email) resolves to this account, and any earlier
+            // wrong per-API binding is overwritten.
+            update('google_account_email', email);
+            update('ga4_account_email', email);
+            update('gsc_account_email', email);
+          }}
         />
 
         {/* Reporting & AEO */}

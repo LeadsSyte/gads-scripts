@@ -12,9 +12,30 @@ import PushToCmsButton from '../../components/PushToCmsButton.jsx';
 import MarkImplementedButton from '../../components/MarkImplementedButton.jsx';
 import PipelineView from '../../components/PipelineView.jsx';
 import LogExternalWork from '../../components/LogExternalWork.jsx';
-import { contentPipelineStatus } from '../../lib/pipelineStatus.js';
-import { listAllImplementations, saveBlogResult, loadContentHistory } from '../../lib/supabase.js';
-import { parseOutputSections } from './articleParser.js';
+import { contentPipelineStatus, monthOptions } from '../../lib/pipelineStatus.js';
+import { listAllImplementations, saveBlogResult, loadContentHistory, deleteBlogResult } from '../../lib/supabase.js';
+import { parseOutputSections, markdownToHtml } from './articleParser.js';
+
+// Copy markdown to the clipboard as both rich HTML and plain text so a
+// paste into Google Docs / Word / WordPress visual editor preserves
+// formatting (headings, bold, lists, tables).
+async function copyArticleFormatted(markdown) {
+  const html = markdownToHtml(markdown);
+  try {
+    if (typeof ClipboardItem !== 'undefined' && navigator.clipboard?.write) {
+      const item = new ClipboardItem({
+        'text/html':  new Blob([html], { type: 'text/html' }),
+        'text/plain': new Blob([markdown], { type: 'text/plain' })
+      });
+      await navigator.clipboard.write([item]);
+      return true;
+    }
+    await navigator.clipboard.writeText(markdown);
+    return true;
+  } catch {
+    try { await navigator.clipboard.writeText(markdown); return true; } catch { return false; }
+  }
+}
 
 // Lightweight, self-contained copy/section UI for the pipeline preview —
 // keeps AutoWrite independent of ContentEngine's internal components but
@@ -78,6 +99,25 @@ const OPP_COLORS = {
   'long-tail':         'var(--text-muted)'
 };
 
+// Pasteable rich-text copy button — sets both text/html and text/plain on
+// the clipboard so a paste into Google Docs / Word / WordPress visual
+// editor preserves headings, lists, and tables.
+function CopyFormattedBtn({ markdown, label = 'Copy formatted' }) {
+  const [copied, setCopied] = React.useState(false);
+  if (!markdown) return null;
+  return (
+    <button
+      onClick={async () => {
+        const ok = await copyArticleFormatted(markdown);
+        if (ok) { setCopied(true); setTimeout(() => setCopied(false), 1500); }
+      }}
+      style={{ fontSize: 10, padding: '3px 8px' }}
+    >
+      {copied ? 'Copied ✓' : label}
+    </button>
+  );
+}
+
 export default function AutoWrite() {
   const allClients = useClients(s => s.clients);
 
@@ -113,13 +153,34 @@ export default function AutoWrite() {
   const withGsc = contentClients.filter(c => c.gsc_property);
   const withoutGsc = contentClients.filter(c => !c.gsc_property);
 
-  const currentMonth = new Date().toISOString().slice(0, 7);
-  const monthLabel = new Date().toLocaleString('en-US', { month: 'long', year: 'numeric' });
+  const months = useMemo(() => monthOptions(), []);
+  const [selMonth, setSelMonth] = useState(new Date().toISOString().slice(0, 7));
+  const currentMonth = selMonth;
+  const monthLabel = months.find(m => m.value === selMonth)?.label || selMonth;
 
   // Load implementations + content history for pipeline view.
   useEffect(() => {
     refreshContentImpls();
     loadContentHistory().then(setSharedHistory).catch(() => {});
+  }, []);
+
+  // Re-fetch whenever the user comes back to the tab — articles written in
+  // ContentEngine's "New Article" tab (or another browser/window) won't be
+  // in this component's state, and a stale view made users think their
+  // article had vanished. Refresh on focus + when visibility changes back
+  // to visible.
+  useEffect(() => {
+    function refresh() {
+      loadContentHistory().then(setSharedHistory).catch(() => {});
+      refreshContentImpls();
+    }
+    function onVis() { if (document.visibilityState === 'visible') refresh(); }
+    window.addEventListener('focus', refresh);
+    document.addEventListener('visibilitychange', onVis);
+    return () => {
+      window.removeEventListener('focus', refresh);
+      document.removeEventListener('visibilitychange', onVis);
+    };
   }, []);
 
   // Warn before navigating away during active writing.
@@ -237,7 +298,12 @@ export default function AutoWrite() {
       });
       updateArticle(idx, { status: 'done', output: buf, words: Math.round(buf.length / 5) });
 
-      // Persist to Supabase (shared across all browsers/users).
+      // Persist (saveBlogResult ALWAYS writes to localStorage first, then
+      // tries Supabase). Even if the Supabase write fails, the article
+      // is durable in local cache and loadContentHistory's merge path
+      // will surface it. Annotate the article state with a save warning
+      // so the user can see if cloud sync didn't land.
+      let saveWarning = null;
       try {
         await saveBlogResult({
           client_id: activeClient.id,
@@ -250,11 +316,14 @@ export default function AutoWrite() {
           opportunity_type: opp.opportunity_type,
           generated_at: new Date().toISOString()
         });
-        // Refresh shared history so pipeline updates immediately.
-        loadContentHistory().then(setSharedHistory).catch(() => {});
       } catch (saveErr) {
-        console.warn('[AutoWrite] save to Supabase failed:', saveErr.message);
+        saveWarning = 'Cloud sync failed (article saved locally): ' + saveErr.message;
+        console.warn('[AutoWrite]', saveWarning);
       }
+      // Always refresh — even on Supabase failure the local copy is now
+      // in sharedHistory via the merge.
+      try { setSharedHistory(await loadContentHistory()); } catch {}
+      if (saveWarning) updateArticle(idx, { saveWarning });
     } catch (e) {
       updateArticle(idx, { status: 'error', error: e.message });
     } finally {
@@ -290,6 +359,11 @@ export default function AutoWrite() {
       <PipelineView
         title={`Content Engine — ${monthLabel}`}
         month={monthLabel}
+        monthSelector={
+          <select value={selMonth} onChange={e => setSelMonth(e.target.value)} style={{ width: 170, fontSize: 12 }}>
+            {months.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
+          </select>
+        }
         sections={pipelineSections}
         onAction={(client, action) => {
           if (action === 'generate') {
@@ -312,13 +386,68 @@ export default function AutoWrite() {
             return <div className="muted" style={{ padding: 12, fontSize: 12 }}>No articles found for this month.</div>;
           }
           const hasWp = client.cms_type === 'WordPress' && client.wp_url && client.wp_username && client.wp_app_password;
+          // Stub rows = saved blog records with no actual content. Usually
+          // legacy duplicates from before saveBlogResult became upsert-by-
+          // (client_id, topic, month), or interrupted streams. Surface a
+          // bulk-cleanup control so users don't confirm-each-one.
+          const stubArticles = articles.filter(a => !a.output && a.tab !== 'Manual' && a.id);
           return (
             <div>
-              {articles.map((a, i) => (
-                <div key={a.id || i} style={{ padding: '10px 14px', borderBottom: '1px solid var(--border)' }}>
+              {stubArticles.length > 0 && (
+                <div style={{
+                  padding: '10px 14px', background: 'var(--surface-2)',
+                  borderBottom: '1px solid var(--border)',
+                  display: 'flex', justifyContent: 'space-between',
+                  alignItems: 'center', gap: 10, flexWrap: 'wrap'
+                }}>
+                  <span className="muted" style={{ fontSize: 11 }}>
+                    ⚠ {stubArticles.length} {stubArticles.length === 1 ? 'row has' : 'rows have'} no saved content (legacy stub{stubArticles.length === 1 ? '' : 's'} or interrupted streams).
+                  </span>
+                  <button
+                    onClick={async () => {
+                      if (!confirm('Delete ' + stubArticles.length + ' empty stub article row' + (stubArticles.length === 1 ? '' : 's') + ' for ' + client.name + '? This cannot be undone.')) return;
+                      for (const a of stubArticles) {
+                        try { await deleteBlogResult(a.id); } catch (e) {
+                          console.warn('[AutoWrite] stub delete failed:', e.message);
+                        }
+                      }
+                      const fresh = await loadContentHistory();
+                      setSharedHistory(fresh);
+                    }}
+                    style={{ fontSize: 11, padding: '4px 12px', borderColor: 'var(--red)', color: 'var(--red)' }}
+                  >
+                    Delete {stubArticles.length} empty row{stubArticles.length === 1 ? '' : 's'}
+                  </button>
+                </div>
+              )}
+              {articles.map((a, i) => {
+                // Look up the implementation status for this article so
+                // the row can show a clear ✓ Verified / ⏳ Pending badge.
+                // Match on title first (most reliable), then page_url.
+                const impl = implementations.find(im =>
+                  im.module === 'content' &&
+                  im.client_id === client.id &&
+                  (im.title === (a.topic || a.keyword) ||
+                   (pushedUrls[a.id || i] && im.page_url === pushedUrls[a.id || i]))
+                );
+                const isVerified = impl?.verification_status === 'verified';
+                const isPending = impl && impl.verification_status === 'pending';
+                return (
+                <div key={a.id || i} style={{
+                  padding: '10px 14px', borderBottom: '1px solid var(--border)',
+                  background: isVerified ? 'color-mix(in srgb, var(--green) 8%, transparent)' : undefined
+                }}>
                   <div className="row" style={{ justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontWeight: 600, fontSize: 13 }}>{a.topic || a.keyword || 'Untitled'}</div>
+                      <div className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                        <div style={{ fontWeight: 600, fontSize: 13 }}>{a.topic || a.keyword || 'Untitled'}</div>
+                        {isVerified && (
+                          <span className="badge green" style={{ fontSize: 9 }}>✓ Verified live</span>
+                        )}
+                        {isPending && (
+                          <span className="badge" style={{ fontSize: 9, color: 'var(--orange)', borderColor: 'color-mix(in srgb, var(--orange) 40%, var(--border))' }}>⏳ Awaiting verification</span>
+                        )}
+                      </div>
                       <div className="muted" style={{ fontSize: 10 }}>
                         {a.tab || 'Auto Write'} · {new Date(a.created_at).toLocaleDateString('en-ZA')}
                         {a.opportunity_type && <span className="badge" style={{ marginLeft: 6, fontSize: 8 }}>{a.opportunity_type}</span>}
@@ -341,6 +470,7 @@ export default function AutoWrite() {
                       <MarkImplementedButton
                         module="content"
                         changeType="article"
+                        client={client}
                         pageUrl={pushedUrls[a.id || i] || client.url || ''}
                         title={a.topic || a.keyword || 'Article'}
                         description={`Article: ${a.topic || ''}`}
@@ -353,24 +483,82 @@ export default function AutoWrite() {
                         el.href = url; el.download = (a.topic || 'article') + '.txt';
                         el.click(); URL.revokeObjectURL(url);
                       }} style={{ fontSize: 10, padding: '4px 8px' }}>.txt</button>
+                      <button
+                        onClick={async () => {
+                          if (!a.id) return;
+                          if (!confirm('Delete this article? This cannot be undone.')) return;
+                          try {
+                            await deleteBlogResult(a.id);
+                            const fresh = await loadContentHistory();
+                            setSharedHistory(fresh);
+                          } catch (e) { alert('Delete failed: ' + e.message); }
+                        }}
+                        style={{ fontSize: 10, padding: '4px 8px', borderColor: 'var(--red)', color: 'var(--red)' }}
+                      >
+                        Delete
+                      </button>
                     </div>
                   </div>
-                  {a.output && (() => {
+                  {(() => {
+                    // Always render SOMETHING under the title row — either
+                    // the full preview (when content is present) or a
+                    // "stub row" notice with a regenerate hint (so users
+                    // know they can clean up legacy / interrupted records).
+                    if (!a.output) {
+                      return (
+                        <div style={{
+                          marginTop: 8, padding: '8px 12px',
+                          background: 'var(--surface-2)', border: '1px solid var(--border)',
+                          borderLeft: '3px solid var(--orange)', borderRadius: 4,
+                          fontSize: 11, color: 'var(--text-muted)'
+                        }}>
+                          ⚠ This row has no saved content.
+                          {a.tab === 'Manual'
+                            ? ' (logged via External Work — content lives elsewhere.)'
+                            : ' Either the generation was interrupted or this is a legacy stub. Use Delete to remove it.'}
+                        </div>
+                      );
+                    }
                     const parsed = parseOutputSections(a.output);
+                    const bodyHtml = markdownToHtml(parsed?.body || '');
                     return (
                       <details style={{ marginTop: 6 }}>
-                        <summary className="muted" style={{ fontSize: 10, cursor: 'pointer' }}>
-                          Preview &amp; copy parts
+                        <summary className="muted" style={{ fontSize: 11, cursor: 'pointer', padding: '4px 0' }}>
+                          ▸ View article &amp; copy parts ({Math.round((parsed?.body?.length || 0) / 5)} words)
                         </summary>
-                        <div style={{ marginTop: 6 }}>
-                          <div className="row" style={{ gap: 6, marginBottom: 6, flexWrap: 'wrap' }}>
+                        <div style={{ marginTop: 8 }}>
+                          <div className="row" style={{ gap: 6, marginBottom: 8, flexWrap: 'wrap' }}>
                             <CopyBtn text={a.output} label="Copy full output" />
-                            <CopyBtn text={parsed?.body} label="Copy article body" />
+                            <CopyFormattedBtn markdown={parsed?.body} label="Copy formatted" />
+                            <CopyBtn text={parsed?.body} label="Copy body (markdown)" />
+                            <CopyBtn text={bodyHtml} label="Copy body (HTML)" />
                           </div>
+                          {/* Rendered preview — what the formatted article actually
+                              looks like (headings, lists, tables). Sits above the
+                              raw-text copy panels so users can verify formatting
+                              at a glance without leaving the page. */}
+                          {parsed?.body && (
+                            <div style={{
+                              marginTop: 8, marginBottom: 8, padding: 14,
+                              background: 'var(--bg)', border: '1px solid var(--border)',
+                              borderLeft: '3px solid var(--mod-content)',
+                              borderRadius: 4, maxHeight: 500, overflowY: 'auto'
+                            }}>
+                              <div className="muted" style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 8 }}>
+                                Rendered preview
+                              </div>
+                              <div
+                                className="article-rendered"
+                                style={{ lineHeight: 1.6, fontSize: 13 }}
+                                dangerouslySetInnerHTML={{ __html: bodyHtml }}
+                              />
+                            </div>
+                          )}
                           <ParsedSection title="Meta Title" content={parsed?.metaTitle} accent="var(--blue)" />
                           <ParsedSection title="Meta Description" content={parsed?.metaDesc} accent="var(--blue)" />
                           <ParsedSection title="AEO Summary Block" content={parsed?.aeoSummary} accent="var(--teal)" />
-                          <ParsedSection title="Article Body (paste into CMS)" content={parsed?.body} accent="var(--mod-content)" />
+                          <ParsedSection title="Article Body — Markdown" content={parsed?.body} accent="var(--mod-content)" />
+                          <ParsedSection title="Article Body — HTML (paste into WordPress / most CMSes)" content={bodyHtml} accent="var(--mod-content)" mono />
                           <ParsedSection title="FAQ Schema (JSON-LD)" content={parsed?.faqSchema} accent="var(--purple)" mono />
                           <ParsedSection title="QA Score" content={parsed?.qaBlock} accent="var(--text-muted)" mono />
                         </div>
@@ -378,7 +566,8 @@ export default function AutoWrite() {
                     );
                   })()}
                 </div>
-              ))}
+                );
+              })}
             </div>
           );
         }}
@@ -616,20 +805,45 @@ export default function AutoWrite() {
                 {isError && state.error && (
                   <div style={{ marginTop: 6, fontSize: 11, color: 'var(--red)' }}>{state.error}</div>
                 )}
-
-                {isDone && state.output && (
-                  <details style={{ marginTop: 8 }}>
-                    <summary className="muted" style={{ fontSize: 11, cursor: 'pointer' }}>
-                      View generated article ({state.words} words)
-                    </summary>
-                    <pre style={{
-                      marginTop: 6, padding: 12, background: 'var(--bg)',
-                      fontSize: 11, overflowX: 'auto', whiteSpace: 'pre-wrap',
-                      maxHeight: 400, borderRadius: 6
-                    }}>{state.output}</pre>
-                    <GenerateImageButton title={opp.topic_title} keyword={opp.primary_keyword} />
-                  </details>
+                {state.saveWarning && (
+                  <div style={{
+                    marginTop: 6, padding: '6px 10px', fontSize: 11,
+                    color: 'var(--orange)',
+                    background: 'color-mix(in srgb, var(--orange) 10%, transparent)',
+                    border: '1px solid color-mix(in srgb, var(--orange) 30%, var(--border))',
+                    borderRadius: 6
+                  }}>
+                    ⚠ {state.saveWarning}
+                  </div>
                 )}
+
+                {isDone && state.output && (() => {
+                  const parsed = parseOutputSections(state.output);
+                  const bodyHtml = markdownToHtml(parsed?.body || state.output);
+                  return (
+                    <details style={{ marginTop: 8 }} open>
+                      <summary className="muted" style={{ fontSize: 11, cursor: 'pointer' }}>
+                        View generated article ({state.words} words)
+                      </summary>
+                      <div className="row" style={{ gap: 6, marginTop: 8, marginBottom: 6, flexWrap: 'wrap' }}>
+                        <CopyFormattedBtn markdown={parsed?.body || state.output} label="Copy formatted" />
+                        <CopyBtn text={parsed?.body || state.output} label="Copy markdown" />
+                        <CopyBtn text={bodyHtml} label="Copy HTML" />
+                      </div>
+                      <div
+                        className="article-rendered"
+                        style={{
+                          marginTop: 6, padding: 14, background: 'var(--bg)',
+                          fontSize: 13, lineHeight: 1.6, maxHeight: 500,
+                          overflowY: 'auto', borderRadius: 6,
+                          border: '1px solid var(--border)'
+                        }}
+                        dangerouslySetInnerHTML={{ __html: bodyHtml }}
+                      />
+                      <GenerateImageButton title={opp.topic_title} keyword={opp.primary_keyword} />
+                    </details>
+                  );
+                })()}
               </div>
             );
           })}

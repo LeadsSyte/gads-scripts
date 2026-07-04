@@ -8,10 +8,11 @@ import ClientCardsGrid from '../../components/ClientCardsGrid.jsx';
 import MarkImplementedButton from '../../components/MarkImplementedButton.jsx';
 import PipelineView from '../../components/PipelineView.jsx';
 import LogExternalWork from '../../components/LogExternalWork.jsx';
-import { aeoPipelineStatus } from '../../lib/pipelineStatus.js';
-import { listAllImplementations, saveAeoResult, loadAeoResults as loadAeoResultsFromDb, deleteAeoResult, saveDeepResult, listDeepResults, deleteDeepResult } from '../../lib/supabase.js';
+import { aeoPipelineStatus, monthOptions } from '../../lib/pipelineStatus.js';
+import { listAllImplementations, saveAeoResult, loadAeoResults as loadAeoResultsFromDb, deleteAeoResult, saveDeepResult, listDeepResults, deleteDeepResult, listAeoRejections, saveAeoRejection } from '../../lib/supabase.js';
 import { AEO_SYSTEM, AEO_TYPES, AEO_DEEP_SYSTEM } from './aeoTypes.js';
 import { fetchSitemapUrls } from './sitemap.js';
+import QueryDiscovery from './QueryDiscovery.jsx';
 import { listAccountSummaries, runReport } from './ga4.js';
 import { ensureToken, SCOPES, getToken, clearToken } from '../technical/googleAuth.js';
 
@@ -21,9 +22,26 @@ const HISTORY_KEY = 'syte-suite-aeo-history';
 const BATCH_SIZE = 3;
 
 function loadResults() { try { return JSON.parse(localStorage.getItem(RESULTS_KEY) || '{}'); } catch { return {}; } }
-function saveResults(r) { localStorage.setItem(RESULTS_KEY, JSON.stringify(r)); }
+// Supabase is the source of truth for AEO results — localStorage is only a
+// best-effort offline cache. Once accounts accumulate enough optimizations
+// the JSON exceeds the ~5MB quota and setItem throws QuotaExceededError,
+// which (without a catch) propagates out of the useEffect and crashes the
+// whole module. Swallow quota errors and clear the stale cache so
+// subsequent saves don't keep failing on the same boundary.
+function saveResults(r) {
+  try { localStorage.setItem(RESULTS_KEY, JSON.stringify(r)); }
+  catch (e) {
+    if (e?.name === 'QuotaExceededError' || /quota/i.test(e?.message || '')) {
+      try { localStorage.removeItem(RESULTS_KEY); } catch {}
+      console.warn('[AEO] localStorage quota exceeded — using Supabase only.');
+    }
+  }
+}
 function loadHistory() { try { return JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]'); } catch { return []; } }
-function saveHistory(h) { localStorage.setItem(HISTORY_KEY, JSON.stringify(h.slice(0, 100))); }
+function saveHistory(h) {
+  try { localStorage.setItem(HISTORY_KEY, JSON.stringify(h.slice(0, 100))); }
+  catch {}
+}
 
 // Deep optimization — full page rewrite with FAQ + changes log.
 // Returns { description, faq, changesDescription, changesFaq, productSchema, faqSchema }.
@@ -62,7 +80,7 @@ ${pageHtml ? 'Current page HTML (source material — reorganize and clarify, do 
 
 Return the JSON object as specified in the system prompt.`
     }],
-    model: 'claude-sonnet-4-20250514',
+    model: 'claude-sonnet-4-6',
     max_tokens: 16000,
     temperature: 0.4
   });
@@ -75,7 +93,7 @@ async function generateForPage(pageUrl, client) {
   let pageHtml = '';
   let pageTitle = '';
   try {
-    pageHtml = (await corsFetchText(pageUrl)).slice(0, 30000);
+    pageHtml = (await corsFetchText(pageUrl)).slice(0, 60000);
     // Extract the <title> tag for context.
     const titleMatch = pageHtml.match(/<title[^>]*>([^<]+)<\/title>/i);
     if (titleMatch) pageTitle = titleMatch[1].trim();
@@ -103,13 +121,20 @@ Organization: ${client?.org_name || client?.name || ''}
 Author: ${client?.author || ''} ${client?.author_creds ? '(' + client.author_creds + ')' : ''}
 ${client?.context ? 'Business context: ' + client.context : ''}
 
-${pageHtml ? 'Page HTML (truncated — analyze what content optimizations are MISSING):\n' + pageHtml : 'Page HTML not available (CORS blocked) — generate optimizations based on the URL, topic, and client context. Focus on content that would make this page citable by AI engines.'}`
+${pageHtml ? 'Page HTML (truncated — TWO uses: (1) analyse what content optimizations are MISSING; (2) READ the CSS classes, heading patterns, container structure, and component conventions so your output matches this page\'s design system. The optimization will be pasted into THIS page — make it look native, not bolted-on. Reuse the page\'s class names verbatim wherever they fit. See DESIGN-MATCHING in the system prompt.):\n' + pageHtml : 'Page HTML not available (CORS blocked) — generate optimizations based on the URL, topic, and client context. Focus on content that would make this page citable by AI engines. Use simple semantic HTML without inline styles since we cannot match the page\'s design system.'}`
     }],
     max_tokens: 6000,
     temperature: 0.4
   });
   const parsed = extractJSON(text);
   return parsed?.optimizations || [];
+}
+
+// Stable key for an AEO optimization. Combines type + name (or title) so
+// the same logical optimization regenerated for a page next month resolves
+// to the same key and can be filtered against the rejection blocklist.
+export function aeoOptKey(o) {
+  return (o.type || '') + '::' + (o.name || o.title || '');
 }
 
 // Expandable optimization card for a single page — shows each optimization
@@ -121,14 +146,146 @@ const OPT_TYPE_COLORS = {
   structure: { bg: 'rgba(255,159,67,.12)', color: 'var(--orange)', border: 'rgba(255,159,67,.2)' }
 };
 
-function OptPageCard({ result: r, onDelete, onVerified }) {
+// Combine N optimizations for a single page into ONE paste-ready HTML
+// block. Each optimization is wrapped in a styled <section> with inline
+// styles so the result looks decent on ANY host page CSS — no
+// dependency on the destination's typography. Schema (JSON-LD) blocks
+// are placed at the END so they render to the page <body> safely.
+function buildCombinedAeoHtml(opts) {
+  if (!opts || !opts.length) return '';
+
+  // Strip any HTML <script> tag — schema blocks — out of opt code, then
+  // join them at the end so the visible-content sections come first.
+  const schemaBlocks = [];
+  const visible = opts.map(o => {
+    const code = (o.implementation || o.code || '').trim();
+    if (!code) return { ...o, _code: '' };
+    // Pull <script type="application/ld+json"> blocks aside.
+    const stripped = code.replace(/<script[\s\S]*?<\/script>/gi, (m) => {
+      schemaBlocks.push(m);
+      return '';
+    }).trim();
+    return { ...o, _code: stripped };
+  });
+
+  // EVERY opt is wrapped in a <details>/<summary> accordion for
+  // consistent visual presentation regardless of host page CSS. AEO-
+  // safe: the content is in the rendered HTML on initial load, so
+  // bots and humans both see every word — humans just toggle whether
+  // it's visually expanded. The first opt defaults to `open` so the
+  // page lead (typically the answer block) is visible without a
+  // click.
+  //
+  // Agent-facing context (CONTENT badge, name, description, placement
+  // hint) lives in HTML comments only — recoverable from page source
+  // by a developer, invisible to the page and to crawlers.
+  const sections = visible
+    .filter(o => o._code)
+    .map((o, i) => {
+      const label = (o.type || 'content').toUpperCase();
+      const name = (o.name || o.title || 'Optimization').replace(/-->/g, '-- >');
+      const desc = (o.description || '').replace(/-->/g, '-- >');
+      const where = (o.where || '').replace(/-->/g, '-- >');
+      const summaryLabel = escapeHtmlForBlock(o.name || o.title || 'Optimization');
+      const openAttr = i === 0 ? ' open' : '';
+      return `
+<!--
+  AEO ${i + 1}/${visible.length} · ${label} · ${name}${desc ? '\n  ' + desc : ''}${where ? '\n  Placement: ' + where : ''}
+-->
+<details${openAttr} class="aeo-opt aeo-opt-${o.type || 'content'}">
+  <summary><strong>${summaryLabel}</strong></summary>
+  <div class="aeo-opt-body">
+    ${o._code}
+  </div>
+</details>
+`;
+    }).join('\n');
+
+  const schemaJoined = schemaBlocks.length
+    ? `\n<!-- AEO Schema Blocks (JSON-LD) -->\n${schemaBlocks.join('\n')}\n`
+    : '';
+
+  return `<!--
+  AEO Optimizations — ${opts.length} block${opts.length === 1 ? '' : 's'} for this page
+  Generated by Syte AEO Engine. Paste the whole chunk on the page.
+  Each block is a native <details>/<summary> accordion. The first one
+  is open by default so the lead answer is immediately visible. AEO-
+  safe: every word is in the source HTML on initial load — bots see
+  it regardless of whether a human has expanded it.
+-->
+${sections}${schemaJoined}`.trim();
+}
+
+// (wrapFaqAsAccordion / stripTags removed — every opt is now wrapped
+// at the section level with its own <details>/<summary>, so the
+// per-question FAQ-specific wrap is no longer needed.)
+
+function escapeHtmlForBlock(s) {
+  return String(s || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function OptPageCard({ result: r, onDelete, onVerified, optClient, rejectedOptKeys, onRejectOpt }) {
   const [open, setOpen] = React.useState(false);
-  const opts = Array.isArray(r.optimizations) ? r.optimizations : [];
-  const copyAll = () => {
-    const text = opts.map((o, i) =>
-      `[${i + 1}] ${o.name || o.title || ''} (${o.type || ''})\n${o.description || ''}\n${o.where ? 'Where: ' + o.where + '\n' : ''}\n${o.implementation || o.code || ''}\n`
-    ).join('\n' + '─'.repeat(40) + '\n\n');
-    navigator.clipboard.writeText(text).catch(() => {});
+  const [copiedAll, setCopiedAll] = React.useState(false);
+  const rawOpts = Array.isArray(r.optimizations) ? r.optimizations : [];
+  // Hide any optimization on this page whose (type, name) is in the
+  // operator's rejection blocklist for this client.
+  const opts = React.useMemo(() => {
+    if (!rejectedOptKeys || !rejectedOptKeys.size) return rawOpts;
+    return rawOpts.filter(o => !rejectedOptKeys.has(aeoOptKey(o)));
+  }, [rawOpts, rejectedOptKeys]);
+  const hiddenCount = rawOpts.length - opts.length;
+
+  // Build a single styled HTML block that combines every optimization
+  // for this page into one paste-ready chunk. The user asked: "if there
+  // are optimizations for a single page they should list them as one
+  // block to paste". Inline styles only — works on any host page CSS.
+  const combinedHtml = React.useMemo(() => buildCombinedAeoHtml(opts), [opts]);
+
+  // Plain-text version for users that paste into a non-HTML editor.
+  const combinedText = React.useMemo(() => opts.map((o, i) =>
+    `[${i + 1}] ${o.name || o.title || ''} (${o.type || ''})\n${o.description || ''}\n${o.where ? 'Where: ' + o.where + '\n' : ''}\n${o.implementation || o.code || ''}\n`
+  ).join('\n' + '─'.repeat(40) + '\n\n'), [opts]);
+
+  // Copy the combined HTML to the clipboard. Sets BOTH text/html and
+  // text/plain so paste into Google Docs / Word / WordPress visual
+  // editor preserves formatting; paste into a code editor gets the raw
+  // HTML source.
+  async function copyAll() {
+    try {
+      if (typeof ClipboardItem !== 'undefined' && navigator.clipboard?.write) {
+        const item = new ClipboardItem({
+          'text/html': new Blob([combinedHtml], { type: 'text/html' }),
+          'text/plain': new Blob([combinedHtml], { type: 'text/plain' })
+        });
+        await navigator.clipboard.write([item]);
+      } else {
+        await navigator.clipboard.writeText(combinedHtml);
+      }
+      setCopiedAll(true);
+      setTimeout(() => setCopiedAll(false), 1500);
+    } catch {
+      try { await navigator.clipboard.writeText(combinedText); setCopiedAll(true); setTimeout(() => setCopiedAll(false), 1500); } catch {}
+    }
+  }
+
+  // Combined push-to-CMS item — pushes ALL optimizations for this page
+  // as one HTML payload in a single CMS push. Used by the new "Push
+  // All to CMS" button at the page-card level.
+  const combinedPushItem = {
+    module: 'aeo',
+    page_url: r.url,
+    page_title: r.url || 'AEO Optimizations',
+    change_type: 'aeo_optimization',
+    payload: {
+      code: combinedHtml,
+      placement: 'Multi-block: see inline section comments',
+      reason: opts.length + ' AEO optimizations combined into one block'
+    }
   };
 
   // Show a readable page path: /about-us/ instead of full URL
@@ -140,20 +297,67 @@ function OptPageCard({ result: r, onDelete, onVerified }) {
   return (
     <div style={{ borderBottom: '1px solid var(--border)' }}>
       <div
-        style={{ padding: '10px 14px', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}
+        style={{ padding: '10px 14px', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' }}
         onClick={() => setOpen(v => !v)}
       >
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontWeight: 600, fontSize: 13 }}>
+        <div style={{ flex: '1 1 220px', minWidth: 0, maxWidth: '100%' }}>
+          <div style={{
+            fontWeight: 600, fontSize: 13,
+            // Truncate long URLs (e.g. /product/ives-dressing-table-dunblane-grey/)
+            // so the right-side button row always has room. Title wraps at most
+            // two lines with ellipsis on overflow.
+            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'
+          }}>
             {pagePath === '/' ? domain + ' (homepage)' : pagePath}
           </div>
-          <div className="muted" style={{ fontSize: 10, marginTop: 1 }}>{displayUrl}</div>
+          <div className="muted" style={{
+            fontSize: 10, marginTop: 1,
+            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'
+          }}>{displayUrl}</div>
         </div>
-        <div className="row" style={{ gap: 6, flexShrink: 0 }}>
+        <div className="row" style={{
+          gap: 6,
+          flex: '0 1 auto',
+          flexWrap: 'wrap',
+          justifyContent: 'flex-end',
+          alignItems: 'center'
+        }}>
           <span style={{ fontSize: 11, color: 'var(--teal)', background: 'rgba(0,212,170,.08)', padding: '2px 8px', borderRadius: 12 }}>
             {opts.length} opts
           </span>
-          <button onClick={(e) => { e.stopPropagation(); copyAll(); }} style={{ fontSize: 10, padding: '2px 8px' }}>Copy All</button>
+          <button onClick={(e) => { e.stopPropagation(); copyAll(); }} style={{ fontSize: 10, padding: '2px 8px' }}>
+            {copiedAll ? 'Copied ✓' : 'Copy all (1 block)'}
+          </button>
+          {opts.length > 0 && (
+            <span onClick={(e) => e.stopPropagation()}>
+              <PushToCmsButton item={combinedPushItem} label="Push all to CMS" />
+            </span>
+          )}
+          {opts.length > 0 && (
+            <span onClick={(e) => e.stopPropagation()}>
+              {/* One verify call for the whole page. Description is a
+                  combined summary of every opt's name + a snippet of
+                  its implementation, so Claude checks the page against
+                  all opts at once and uses the lenient AEO 60%-themes-
+                  present rule (already in verification.js prompt). */}
+              <MarkImplementedButton
+                module="aeo"
+                changeType="aeo_optimization"
+                pageUrl={r.url}
+                title={'AEO bundle: ' + opts.length + ' optimizations'}
+                description={
+                  'Combined AEO push for ' + (r.url || 'this page') + '. Verify the page contains content matching these themes:\n\n' +
+                  opts.map((o, i) =>
+                    (i + 1) + '. ' + (o.name || o.title || 'Opt') +
+                    ' — ' + (o.description || '').slice(0, 200) + '\n' +
+                    'Implementation excerpt: ' + (o.implementation || o.code || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').slice(0, 300)
+                  ).join('\n\n')
+                }
+                client={optClient}
+                onVerified={onVerified}
+              />
+            </span>
+          )}
           {onDelete && (
             <button onClick={(e) => { e.stopPropagation(); onDelete(); }} style={{ fontSize: 10, padding: '2px 8px', color: 'var(--red)', borderColor: 'rgba(255,77,77,.3)' }}>Delete</button>
           )}
@@ -207,15 +411,34 @@ function OptPageCard({ result: r, onDelete, onVerified }) {
               <MarkImplementedButton
                 module="aeo"
                 changeType={o.type || 'aeo_optimization'}
+                client={optClient}
                 pageUrl={r.url}
                 title={o.name || o.title || 'AEO Optimization'}
                 description={code.slice(0, 500)}
                 onVerified={onVerified}
               />
+              {onRejectOpt && (
+                <button
+                  onClick={() => {
+                    const reason = window.prompt('Reject this optimization? It will be filtered out of future runs for this page.\n\nOptional reason:');
+                    if (reason === null) return;
+                    onRejectOpt(r.url, o, reason || '');
+                  }}
+                  title="Reject this optimization so it won't appear in future runs for this page"
+                  style={{ fontSize: 10, padding: '2px 8px', color: 'var(--red)', borderColor: 'rgba(255,77,77,.3)' }}
+                >
+                  Reject
+                </button>
+              )}
             </div>
           </div>
         );
       })}
+      {hiddenCount > 0 && (
+        <div className="muted" style={{ padding: '4px 14px 8px', fontSize: 10 }}>
+          {hiddenCount} rejected optimization{hiddenCount > 1 ? 's' : ''} hidden for this page.
+        </div>
+      )}
     </div>
   );
 }
@@ -420,6 +643,10 @@ export default function AEOEngine({ sub }) {
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState('');
   const [err, setErr] = useState('');
+  // Map of "clientId::url" → Set of rejected opt keys. An optimization
+  // generated by a future run that matches a rejected (type, name) pair on
+  // the same page is hidden from the UI.
+  const [rejectionsByPage, setRejectionsByPage] = useState(() => new Map());
 
   // Deep optimization state — single page, full rewrite + FAQ + changes log.
   const [deepUrl, setDeepUrl] = useState('');
@@ -520,7 +747,41 @@ export default function AEOEngine({ sub }) {
         setResults(prev => ({ ...prev, ...dbResults }));
       }
     }).catch(() => {});
+    listAeoRejections().then(rows => {
+      const map = new Map();
+      for (const r of rows || []) {
+        const k = (r.client_id || '') + '::' + r.page_url;
+        if (!map.has(k)) map.set(k, new Set());
+        map.get(k).add(r.opt_key);
+      }
+      setRejectionsByPage(map);
+    }).catch(() => {});
   }, []);
+
+  async function rejectAeoOpt(pageUrl, opt, reason) {
+    const cid = (() => {
+      // Find which client this page belongs to by scanning results.
+      for (const r of Object.values(results)) {
+        if (r.url === pageUrl) return r.client_id;
+      }
+      return null;
+    })();
+    if (!cid) return;
+    const key = aeoOptKey(opt);
+    setRejectionsByPage(prev => {
+      const next = new Map(prev);
+      const mapKey = cid + '::' + pageUrl;
+      const set = new Set(next.get(mapKey) || []);
+      set.add(key);
+      next.set(mapKey, set);
+      return next;
+    });
+    try {
+      await saveAeoRejection(cid, pageUrl, key, reason || '');
+    } catch (e) {
+      console.warn('[AEO] saveAeoRejection failed:', e.message);
+    }
+  }
 
   useEffect(() => { saveResults(results); }, [results]);
   useEffect(() => { saveHistory(history); }, [history]);
@@ -548,13 +809,18 @@ export default function AEOEngine({ sub }) {
       // STEP 0: Pre-check Google credentials if client has GA4.
       // Do this BEFORE the pipeline so the OAuth popup appears up-front,
       // not mid-flow where it can hang or confuse the user.
+      //
+      // Hint Google to the client's saved account (per-API field wins
+      // over the legacy single google_account_email) so the picker is
+      // skipped when that account already has a live cached token.
+      const ga4Email = c.ga4_account_email || c.google_account_email || null;
       let ga4Ready = false;
       if (c.ga4_property_id) {
         const existingToken = getToken();
         if (!existingToken || !existingToken.access_token) {
           setProgress('Connecting to Google Analytics — please sign in…');
           try {
-            await ensureToken([SCOPES.ga4]);
+            await ensureToken([SCOPES.ga4], { expectedEmail: ga4Email });
             ga4Ready = true;
             setProgress('Google connected ✓');
           } catch (e) {
@@ -726,6 +992,8 @@ export default function AEOEngine({ sub }) {
     if (!client?.ga4_property_id) { setErr('Client has no GA4 property ID.'); return; }
     setBusy(true); setErr(''); setProgress('Running GA4 report…');
     try {
+      const ga4Email = client.ga4_account_email || client.google_account_email || null;
+      await ensureToken([SCOPES.ga4], { expectedEmail: ga4Email });
       const report = await runReport(client.ga4_property_id, 30);
       const rows = (report.rows || [])
         .map(r => ({
@@ -816,8 +1084,10 @@ export default function AEOEngine({ sub }) {
   }
   useEffect(() => { refreshImplementations(); }, []);
 
-  const currentMonth = new Date().toISOString().slice(0, 7);
-  const monthLabel = new Date().toLocaleString('en-US', { month: 'long', year: 'numeric' });
+  const months = useMemo(() => monthOptions(), []);
+  const [selMonth, setSelMonth] = useState(new Date().toISOString().slice(0, 7));
+  const currentMonth = selMonth;
+  const monthLabel = months.find(m => m.value === selMonth)?.label || selMonth;
   const aeoClients = clients.filter(c => c.does_aeo !== false);
 
   const aeoPipeline = useMemo(() => {
@@ -828,8 +1098,15 @@ export default function AEOEngine({ sub }) {
       'credentials-missing': []
     };
     for (const c of aeoClients) {
-      const status = aeoPipelineStatus(c, aeoImpls, results, currentMonth, deepHistory);
-      buckets[status.section]?.push({ client: c, summary: status.summary, detail: status.detail });
+      let status;
+      try {
+        status = aeoPipelineStatus(c, aeoImpls, results, currentMonth, deepHistory);
+      } catch (e) {
+        console.warn('[AEO] pipeline status failed for', c?.name || c?.id, e);
+        status = { section: 'not-run', detail: 'Status check failed: ' + e.message };
+      }
+      const bucket = buckets[status?.section] || buckets['not-run'];
+      bucket.push({ client: c, summary: status?.summary, detail: status?.detail });
     }
     return [
       { key: 'verified-on-site',        label: 'Verified on Site',        color: 'var(--green)',      borderColor: 'var(--green)',      clients: buckets['verified-on-site'] },
@@ -860,6 +1137,10 @@ export default function AEOEngine({ sub }) {
   }
 
   // -------- Subviews --------
+  if (sub === 'Query Discovery') {
+    return <QueryDiscovery />;
+  }
+
   if (sub === 'Run Optimizations') {
     return (
       <div className="content-area">
@@ -879,6 +1160,11 @@ export default function AEOEngine({ sub }) {
         <PipelineView
           title={`AEO Engine — ${monthLabel}`}
           month={monthLabel}
+          monthSelector={
+            <select value={selMonth} onChange={e => setSelMonth(e.target.value)} style={{ width: 170, fontSize: 12 }}>
+              {months.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
+            </select>
+          }
           sections={aeoPipeline}
           onAction={(c, action) => {
             if (action === 'run') {
@@ -900,7 +1186,12 @@ export default function AEOEngine({ sub }) {
             if (cResults.length === 0 && cDeep.length === 0) {
               return <div className="muted" style={{ padding: 12, fontSize: 12 }}>No optimizations yet. Click Run Optimizations to generate.</div>;
             }
-            const totalOpts = cResults.reduce((a, r) => a + (r.optimizations?.length || 0), 0);
+            // Don't count rejected optimizations in the per-client total.
+            const totalOpts = cResults.reduce((a, r) => {
+              const rej = rejectionsByPage.get(c.id + '::' + r.url);
+              const opts = Array.isArray(r.optimizations) ? r.optimizations : [];
+              return a + (rej ? opts.filter(o => !rej.has(aeoOptKey(o))).length : opts.length);
+            }, 0);
             return (
               <div>
                 {cResults.length > 0 && (
@@ -909,7 +1200,15 @@ export default function AEOEngine({ sub }) {
                       Quick-Win Optimizations · {totalOpts} across {cResults.length} page{cResults.length > 1 ? 's' : ''}
                     </div>
                     {cResults.slice(0, 5).map(r => (
-                      <OptPageCard key={r.url} result={r} onDelete={() => deleteResult(r.url, c.id)} onVerified={refreshImplementations} />
+                      <OptPageCard
+                        key={r.url}
+                        result={r}
+                        onDelete={() => deleteResult(r.url, c.id)}
+                        onVerified={refreshImplementations}
+                        optClient={c}
+                        rejectedOptKeys={rejectionsByPage.get(c.id + '::' + r.url)}
+                        onRejectOpt={rejectAeoOpt}
+                      />
                     ))}
                     {cResults.length > 5 && (
                       <div className="muted" style={{ padding: '8px 14px', fontSize: 11 }}>
@@ -1151,7 +1450,15 @@ export default function AEOEngine({ sub }) {
                 </div>
               </div>
               {isOpen && g.results.map(r => (
-                <OptPageCard key={r.url} result={r} onDelete={() => deleteResult(r.url, r.client_id)} onVerified={refreshImplementations} />
+                <OptPageCard
+                  key={r.url}
+                  result={r}
+                  onDelete={() => deleteResult(r.url, r.client_id)}
+                  onVerified={refreshImplementations}
+                  optClient={clients.find(cc => cc.id === r.client_id)}
+                  rejectedOptKeys={rejectionsByPage.get(r.client_id + '::' + r.url)}
+                  onRejectOpt={rejectAeoOpt}
+                />
               ))}
             </div>
           );

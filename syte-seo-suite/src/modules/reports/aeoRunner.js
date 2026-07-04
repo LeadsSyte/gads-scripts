@@ -55,6 +55,9 @@ async function askWithBackoff(eng, query, askOpts, { retries, baseMs, sleep }) {
   let delay = baseMs;
   for (let attempt = 0; ; attempt++) {
     const resp = await eng.ask(query, askOpts);
+    // A flagged sustained rate-limit / config error already exhausted the
+    // engine's own retries, so don't hammer it; the runner disables it instead.
+    if (resp?.rateLimited || resp?.configError) return resp;
     if (!is429(resp) || attempt >= retries) return resp;
     await sleep(delay);
     delay *= 2;
@@ -153,15 +156,21 @@ export async function runSnapshot(client, opts = {}) {
     retries = DEFAULT_RETRIES,
     retryDelayMs = DEFAULT_RETRY_MS,
     sleep = defaultSleep,
-    temperature = 0.7
+    temperature = 0.7,
+    maxQueries    // optional cap on scorable probes (bounds the live probe in the full report)
   } = opts;
 
   const engines = engineOverride || activeEngines();
   if (!engines.length) throw new Error('No AI engines configured. Open Suite Settings.');
 
   const { all: allProbes, active, scorable, reverse } = resolveProbes(client, { now });
-  const runnableProbes = active.concat(reverse.filter(r => !active.some(a => a.id === r.id)));
   if (!scorable.length) throw new Error('This client has no active AEO probes. Migrate or add some.');
+  // maxQueries bounds how many scorable probes run (reverse instruments always
+  // run). Used by the full monthly report to keep the inline live probe cheap.
+  const scorableToRun = (maxQueries && Number(maxQueries) > 0)
+    ? active.filter(p => p.type !== 'reverse').slice(0, Number(maxQueries))
+    : active;
+  const runnableProbes = scorableToRun.concat(reverse.filter(r => !scorableToRun.some(a => a.id === r.id)));
 
   const N = Math.max(1, Math.min(10, Number(iterations) || DEFAULT_ITERATIONS));
   const competitorList = parseCompetitors(client.competitors);
@@ -177,18 +186,38 @@ export async function runSnapshot(client, opts = {}) {
   const runRecords = [];   // persisted per-run records
   const rawEntries = [];   // { hash, engine, run_mode, raw_response }
   const enginesRan = new Set();
+  const disabledEngines = new Set();  // engines a sustained 429 / bad key took out mid-sweep
   const nowISO = (now ? new Date(now) : new Date()).toISOString();
   const runMonth = nowISO.slice(0, 7);
+
+  function errorRecord(probe, eng, i, mode, error) {
+    return {
+      client_id: client.id, month: runMonth, probeId: probe.id, engine: eng.id, runIndex: i,
+      timestamp: nowISO, runMode: mode, error,
+      appeared: null, position: null, listLength: null,
+      segmentLabel: null, reasonPhrase: null, sentiment: null,
+      competitorsNamed: [], citedUrls: [], rawResponseHash: null
+    };
+  }
 
   // Probe one (engine, mode) N times, sequentially (rate-limit friendly).
   async function probeGroup(probe, eng, mode) {
     const runs = [];
     for (let i = 0; i < N; i++) {
+      // Skip an engine that a sustained rate-limit / bad key already took out.
+      if (disabledEngines.has(eng.id)) {
+        runRecords.push(errorRecord(probe, eng, i, mode, 'engine disabled for this sweep'));
+        done++;
+        continue;
+      }
       onProgress?.({ phase: 'query', engine: eng.label, query: probe.query, mode, index: done, total, iteration: i + 1, iterations: N });
       const search = mode === 'search_on';
       const resp = await askWithBackoff(eng, probe.query, { search }, { retries, baseMs: retryDelayMs, sleep });
       done++;
       onProgress?.({ phase: 'done', engine: eng.label, query: probe.query, mode, index: done, total });
+      // A sustained rate-limit or config error takes the engine out for the
+      // rest of the sweep (main's behaviour) instead of paying it every probe.
+      if (resp.rateLimited || resp.configError) disabledEngines.add(eng.id);
       if (resp.error) {
         // Errored run: excluded from scored runs, but we note the attempt.
         runRecords.push({
@@ -252,6 +281,18 @@ export async function runSnapshot(client, opts = {}) {
 
   // Hand raw runs to the caller for persistence (UI wires DB writers).
   try { await onRuns?.(runRecords, rawEntries); } catch (e) { console.warn('[aeo] onRuns persistence failed:', e.message); }
+
+  // Per-engine health so the report UI can explain all-zero engines (timeout /
+  // rate-limit / bad key) instead of showing them as "0% visibility".
+  const engineHealth = {};
+  for (const eng of engines) engineHealth[eng.id] = { label: eng.label, runs: 0, errors: 0, sample_error: null, all_failed: false };
+  for (const r of runRecords) {
+    const h = engineHealth[r.engine];
+    if (!h) continue;
+    h.runs++;
+    if (r.error) { h.errors++; if (!h.sample_error) h.sample_error = r.error; }
+  }
+  for (const h of Object.values(engineHealth)) h.all_failed = h.runs > 0 && h.errors === h.runs;
 
   // ── Aggregate ──────────────────────────────────────────────
   // Index groups by probe.
@@ -490,6 +531,7 @@ export async function runSnapshot(client, opts = {}) {
 
     engine_scores: engineScores,
     engines_used: [...enginesRan.size ? enginesRan : new Set(engines.map(e => e.id))],
+    engine_health: engineHealth,
 
     iterations: N,
     total_runs: runRecords.filter(r => !r.error).length,

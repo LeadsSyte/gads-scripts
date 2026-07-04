@@ -8,6 +8,27 @@ const BLOGS_KEY = 'syte-suite-content_blogs';
 
 function thisMonth() { return new Date().toISOString().slice(0, 7); }
 
+// Month options for the dashboard pickers (newest first). Values are
+// UTC YYYY-MM strings so they match how rows are bucketed everywhere else
+// (timestamp.slice(0, 7) on the ISO/UTC string). Building them from
+// getUTCMonth avoids the off-by-one that local-midnight dates hit in
+// positive-offset timezones (e.g. SAST UTC+2).
+export function monthOptions(count = 12) {
+  const out = [];
+  const now = new Date();
+  let y = now.getUTCFullYear();
+  let m = now.getUTCMonth(); // 0-11
+  for (let i = 0; i < count; i++) {
+    const value = `${y}-${String(m + 1).padStart(2, '0')}`;
+    const label = new Date(Date.UTC(y, m, 1))
+      .toLocaleString('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+    out.push({ value, label });
+    m -= 1;
+    if (m < 0) { m = 11; y -= 1; }
+  }
+  return out;
+}
+
 // Fallback: read cached content history from localStorage (written by
 // loadContentHistory in supabase.js). The caller is expected to pass
 // the Supabase-loaded list via the `contentHistory` param when available.
@@ -59,24 +80,37 @@ export function contentPipelineStatus(client, implementations, month, contentHis
 
   // "Articles Written" = ALL required articles are written, but not all verified yet.
   if (quotaMet) {
+    // Both summary and detail use the SAME denominator (written, the
+    // actual count of articles in the list) so users don't see a
+    // contradiction like "1/2 verified" + "1 of 7 verified" simultaneously.
+    // The "need N to advance to Verified on Site" line is what tells them
+    // the quota; before this fix users couldn't tell whether the bucket
+    // moved on quota (required) or completion (written).
     const parts = [written + ' written'];
-    if (verifiedCount > 0) parts.push(verifiedCount + '/' + required + ' verified');
-    else parts.push('0 verified');
+    parts.push(verifiedCount + ' verified');
+    // We only reach here if allVerified was false above, so verifiedCount
+    // < required. remainingForQuota is always >= 1 in this branch.
+    const remainingForQuota = required - verifiedCount;
+    const detail = verifiedCount === 0
+      ? 'All ' + written + ' articles written, awaiting verification. ' +
+        'Verify any ' + required + ' to move to Verified on Site.'
+      : verifiedCount + ' of ' + written + ' verified — verify ' +
+        remainingForQuota + ' more to move to Verified on Site (quota: ' + required + ').';
     return {
       section: 'articles-written',
       summary: parts.join(' · '),
-      detail: verifiedCount > 0
-        ? verifiedCount + ' of ' + required + ' verified — ' + (required - verifiedCount) + ' awaiting verification'
-        : 'All ' + required + ' articles written, awaiting upload & verification'
+      detail
     };
   }
 
-  // In progress — some articles written but quota not met.
+  // In progress — at least one article written but quota not met. Counts as
+  // "Articles Written" (with an X/Y progress note) so real work isn't hidden
+  // under "No Articles Yet"; only zero-article clients stay there.
   if (written > 0) {
     const parts = [written + '/' + required + ' articles'];
     if (verifiedCount > 0) parts.push(verifiedCount + ' verified');
     return {
-      section: 'no-articles',
+      section: 'articles-written',
       summary: parts.join(' · '),
       detail: written + ' of ' + required + ' articles written — ' + (required - written) + ' remaining'
     };
@@ -102,33 +136,42 @@ export function technicalPipelineStatus(client, implementations, tasks, month) {
     i => i.client_id === client.id && i.module === 'technical' &&
       (i.implemented_at || i.created_at || '').slice(0, 7) === m
   );
-  const verified = monthImpls.filter(i => i.verification_status === 'verified');
+  const verifiedImpls = monthImpls.filter(i => i.verification_status === 'verified');
 
   const clientTasks = (tasks || []).filter(
     t => t.client_id === client.id && (t.created_at || '').slice(0, 7) === m
   );
+  const verifiedTasks = clientTasks.filter(t => t.status === 'verified');
   const open = clientTasks.filter(t => t.status === 'open').length;
   const done = clientTasks.filter(t => t.status === 'done' || t.status === 'verified').length;
   const allTasksDone = clientTasks.length > 0 && open === 0;
 
-  // "Verified on Site" when at least 1 implementation is verified on the live site.
-  if (verified.length > 0) {
+  // A fix counts as verified-on-site if it has a verified IMPLEMENTATION row
+  // OR its task is marked verified. The team verifies tasks directly (the
+  // task "Verify" button) and the matching impl-row write is best-effort —
+  // it's wrapped in a swallowed try/catch — so the dashboard must not depend
+  // on that row existing, or genuinely-verified work shows as "not done".
+  // The two sources overlap (a verified task usually has a verified impl), so
+  // take the larger count rather than summing to avoid double-counting.
+  const verifiedCount = Math.max(verifiedImpls.length, verifiedTasks.length);
+
+  // "Verified on Site" when at least 1 fix is verified on the live site.
+  if (verifiedCount > 0) {
     const parts = [clientTasks.length + ' tasks'];
-    if (verified.length > 0) parts.push(verified.length + ' verified');
+    parts.push(verifiedCount + ' verified');
     if (open > 0) parts.push(open + ' open');
     return {
       section: 'verified-on-site',
       summary: parts.join(' · '),
       detail: allTasksDone
-        ? 'All ' + verified.length + ' fixes verified on site'
-        : verified.length + ' of ' + clientTasks.length + ' verified · ' + open + ' still open'
+        ? 'All ' + verifiedCount + ' fixes verified on site'
+        : verifiedCount + ' of ' + clientTasks.length + ' verified · ' + open + ' still open'
     };
   }
 
   if (clientTasks.length > 0) {
     const parts = [clientTasks.length + ' tasks'];
     if (done > 0) parts.push(done + ' done');
-    if (verified.length > 0) parts.push(verified.length + ' verified');
     if (open > 0) parts.push(open + ' open');
     return {
       // "fixes-generated" = a scan was run and tasks exist (regardless of
@@ -170,16 +213,31 @@ export function aeoPipelineStatus(client, implementations, aeoResults, month, de
   const monthResults = Object.values(aeoResults || {}).filter(
     r => r.client_id === client.id && (r.generated_at || '').slice(0, 7) === m
   );
-  const totalOpts = monthResults.reduce((a, r) => a + (r.optimizations?.length || 0), 0);
+  // ALSO count optimizations from any earlier month — these existed but
+  // the strict month filter was hiding them as "not run". Show the
+  // client in optimizations-generated with a "stale" note instead of
+  // burying them in NOT RUN YET.
+  const allClientResults = Object.values(aeoResults || {}).filter(
+    r => r.client_id === client.id
+  );
+  const priorResults = allClientResults.filter(
+    r => (r.generated_at || '').slice(0, 7) !== m
+  );
+  const monthOpts = monthResults.reduce((a, r) => a + (r.optimizations?.length || 0), 0);
+  const priorOpts = priorResults.reduce((a, r) => a + (r.optimizations?.length || 0), 0);
+  const totalOpts = monthOpts + priorOpts;
 
   // Deep optimizations count as real work too. Each deep opt is a full-page
   // rewrite so we count it as 1 "optimization" toward the month's work.
   const monthDeep = (deepResults || []).filter(
     d => d.client_id === client.id && (d.generated_at || '').slice(0, 7) === m
   );
-  const deepCount = monthDeep.length;
+  const allDeep = (deepResults || []).filter(d => d.client_id === client.id);
+  const priorDeep = allDeep.filter(d => (d.generated_at || '').slice(0, 7) !== m);
+  const deepCount = monthDeep.length + priorDeep.length;
   const totalWork = totalOpts + deepCount;
   const allImplemented = totalWork > 0 && verified.length >= totalWork;
+  const isStale = monthResults.length === 0 && monthDeep.length === 0 && (priorResults.length > 0 || priorDeep.length > 0);
 
   // Only "verified-on-site" when all optimizations are implemented + verified.
   if (allImplemented && verified.length > 0) {
@@ -190,19 +248,22 @@ export function aeoPipelineStatus(client, implementations, aeoResults, month, de
     };
   }
 
-  if (monthResults.length > 0 || deepCount > 0) {
+  if (totalOpts > 0 || deepCount > 0) {
     const parts = [];
     if (totalOpts > 0) parts.push(totalOpts + ' quick-win optimizations');
     if (deepCount > 0) parts.push(deepCount + ' deep rewrite' + (deepCount > 1 ? 's' : ''));
     if (verified.length > 0) parts.push(verified.length + ' verified');
     const remaining = totalWork - verified.length;
     if (remaining > 0) parts.push(remaining + ' awaiting implementation');
+    if (isStale) parts.push('from prior month — re-run for ' + m);
     return {
-      section: allImplemented ? 'optimizations-generated' : (verified.length > 0 ? 'optimizations-generated' : 'optimizations-generated'),
+      section: 'optimizations-generated',
       summary: parts.join(' · '),
-      detail: verified.length > 0
-        ? verified.length + ' of ' + totalWork + ' items verified'
-        : 'Generated, awaiting implementation'
+      detail: isStale
+        ? 'Existing optimizations are from a prior month. Click Run Optimizations to refresh for ' + m + '.'
+        : (verified.length > 0
+          ? verified.length + ' of ' + totalWork + ' items verified'
+          : 'Generated, awaiting implementation')
     };
   }
 
@@ -211,11 +272,14 @@ export function aeoPipelineStatus(client, implementations, aeoResults, month, de
 
 // ─── Approvals matrix ────────────────────────────────────────────
 // For each client, return the status of each module this month.
-export function approvalsStatus(client, implementations, tasks, aeoResults, month, contentHistory) {
+// `deepResults` (AEO full-page rewrites) is required for the AEO column to
+// reach "verified-on-site" — without it totalWork is 0 and AEO can never
+// clear, even when verified implementations exist.
+export function approvalsStatus(client, implementations, tasks, aeoResults, month, contentHistory, deepResults) {
   const m = month || thisMonth();
   return {
     content: contentPipelineStatus(client, implementations, m, contentHistory),
     technical: technicalPipelineStatus(client, implementations, tasks, m),
-    aeo: aeoPipelineStatus(client, implementations, aeoResults, m)
+    aeo: aeoPipelineStatus(client, implementations, aeoResults, m, deepResults)
   };
 }

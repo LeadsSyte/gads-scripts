@@ -82,7 +82,7 @@ await t('chosen provider with no key surfaces a clear error (not a silent fallba
 await t('explicit DALL-E pick — DALL-E error surfaces, no Imagen fallback', async () => {
   globalThis.__settings = { openaiKey: 'o', googleAiKey: 'g' };
   fetchHandler = (url) => {
-    if (url.includes('openai.com')) {
+    if (url.includes('openai-proxy') || url.includes('openai.com')) {
       return { ok: false, status: 400, text: async () => 'content policy violation' };
     }
     throw new Error('Imagen should not be called when user picked DALL-E');
@@ -94,7 +94,7 @@ await t('explicit DALL-E pick — DALL-E error surfaces, no Imagen fallback', as
   );
   // Critical assertion: only one fetch happened, to OpenAI.
   assertEq(fetchCalls.length, 1, 'fetch count');
-  assertMatch(fetchCalls[0].url, /openai\.com/, 'fetch URL');
+  assertMatch(fetchCalls[0].url, /openai-proxy|openai\.com/, 'fetch URL');
 });
 
 await t('explicit Imagen pick — Imagen error surfaces, no DALL-E fallback', async () => {
@@ -121,7 +121,7 @@ await t('explicit Imagen pick — Imagen error surfaces, no DALL-E fallback', as
 await t('allowFallback=true falls through to the other provider when first fails', async () => {
   globalThis.__settings = { openaiKey: 'o', googleAiKey: 'g' };
   fetchHandler = (url) => {
-    if (url.includes('openai.com')) {
+    if (url.includes('openai-proxy') || url.includes('openai.com')) {
       return { ok: false, status: 500, text: async () => 'down' };
     }
     if (url.includes('generativelanguage.googleapis.com')) {
@@ -138,7 +138,7 @@ await t('allowFallback=true falls through to the other provider when first fails
 await t('allowFallback=true returns success directly when first provider works', async () => {
   globalThis.__settings = { openaiKey: 'o', googleAiKey: 'g' };
   fetchHandler = (url) => {
-    if (url.includes('openai.com')) {
+    if (url.includes('openai-proxy') || url.includes('openai.com')) {
       return { ok: true, json: async () => ({ data: [{ b64_json: 'BBBB', revised_prompt: 'p' }] }) };
     }
     throw new Error('Imagen should not be called when DALL-E works');

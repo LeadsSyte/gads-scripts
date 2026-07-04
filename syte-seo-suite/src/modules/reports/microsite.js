@@ -462,6 +462,16 @@ export function buildMicrositeHtml({ micro, client, monthLabel, previousMonthLab
         Probed ${probe.engines_used?.length || 0} AI engine${(probe.engines_used?.length || 0) > 1 ? 's' : ''}
         (${(probe.engines_used || []).join(', ')}) across ${probe.scorable_probes || probe.queries_count || new Set(probe.per_query.map(r => r.query)).size} buyer prompts × ${probe.iterations || 1} iterations = ${probe.total_runs || probe.per_query.length} total responses.
       </p>
+      ${(probe.mentions || 0) === 0 && (probe.citations || 0) === 0 && !cmp?.has_previous ? `
+      <!-- No signal yet → reframe as "Establishing baseline" rather than blasting six big "0%" panels at the client (which reads as a doom report even though it's a brand-new measurement). The detail table below still shows every query that was probed. -->
+      <div style="padding:24px;background:var(--surface);border:1px solid var(--border);border-radius:12px;margin-bottom:20px;border-left:4px solid var(--accent);">
+        <div style="font-family:'DM Serif Display',serif;font-size:24px;line-height:1.2;color:var(--text);margin-bottom:8px;">
+          Establishing the AI-visibility baseline
+        </div>
+        <p style="color:var(--muted);font-size:13px;margin:0;line-height:1.55;">
+          This is the first month of AEO measurement. We probed ${probe.queries_count || new Set(probe.per_query.map(r => r.query)).size} category-demand queries across ${probe.engines_used?.length || 0} engines and the brand isn't yet surfacing in answers — that's normal at month one and tells us exactly which queries are open opportunities. Next month's report will compare against this baseline so you can see momentum.
+        </p>
+      </div>` : `
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-bottom:20px;">
         ${[
           { label: 'Named In', value: `${probe.prompt_coverage ?? 0} of ${probe.scorable_probes ?? (probe.queries_count || 0)}`, sub: 'buyer prompts', delta: cmp?.deltas?.coverage, deltaSuffix: 'pp' },
@@ -478,8 +488,32 @@ export function buildMicrositeHtml({ micro, client, monthLabel, previousMonthLab
           </div>
         `).join('')}
       </div>
-      ${cmp?.has_previous ? `<p style="color:var(--muted);font-size:12px;font-style:italic;">Deltas vs ${esc(previousMonthLabel || cmp.previous_month || 'last month')}</p>` : '<p style="color:var(--muted);font-size:12px;font-style:italic;">First snapshot — this is the baseline. MoM deltas appear from next month.</p>'}
+      ${cmp?.has_previous ? `<p style="color:var(--muted);font-size:12px;font-style:italic;">Deltas vs ${esc(previousMonthLabel || cmp.previous_month || 'last month')}</p>` : '<p style="color:var(--muted);font-size:12px;font-style:italic;">First snapshot — this is the baseline. MoM deltas appear from next month.</p>'}`}
       ${micro?.aeoMomNarrative ? `<p class="narrative" style="margin-top:14px;">${esc(micro.aeoMomNarrative)}</p>` : ''}
+      ${(() => {
+        // Surface per-engine health when any engine errored across runs —
+        // otherwise the report quietly omits failed engines (engineScores
+        // = 0%) and the operator can't tell a real "no mentions" from a
+        // "ChatGPT 404'd on every iteration" until they cross-check the
+        // raw probe.
+        const eh = probe.engine_health || {};
+        const failing = Object.entries(eh).filter(([, h]) => h.errors > 0);
+        if (!failing.length) return '';
+        return `<div style="margin-top:14px;padding:12px 14px;border:1px solid color-mix(in srgb,var(--orange) 40%,var(--border));border-left:3px solid var(--orange);background:color-mix(in srgb,var(--orange) 8%,var(--surface-2));border-radius:8px;font-size:12px;">
+          <strong style="color:var(--orange);">Engine probe failures:</strong>
+          <ul style="margin:6px 0 0 18px;padding:0;">
+            ${failing.map(([id, h]) => `
+              <li style="margin-bottom:4px;">
+                <strong>${esc(h.label || id)}</strong> — ${h.errors}/${h.runs} iterations failed${h.all_failed ? ' <span style="color:var(--red);">(every iteration)</span>' : ''}
+                ${h.sample_error ? `<div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--muted);margin-top:2px;">${esc(h.sample_error)}</div>` : ''}
+              </li>
+            `).join('')}
+          </ul>
+          <div style="color:var(--muted);font-size:11px;margin-top:6px;">
+            Visibility for the failing engine(s) reads as 0% in the tables below — those rows reflect probe errors, not real "no mentions" results.
+          </div>
+        </div>`;
+      })()}
       ${rankscaleBtn}
     </section>` : ''}
 
@@ -645,7 +679,21 @@ export function buildMicrositeHtml({ micro, client, monthLabel, previousMonthLab
       </table>
     </section>` : ''}
 
-    ${probe.per_query?.length > 0 ? `
+    ${probe.per_query?.length > 0 ? (() => {
+      // Every other table in this report is row-capped; this granular
+      // detail table was not, so a saved snapshot with a large probe-query
+      // list (queries × engines rows) produced a multi-hundred-row table.
+      // Baked into the iframe srcDoc alongside everything else that was
+      // enough to lock the tab on render. Cap it like its siblings and note
+      // the remainder — the full per-query data lives in the AEO Snapshot.
+      const MAX_DETAIL_ROWS = 200;
+      const allRows = probe.per_query
+        .filter(r => !r.error)
+        .slice()
+        .sort((a, b) => (b.visibility || 0) - (a.visibility || 0));
+      const rows = allRows.slice(0, MAX_DETAIL_ROWS);
+      const hidden = allRows.length - rows.length;
+      return `
     <section>
       <h2>Query × Engine Visibility Detail</h2>
       <p style="color:var(--muted);font-size:13px;margin-bottom:14px;">Per-engine visibility for every probe query — the granular data behind the scores above.</p>
@@ -661,10 +709,7 @@ export function buildMicrositeHtml({ micro, client, monthLabel, previousMonthLab
           </tr>
         </thead>
         <tbody>
-          ${probe.per_query
-            .filter(r => !r.error)
-            .slice()
-            .sort((a, b) => (b.visibility || 0) - (a.visibility || 0))
+          ${rows
             .map(r => {
               const v = r.visibility ?? (r.mentioned ? 100 : 0);
               const visColour = v >= 70 ? 'var(--green)' : v >= 30 ? 'var(--orange)' : 'var(--muted)';
@@ -679,7 +724,9 @@ export function buildMicrositeHtml({ micro, client, monthLabel, previousMonthLab
             }).join('')}
         </tbody>
       </table>
-    </section>` : ''}
+      ${hidden > 0 ? `<p style="color:var(--muted);font-size:12px;margin-top:10px;">+${hidden} more query × engine rows — see the full AEO Snapshot for the complete set.</p>` : ''}
+    </section>`;
+    })() : ''}
 
     ${micro?.whatNext ? `
     <section>
@@ -782,4 +829,74 @@ export function downloadMicrosite(html, filename) {
   a.href = url; a.download = filename;
   a.click();
   URL.revokeObjectURL(url);
+}
+
+// Open the microsite in a new window with print-friendly CSS injected
+// and trigger window.print(). The browser presents the standard "Save
+// as PDF" destination so the user gets a clean PDF without needing a
+// server-side renderer (puppeteer / wkhtmltopdf).
+//
+// The PDF is meant to look exactly like the on-screen HTML — we only
+// add @page sizing, force colour preservation (Chrome strips background
+// colours by default in print), and tighten page-break behaviour so
+// cards / table rows don't split awkwardly across pages.
+export function downloadMicrositePdf(html, filename) {
+  const PRINT_CSS = `
+    @page { size: A4; margin: 0; }
+    @media print {
+      /* Force every coloured surface to print — without this, Chrome
+         drops the dark background and the report comes out white. */
+      *, *::before, *::after {
+        -webkit-print-color-adjust: exact !important;
+        print-color-adjust: exact !important;
+      }
+      html, body {
+        background: var(--bg) !important;
+        color: var(--text) !important;
+      }
+      /* The microsite already has its own padding via .wrap — we just
+         need to make sure the dark background extends to the page edges
+         since we set @page margin to 0. */
+      .wrap { padding: 18mm 14mm !important; }
+
+      /* Page-break behaviour — keep cards / table rows together where
+         possible so the document reads cleanly. */
+      section, .card, .metric, .work-card, .ppc-card, .next, .engine-tile,
+      .comp-row, footer { break-inside: avoid; page-break-inside: avoid; }
+      h1, h2, h3 { break-after: avoid-page; page-break-after: avoid; }
+      table { break-inside: auto; }
+      tr { break-inside: avoid; break-after: auto; }
+      thead { display: table-header-group; }
+    }
+  `;
+
+  const titleTag = '<title>' + (filename || 'Report').replace(/\.pdf$/i, '') + '</title>';
+  let prepared;
+  if (html.includes('</head>')) {
+    prepared = html.replace('</head>', '<style>' + PRINT_CSS + '</style>\n' + titleTag + '</head>');
+  } else {
+    prepared = '<style>' + PRINT_CSS + '</style>' + titleTag + html;
+  }
+
+  const win = window.open('', '_blank');
+  if (!win) {
+    // Pop-up blocked — fall back to downloading the HTML so the user can
+    // open it in a new tab and Cmd/Ctrl+P themselves.
+    downloadMicrosite(html, (filename || 'report').replace(/\.pdf$/i, '') + '.html');
+    alert('Pop-up blocked. Saved the HTML version instead — open it and use the browser\'s Print → Save as PDF.');
+    return;
+  }
+  win.document.open();
+  win.document.write(prepared);
+  win.document.close();
+
+  // Wait for fonts + images to settle before triggering print.
+  const triggerPrint = () => {
+    try { win.focus(); win.print(); } catch {}
+  };
+  if (win.document.readyState === 'complete') {
+    setTimeout(triggerPrint, 600);
+  } else {
+    win.addEventListener('load', () => setTimeout(triggerPrint, 600));
+  }
 }

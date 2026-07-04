@@ -109,6 +109,25 @@ await t('errored engine does not abort; engines_used reflects engines that ran',
   ok(snap.engines_used.includes('chatgpt'), 'chatgpt ran');
   ok(!snap.engines_used.includes('gemini'), 'gemini did not run (all errored)');
   eq(snap.coverage_rate, 1, 'coverage still computed from actual runs');
+  // engine_health (ported from main) surfaces the failing engine for the UI.
+  ok(snap.engine_health, 'engine_health present');
+  eq(snap.engine_health.gemini.all_failed, true, 'gemini all_failed');
+  ok(snap.engine_health.gemini.errors > 0, 'gemini errors recorded');
+  eq(snap.engine_health.chatgpt.all_failed, false, 'chatgpt healthy');
+});
+
+// ── Engine disabled mid-sweep on sustained rate-limit (ported from main) ─
+await t('rateLimited engine is disabled for the rest of the sweep', async () => {
+  let calls = 0;
+  const limited = {
+    id: 'chatgpt', label: 'ChatGPT', model: 'gpt-4o', retrievalNative: false, supportsSearchOff: true, isConfigured: () => true,
+    ask: async () => { calls++; return { error: 'OpenAI 429 rate limit', rateLimited: true }; }
+  };
+  await mod.runSnapshot(CLIENT, { engines: [limited], extract: extractAppears, iterations: 3, retryDelayMs: 0, sleep: async () => {}, now: NOW });
+  // 2 scorable (both modes) + 2 reverse (search_on) = many groups x3 iters, but
+  // once the first call flags rateLimited the engine is disabled, so the number
+  // of real calls stays far below the full precount.
+  ok(calls >= 1 && calls < 10, 'engine disabled after first rate-limit (calls=' + calls + ')');
 });
 
 // ── Reverse probes excluded from coverage/index ─────────────

@@ -9,6 +9,12 @@
 import { ensureToken, SCOPES } from '../technical/googleAuth.js';
 import { querySearchAnalytics } from '../technical/gsc.js';
 import { buildKeywordBuckets, classifyKeywords } from './keywordBuckets.js';
+import { fetchWithTimeout } from '../../lib/http.js';
+import { serverAuthEnabled, proxyGoogleFetch } from '../../lib/googleServerAuth.js';
+
+// Cap GA4 calls so a stalled Analytics endpoint surfaces as an error in the
+// report's errors[] instead of hanging the whole fetch behind Promise.all.
+const GA4_TIMEOUT_MS = 30000;
 
 // ─── Date helpers ────────────────────────────────────────────
 function monthRange(year, month) {
@@ -30,9 +36,10 @@ function getReportPeriods(year, month) {
 }
 
 // ─── GA4 Organic Traffic + Conversions ───────────────────────
-async function fetchGA4Period(propertyId, dateRange, clientType) {
-  const token = await ensureToken([SCOPES.ga4]);
-
+// `expectedEmail` pins which cached Google-account token gets used —
+// supports the per-API binding where GA4 lives under a different Google
+// account than GSC for the same client.
+async function fetchGA4Period(propertyId, dateRange, clientType, expectedEmail = null) {
   // Base metrics always needed.
   const metrics = [
     { name: 'totalUsers' },
@@ -48,27 +55,38 @@ async function fetchGA4Period(propertyId, dateRange, clientType) {
     metrics.push({ name: 'keyEvents' });
   }
 
-  const res = await fetch(
-    `https://analyticsdata.googleapis.com/v1beta/properties/${propertyId}:runReport`,
-    {
-      method: 'POST',
-      headers: {
-        Authorization: 'Bearer ' + token.access_token,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        dateRanges: [dateRange],
-        dimensions: [{ name: 'sessionDefaultChannelGroup' }],
-        metrics,
-        dimensionFilter: {
-          filter: {
-            fieldName: 'sessionDefaultChannelGroup',
-            stringFilter: { matchType: 'EXACT', value: 'Organic Search' }
-          }
-        }
-      })
+  const url = `https://analyticsdata.googleapis.com/v1beta/properties/${propertyId}:runReport`;
+  const reqBody = {
+    dateRanges: [dateRange],
+    dimensions: [{ name: 'sessionDefaultChannelGroup' }],
+    metrics,
+    dimensionFilter: {
+      filter: {
+        fieldName: 'sessionDefaultChannelGroup',
+        stringFilter: { matchType: 'EXACT', value: 'Organic Search' }
+      }
     }
-  );
+  };
+
+  let res;
+  if (serverAuthEnabled()) {
+    // Server-side flow: the proxy attaches the account's token server-side.
+    res = await proxyGoogleFetch(url, { method: 'POST', body: reqBody }, expectedEmail);
+  } else {
+    const token = await ensureToken([SCOPES.ga4], { expectedEmail });
+    res = await fetchWithTimeout(
+      url,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer ' + token.access_token,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(reqBody)
+      },
+      GA4_TIMEOUT_MS
+    );
+  }
   if (!res.ok) {
     const txt = await res.text().catch(() => '');
     throw new Error('GA4 ' + res.status + ': ' + txt.slice(0, 200));
@@ -102,7 +120,7 @@ async function fetchGA4Period(propertyId, dateRange, clientType) {
 const MAX_KEYWORD_ROWS = 10000;
 const PAGE_SIZE = 2500;
 
-async function fetchKeywordRankings(gscProperty, dateRange) {
+async function fetchKeywordRankings(gscProperty, dateRange, expectedEmail = null) {
   const all = [];
   for (let startRow = 0; startRow < MAX_KEYWORD_ROWS; startRow += PAGE_SIZE) {
     const page = await querySearchAnalytics(gscProperty, {
@@ -110,7 +128,8 @@ async function fetchKeywordRankings(gscProperty, dateRange) {
       endDate: dateRange.endDate,
       dimensions: ['query'],
       rowLimit: PAGE_SIZE,
-      startRow
+      startRow,
+      expectedEmail
     });
     const rows = page.rows || [];
     all.push(...rows);
@@ -119,12 +138,13 @@ async function fetchKeywordRankings(gscProperty, dateRange) {
   return { rows: all };
 }
 
-async function fetchTopPages(gscProperty, dateRange) {
+async function fetchTopPages(gscProperty, dateRange, expectedEmail = null) {
   return querySearchAnalytics(gscProperty, {
     startDate: dateRange.startDate,
     endDate: dateRange.endDate,
     dimensions: ['page'],
-    rowLimit: 20
+    rowLimit: 20,
+    expectedEmail
   });
 }
 
@@ -136,14 +156,22 @@ export async function fetchReportData(client, year, month1Based) {
   const clientType = client.client_type || 'lead_gen';
   const errors = [];
 
+  // Per-API account binding. The agency has clients where GA4 lives in
+  // one Google account and Search Console lives in another (e.g. brand
+  // owns GSC, agency hosts GA4). Each fetcher uses its own binding,
+  // falling back to the legacy single google_account_email for clients
+  // set up before the per-API fields existed.
+  const ga4Email = client.ga4_account_email || client.google_account_email || null;
+  const gscEmail = client.gsc_account_email || client.google_account_email || null;
+
   // 1. GA4 traffic + conversions (3 periods in parallel)
   let traffic = { current: null, previous: null, yoy: null };
   if (client.ga4_property_id) {
     try {
       const [cur, prev, yoy] = await Promise.all([
-        fetchGA4Period(client.ga4_property_id, periods.current, clientType),
-        fetchGA4Period(client.ga4_property_id, periods.prev, clientType),
-        fetchGA4Period(client.ga4_property_id, periods.yoy, clientType)
+        fetchGA4Period(client.ga4_property_id, periods.current, clientType, ga4Email),
+        fetchGA4Period(client.ga4_property_id, periods.prev, clientType, ga4Email),
+        fetchGA4Period(client.ga4_property_id, periods.yoy, clientType, ga4Email)
       ]);
       traffic = { current: cur, previous: prev, yoy };
     } catch (e) {
@@ -158,11 +186,11 @@ export async function fetchReportData(client, year, month1Based) {
   let topPages = [];
   if (client.gsc_property) {
     try {
-      await ensureToken([SCOPES.gsc]);
+      await ensureToken([SCOPES.gsc], { expectedEmail: gscEmail });
       const [curKw, prevKw, pages] = await Promise.all([
-        fetchKeywordRankings(client.gsc_property, periods.current),
-        fetchKeywordRankings(client.gsc_property, periods.prev),
-        fetchTopPages(client.gsc_property, periods.current)
+        fetchKeywordRankings(client.gsc_property, periods.current, gscEmail),
+        fetchKeywordRankings(client.gsc_property, periods.prev, gscEmail),
+        fetchTopPages(client.gsc_property, periods.current, gscEmail)
       ]);
 
       // Build keyword comparison table.

@@ -16,11 +16,21 @@ import { verifyImplementation, verifyImplementationFromHtml, verifyImplementatio
 //   pageUrl:     the URL where the change should appear
 //   title:       short description of what was implemented
 //   description: longer detail (the actual change content)
+//   client?:     OPTIONAL — explicit client object to verify against. Use
+//                this when the button lives on a per-task / per-article
+//                row whose client is NOT the topbar selection (e.g. a
+//                pipeline view shows tasks from many clients). Without
+//                this, the button verified against the topbar client and
+//                produced the "checked bamdiy.com/robots.txt for a Syte
+//                task" bug. It's also what kept the button disabled (the
+//                not-allowed cursor) when no client was selected in the
+//                topbar — falling back to a null current() left it dead.
 //   disabled?:   boolean
 export default function MarkImplementedButton({
-  module, changeType, pageUrl, title, description, disabled, onVerified
+  module, changeType, pageUrl, title, description, disabled, onVerified, client: clientProp
 }) {
-  const client = useClients(s => s.current());
+  const topbarClient = useClients(s => s.current());
+  const client = clientProp || topbarClient;
   const [phase, setPhase] = useState('idle'); // idle | logging | verifying | done
   const [result, setResult] = useState(null); // { status, detail, impl }
   const [err, setErr] = useState('');
@@ -44,6 +54,76 @@ export default function MarkImplementedButton({
       setErr(e.message);
     } finally {
       setPasteBusy(false);
+    }
+  }
+
+  // Compress + read an image File as a base64 data URL. Caps the long
+  // edge at ~1600px so a phone screenshot doesn't bloat the DB row to
+  // multi-MB. JPEG quality 0.85 keeps the file legible while
+  // shrinking ~10× vs the raw photo.
+  async function fileToCompressedDataUrl(file) {
+    if (!file) return '';
+    const dataUrl = await new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(r.result);
+      r.onerror = () => reject(r.error);
+      r.readAsDataURL(file);
+    });
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        const MAX = 1600;
+        let { width, height } = img;
+        if (width > MAX || height > MAX) {
+          const scale = MAX / Math.max(width, height);
+          width = Math.round(width * scale);
+          height = Math.round(height * scale);
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = width; canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#fff'; // flatten transparency
+        ctx.fillRect(0, 0, width, height);
+        ctx.drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL('image/jpeg', 0.85));
+      };
+      img.onerror = reject;
+      img.src = dataUrl;
+    });
+  }
+
+  // Verify-with-screenshot path. User picks an image → compress to JPEG
+  // base64 → store in verification_detail prefixed with a marker so the
+  // history view can split it back out and render the image. The whole
+  // implementation row is updated to verified. Available on EVERY
+  // verification state per user request — even after auto-verify said
+  // OK, the user might still want to attach proof for the audit trail.
+  const screenshotInputRef = React.useRef(null);
+  const [uploading, setUploading] = useState(false);
+
+  async function uploadScreenshot(file) {
+    if (!file || !result?.impl?.id) return;
+    if (!file.type.startsWith('image/')) {
+      setErr('Please upload an image (JPEG, PNG, etc.)');
+      return;
+    }
+    setUploading(true); setErr('');
+    try {
+      const dataUrl = await fileToCompressedDataUrl(file);
+      const note = (result?.detail ? result.detail + '\n\n' : '') +
+        '✓ Verified via uploaded screenshot.\n[SCREENSHOT]' + dataUrl + '[/SCREENSHOT]';
+      await updateImplementation(result.impl.id, {
+        verification_status: 'verified',
+        verification_detail: note,
+        verified_at: new Date().toISOString()
+      });
+      setResult({ ...result, status: 'verified', detail: note });
+      onVerified?.();
+    } catch (e) {
+      setErr('Upload failed: ' + e.message);
+    } finally {
+      setUploading(false);
+      if (screenshotInputRef.current) screenshotInputRef.current.value = '';
     }
   }
 
@@ -168,6 +248,27 @@ export default function MarkImplementedButton({
             <span style={{ color: statusColor, fontWeight: 600 }}>
               {statusLabel}
             </span>
+            {/* Universal "Upload screenshot proof" — available on every
+                verification result (verified / failed / manual_required).
+                User can always attach evidence; uploading marks the row
+                verified regardless of the auto-check outcome. */}
+            <input
+              ref={screenshotInputRef}
+              type="file"
+              accept="image/*"
+              style={{ display: 'none' }}
+              onChange={(e) => uploadScreenshot(e.target.files?.[0])}
+            />
+            <button
+              onClick={() => screenshotInputRef.current?.click()}
+              disabled={uploading}
+              style={{
+                fontSize: 10, padding: '2px 8px', marginLeft: 6,
+                borderColor: 'var(--green)', color: 'var(--green)'
+              }}
+            >
+              {uploading ? 'Uploading…' : (result.status === 'verified' ? '+ Add proof screenshot' : '📸 Upload screenshot to verify')}
+            </button>
             {result.status === 'verified' && (
               <button onClick={handleClick} style={{ fontSize: 10, padding: '2px 8px', marginLeft: 6 }}>Re-verify</button>
             )}
@@ -240,18 +341,43 @@ export default function MarkImplementedButton({
         )}
       </div>
 
-      {result?.detail && (
-        <div style={{
-          fontSize: 11, lineHeight: 1.4, maxWidth: 500,
-          color: result.status === 'verified' ? 'var(--text-muted)' : 'var(--orange)',
-          padding: '4px 8px',
-          background: 'var(--surface-2)',
-          borderRadius: 6,
-          borderLeft: '2px solid ' + statusColor
-        }}>
-          {result.detail}
-        </div>
-      )}
+      {result?.detail && (() => {
+        // Split out an embedded screenshot data-URL (added by the upload
+        // path) so we can render the image inline. Marker convention:
+        //   …prose…[SCREENSHOT]data:image/jpeg;base64,XXX[/SCREENSHOT]
+        const m = String(result.detail).match(/\[SCREENSHOT\]([\s\S]+?)\[\/SCREENSHOT\]/);
+        const text = m ? result.detail.replace(m[0], '').trim() : result.detail;
+        const screenshot = m ? m[1] : '';
+        return (
+          <div style={{
+            fontSize: 11, lineHeight: 1.4, maxWidth: 500,
+            color: result.status === 'verified' ? 'var(--text-muted)' : 'var(--orange)',
+            padding: '4px 8px',
+            background: 'var(--surface-2)',
+            borderRadius: 6,
+            borderLeft: '2px solid ' + statusColor
+          }}>
+            <div style={{ whiteSpace: 'pre-wrap' }}>{text}</div>
+            {screenshot && (
+              <div style={{ marginTop: 8 }}>
+                <a href={screenshot} target="_blank" rel="noreferrer" style={{ display: 'block' }}>
+                  <img
+                    src={screenshot}
+                    alt="Verification proof screenshot"
+                    style={{
+                      maxWidth: '100%', maxHeight: 240,
+                      border: '1px solid var(--border)', borderRadius: 4
+                    }}
+                  />
+                </a>
+                <div className="muted" style={{ fontSize: 10, marginTop: 4 }}>
+                  Click the screenshot to open full size.
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
       {showPasteHtml && (
         <div style={{ marginTop: 6, padding: 10, background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 6, maxWidth: 500 }}>

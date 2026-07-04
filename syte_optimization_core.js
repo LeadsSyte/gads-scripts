@@ -1,5 +1,5 @@
 /**
- * SYTE OPTIMIZATION CORE v4.5.0
+ * SYTE OPTIMIZATION CORE v4.6.0
  * ============================
  * This file is the CORE engine — hosted centrally and fetched by each client's loader script.
  * DO NOT paste this into Google Ads Scripts directly.
@@ -12,10 +12,42 @@
  *
  * When you improve this core, ALL client accounts get the update on their next scheduled run.
  *
- * Author: Syte Digital Agency (syte.co.za)
- * Version: 4.5.0
+* Author: Syte Digital Agency (syte.co.za)
+ * Version: 4.9.0
  *
- * CHANGELOG v4.5.0 — SHOPPING/PMAX IN AI SMART REVIEW + INTERACTIVE FLAGGED REVIEW:
+ * CHANGELOG v4.9.0 — LEAD ANOMALY SELF-THROTTLE:
+ * - NEW: _loadLeadAnomalyContext() reads this account's last 14 days of
+ *   conv_this_week from DailyDigest, compares to today's value. If today is
+ *   >=30% below the median (matching daily_digest.js thresholds), prepends a
+ *   "LEAD ANOMALY ALERT" block to the smart-negation AI prompt instructing
+ *   it to default to "review" over "negate" until the trend recovers.
+ * - Closes the end-to-end loop: outcomes scored 14d post-change -> daily
+ *   anomaly detection in email -> next per-run AI call self-throttles while
+ *   the anomaly is unresolved. The script now backs off automatically when
+ *   leads tank, instead of compounding the problem with more negations.
+ *
+ * CHANGELOG v4.8.0 — RECURSIVE LEARNING IN PER-RUN AI PROMPT:
+ * - NEW: _loadPriorLessons() reads outcome-scored ChangeLog rows (last 90 days, this
+ *   account) and builds a compact "lessons" block listing INCORRECT prior negations
+ *   (and a sample of CORRECT ones for balance).
+ * - The block is injected into the _smartSearchTermReview() Haiku prompt on every
+ *   run, so each pass inherits what the script got wrong last time. Bounded at
+ *   30 incorrect + 15 correct rows to keep prompt size sane. Cached per run.
+ * - Closes the loop: outcomes were already scored 14 days post-change, and the
+ *   Sunday review already emailed recommendations — now those scored outcomes
+ *   actively influence the next decision, not just the next email.
+ *
+ * CHANGELOG v4.7.0 — STRICTER AUTOPILOT DEFAULTS + DETAILED EMAIL LISTINGS:
+ * - BREAKING: Default tier for unlisted clients changed from 'tier_1_only' to 'approval_required'.
+ *   Only clients explicitly listed in ClientConfig with 'tier_1_only' or 'full_autopilot'
+ *   will see silent autopilot changes. All other clients see the email approval workflow,
+ *   same as before Phase 2. This is opt-in autopilot.
+ * - NEW: Autopilot section in email report now lists every auto-applied change in detail
+ *   (search term, campaign, spend, AI verdict) instead of "applied X changes silently".
+ *   Detail breakdown by category: AI junk negations, n-gram negations, schedule adjustments,
+ *   plus keyword pauses and winners when on full_autopilot.
+ *
+ * CHANGELOG v4.6.0 — SHOPPING/PMAX IN AI SMART REVIEW + INTERACTIVE FLAGGED REVIEW:
  * - _smartSearchTermReview() candidate collection expanded to SEARCH, SHOPPING, and PERFORMANCE_MAX.
  *   Previously the unified AI review only saw Search campaigns; Shopping/PMax relied on blunt
  *   spend+ROAS thresholds and a small regex list. Now borderline terms (clicks but no conversions
@@ -587,7 +619,7 @@ function _smartSearchTermReview(results) {
   }
 
   // SOURCE 2: High spend, low ROAS (last 30 days) — ecommerce
-  // v4.5.0: expanded to cover SEARCH, SHOPPING, and PERFORMANCE_MAX campaigns
+  // v4.6.0: expanded to cover SEARCH, SHOPPING, and PERFORMANCE_MAX campaigns
   if (_isEcommerceMode()) {
     var ecomThreshold = CONFIG.ECOM_SEARCH_TERM_SPEND_THRESHOLD || 800;
     try {
@@ -614,7 +646,7 @@ function _smartSearchTermReview(results) {
   }
 
   // SOURCE 3: Early detection — clicks but no conversions, last 7 days
-  // v4.5.0: expanded to cover SEARCH, SHOPPING, and PERFORMANCE_MAX (borderline borderline terms on every channel)
+  // v4.6.0: expanded to cover SEARCH, SHOPPING, and PERFORMANCE_MAX (borderline borderline terms on every channel)
   var minClicks = CONFIG.SMART_NEGATION_MIN_CLICKS || 1;
   try {
     var q3 = 'SELECT search_term_view.search_term, search_term_view.status, campaign.name, ' +
@@ -767,7 +799,9 @@ function _smartSearchTermReview(results) {
       '- EARLY_DETECTION: Low spend, clicked, no conversions yet\n' +
       '- INFORMATIONAL_PATTERN: Matches informational regex (how to, tutorial, etc.)\n' +
       '- CLIENT_IRRELEVANT_LIST: Contains a term the client flagged as irrelevant\n' +
-      'These flags are HINTS. Use them alongside your judgment.\n\n' +
+      'These flags are HINTS. Use them alongside your judgment.\n' +
+      _loadPriorLessons() +
+      _loadLeadAnomalyContext(results.conversionHealth ? results.conversionHealth.thisWeek : null) + '\n' +
 
       'Search terms:\n' + termList;
 
@@ -1047,7 +1081,7 @@ function _logChange(change) {
       CONFIG.PREVIEW_MODE ? 'PREVIEW' : 'PENDING',  // outcome — PREVIEW tagged, LIVE backfilled in 14 days
       '',                  // outcome_checked_date
       '',                  // outcome_notes
-      'v4.5.0'            // script_version
+      'v4.6.0'            // script_version
     ]);
   } catch (e) {
     var writeErr = 'Change log write failed: ' + e.message;
@@ -1221,6 +1255,172 @@ function _backfillOutcomes() {
 
 
 // ============================================
+// PRIOR-OUTCOME LESSONS (recursive learning input for per-run AI prompts)
+// ============================================
+
+var _priorLessonsCache = null;
+
+/**
+ * Reads the ChangeLog for this account, finds prior negation decisions that
+ * were outcome-scored, and returns a compact "lessons" block to prepend to
+ * the per-run AI negation prompt. INCORRECT rows are the ones we most want
+ * the AI to learn from — but a small sample of CORRECT rows is included
+ * so it doesn't over-correct and start refusing safe negations.
+ *
+ * Bounded so prompt size stays reasonable: 30 incorrect + 15 correct max.
+ * Cached per run.
+ */
+function _loadPriorLessons() {
+  if (_priorLessonsCache !== null) return _priorLessonsCache;
+  _priorLessonsCache = '';
+
+  var sheet = _getChangeLogSheet();
+  if (!sheet) return '';
+
+  try {
+    var data = sheet.getDataRange().getValues();
+    if (data.length < 2) return '';
+
+    var headers = data[0];
+    var col = {};
+    for (var h = 0; h < headers.length; h++) col[headers[h]] = h;
+    if (col['outcome'] === undefined || col['account_name'] === undefined) return '';
+
+    var accountName = AdsApp.currentAccount().getName();
+    var cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - 90);
+
+    var incorrect = [];
+    var correct = [];
+
+    for (var r = 1; r < data.length; r++) {
+      var row = data[r];
+      if (row[col['account_name']] !== accountName) continue;
+      var ts = new Date(row[col['timestamp']]);
+      if (isNaN(ts.getTime()) || ts < cutoff) continue;
+
+      var fn = String(row[col['function_name']] || '').toLowerCase();
+      // Only lessons relevant to negation decisions
+      if (fn.indexOf('smart') === -1 && fn.indexOf('negat') === -1 && fn.indexOf('ngram') === -1) continue;
+
+      var outcome = String(row[col['outcome']] || '').toUpperCase();
+      var item = {
+        entity: row[col['entity']],
+        reason: row[col['reason']],
+        notes: row[col['outcome_notes']]
+      };
+      if (outcome === 'INCORRECT') incorrect.push(item);
+      else if (outcome === 'CORRECT') correct.push(item);
+    }
+
+    if (incorrect.length === 0 && correct.length === 0) return '';
+
+    var s = '\nLESSONS FROM PRIOR OUTCOMES (this account, last 90 days):\n';
+    if (incorrect.length > 0) {
+      s += 'Negations you got WRONG before (similar patterns now need extra caution — prefer "review" over "negate"):\n';
+      incorrect.slice(0, 30).forEach(function(it) {
+        s += '- "' + it.entity + '" — negated because: ' + (it.reason || '?') + '. Result: ' + (it.notes || 'incorrect') + '\n';
+      });
+    }
+    if (correct.length > 0) {
+      s += 'Negations that were CORRECT (these patterns are safe):\n';
+      correct.slice(0, 15).forEach(function(it) {
+        s += '- "' + it.entity + '" — ' + (it.notes || 'confirmed correct') + '\n';
+      });
+    }
+    s += 'Use these as priors, not as hard rules. Apply the same judgment to new terms.\n';
+
+    _priorLessonsCache = s;
+    _log('INFO', 'Prior lessons loaded: ' + incorrect.length + ' incorrect, ' + correct.length + ' correct');
+    return s;
+  } catch (e) {
+    _log('WARN', 'loadPriorLessons: ' + e.message);
+    return '';
+  }
+}
+
+
+/**
+ * Reads DailyDigest for this account's trailing 14 days of conv_this_week,
+ * compares to today's value (from results.conversionHealth.thisWeek), and
+ * returns a CAUTION block for the AI prompt if today is anomalously low.
+ *
+ * Why this matters for recursive learning: a fresh lead drop is often the
+ * downstream effect of an earlier negation that was too aggressive. Telling
+ * the AI "leads are anomalously low right now" pushes it toward "review"
+ * over "negate" until the trend recovers — i.e. self-throttle while the
+ * anomaly is unresolved.
+ *
+ * Mirrors the thresholds in daily_digest.js so the email and the prompt
+ * agree on what counts as an anomaly.
+ */
+var _LEAD_ANOMALY_DROP_PCT = 30;
+var _LEAD_ANOMALY_WINDOW_DAYS = 14;
+var _LEAD_ANOMALY_MIN_SAMPLES = 3;
+
+function _loadLeadAnomalyContext(thisWeekConv) {
+  if (thisWeekConv === undefined || thisWeekConv === null) return '';
+
+  if (!CONFIG.MASTER_SHEET_ID) return '';
+
+  try {
+    var ss = SpreadsheetApp.openById(CONFIG.MASTER_SHEET_ID);
+    var sheet = ss.getSheetByName('DailyDigest');
+    if (!sheet) return '';
+    var data = sheet.getDataRange().getValues();
+    if (data.length < 2) return '';
+
+    var headers = data[0];
+    var col = {};
+    for (var h = 0; h < headers.length; h++) col[headers[h]] = h;
+    if (col['account'] === undefined || col['conv_this_week'] === undefined) return '';
+
+    var accountName = CONFIG.CLIENT_NAME || AdsApp.currentAccount().getName();
+    var todayStr = Utilities.formatDate(new Date(), AdsApp.currentAccount().getTimeZone(), 'yyyy-MM-dd');
+    var cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - _LEAD_ANOMALY_WINDOW_DAYS);
+
+    var history = [];
+    for (var r = 1; r < data.length; r++) {
+      var dateStr = String(data[r][0]);
+      if (dateStr === todayStr) continue;
+      var m = dateStr.match(/^(\d{4})-(\d{2})-(\d{2})/);
+      if (!m) continue;
+      var rowDate = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+      if (rowDate < cutoff) continue;
+      if (String(data[r][col['account']]) !== accountName) continue;
+      var conv = Number(data[r][col['conv_this_week']]);
+      if (!isNaN(conv)) history.push(conv);
+    }
+
+    if (history.length < _LEAD_ANOMALY_MIN_SAMPLES) return '';
+
+    history.sort(function(a, b) { return a - b; });
+    var mid = Math.floor(history.length / 2);
+    var median = history.length % 2 === 0 ? (history[mid - 1] + history[mid]) / 2 : history[mid];
+    if (median <= 0) return '';
+
+    var deltaPct = ((thisWeekConv - median) / median) * 100;
+    if (deltaPct > -_LEAD_ANOMALY_DROP_PCT) return '';
+
+    var msg = '\nLEAD ANOMALY ALERT:\n' +
+              'This account\'s conversions this week (' + thisWeekConv.toFixed(0) + ') are ' +
+              Math.abs(deltaPct).toFixed(0) + '% BELOW the ' + _LEAD_ANOMALY_WINDOW_DAYS + '-day median of ' + median.toFixed(0) + '.\n' +
+              'A drop this size often means a recent negation is filtering converting traffic. Until the lead trend recovers:\n' +
+              '- Default to "review" over "negate" when uncertain.\n' +
+              '- Only negate terms that are unambiguously irrelevant (jobs, DIY, academic, wrong product entirely).\n' +
+              '- Do NOT negate terms that share words with active keywords, even if spend looks wasteful — wait for more data.\n';
+
+    _log('INFO', 'Lead anomaly: thisWeek=' + thisWeekConv.toFixed(0) + ' vs median=' + median.toFixed(0) + ' (' + deltaPct.toFixed(0) + '%) — caution injected into AI prompt');
+    return msg;
+  } catch (e) {
+    _log('WARN', 'loadLeadAnomalyContext: ' + e.message);
+    return '';
+  }
+}
+
+
+// ============================================
 // WEEKLY CLAUDE REVIEW (runs on Sunday)
 // ============================================
 
@@ -1385,7 +1585,7 @@ function _buildChangeLogSummary() {
 
 /**
  * Builds the prompt sent to Claude for the weekly review.
- * v4.5.0: Asks for structured JSON output — concise recommendations, not a full rewritten script.
+ * v4.6.0: Asks for structured JSON output — concise recommendations, not a full rewritten script.
  */
 function _buildClaudeReviewPrompt(accountName, changeLogSummary) {
   var prompt = 'You are a senior Google Ads strategist reviewing an automated optimization script\'s recent decisions.\n';
@@ -1434,7 +1634,7 @@ function _buildClaudeReviewPrompt(accountName, changeLogSummary) {
 
 /**
  * Calls the Anthropic Claude API and returns the text response.
- * v4.5.0: Uses Haiku for weekly review (structured JSON output, no script rewrite).
+ * v4.6.0: Uses Haiku for weekly review (structured JSON output, no script rewrite).
  */
 function _callClaudeAPI(prompt) {
   try {
@@ -1479,7 +1679,7 @@ function _callClaudeAPI(prompt) {
 
 /**
  * Sends the weekly self-improvement report.
- * v4.5.0: Clean, simple summary — no raw data dumps or rewritten scripts.
+ * v4.6.0: Clean, simple summary — no raw data dumps or rewritten scripts.
  */
 function _sendWeeklyReviewEmail(accountName, claudeResponse, changeLogSummary) {
   var today = Utilities.formatDate(new Date(), AdsApp.currentAccount().getTimeZone(), 'yyyy-MM-dd');
@@ -1532,7 +1732,7 @@ function _sendWeeklyReviewEmail(accountName, claudeResponse, changeLogSummary) {
   // Header
   email += '<div style="background:linear-gradient(135deg,#1a1a2e,#16213e);color:white;padding:20px 24px;border-radius:8px 8px 0 0;">';
   email += '<h1 style="margin:0;font-size:20px;">Weekly Optimization Review</h1>';
-  email += '<p style="margin:4px 0 0;opacity:0.7;font-size:13px;">' + accountName + ' | ' + today + ' | Core v4.5.0</p>';
+  email += '<p style="margin:4px 0 0;opacity:0.7;font-size:13px;">' + accountName + ' | ' + today + ' | Core v4.6.0</p>';
   email += '</div>';
 
   // Health score card
@@ -1902,7 +2102,7 @@ function _analyzeShoppingProducts(results) {
 }
 
 function _analyzeShoppingSearchTerms(results) {
-  // v4.5.0: When the AI-powered smart review is active and has an API key,
+  // v4.6.0: When the AI-powered smart review is active and has an API key,
   // it already covers Shopping search terms (irrelevant + borderline, last 7/30 days).
   // Skip this legacy threshold-only fallback to avoid duplicate negation.
   if (CONFIG.SMART_NEGATION !== false && CONFIG.ANTHROPIC_API_KEY) {
@@ -1960,7 +2160,7 @@ function _monitorPMaxCampaigns(results) {
 }
 
 function _analyzePMaxSearchTerms(results) {
-  // v4.5.0: When the AI-powered smart review is active and has an API key,
+  // v4.6.0: When the AI-powered smart review is active and has an API key,
   // it already covers PMax search terms (irrelevant + borderline, last 7/30 days)
   // and routes negations as campaign-level PMax negatives. Skip the legacy fallback.
   if (CONFIG.SMART_NEGATION !== false && CONFIG.ANTHROPIC_API_KEY) {
@@ -2392,7 +2592,7 @@ function _checkConversionHealth(results) {
       if (CONFIG.SEND_EMAIL !== false) {
         var recipients = CONFIG.EMAIL_ADDRESSES || [CONFIG.EMAIL_RECIPIENT || 'michaelh@syte.co.za'];
         if (typeof recipients === 'string') recipients = [recipients];
-        MailApp.sendEmail({ to: recipients.join(','), subject: '🚨 URGENT: ' + CONFIG.CLIENT_NAME + ' — Conversions Dropped ' + dropPct + '%', body: alertMsg + '\n\nAction needed:\n1. Check conversion tags in GTM\n2. Test the conversion flow manually\n3. Check for landing page errors\n4. Review any recent website changes\n\n— Syte Optimization Script v4.5.0' });
+        MailApp.sendEmail({ to: recipients.join(','), subject: '🚨 URGENT: ' + CONFIG.CLIENT_NAME + ' — Conversions Dropped ' + dropPct + '%', body: alertMsg + '\n\nAction needed:\n1. Check conversion tags in GTM\n2. Test the conversion flow manually\n3. Check for landing page errors\n4. Review any recent website changes\n\n— Syte Optimization Script v4.6.0' });
       }
     }
 
@@ -2641,24 +2841,30 @@ function _writeDailyDigestRow(results, duration) {
     var sheet = ss.getSheetByName('DailyDigest');
     if (!sheet) {
       sheet = ss.insertSheet('DailyDigest');
-      sheet.getRange(1, 1, 1, 24).setValues([[
+      sheet.getRange(1, 1, 1, 26).setValues([[
         'date', 'time', 'account', 'mode', 'run_mode',
         'duration_s', 'keywords_paused', 'search_terms_negated',
         'ai_negated', 'ai_review', 'winners_promoted',
         'audit_findings', 'schedule_adjustments', 'device_adjustments',
         'geo_adjustments', 'ngram_negatives', 'low_qs_paused',
         'conv_this_week', 'conv_last_week', 'errors',
-        'cost_30d', 'conversions_30d', 'revenue_30d', 'clicks_30d'
+        'cost_30d', 'conversions_30d', 'revenue_30d', 'clicks_30d',
+        'tier1_applied', 'automation_tier'
       ]]);
-      sheet.getRange(1, 1, 1, 24).setFontWeight('bold');
+      sheet.getRange(1, 1, 1, 26).setFontWeight('bold');
       sheet.setFrozenRows(1);
     } else {
       // Auto-migrate: add performance columns if missing
       var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
-      if (headers.indexOf('cost_30d') === -1) {
+  if (headers.indexOf('cost_30d') === -1) {
         var nextCol = sheet.getLastColumn() + 1;
         sheet.getRange(1, nextCol, 1, 4).setValues([['cost_30d', 'conversions_30d', 'revenue_30d', 'clicks_30d']]);
         sheet.getRange(1, nextCol, 1, 4).setFontWeight('bold');
+      }
+      if (headers.indexOf('tier1_applied') === -1) {
+        var nextCol2 = sheet.getLastColumn() + 1;
+        sheet.getRange(1, nextCol2, 1, 2).setValues([['tier1_applied', 'automation_tier']]);
+        sheet.getRange(1, nextCol2, 1, 2).setFontWeight('bold');
       }
     }
 
@@ -2706,7 +2912,9 @@ function _writeDailyDigestRow(results, duration) {
       results.lowQsPaused ? results.lowQsPaused.length : 0,
       convThis, convLast,
       results.errors ? results.errors.length : 0,
-      cost30d.toFixed(2), conv30d.toFixed(1), rev30d.toFixed(2), clicks30d
+      cost30d.toFixed(2), conv30d.toFixed(1), rev30d.toFixed(2), clicks30d,
+      results.tier1Applied || 0,
+      (typeof AUTOPILOT !== 'undefined' ? AUTOPILOT.clientTier : 'unknown')
     ]);
 
     // Persist individual error messages to "Errors" tab so the weekly
@@ -2748,18 +2956,29 @@ function _writeDailyDigestRow(results, duration) {
 // EMAIL REPORT
 // ============================================
 
-function _sendReport(results, duration, evalResult, pendingRunId) {
-  var mode = CONFIG.PREVIEW_MODE ? 'PREVIEW' : (CONFIG.REQUIRE_APPROVAL ? 'PENDING APPROVAL' : 'LIVE');
+function _sendReport(results, duration, evalResult, pendingRunId, split) {
+  var mode;
+  if (CONFIG.PREVIEW_MODE) {
+    mode = 'PREVIEW';
+  } else if (typeof AUTOPILOT !== 'undefined' && AUTOPILOT.clientTier === 'full_autopilot') {
+    mode = 'AUTOPILOT (full)';
+  } else if (typeof AUTOPILOT !== 'undefined' && AUTOPILOT.clientTier === 'tier_1_only' && results.tier1Applied > 0) {
+    mode = 'TIER 1 + APPROVAL (' + results.tier1Applied + ' auto)';
+  } else if (CONFIG.REQUIRE_APPROVAL) {
+    mode = 'PENDING APPROVAL';
+  } else {
+    mode = 'LIVE';
+  }
   var accountName = AdsApp.currentAccount().getName();
   var today = Utilities.formatDate(new Date(), AdsApp.currentAccount().getTimeZone(), 'yyyy-MM-dd HH:mm');
 
   var email = '<html><body style="font-family:Arial,sans-serif;max-width:800px;margin:0 auto;color:#333;">';
   email += '<div style="background:linear-gradient(135deg,#0d47a1,#1565c0);color:white;padding:20px;border-radius:8px 8px 0 0;">';
-  email += '<h1 style="margin:0;font-size:20px;">Syte Optimization Report v4.5.0</h1>';
+  email += '<h1 style="margin:0;font-size:20px;">Syte Optimization Report v4.6.0</h1>';
   email += '<p style="margin:5px 0 0;opacity:0.8;">' + accountName + ' | ' + today + ' | ' + mode + ' | ' + CONFIG.ACCOUNT_MODE + '</p></div>';
 
   // v4.4.0: Approval buttons bar
-  // v4.5.0: Fixed — encode & as &amp; in HTML href attributes so Gmail doesn't strip query params.
+  // v4.6.0: Fixed — encode & as &amp; in HTML href attributes so Gmail doesn't strip query params.
   if (pendingRunId && CONFIG.APPROVAL_WEBAPP_URL) {
     var webAppUrl = CONFIG.APPROVAL_WEBAPP_URL;
     var btnStyle = 'display:inline-block;padding:10px 18px;margin:4px;border-radius:6px;color:white;text-decoration:none;font-weight:bold;font-size:13px;';
@@ -2839,7 +3058,122 @@ function _sendReport(results, duration, evalResult, pendingRunId) {
   if (results.conversionAlert) {
     email += '<div style="background:#c62828;color:white;padding:14px 16px;font-weight:bold;font-size:14px;">🚨 ' + results.conversionAlert + '</div>';
   }
+// Autopilot summary banner with detail (v4.7.0)
+  if (typeof AUTOPILOT !== 'undefined' && results.tier1Applied !== undefined && results.tier1Applied > 0) {
+    var cs2 = CONFIG.CURRENCY_SYMBOL || 'R';
+    var tierLabel = AUTOPILOT.clientTier === 'full_autopilot' ? 'Full Autopilot' : 'Tier 1 (high-confidence only)';
 
+    email += '<div style="background:#e3f2fd;padding:14px 20px;border-left:4px solid #1565c0;">';
+    email += '<h3 style="margin:0 0 6px;color:#1565c0;">Autopilot applied ' + results.tier1Applied + ' changes (' + tierLabel + ')</h3>';
+    email += '<p style="margin:0 0 12px;font-size:13px;color:#333;">These changes were applied without approval as they meet safety thresholds. Each change is also recorded in the ChangeLog tab of the master sheet for review.</p>';
+
+    // Get the tier1 split so we can show what was auto-applied
+    var splitInfo = (typeof _splitChangesByTier === 'function') ? null : null;
+    // Pull from the original split that was done before approval filtering
+    // We need to look at what was logged with function_name='tier1_auto' or 'full_auto' in this run.
+    // Simpler approach: re-derive from the original results buckets that were applied.
+
+    // === AI-flagged Junk Negations (auto-applied) ===
+    var aiAutoApplied = [];
+    if (typeof split !== 'undefined' && split && split.tier1Changes && split.tier1Changes.smartNegated) {
+      aiAutoApplied = split.tier1Changes.smartNegated;
+    }
+    if (aiAutoApplied.length > 0) {
+      email += '<h4 style="margin:8px 0 4px;color:#333;font-size:13px;">AI-flagged Junk Negations (' + aiAutoApplied.length + '):</h4>';
+      email += '<table style="width:100%;border-collapse:collapse;font-size:12px;background:#ffffff;margin:4px 0;">';
+      email += '<tr style="background:#bbdefb;"><th style="padding:6px;text-align:left;">Search Term</th><th style="padding:6px;text-align:left;">Campaign</th><th style="padding:6px;text-align:right;">Spend</th><th style="padding:6px;text-align:left;">AI Verdict</th></tr>';
+      for (var aaI = 0; aaI < aiAutoApplied.length; aaI++) {
+        var aaItem = aiAutoApplied[aaI];
+        email += '<tr style="border-bottom:1px solid #eee;">';
+        email += '<td style="padding:4px 6px;">"' + aaItem.term + '"</td>';
+        email += '<td style="padding:4px 6px;">' + (aaItem.campaign || '-') + '</td>';
+        email += '<td style="padding:4px 6px;text-align:right;">' + cs2 + (aaItem.cost || 0).toFixed(0) + '</td>';
+        email += '<td style="padding:4px 6px;color:#666;">' + (aaItem.reason || '') + '</td>';
+        email += '</tr>';
+      }
+      email += '</table>';
+    }
+
+    // === N-gram Negations (auto-applied) ===
+    var ngramAutoApplied = [];
+    if (typeof split !== 'undefined' && split && split.tier1Changes && split.tier1Changes.ngramNegatives) {
+      ngramAutoApplied = split.tier1Changes.ngramNegatives;
+    }
+    if (ngramAutoApplied.length > 0) {
+      email += '<h4 style="margin:8px 0 4px;color:#333;font-size:13px;">N-gram Negations (' + ngramAutoApplied.length + '):</h4>';
+      email += '<table style="width:100%;border-collapse:collapse;font-size:12px;background:#ffffff;margin:4px 0;">';
+      email += '<tr style="background:#bbdefb;"><th style="padding:6px;text-align:left;">Word</th><th style="padding:6px;text-align:right;">Wasted</th><th style="padding:6px;text-align:right;">Terms</th><th style="padding:6px;text-align:left;">Sample Search Terms</th></tr>';
+      for (var ngI = 0; ngI < ngramAutoApplied.length; ngI++) {
+        var ngI2 = ngramAutoApplied[ngI];
+        email += '<tr style="border-bottom:1px solid #eee;">';
+        email += '<td style="padding:4px 6px;">"' + ngI2.word + '"</td>';
+        email += '<td style="padding:4px 6px;text-align:right;">' + cs2 + (ngI2.totalCost || 0).toFixed(0) + '</td>';
+        email += '<td style="padding:4px 6px;text-align:right;">' + ngI2.termCount + '</td>';
+        email += '<td style="padding:4px 6px;color:#666;">' + (ngI2.sampleTerms || []).slice(0, 3).join(', ') + '</td>';
+        email += '</tr>';
+      }
+      email += '</table>';
+    }
+
+    // === Schedule Adjustments (auto-applied) ===
+    var schedAutoApplied = [];
+    if (typeof split !== 'undefined' && split && split.tier1Changes && split.tier1Changes.scheduleAdjustments) {
+      schedAutoApplied = split.tier1Changes.scheduleAdjustments;
+    }
+    if (schedAutoApplied.length > 0) {
+      email += '<h4 style="margin:8px 0 4px;color:#333;font-size:13px;">Schedule Bid Adjustments (' + schedAutoApplied.length + '):</h4>';
+      email += '<table style="width:100%;border-collapse:collapse;font-size:12px;background:#ffffff;margin:4px 0;">';
+      email += '<tr style="background:#bbdefb;"><th style="padding:6px;text-align:left;">Campaign</th><th style="padding:6px;text-align:left;">Hour</th><th style="padding:6px;text-align:right;">Adjustment</th></tr>';
+      for (var saI = 0; saI < schedAutoApplied.length; saI++) {
+        var saI2 = schedAutoApplied[saI];
+        email += '<tr style="border-bottom:1px solid #eee;">';
+        email += '<td style="padding:4px 6px;">' + saI2.campaign + '</td>';
+        email += '<td style="padding:4px 6px;">' + saI2.hourLabel + '</td>';
+        email += '<td style="padding:4px 6px;text-align:right;color:#c62828;">' + saI2.adjustment + '%</td>';
+        email += '</tr>';
+      }
+      email += '</table>';
+    }
+
+    // === Full autopilot extras: keyword pauses, winners, etc ===
+    if (AUTOPILOT.clientTier === 'full_autopilot' && typeof split !== 'undefined' && split && split.tier1Changes) {
+      var fullKw = (split.tier1Changes.keywordsPaused || []).concat(split.tier1Changes.ecomKeywordsPaused || [], split.tier1Changes.lowQsPaused || []);
+      if (fullKw.length > 0) {
+        email += '<h4 style="margin:8px 0 4px;color:#333;font-size:13px;">Keywords Paused (' + fullKw.length + '):</h4>';
+        email += '<table style="width:100%;border-collapse:collapse;font-size:12px;background:#ffffff;margin:4px 0;">';
+        email += '<tr style="background:#bbdefb;"><th style="padding:6px;text-align:left;">Keyword</th><th style="padding:6px;text-align:left;">Campaign</th><th style="padding:6px;text-align:right;">Spend</th></tr>';
+        for (var fkI = 0; fkI < fullKw.length; fkI++) {
+          var fk = fullKw[fkI];
+          email += '<tr style="border-bottom:1px solid #eee;">';
+          email += '<td style="padding:4px 6px;">' + fk.keyword + '</td>';
+          email += '<td style="padding:4px 6px;">' + fk.campaign + '</td>';
+          email += '<td style="padding:4px 6px;text-align:right;">' + cs2 + (fk.spend || 0).toFixed(0) + '</td>';
+          email += '</tr>';
+        }
+        email += '</table>';
+      }
+
+      var fullWinners = (split.tier1Changes.winnersPromoted || []).concat(split.tier1Changes.ecomWinnersPromoted || []);
+      if (fullWinners.length > 0) {
+        email += '<h4 style="margin:8px 0 4px;color:#333;font-size:13px;">Winners Promoted (' + fullWinners.length + '):</h4>';
+        email += '<table style="width:100%;border-collapse:collapse;font-size:12px;background:#ffffff;margin:4px 0;">';
+        email += '<tr style="background:#bbdefb;"><th style="padding:6px;text-align:left;">Search Term</th><th style="padding:6px;text-align:left;">Campaign</th><th style="padding:6px;text-align:right;">Conv / ROAS</th></tr>';
+        for (var fwI = 0; fwI < fullWinners.length; fwI++) {
+          var fw = fullWinners[fwI];
+          var winMetric = fw.roas !== undefined ? (fw.roas || 0).toFixed(2) + 'x' : (fw.conversions || 0) + ' conv';
+          email += '<tr style="border-bottom:1px solid #eee;">';
+          email += '<td style="padding:4px 6px;">[' + fw.searchTerm + ']</td>';
+          email += '<td style="padding:4px 6px;">' + fw.campaign + '</td>';
+          email += '<td style="padding:4px 6px;text-align:right;">' + winMetric + '</td>';
+          email += '</tr>';
+        }
+        email += '</table>';
+      }
+    }
+
+    email += '<p style="margin:10px 0 0;font-size:11px;color:#999;">To reverse any change: open the master sheet ChangeLog tab, find the row, and reverse manually in Google Ads. All changes can also be seen in the next weekly review email.</p>';
+    email += '</div>';
+  }
   email += '<div style="background:#f8f9fa;padding:15px;"><h3>Summary</h3><table style="width:100%;border-collapse:collapse;">';
 
   if (_isLeadGenMode()) {
@@ -2851,7 +3185,6 @@ function _sendReport(results, duration, evalResult, pendingRunId) {
   if (_isEcommerceMode()) {
     email += '<tr><td colspan="2" style="padding:8px;background:#e3f2fd;font-weight:bold;">Ecommerce</td></tr>';
     email += '<tr><td style="padding:4px 8px;">Keywords Paused (ROAS)</td><td style="text-align:right;font-weight:bold;">' + results.ecomKeywordsPaused.length + '</td></tr>';
-    email += '<tr><td style="padding:4px 8px;">Search Terms Negated</td><td style="text-align:right;font-weight:bold;">' + results.ecomSearchTermsNegated.length + '</td></tr>';
     email += '<tr><td style="padding:4px 8px;">Ecom Winners</td><td style="text-align:right;font-weight:bold;">' + results.ecomWinnersPromoted.length + '</td></tr>';
     email += '<tr><td colspan="2" style="padding:8px;background:#e3f2fd;font-weight:bold;">Shopping</td></tr>';
     email += '<tr><td style="padding:4px 8px;">Zero Revenue Products</td><td style="text-align:right;font-weight:bold;color:#c62828;">' + results.shoppingProductsPaused.length + '</td></tr>';
@@ -2948,17 +3281,9 @@ function _sendReport(results, duration, evalResult, pendingRunId) {
     email += '</table></div>';
   }
 
-  // Ecommerce Search Terms Negated detail
-  if (results.ecomSearchTermsNegated.length > 0) {
-    email += '<div style="padding:15px;"><h3>Ecom Search Terms Negated</h3>';
-    email += '<table style="width:100%;border-collapse:collapse;font-size:13px;">';
-    email += '<tr style="background:#e3f2fd;"><th style="padding:6px;text-align:left;">Search Term</th><th style="padding:6px;text-align:left;">Campaign</th><th style="padding:6px;text-align:right;">Spend</th><th style="padding:6px;text-align:right;">ROAS</th></tr>';
-    for (var es = 0; es < results.ecomSearchTermsNegated.length; es++) {
-      var esItem = results.ecomSearchTermsNegated[es];
-      email += '<tr style="border-bottom:1px solid #eee;"><td style="padding:4px 6px;">' + esItem.searchTerm + '</td><td style="padding:4px 6px;">' + esItem.campaign + '</td><td style="padding:4px 6px;text-align:right;">' + cs + (esItem.spend || 0).toFixed(0) + '</td><td style="padding:4px 6px;text-align:right;">' + (esItem.roas || 0).toFixed(2) + 'x</td></tr>';
-    }
-    email += '</table></div>';
-  }
+  // (Ecommerce Search Terms Negated detail removed in v4.7.0 — all negation now routes
+  // through _smartSearchTermReview and surfaces under "Search Terms Negated" /
+  // "AI Auto-Negated". results.ecomSearchTermsNegated is no longer populated.)
 
   // v4.3.0: Informational Blocked section removed — handled by unified AI review
 
@@ -3015,7 +3340,7 @@ function _sendReport(results, duration, evalResult, pendingRunId) {
     email += '<div style="padding:15px;background:#e3f2fd;"><h3 style="color:#1565c0;">AI Flagged for Review</h3>';
     email += '<p style="font-size:12px;color:#666;">These terms were flagged as ambiguous by the AI. Please review and manually negate or keep.</p>';
 
-    // v4.5.0: Interactive review button — links to webapp where user can select terms to negate or give natural language instructions
+    // v4.6.0: Interactive review button — links to webapp where user can select terms to negate or give natural language instructions
     // (Uses &amp; so Gmail doesn't strip the query string)
     if (pendingRunId && CONFIG.APPROVAL_WEBAPP_URL) {
       email += '<a href="' + CONFIG.APPROVAL_WEBAPP_URL + '?view=flagged_review&amp;runId=' + pendingRunId + '" target="_blank" style="display:inline-block;padding:10px 18px;margin:8px 0;border-radius:6px;color:white;text-decoration:none;font-weight:bold;font-size:13px;background:#1565c0;">Review &amp; Negate Flagged Terms (' + results.smartReviewTerms.length + ')</a>';
@@ -3055,11 +3380,11 @@ function _sendReport(results, duration, evalResult, pendingRunId) {
     email += '</ul></div>';
   }
 
-  email += '<div style="padding:15px;color:#666;font-size:12px;"><p>Completed in ' + duration.toFixed(1) + 's | Core v4.5.0 | Syte Digital Agency</p></div></body></html>';
+  email += '<div style="padding:15px;color:#666;font-size:12px;"><p>Completed in ' + duration.toFixed(1) + 's | Core v4.6.0 | Syte Digital Agency</p></div></body></html>';
 
   var recipients = CONFIG.EMAIL_ADDRESSES || [CONFIG.EMAIL_RECIPIENT || 'michaelh@syte.co.za'];
   if (typeof recipients === 'string') recipients = [recipients];
-  MailApp.sendEmail({ to: recipients.join(','), subject: mode + ' Syte v4.5.0 | ' + accountName + ' | ' + CONFIG.ACCOUNT_MODE, htmlBody: email });
+  MailApp.sendEmail({ to: recipients.join(','), subject: mode + ' Syte v4.6.0 | ' + accountName + ' | ' + CONFIG.ACCOUNT_MODE, htmlBody: email });
 }
 
 
@@ -3500,7 +3825,7 @@ function _applyApprovedChanges(changesObj, approvedCategories, results) {
 
     (stData.smartNegated || []).forEach(function(s) {
       try {
-        // v4.5.0: Route PMax negatives to campaign-level, others to shared lists
+        // v4.6.0: Route PMax negatives to campaign-level, others to shared lists
         if (s.channelType === 'PERFORMANCE_MAX' && s.campaign) {
           var pmaxIter = AdsApp.performanceMaxCampaigns()
             .withCondition('campaign.name = "' + s.campaign.replace(/"/g, '\\"') + '"').get();
@@ -3607,7 +3932,7 @@ function _applyApprovedChanges(changesObj, approvedCategories, results) {
     _log('INFO', 'Applied auto-optimizations');
   }
 
-  // === FLAGGED REVIEW NEGATIONS (v4.5.0) ===
+  // === FLAGGED REVIEW NEGATIONS (v4.6.0) ===
   if (categories.indexOf('flagged_review_negations') !== -1 && changesObj.flagged_review) {
     var frData = changesObj.flagged_review;
     var selectedTerms = frData.selectedForNegation || [];
@@ -3615,7 +3940,7 @@ function _applyApprovedChanges(changesObj, approvedCategories, results) {
       var negativeListSpendFR = _getOrCreateNegativeList(CONFIG.NEGATIVE_LIST_NAME_SPEND);
       selectedTerms.forEach(function(s) {
         try {
-          // v4.5.0: Route PMax flagged negatives to campaign-level; others to shared list
+          // v4.6.0: Route PMax flagged negatives to campaign-level; others to shared list
           if (s.channelType === 'PERFORMANCE_MAX' && s.campaign) {
             var pmaxIterFR = AdsApp.performanceMaxCampaigns()
               .withCondition('campaign.name = "' + s.campaign.replace(/"/g, '\\"') + '"').get();
@@ -3639,12 +3964,25 @@ function _applyApprovedChanges(changesObj, approvedCategories, results) {
   if (categories.indexOf('shopping_pmax') !== -1 && changesObj.shopping_pmax) {
     var spData = changesObj.shopping_pmax;
 
-    // PMax search term negations
+    // PMax search term negations — must be campaign-level (PMax ignores shared lists)
     (spData.pmaxSearchTermsNegated || []).forEach(function(p) {
       try {
         var term = p.searchTerm || p.term;
-        var negList = _getOrCreateNegativeList(CONFIG.NEGATIVE_LIST_NAME_SPEND);
-        if (negList) { negList.addNegativeKeyword('[' + term + ']'); appliedCount++; }
+        if (!term) return;
+        var pmaxIter = AdsApp.performanceMaxCampaigns()
+          .withCondition('campaign.name = "' + (p.campaign || '').replace(/"/g, '\\"') + '"').get();
+        if (pmaxIter.hasNext()) {
+          pmaxIter.next().createNegativeKeyword('[' + term + ']');
+          appliedCount++;
+          _logChange({ functionName: 'approval_apply', entity: term, entityType: 'SEARCH_TERM_NEGATIVE', campaign: p.campaign || '', reason: 'Approved PMax campaign negation', spend: p.spend || 0, conversions: 0 });
+        } else {
+          var negList = _getOrCreateNegativeList(CONFIG.NEGATIVE_LIST_NAME_SPEND);
+          if (negList) {
+            _log('WARN', 'PMax campaign "' + p.campaign + '" not found — falling back to shared list (will not block on PMax)');
+            negList.addNegativeKeyword('[' + term + ']');
+            appliedCount++;
+          }
+        }
       } catch (e) { _log('WARN', 'Apply PMax negation failed: ' + e.message); }
     });
 
@@ -3654,7 +3992,751 @@ function _applyApprovedChanges(changesObj, approvedCategories, results) {
   return appliedCount;
 }
 
+/**
+ * SYTE AUTOPILOT MODULE v1.0
+ * ===========================
+ * Drop this entire file INTO the existing syte_optimization_core.js
+ * Place it directly above the "ENTRY POINT" section (just before runOptimization()).
+ *
+ * What it adds:
+ *  - Per-client automation tier (full_autopilot / tier_1_only / approval_required)
+ *  - Global kill switch (AUTOMATION_ENABLED in master sheet Config tab)
+ *  - Daily change cap per client
+ *  - Tier 1 auto-apply for genuinely safe categories
+ *  - Logging tier decisions for visibility in weekly report
+ *
+ * Reads from master sheet:
+ *  - Config tab: AUTOMATION_ENABLED, AUTOMATION_MUTE_REASON
+ *  - ClientConfig tab: client_name, automation_tier, daily_change_cap, notes
+ *
+ * Writes to master sheet:
+ *  - ChangeLog tab: every auto-applied change tagged source='gas-tier1-auto' or 'gas-full-auto'
+ */
 
+
+// ============================================
+// AUTOPILOT CONFIG LOADING
+// ============================================
+
+var AUTOPILOT = {
+  globalEnabled: true,
+  globalMuteReason: '',
+  clientTier: 'approval_required',  // v4.7.0: default changed from tier_1_only — clients must explicitly opt in to autopilot
+  dailyChangeCap: 50,
+  changesAppliedToday: 0,
+  changesProposedThisRun: 0
+};
+/**
+ * Loads AUTOMATION_ENABLED and per-client automation tier from master sheet.
+ * Called early in runOptimization() before anything else.
+ */
+function _loadAutopilotConfig() {
+  if (!CONFIG.MASTER_SHEET_ID) {
+    _log('WARN', 'No MASTER_SHEET_ID — autopilot disabled (will use approval flow)');
+    AUTOPILOT.clientTier = 'approval_required';
+    return;
+  }
+
+  try {
+    var ss = SpreadsheetApp.openById(CONFIG.MASTER_SHEET_ID);
+
+    // === 1. Read global kill switch from Config tab ===
+    var configSheet = ss.getSheetByName('Config');
+    if (configSheet) {
+      var configData = configSheet.getDataRange().getValues();
+      for (var i = 0; i < configData.length; i++) {
+        var key = String(configData[i][0]).trim();
+        var value = String(configData[i][1]).trim();
+        if (key === 'AUTOMATION_ENABLED') {
+          AUTOPILOT.globalEnabled = (value.toUpperCase() === 'TRUE' || value === '1');
+        }
+        if (key === 'AUTOMATION_MUTE_REASON') {
+          AUTOPILOT.globalMuteReason = value;
+        }
+      }
+    }
+
+    // === 2. Read per-client tier from ClientConfig tab ===
+    var clientSheet = ss.getSheetByName('ClientConfig');
+    if (!clientSheet) {
+      // Create the tab with default schema if it doesn't exist
+      clientSheet = ss.insertSheet('ClientConfig');
+      clientSheet.getRange(1, 1, 1, 4).setValues([[
+        'client_name', 'automation_tier', 'daily_change_cap', 'notes'
+      ]]);
+      clientSheet.getRange(1, 1, 1, 4).setFontWeight('bold');
+      clientSheet.setFrozenRows(1);
+      _log('INFO', 'Created ClientConfig tab (empty — using defaults)');
+    } else {
+      var clientData = clientSheet.getDataRange().getValues();
+      var headers = clientData[0];
+      var col = {};
+      for (var h = 0; h < headers.length; h++) {
+        col[String(headers[h]).trim()] = h;
+      }
+
+      var thisAccountName = (CONFIG.CLIENT_NAME || AdsApp.currentAccount().getName()).trim().toLowerCase();
+      for (var r = 1; r < clientData.length; r++) {
+        var rowName = String(clientData[r][col['client_name']] || '').trim().toLowerCase();
+        if (!rowName) continue;
+        // Match by exact or substring
+        if (rowName === thisAccountName ||
+            rowName.indexOf(thisAccountName) !== -1 ||
+            thisAccountName.indexOf(rowName) !== -1) {
+          var tier = String(clientData[r][col['automation_tier']] || '').trim().toLowerCase();
+          if (tier === 'full_autopilot' || tier === 'tier_1_only' || tier === 'approval_required') {
+            AUTOPILOT.clientTier = tier;
+          }
+          var cap = Number(clientData[r][col['daily_change_cap']]);
+          if (cap && cap > 0) AUTOPILOT.dailyChangeCap = cap;
+          break;
+        }
+      }
+    }
+
+    _log('INFO', 'Autopilot config: global=' + AUTOPILOT.globalEnabled +
+                 ' | tier=' + AUTOPILOT.clientTier +
+                 ' | daily_cap=' + AUTOPILOT.dailyChangeCap);
+
+  } catch (e) {
+    _log('WARN', 'Could not load autopilot config: ' + e.message + ' — defaulting to approval_required for safety');
+    AUTOPILOT.clientTier = 'approval_required';
+  }
+}
+
+/**
+ * Returns the count of changes already applied today for this account.
+ * Used for the daily cap check.
+ */
+function _getChangesAppliedToday() {
+  if (!CONFIG.MASTER_SHEET_ID) return 0;
+  try {
+    var sheet = _getChangeLogSheet();
+    if (!sheet) return 0;
+    var data = sheet.getDataRange().getValues();
+    if (data.length < 2) return 0;
+    var headers = data[0];
+    var col = {};
+    for (var h = 0; h < headers.length; h++) col[headers[h]] = h;
+
+    var accountName = AdsApp.currentAccount().getName();
+    var todayStr = Utilities.formatDate(new Date(), AdsApp.currentAccount().getTimeZone(), 'yyyy-MM-dd');
+    var count = 0;
+    for (var r = 1; r < data.length; r++) {
+      var ts = String(data[r][col['timestamp']] || '');
+      if (ts.indexOf(todayStr) !== 0) continue;
+      if (String(data[r][col['account_name']]) !== accountName) continue;
+      // Only count rows that are actual applied changes (not pending/preview)
+      var outcome = String(data[r][col['outcome']] || '');
+      if (outcome === 'PREVIEW') continue;
+      count++;
+    }
+    return count;
+  } catch (e) {
+    _log('WARN', 'Could not count daily changes: ' + e.message);
+    return 0;
+  }
+}
+
+/**
+ * Decides whether to halt the entire run based on global kill switch
+ * or daily cap. Returns true if run should HALT.
+ */
+function _shouldHaltForSafety(results) {
+  // Global kill switch
+  if (!AUTOPILOT.globalEnabled) {
+    var reason = 'GLOBAL KILL SWITCH ACTIVE: ' + (AUTOPILOT.globalMuteReason || 'AUTOMATION_ENABLED=FALSE');
+    _log('ERROR', reason);
+    results.errors.push(reason);
+    results.haltReason = reason;
+    return true;
+  }
+
+  // Daily change cap
+  AUTOPILOT.changesAppliedToday = _getChangesAppliedToday();
+  if (AUTOPILOT.changesAppliedToday >= AUTOPILOT.dailyChangeCap) {
+    var capReason = 'DAILY CHANGE CAP HIT: ' + AUTOPILOT.changesAppliedToday +
+                    ' changes already applied today (cap: ' + AUTOPILOT.dailyChangeCap + ')';
+    _log('ERROR', capReason);
+    results.errors.push(capReason);
+    results.haltReason = capReason;
+    return true;
+  }
+
+  return false;
+}
+
+
+// ============================================
+// TIER 1 ELIGIBILITY CHECKS
+// ============================================
+// These determine which proposed changes qualify for silent auto-apply.
+
+/**
+ * Tier 1: AI-negated search terms with HIGH confidence + low spend + obvious junk pattern.
+ * Returns true if this AI negation should be auto-applied silently.
+ */
+function _isTier1AiNegation(item) {
+  if (!item || !item.term || !item.reason) return false;
+
+  // Must be low spend
+  if ((item.cost || 0) >= 200) return false;
+
+  // Must match obvious junk pattern in the AI's reason
+  var reason = String(item.reason).toLowerCase();
+  var junkPatterns = [
+    'job', 'career', 'salary', 'vacancy', 'hiring', 'internship',
+    'diy', 'tutorial', 'how to', 'wikipedia', 'reddit',
+    'course', 'university', 'academic', 'educational',
+    'image', 'picture', 'video', 'youtube',
+    'definition', 'meaning', 'free download', 'pdf'
+  ];
+  for (var i = 0; i < junkPatterns.length; i++) {
+    if (reason.indexOf(junkPatterns[i]) !== -1) return true;
+  }
+  return false;
+}
+
+/**
+ * Tier 1: N-gram negatives with strong evidence.
+ * Returns true if this n-gram should be auto-applied silently.
+ */
+function _isTier1Ngram(item) {
+  if (!item || !item.word) return false;
+  if ((item.totalCost || 0) < 2000) return false;
+  if ((item.termCount || 0) < 5) return false;
+  // Already protected from active keywords by _autoNgramNegatives
+  return true;
+}
+
+/**
+ * Tier 1: Schedule bid downward adjustments only (the script never proposes >+30%
+ * upward via this path). Hour with 0 conv + spent above threshold.
+ */
+function _isTier1ScheduleAdjust(item) {
+  if (!item) return false;
+  // Only downward adjustments (-40, -50, -75). Skip upward.
+  if ((item.adjustment || 0) >= 0) return false;
+  return true;
+}
+
+/**
+ * Tier 1: Zero-impression keyword pauses (proposed via existing pause functions
+ * but only those with 0 impressions in 14 days — needs to be classified at proposal time).
+ * For now we don't have a separate proposer for this; flagged for future.
+ */
+// Placeholder — your current pause functions don't differentiate between
+// 0-impression and high-spend keywords. We'd need to add that classification
+// at proposal time. For now, all keyword pauses route to approval flow.
+
+
+// ============================================
+// SPLIT PROPOSED CHANGES INTO TIER 1 vs APPROVAL
+// ============================================
+
+/**
+ * Given the full results object after all proposers have run, returns:
+ *   { tier1Changes: {...}, approvalChanges: {...}, tier1Count: N, approvalCount: N }
+ *
+ * tier1Changes contains items eligible for silent auto-apply
+ * approvalChanges contains items that still need email approval
+ *
+ * If client tier is 'full_autopilot', everything goes to tier1Changes.
+ * If client tier is 'approval_required', everything goes to approvalChanges.
+ */
+function _splitChangesByTier(results) {
+  var tier1 = {
+    smartNegated: [],
+    ngramNegatives: [],
+    scheduleAdjustments: []
+  };
+  var approval = {
+    keywordsPaused: results.keywordsPaused.slice(),
+    ecomKeywordsPaused: results.ecomKeywordsPaused.slice(),
+    lowQsPaused: results.lowQsPaused.slice(),
+    smartNegated: [],
+    ngramNegatives: [],
+    winnersPromoted: results.winnersPromoted.slice(),
+    ecomWinnersPromoted: results.ecomWinnersPromoted.slice(),
+    deviceAdjustments: results.deviceAdjustments.slice(),
+    scheduleAdjustments: [],
+    geoAdjustments: results.geoAdjustments.slice(),
+    shoppingProductsPaused: results.shoppingProductsPaused.slice(),
+    pmaxSearchTermsNegated: results.pmaxSearchTermsNegated.slice(),
+    smartReviewTerms: results.smartReviewTerms.slice()
+  };
+
+  // === full_autopilot: route everything to tier1 ===
+  if (AUTOPILOT.clientTier === 'full_autopilot') {
+    return {
+      tier1Changes: {
+        keywordsPaused: results.keywordsPaused,
+        ecomKeywordsPaused: results.ecomKeywordsPaused,
+        lowQsPaused: results.lowQsPaused,
+        smartNegated: results.smartNegated,
+        ngramNegatives: results.ngramNegatives,
+        winnersPromoted: results.winnersPromoted,
+        ecomWinnersPromoted: results.ecomWinnersPromoted,
+        deviceAdjustments: results.deviceAdjustments,
+        scheduleAdjustments: results.scheduleAdjustments,
+        geoAdjustments: results.geoAdjustments,
+        shoppingProductsPaused: results.shoppingProductsPaused,
+        pmaxSearchTermsNegated: results.pmaxSearchTermsNegated
+      },
+      approvalChanges: {
+        smartReviewTerms: results.smartReviewTerms  // human-needed flagged terms still go to email
+      },
+      tier1Count: _countItems(results),
+      approvalCount: results.smartReviewTerms.length
+    };
+  }
+
+  // === approval_required: route everything to approval ===
+  if (AUTOPILOT.clientTier === 'approval_required') {
+    return {
+      tier1Changes: { smartNegated: [], ngramNegatives: [], scheduleAdjustments: [] },
+      approvalChanges: approval,
+      tier1Count: 0,
+      approvalCount: _countApprovalItems(approval)
+    };
+  }
+
+  // === tier_1_only: split intelligently ===
+
+  // AI search term negations
+  for (var s = 0; s < results.smartNegated.length; s++) {
+    var item = results.smartNegated[s];
+    if (_isTier1AiNegation(item)) {
+      tier1.smartNegated.push(item);
+    } else {
+      approval.smartNegated.push(item);
+    }
+  }
+
+  // N-gram negatives
+  for (var n = 0; n < results.ngramNegatives.length; n++) {
+    var ngram = results.ngramNegatives[n];
+    if (_isTier1Ngram(ngram)) {
+      tier1.ngramNegatives.push(ngram);
+    } else {
+      approval.ngramNegatives.push(ngram);
+    }
+  }
+
+  // Schedule downward adjustments
+  for (var sa = 0; sa < results.scheduleAdjustments.length; sa++) {
+    var sched = results.scheduleAdjustments[sa];
+    if (_isTier1ScheduleAdjust(sched)) {
+      tier1.scheduleAdjustments.push(sched);
+    } else {
+      approval.scheduleAdjustments.push(sched);
+    }
+  }
+
+  return {
+    tier1Changes: tier1,
+    approvalChanges: approval,
+    tier1Count: tier1.smartNegated.length + tier1.ngramNegatives.length + tier1.scheduleAdjustments.length,
+    approvalCount: _countApprovalItems(approval)
+  };
+}
+
+function _countItems(results) {
+  return (results.keywordsPaused || []).length +
+         (results.ecomKeywordsPaused || []).length +
+         (results.lowQsPaused || []).length +
+         (results.smartNegated || []).length +
+         (results.ngramNegatives || []).length +
+         (results.winnersPromoted || []).length +
+         (results.ecomWinnersPromoted || []).length +
+         (results.deviceAdjustments || []).length +
+         (results.scheduleAdjustments || []).length +
+         (results.geoAdjustments || []).length +
+         (results.shoppingProductsPaused || []).length +
+         (results.pmaxSearchTermsNegated || []).length;
+}
+
+function _countApprovalItems(approval) {
+  return (approval.keywordsPaused || []).length +
+         (approval.ecomKeywordsPaused || []).length +
+         (approval.lowQsPaused || []).length +
+         (approval.smartNegated || []).length +
+         (approval.ngramNegatives || []).length +
+         (approval.winnersPromoted || []).length +
+         (approval.ecomWinnersPromoted || []).length +
+         (approval.deviceAdjustments || []).length +
+         (approval.scheduleAdjustments || []).length +
+         (approval.geoAdjustments || []).length +
+         (approval.shoppingProductsPaused || []).length +
+         (approval.pmaxSearchTermsNegated || []).length;
+}
+
+
+// ============================================
+// APPLY TIER 1 CHANGES (silent — no approval)
+// ============================================
+
+/**
+ * Pushes tier 1 changes directly to Google Ads.
+ * Logs each with source='gas-tier1-auto' so weekly report can attribute.
+ * Respects daily cap.
+ *
+ * Returns count of changes successfully applied.
+ */
+function _applyTier1Changes(tier1Changes, results) {
+  var applied = 0;
+  var capReached = false;
+  var remainingCap = AUTOPILOT.dailyChangeCap - AUTOPILOT.changesAppliedToday;
+
+  if (remainingCap <= 0) {
+    _log('WARN', 'Daily cap reached before tier 1 application — skipping');
+    return 0;
+  }
+
+  // === Apply AI search term negations ===
+  if (tier1Changes.smartNegated && tier1Changes.smartNegated.length > 0) {
+    var negativeListSpend = _getOrCreateNegativeList(CONFIG.NEGATIVE_LIST_NAME_SPEND);
+    var negativeListInfo = _getOrCreateNegativeList(CONFIG.NEGATIVE_LIST_NAME_INFORMATIONAL);
+    var negativeListIrr = _getOrCreateNegativeList(CONFIG.NEGATIVE_LIST_NAME_IRRELEVANT);
+
+    for (var s = 0; s < tier1Changes.smartNegated.length; s++) {
+      if (applied >= remainingCap) { capReached = true; break; }
+      var item = tier1Changes.smartNegated[s];
+
+      try {
+        if (item.channelType === 'PERFORMANCE_MAX' && item.campaign) {
+          var pmaxIter = AdsApp.performanceMaxCampaigns()
+            .withCondition('campaign.name = "' + item.campaign.replace(/"/g, '\\"') + '"').get();
+          if (pmaxIter.hasNext()) {
+            pmaxIter.next().createNegativeKeyword('[' + item.term + ']');
+          } else if (negativeListSpend) {
+            negativeListSpend.addNegativeKeyword('[' + item.term + ']');
+          }
+        } else {
+          var reason = (item.reason || '').toLowerCase();
+          var targetList = negativeListSpend;
+          if (reason.indexOf('wrong industry') !== -1 || reason.indexOf('irrelevant') !== -1) {
+            targetList = negativeListIrr;
+          } else if (reason.indexOf('job') !== -1 || reason.indexOf('career') !== -1 ||
+                     reason.indexOf('academic') !== -1 || reason.indexOf('educational') !== -1 ||
+                     reason.indexOf('informational') !== -1 || reason.indexOf('diy') !== -1 ||
+                     reason.indexOf('tutorial') !== -1 || reason.indexOf('how to') !== -1) {
+            targetList = negativeListInfo;
+          }
+          if (targetList) targetList.addNegativeKeyword('[' + item.term + ']');
+        }
+        applied++;
+        _logChange({
+          functionName: 'tier1_auto',
+          entity: item.term,
+          entityType: 'SEARCH_TERM_NEGATIVE',
+          campaign: item.campaign || '',
+          reason: 'TIER1 AUTO: ' + item.reason,
+          spend: item.cost || 0,
+          conversions: 0
+        });
+      } catch (e) {
+        _log('WARN', 'Tier 1 negation failed: ' + item.term + ' — ' + e.message);
+      }
+    }
+  }
+
+  // === Apply N-gram negatives ===
+  if (tier1Changes.ngramNegatives && tier1Changes.ngramNegatives.length > 0 && !capReached) {
+    var ngramList = _getOrCreateNegativeList(CONFIG.NEGATIVE_LIST_NAME_SPEND);
+    if (ngramList) {
+      for (var ng = 0; ng < tier1Changes.ngramNegatives.length; ng++) {
+        if (applied >= remainingCap) { capReached = true; break; }
+        var ngItem = tier1Changes.ngramNegatives[ng];
+        try {
+          ngramList.addNegativeKeyword('"' + ngItem.word + '"');
+          applied++;
+          _logChange({
+            functionName: 'tier1_auto',
+            entity: ngItem.word,
+            entityType: 'NGRAM_NEGATIVE',
+            reason: 'TIER1 AUTO: R' + (ngItem.totalCost || 0).toFixed(0) + ' wasted across ' + ngItem.termCount + ' terms',
+            spend: ngItem.totalCost || 0,
+            conversions: 0
+          });
+        } catch (e) {
+          _log('WARN', 'Tier 1 n-gram failed: ' + ngItem.word + ' — ' + e.message);
+        }
+      }
+    }
+  }
+
+  // === Apply schedule downward adjustments ===
+  if (tier1Changes.scheduleAdjustments && tier1Changes.scheduleAdjustments.length > 0 && !capReached) {
+    for (var sa = 0; sa < tier1Changes.scheduleAdjustments.length; sa++) {
+      if (applied >= remainingCap) { capReached = true; break; }
+      var schedItem = tier1Changes.scheduleAdjustments[sa];
+      try {
+        var ci = AdsApp.campaigns().withCondition('campaign.name = "' + schedItem.campaign + '"').get();
+        if (ci.hasNext()) {
+          var campaign = ci.next();
+          var days = ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY'];
+          var modifier = 1 + (schedItem.adjustment / 100);
+          for (var d = 0; d < days.length; d++) {
+            try {
+              campaign.addAdSchedule({
+                dayOfWeek: days[d],
+                startHour: schedItem.hour,
+                startMinute: 0,
+                endHour: schedItem.hour + 1,
+                endMinute: 0,
+                bidModifier: modifier
+              });
+            } catch (e2) {
+              var schedules = campaign.targeting().adSchedules().get();
+              while (schedules.hasNext()) {
+                var sched = schedules.next();
+                if (sched.getStartHour() === schedItem.hour && sched.getDayOfWeek() === days[d]) {
+                  sched.setBidModifier(modifier);
+                  break;
+                }
+              }
+            }
+          }
+          applied++;
+          _logChange({
+            functionName: 'tier1_auto',
+            entity: schedItem.campaign + '_H' + schedItem.hour,
+            entityType: 'SCHEDULE_BID',
+            campaign: schedItem.campaign,
+            reason: 'TIER1 AUTO: Hour ' + schedItem.hour + ' downward ' + schedItem.adjustment + '%',
+            spend: 0,
+            conversions: 0
+          });
+        }
+      } catch (e) {
+        _log('WARN', 'Tier 1 schedule adjust failed: ' + e.message);
+      }
+    }
+  }
+
+  // === If full_autopilot: also apply pauses, winners, geo, etc. ===
+  if (AUTOPILOT.clientTier === 'full_autopilot') {
+    // Keyword pauses
+    if (tier1Changes.keywordsPaused) {
+      for (var kp = 0; kp < tier1Changes.keywordsPaused.length; kp++) {
+        if (applied >= remainingCap) { capReached = true; break; }
+        var k = tier1Changes.keywordsPaused[kp];
+        try {
+          var ki = AdsApp.keywords()
+            .withCondition('ad_group.name = "' + k.adGroup + '"')
+            .withCondition('campaign.name = "' + k.campaign + '"')
+            .withCondition('ad_group_criterion.keyword.text = "' + k.keyword + '"').get();
+          while (ki.hasNext()) { ki.next().pause(); }
+          applied++;
+          _logChange({
+            functionName: 'full_auto',
+            entity: k.keyword,
+            entityType: 'KEYWORD',
+            campaign: k.campaign,
+            adGroup: k.adGroup,
+            reason: 'FULL_AUTOPILOT: keyword pause',
+            spend: k.spend || 0,
+            conversions: 0
+          });
+        } catch (e) {
+          _log('WARN', 'Full auto keyword pause failed: ' + k.keyword + ' — ' + e.message);
+        }
+      }
+    }
+
+    // Ecom keyword pauses
+    if (tier1Changes.ecomKeywordsPaused) {
+      for (var ek = 0; ek < tier1Changes.ecomKeywordsPaused.length; ek++) {
+        if (applied >= remainingCap) { capReached = true; break; }
+        var ekw = tier1Changes.ecomKeywordsPaused[ek];
+        try {
+          var eki = AdsApp.keywords()
+            .withCondition('ad_group.name = "' + ekw.adGroup + '"')
+            .withCondition('campaign.name = "' + ekw.campaign + '"')
+            .withCondition('ad_group_criterion.keyword.text = "' + ekw.keyword + '"').get();
+          while (eki.hasNext()) { eki.next().pause(); }
+          applied++;
+          _logChange({
+            functionName: 'full_auto',
+            entity: ekw.keyword,
+            entityType: 'KEYWORD',
+            campaign: ekw.campaign,
+            adGroup: ekw.adGroup,
+            reason: 'FULL_AUTOPILOT: ecom keyword pause (ROAS ' + (ekw.roas || 0).toFixed(2) + 'x)',
+            spend: ekw.spend || 0,
+            conversions: ekw.revenue || 0
+          });
+        } catch (e) {
+          _log('WARN', 'Full auto ecom pause failed: ' + e.message);
+        }
+      }
+    }
+
+    // Low QS pauses
+    if (tier1Changes.lowQsPaused) {
+      for (var lq = 0; lq < tier1Changes.lowQsPaused.length; lq++) {
+        if (applied >= remainingCap) { capReached = true; break; }
+        var lqw = tier1Changes.lowQsPaused[lq];
+        try {
+          var lqi = AdsApp.keywords()
+            .withCondition('ad_group.name = "' + lqw.adGroup + '"')
+            .withCondition('campaign.name = "' + lqw.campaign + '"')
+            .withCondition('ad_group_criterion.keyword.text = "' + lqw.keyword + '"').get();
+          while (lqi.hasNext()) { lqi.next().pause(); }
+          applied++;
+          _logChange({
+            functionName: 'full_auto',
+            entity: lqw.keyword,
+            entityType: 'KEYWORD',
+            campaign: lqw.campaign,
+            adGroup: lqw.adGroup,
+            reason: 'FULL_AUTOPILOT: low QS (' + lqw.qualityScore + ') pause',
+            spend: lqw.spend || 0,
+            conversions: 0
+          });
+        } catch (e) {
+          _log('WARN', 'Full auto low QS pause failed: ' + e.message);
+        }
+      }
+    }
+
+    // Winners
+    if (tier1Changes.winnersPromoted) {
+      var allWinners = (tier1Changes.winnersPromoted || []).concat(tier1Changes.ecomWinnersPromoted || []);
+      for (var w = 0; w < allWinners.length; w++) {
+        if (applied >= remainingCap) { capReached = true; break; }
+        var winner = allWinners[w];
+        try {
+          _createExactMatchWinner(winner.searchTerm, winner.campaign, winner.adGroup);
+          applied++;
+          _logChange({
+            functionName: 'full_auto',
+            entity: winner.searchTerm,
+            entityType: 'EXACT_MATCH_PROMOTION',
+            campaign: winner.campaign,
+            adGroup: winner.adGroup,
+            reason: 'FULL_AUTOPILOT: winner promotion',
+            spend: winner.spend || 0,
+            conversions: winner.conversions || 0
+          });
+        } catch (e) {
+          _log('WARN', 'Full auto winner failed: ' + e.message);
+        }
+      }
+    }
+
+    // === Device bid adjustments ===
+    if (tier1Changes.deviceAdjustments) {
+      for (var dv = 0; dv < tier1Changes.deviceAdjustments.length; dv++) {
+        if (applied >= remainingCap) { capReached = true; break; }
+        var dItem = tier1Changes.deviceAdjustments[dv];
+        try {
+          var dCi = AdsApp.campaigns().withCondition('campaign.name = "' + dItem.campaign + '"').get();
+          if (dCi.hasNext()) {
+            var platforms = dCi.next().targeting().platforms().get();
+            var appliedThisDevice = false;
+            while (platforms.hasNext()) {
+              var platform = platforms.next();
+              if ((dItem.device === 'MOBILE' && platform.getName() === 'Mobile devices with full browsers') ||
+                  (dItem.device === 'TABLET' && platform.getName() === 'Tablets with full browsers')) {
+                platform.setBidModifier(1 + (dItem.adjustment / 100));
+                appliedThisDevice = true;
+              }
+            }
+            if (appliedThisDevice) {
+              applied++;
+              _logChange({
+                functionName: 'full_auto',
+                entity: dItem.campaign + '_' + dItem.device,
+                entityType: 'DEVICE_BID',
+                campaign: dItem.campaign,
+                reason: 'FULL_AUTOPILOT: device bid ' + (dItem.adjustment > 0 ? '+' : '') + dItem.adjustment + '%',
+                spend: 0,
+                conversions: 0
+              });
+            }
+          }
+        } catch (e) {
+          _log('WARN', 'Full auto device bid failed: ' + e.message);
+        }
+      }
+    }
+
+    // === Geographic bid adjustments ===
+    if (tier1Changes.geoAdjustments) {
+      for (var gi = 0; gi < tier1Changes.geoAdjustments.length; gi++) {
+        if (applied >= remainingCap) { capReached = true; break; }
+        var gItem = tier1Changes.geoAdjustments[gi];
+        try {
+          _setGeoBidModifier(gItem.campaign, gItem.location, 1 + (gItem.adjustment / 100));
+          applied++;
+          _logChange({
+            functionName: 'full_auto',
+            entity: gItem.campaign + '_LOC_' + gItem.location,
+            entityType: 'GEO_BID',
+            campaign: gItem.campaign,
+            reason: 'FULL_AUTOPILOT: geo bid ' + (gItem.adjustment > 0 ? '+' : '') + gItem.adjustment + '%',
+            spend: gItem.spend || 0,
+            conversions: gItem.conversions || 0
+          });
+        } catch (e) {
+          _log('WARN', 'Full auto geo bid failed: ' + e.message);
+        }
+      }
+    }
+
+    // === PMax search term negatives ===
+    // PMax does not honor shared negative keyword lists — these must be added as
+    // campaign-level negatives on the specific PMax campaign.
+    if (tier1Changes.pmaxSearchTermsNegated) {
+      var pmaxFallbackList = _getOrCreateNegativeList(CONFIG.NEGATIVE_LIST_NAME_SPEND);
+      for (var pm = 0; pm < tier1Changes.pmaxSearchTermsNegated.length; pm++) {
+        if (applied >= remainingCap) { capReached = true; break; }
+        var pmItem = tier1Changes.pmaxSearchTermsNegated[pm];
+        var pmTerm = pmItem.searchTerm || pmItem.term;
+        if (!pmTerm) continue;
+        try {
+          var pmaxIter = AdsApp.performanceMaxCampaigns()
+            .withCondition('campaign.name = "' + (pmItem.campaign || '').replace(/"/g, '\\"') + '"').get();
+          if (pmaxIter.hasNext()) {
+            pmaxIter.next().createNegativeKeyword('[' + pmTerm + ']');
+          } else if (pmaxFallbackList) {
+            _log('WARN', 'PMax campaign "' + pmItem.campaign + '" not found — falling back to shared list (will not block on PMax)');
+            pmaxFallbackList.addNegativeKeyword('[' + pmTerm + ']');
+          }
+          applied++;
+          _logChange({
+            functionName: 'full_auto',
+            entity: pmTerm,
+            entityType: 'SEARCH_TERM_NEGATIVE',
+            campaign: pmItem.campaign || '',
+            reason: 'FULL_AUTOPILOT: PMax search term negation',
+            spend: pmItem.spend || 0,
+            conversions: 0
+          });
+        } catch (e) {
+          _log('WARN', 'Full auto PMax negation failed: ' + pmTerm + ' — ' + e.message);
+        }
+      }
+    }
+
+    // Note: shoppingProductsPaused is informational-only (no exclusion API call exists
+    // in this codebase). Surfaced in reports for manual review.
+    if (tier1Changes.shoppingProductsPaused && tier1Changes.shoppingProductsPaused.length > 0) {
+      _log('INFO', 'Full autopilot: ' + tier1Changes.shoppingProductsPaused.length +
+                   ' shopping products flagged for exclusion (manual action required — no API call available)');
+    }
+  }
+
+  if (capReached) {
+    _log('WARN', 'Daily change cap reached during tier 1 apply — remaining changes deferred to approval');
+    results.errors.push('Daily cap hit during tier 1 (' + AUTOPILOT.dailyChangeCap + ') — some changes deferred');
+  }
+
+  AUTOPILOT.changesAppliedToday += applied;
+  return applied;
+}
 // ============================================
 // ENTRY POINT — called by each client's loader
 // ============================================
@@ -3666,7 +4748,7 @@ function runOptimization() {
   CONFIG.REQUIRE_APPROVAL = CONFIG.REQUIRE_APPROVAL !== false;
 
   _log('INFO', '═══════════════════════════════════════════');
-  _log('INFO', 'SYTE OPTIMIZATION CORE v4.5.0');
+  _log('INFO', 'SYTE OPTIMIZATION CORE v4.6.0');
   _log('INFO', 'Client: ' + (CONFIG.CLIENT_NAME || AdsApp.currentAccount().getName()));
   _log('INFO', 'Mode: ' + CONFIG.ACCOUNT_MODE);
   _log('INFO', 'Run: ' + (CONFIG.PREVIEW_MODE ? 'PREVIEW (no changes)' : 'LIVE'));
@@ -3705,6 +4787,28 @@ function runOptimization() {
 
   // === LOAD SHARED CONFIG FROM SHEET (v4.2.1) ===
   _loadSharedConfig();
+  // === LOAD AUTOPILOT CONFIG (v4.6.0) ===
+  _log('INFO', '\n=== LOADING AUTOPILOT CONFIG ===');
+  _loadAutopilotConfig();
+
+  // === CHECK GLOBAL KILL SWITCH AND DAILY CAP ===
+  if (_shouldHaltForSafety(results)) {
+    _log('ERROR', 'Halting run for safety: ' + results.haltReason);
+    if (CONFIG.SEND_EMAIL !== false) {
+      var haltRecipients = CONFIG.EMAIL_ADDRESSES || [CONFIG.EMAIL_RECIPIENT || 'michaelh@syte.co.za'];
+      if (typeof haltRecipients === 'string') haltRecipients = [haltRecipients];
+      MailApp.sendEmail({
+        to: haltRecipients.join(','),
+        subject: 'HALTED | ' + AdsApp.currentAccount().getName() + ' | ' + results.haltReason,
+        htmlBody: '<p style="font-family:Arial,sans-serif;font-size:14px;">' +
+                  '<strong>Run halted for safety.</strong></p>' +
+                  '<p>Reason: ' + results.haltReason + '</p>' +
+                  '<p>No changes were proposed or applied. Investigate before next scheduled run.</p>'
+      });
+    }
+    _writeDailyDigestRow(results, 0);
+    return;
+  }
 
   // Log if no API key available after all loading attempts
   if (!CONFIG.ANTHROPIC_API_KEY) {
@@ -3814,6 +4918,45 @@ function runOptimization() {
 
   // v4.4.0: Restore original preview mode
   CONFIG.PREVIEW_MODE = _originalPreviewMode;
+  // === AUTOPILOT: SPLIT PROPOSED CHANGES INTO TIER 1 (silent) vs APPROVAL ===
+  _log('INFO', '\n=== AUTOPILOT TIER ROUTING ===');
+  var split = _splitChangesByTier(results);
+  _log('INFO', 'Tier routing: ' + split.tier1Count + ' silent autopilot, ' +
+               split.approvalCount + ' need approval');
+
+  // === APPLY TIER 1 CHANGES SILENTLY (only if not in original preview mode) ===
+  var tier1Applied = 0;
+  if (!_originalPreviewMode && split.tier1Count > 0) {
+    _log('INFO', 'Applying ' + split.tier1Count + ' tier 1 changes silently...');
+    CONFIG.PREVIEW_MODE = false;
+    tier1Applied = _applyTier1Changes(split.tier1Changes, results);
+    CONFIG.PREVIEW_MODE = !!_originalPreviewMode;
+    _log('INFO', 'Tier 1 applied: ' + tier1Applied);
+    results.tier1Applied = tier1Applied;
+  } else if (_originalPreviewMode) {
+    _log('INFO', 'PREVIEW MODE — tier 1 not applied (would have applied ' + split.tier1Count + ')');
+    results.tier1Applied = 0;
+  }
+
+  // === REMOVE TIER 1 ITEMS FROM RESULTS BEFORE WRITING TO PENDING ===
+  if (AUTOPILOT.clientTier === 'tier_1_only') {
+    results.smartNegated = split.approvalChanges.smartNegated;
+    results.ngramNegatives = split.approvalChanges.ngramNegatives;
+    results.scheduleAdjustments = split.approvalChanges.scheduleAdjustments;
+  } else if (AUTOPILOT.clientTier === 'full_autopilot') {
+    results.keywordsPaused = [];
+    results.ecomKeywordsPaused = [];
+    results.lowQsPaused = [];
+    results.smartNegated = [];
+    results.ngramNegatives = [];
+    results.winnersPromoted = [];
+    results.ecomWinnersPromoted = [];
+    results.deviceAdjustments = [];
+    results.scheduleAdjustments = [];
+    results.geoAdjustments = [];
+    results.shoppingProductsPaused = [];
+    results.pmaxSearchTermsNegated = [];
+  }
 
   // Surface any sheet errors so they appear in the email report
   if (_sheetErrors.length > 0) {
@@ -3845,7 +4988,7 @@ function runOptimization() {
   // Write summary row for daily digest
   _writeDailyDigestRow(results, duration);
 
-  if (CONFIG.SEND_EMAIL !== false) _sendReport(results, duration, evalResult, pendingRunId);
+ if (CONFIG.SEND_EMAIL !== false) _sendReport(results, duration, evalResult, pendingRunId, split);
 
   _log('INFO', '\n=== SUMMARY ===');
   if (_isLeadGenMode()) _log('INFO', 'KW Paused: ' + results.keywordsPaused.length + ' | Winners: ' + results.winnersPromoted.length);
