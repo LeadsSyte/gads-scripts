@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useClients } from '../../store/useClients.js';
-import { snapshotPreflight, runSnapshot } from './aeoRunner.js';
+import { snapshotPreflight, runSnapshot, estimateRunCost } from './aeoRunner.js';
 import { normalizeSnapshot } from './aeoCompare.js';
 import { saveAeoSnapshot, listAeoSnapshots, getCachedReportData, persistAeoRuns } from '../../lib/supabase.js';
 import { ALL_ENGINES } from './aeoEngines.js';
@@ -64,6 +64,8 @@ export default function AEOSnapshot() {
   // Fan-out "Discovered prompts" approval queue.
   const [fanoutProposals, setFanoutProposals] = useState([]);
   const [fanoutBusy, setFanoutBusy] = useState(false);
+  // Cost preview: block a run above this many model calls until confirmed.
+  const [callBudget, setCallBudget] = useState(400);
 
   // Compute the list of AEO-enabled clients that haven't had a snapshot
   // yet this month. Runs once when clients load.
@@ -204,6 +206,17 @@ export default function AEOSnapshot() {
 
   async function run() {
     if (!client) return;
+    // Cost preview + confirm (Requirement 7): block runs above the budget.
+    const est = estimateRunCost(client, { iterations });
+    if (est.totalCalls > (Number(callBudget) || 0)) {
+      const go = window.confirm(
+        `Cost preview: about ${est.totalCalls} model calls this run ` +
+        `(${est.probes} probes x ${est.engines} engines x ${iterations} iterations across search modes, ` +
+        `${est.engineCalls} engine + ${est.extractionCalls} extraction). ` +
+        `This exceeds your budget of ${callBudget}. Proceed?`
+      );
+      if (!go) return;
+    }
     setBusy(true); setErr(''); setMsg(''); setSnapshot(null);
     setProgress({ phase: 'starting', index: 0, total: 0 });
     try {
@@ -337,6 +350,7 @@ export default function AEOSnapshot() {
   }));
 
   const queries = (client.aeo_probe_queries || '').split('\n').map(s => s.trim()).filter(Boolean);
+  const costEst = preflight?.canRun ? (() => { try { return estimateRunCost(client, { iterations }); } catch { return null; } })() : null;
   const census = parseCensus(client);
   const coverage = census ? intentCoverage(census) : null;
   const intentLabel = id => (INTENT_BUCKETS.find(b => b.id === id)?.label) || id;
@@ -638,6 +652,23 @@ export default function AEOSnapshot() {
                 title="How many times to ask each (query × engine). 3+ gives meaningful visibility percentages."
               />
             </label>
+            <label style={{ fontSize: 11, color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 6 }}>
+              Call budget
+              <input
+                type="number" min={0} step={50}
+                value={callBudget}
+                onChange={e => setCallBudget(Math.max(0, Number(e.target.value) || 0))}
+                style={{ width: 68, padding: '4px 8px', fontSize: 12 }}
+                disabled={busy}
+                title="Runs above this many model calls ask for confirmation first."
+              />
+            </label>
+            {costEst && (
+              <span className="muted" style={{ fontSize: 11, color: costEst.totalCalls > callBudget ? 'var(--orange)' : 'var(--text-muted)' }}
+                title={`${costEst.engineCalls} engine + ${costEst.extractionCalls} extraction calls`}>
+                ~{costEst.totalCalls} calls
+              </span>
+            )}
             <button
               className="primary"
               onClick={run}

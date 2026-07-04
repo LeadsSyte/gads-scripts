@@ -26,6 +26,40 @@ import {
 import { buildCitationGaps } from './aeoCitationGaps.js';
 
 const DEFAULT_ITERATIONS = 3;
+const DEFAULT_CONCURRENCY = 2;   // max in-flight requests per engine
+const DEFAULT_RETRIES = 3;       // on 429
+const DEFAULT_RETRY_MS = 1000;   // base backoff, doubles each attempt
+
+// Tiny concurrency limiter — caps how many of `fn` run at once.
+function pLimit(n) {
+  let active = 0;
+  const queue = [];
+  const next = () => {
+    if (active >= n || !queue.length) return;
+    active++;
+    const { fn, resolve, reject } = queue.shift();
+    Promise.resolve().then(fn).then(resolve, reject).finally(() => { active--; next(); });
+  };
+  return (fn) => new Promise((resolve, reject) => { queue.push({ fn, resolve, reject }); next(); });
+}
+
+const defaultSleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+function is429(resp) {
+  return resp?.error && (resp.status === 429 || /\b429\b|rate limit|too many requests/i.test(resp.error));
+}
+
+// Call eng.ask with exponential backoff on 429. sleep is injectable so tests
+// don't actually wait. Non-429 errors return immediately (skip, don't abort).
+async function askWithBackoff(eng, query, askOpts, { retries, baseMs, sleep }) {
+  let delay = baseMs;
+  for (let attempt = 0; ; attempt++) {
+    const resp = await eng.ask(query, askOpts);
+    if (!is429(resp) || attempt >= retries) return resp;
+    await sleep(delay);
+    delay *= 2;
+  }
+}
 
 function parseCompetitors(raw) {
   return (raw || '')
@@ -114,7 +148,12 @@ export async function runSnapshot(client, opts = {}) {
   const {
     onProgress, onRuns, iterations, now,
     engines: engineOverride, extract = extractRun,
-    sinceISO
+    sinceISO,
+    concurrency = DEFAULT_CONCURRENCY,
+    retries = DEFAULT_RETRIES,
+    retryDelayMs = DEFAULT_RETRY_MS,
+    sleep = defaultSleep,
+    temperature = 0.7
   } = opts;
 
   const engines = engineOverride || activeEngines();
@@ -147,7 +186,7 @@ export async function runSnapshot(client, opts = {}) {
     for (let i = 0; i < N; i++) {
       onProgress?.({ phase: 'query', engine: eng.label, query: probe.query, mode, index: done, total, iteration: i + 1, iterations: N });
       const search = mode === 'search_on';
-      const resp = await eng.ask(probe.query, { search });
+      const resp = await askWithBackoff(eng, probe.query, { search }, { retries, baseMs: retryDelayMs, sleep });
       done++;
       onProgress?.({ phase: 'done', engine: eng.label, query: probe.query, mode, index: done, total });
       if (resp.error) {
@@ -196,20 +235,20 @@ export async function runSnapshot(client, opts = {}) {
     return { probe, engine: eng, mode, runs };
   }
 
-  // Fire engines in parallel per probe; modes/iterations sequential within an
-  // engine. (Stage 7 adds a concurrency cap + backoff.)
-  const groups = [];
+  // Per-engine concurrency cap: each engine runs at most `concurrency` groups
+  // at once; engines run independently of each other. Iterations stay
+  // sequential within a group (probeGroup). 429s back off exponentially.
+  const perEngineLimit = new Map(engines.map(e => [e.id, pLimit(Math.max(1, concurrency))]));
+  const groupPromises = [];
   for (const probe of runnableProbes) {
-    const enginePromises = engines.map(async (eng) => {
-      const out = [];
+    for (const eng of engines) {
       for (const mode of resolveRunModes(probe.runMode, eng)) {
-        out.push(await probeGroup(probe, eng, mode));
+        const limit = perEngineLimit.get(eng.id);
+        groupPromises.push(limit(() => probeGroup(probe, eng, mode)));
       }
-      return out;
-    });
-    const batches = await Promise.all(enginePromises);
-    for (const b of batches) groups.push(...b);
+    }
   }
+  const groups = await Promise.all(groupPromises);
 
   // Hand raw runs to the caller for persistence (UI wires DB writers).
   try { await onRuns?.(runRecords, rawEntries); } catch (e) { console.warn('[aeo] onRuns persistence failed:', e.message); }
@@ -427,8 +466,13 @@ export async function runSnapshot(client, opts = {}) {
     // per-probe scored results (new)
     probe_results: probeResults,
 
-    // engine params actually used (Requirement 7 groundwork)
-    engine_params: engines.map(e => ({ id: e.id, model: e.model, retrievalNative: !!e.retrievalNative, temperature: null })),
+    // Per-engine params used this snapshot, persisted so month-over-month
+    // comparisons can flag param changes (Requirement 7).
+    engine_params: engines.map(e => ({
+      id: e.id, model: e.model, retrievalNative: !!e.retrievalNative,
+      temperature, extraction_temperature: 0
+    })),
+    run_config: { iterations: N, concurrency, retries, temperature },
     run_modes_used: [...new Set(groups.map(g => g.mode))],
 
     // signals for the fan-out loop (Stage 4)

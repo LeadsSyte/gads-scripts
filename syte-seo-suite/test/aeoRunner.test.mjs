@@ -104,7 +104,7 @@ await t('retrieval-native engine (perplexity) runs search_on only even for a bot
 
 // ── Errored engine skips, does not abort; engines_used reflects actual ─
 await t('errored engine does not abort; engines_used reflects engines that ran', async () => {
-  const bad = { id: 'gemini', label: 'Gemini', model: 'g', retrievalNative: true, supportsSearchOff: false, isConfigured: () => true, ask: async () => ({ error: 'rate limit', status: 429 }) };
+  const bad = { id: 'gemini', label: 'Gemini', model: 'g', retrievalNative: true, supportsSearchOff: false, isConfigured: () => true, ask: async () => ({ error: 'server 500' }) };
   const snap = await mod.runSnapshot(CLIENT, { engines: [gptStub(), bad], extract: extractAppears, iterations: 1, now: NOW });
   ok(snap.engines_used.includes('chatgpt'), 'chatgpt ran');
   ok(!snap.engines_used.includes('gemini'), 'gemini did not run (all errored)');
@@ -129,6 +129,37 @@ await t('brand never appears → visibilityScore 0, avgPos null, coverage 0', as
   eq(row.visibilityScore, 0, 'vis 0');
   eq(snap.coverage_rate, 0, 'coverage 0');
   ok(snap.share_of_voice < 100, 'competitors took share');
+});
+
+// ── Hardening: 429 backoff + concurrency cap ────────────────
+await t('429 backoff: retries past transient 429s then succeeds', async () => {
+  let calls = 0;
+  const flaky = {
+    id: 'chatgpt', label: 'ChatGPT', model: 'gpt-4o', retrievalNative: false, supportsSearchOff: true, isConfigured: () => true,
+    ask: async (q, { search } = {}) => {
+      calls++;
+      if (calls <= 2) return { error: '429 rate limit', status: 429 };
+      return { text: 'Acme wins', raw: {}, searchMode: search ? 'search_on' : 'search_off' };
+    }
+  };
+  const snap = await mod.runSnapshot(CLIENT, { engines: [flaky], extract: extractAppears, iterations: 1, retries: 3, retryDelayMs: 0, sleep: async () => {}, now: NOW });
+  ok(calls > 2, 'retried past the 429s (calls=' + calls + ')');
+  ok(snap.engines_used.includes('chatgpt'), 'engine ran after backoff');
+});
+
+await t('concurrency cap: never more than 2 requests in-flight per engine', async () => {
+  let inFlight = 0, maxSeen = 0;
+  const eng = {
+    id: 'chatgpt', label: 'ChatGPT', model: 'gpt-4o', retrievalNative: false, supportsSearchOff: true, isConfigured: () => true,
+    ask: async (q, { search } = {}) => {
+      inFlight++; maxSeen = Math.max(maxSeen, inFlight);
+      await new Promise(r => setTimeout(r, 5));
+      inFlight--;
+      return { text: 'Acme', raw: {}, searchMode: search ? 'search_on' : 'search_off' };
+    }
+  };
+  await mod.runSnapshot(CLIENT, { engines: [eng], extract: extractAppears, iterations: 2, concurrency: 2, now: NOW });
+  ok(maxSeen <= 2 && maxSeen > 0, 'peak in-flight was ' + maxSeen + ' (<=2)');
 });
 
 // ── Cost preview ────────────────────────────────────────────
