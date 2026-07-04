@@ -245,6 +245,42 @@ export function gscBuyerPrompts(queries, { geo = '', limit = 20 } = {}) {
   return out;
 }
 
+// Build a BALANCED, typed probe set grounded in GSC + competitors, so an
+// auto-generated set covers the same breadth as a hand-built panel: category
+// (GSC head-terms), comparison (alternatives-to-competitor), qualified
+// (mid-market), and conversational (who-should-I-hire). Returns probe-candidate
+// objects ready for addProbes. `gscQueries` are raw GSC head-terms.
+export function groundedProbeSet(gscQueries, { geo = '', competitors = [], limit = 28 } = {}) {
+  const g = String(geo || '').split(/[,/]/)[0].trim();
+  const tail = g ? ` in ${g.toLowerCase()}` : '';
+  const category = gscBuyerPrompts(gscQueries, { geo, limit: 18 })
+    .map(q => ({ query: q, type: 'category', intent: 'commercial' }));
+
+  const comparison = [];
+  for (const c of (competitors || []).slice(0, 3)) {
+    const name = String(c).trim();
+    if (!name) continue;
+    comparison.push({ query: `alternatives to ${name}${tail}`.toLowerCase(), type: 'comparison', intent: 'comparison' });
+  }
+
+  // Qualified + conversational off the top couple of raw GSC terms.
+  const topTerms = (gscQueries || []).slice(0, 2)
+    .map(t => String(t).toLowerCase().trim()).filter(Boolean);
+  const qualified = topTerms.map(t => ({ query: `best ${t} for mid-market companies${tail}`.toLowerCase(), type: 'qualified', intent: 'commercial' }));
+  const conversational = topTerms.slice(0, 1).map(t => ({ query: `who should i hire for ${t}${tail}?`.toLowerCase(), type: 'conversational', intent: 'problem' }));
+
+  const seen = new Set();
+  const out = [];
+  for (const p of [...category, ...comparison, ...qualified, ...conversational]) {
+    const k = (p.query || '').trim();
+    if (!k || seen.has(k)) continue;
+    seen.add(k);
+    out.push({ ...p, tier: 1, source: 'gsc', active: true });
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
 // Merge new probe queries into an existing newline-separated list,
 // case-insensitive deduping, preserving the existing order. Returns
 // { merged: string, addedCount: number, totalCount: number }.
