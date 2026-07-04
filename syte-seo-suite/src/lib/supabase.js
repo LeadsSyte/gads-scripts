@@ -288,13 +288,30 @@ export async function persistAeoRuns(records, rawEntries) {
     timestamp: r.timestamp
   }));
   await saveAeoRuns(rows);
-  // Dedupe raw bodies by hash before writing.
+  // Dedupe raw bodies by hash and write them in ONE bulk upsert. The old
+  // per-hash SELECT+INSERT loop made ~2 round-trips per response (hundreds
+  // per run), which blocked the end of every snapshot for minutes.
   const seen = new Set();
+  const rawRows = [];
   for (const e of (rawEntries || [])) {
     if (!e.hash || seen.has(e.hash)) continue;
     seen.add(e.hash);
-    await saveRawResponse({ hash: e.hash, client_id: e.client_id, engine: e.engine, run_mode: e.run_mode, raw_response: e.raw_response });
+    rawRows.push({ hash: e.hash, client_id: e.client_id, engine: e.engine, run_mode: e.run_mode, raw_response: e.raw_response });
   }
+  if (!rawRows.length) return;
+  if (supabase) {
+    try {
+      await supabase.from('syte_suite_aeo_raw').upsert(rawRows, { onConflict: 'hash', ignoreDuplicates: true });
+      return;
+    } catch (e) {
+      console.warn('[aeo] bulk raw upsert failed, using localStorage:', e.message);
+    }
+  }
+  try {
+    const store = JSON.parse(localStorage.getItem(AEO_RAW_KEY) || '{}');
+    for (const r of rawRows) if (!store[r.hash]) store[r.hash] = { engine: r.engine, run_mode: r.run_mode, raw_response: r.raw_response, created_at: new Date().toISOString() };
+    localStorage.setItem(AEO_RAW_KEY, JSON.stringify(store));
+  } catch {}
 }
 
 export async function listAeoRuns(clientId, month) {
