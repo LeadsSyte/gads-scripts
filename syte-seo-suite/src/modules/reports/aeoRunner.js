@@ -198,6 +198,8 @@ export async function runSnapshot(client, opts = {}) {
   const rawEntries = [];   // { hash, engine, run_mode, raw_response }
   const enginesRan = new Set();
   const disabledEngines = new Set();  // engines a sustained 429 / bad key took out mid-sweep
+  const consecErrors = {};            // engine.id -> consecutive error count
+  const FAIL_DISABLE_THRESHOLD = 3;   // bench an engine after this many misses in a row (e.g. 504 storm)
   const nowISO = (now ? new Date(now) : new Date()).toISOString();
   const runMonth = nowISO.slice(0, 7);
 
@@ -230,16 +232,14 @@ export async function runSnapshot(client, opts = {}) {
       // rest of the sweep (main's behaviour) instead of paying it every probe.
       if (resp.rateLimited || resp.configError) disabledEngines.add(eng.id);
       if (resp.error) {
-        // Errored run: excluded from scored runs, but we note the attempt.
-        runRecords.push({
-          client_id: client.id, month: runMonth, probeId: probe.id, engine: eng.id, runIndex: i,
-          timestamp: nowISO, runMode: mode, error: resp.error,
-          appeared: null, position: null, listLength: null,
-          segmentLabel: null, reasonPhrase: null, sentiment: null,
-          competitorsNamed: [], citedUrls: [], rawResponseHash: null
-        });
+        // Bench an engine that keeps failing (e.g. a 504 storm from a slow
+        // proxy, or a dead key) so it doesn't drag the whole run for minutes.
+        consecErrors[eng.id] = (consecErrors[eng.id] || 0) + 1;
+        if (consecErrors[eng.id] >= FAIL_DISABLE_THRESHOLD) disabledEngines.add(eng.id);
+        runRecords.push(errorRecord(probe, eng, i, mode, resp.error));
         continue;
       }
+      consecErrors[eng.id] = 0; // reset on any success
       enginesRan.add(eng.id);
       const text = resp.text || '';
       const raw = resp.raw;

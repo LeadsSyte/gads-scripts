@@ -198,6 +198,19 @@ await t('concurrency cap: never more than 2 requests in-flight per engine', asyn
   ok(maxSeen <= 2 && maxSeen > 0, 'peak in-flight was ' + maxSeen + ' (<=2)');
 });
 
+// ── A repeatedly-failing engine benches itself (no hang) ────
+await t('engine failing repeatedly (e.g. 504 storm) is benched after 3 misses', async () => {
+  let calls = 0;
+  const flaky = {
+    id: 'chatgpt', label: 'ChatGPT', model: 'gpt-4o', retrievalNative: false, supportsSearchOff: true, isConfigured: () => true,
+    ask: async () => { calls++; return { error: 'OpenAI 504 gateway timeout' }; } // not rateLimited/configError
+  };
+  await mod.runSnapshot(CLIENT, { engines: [flaky], extract: extractAppears, iterations: 3, retryDelayMs: 0, sleep: async () => {}, now: NOW });
+  // 2 scorable (both modes) + 2 reverse = many groups x3, but after 3 straight
+  // failures the engine is disabled, so total real calls stay small.
+  ok(calls >= 3 && calls < 12, 'benched after a few failures (calls=' + calls + ')');
+});
+
 // ── Retrieval-first scoring: parametric runs must not dilute the score ─
 await t('parametric no-search runs do not dilute the engine score (retrieval is the headline)', async () => {
   const eng = {
