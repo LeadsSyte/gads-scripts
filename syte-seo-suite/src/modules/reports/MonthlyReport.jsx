@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useClients } from '../../store/useClients.js';
 import { claudeComplete, extractJSON } from '../../lib/anthropic.js';
-import { listAeoSnapshots, logReportSent, logReportGenerated, getGeneratedReport, getCachedReportData, setCachedReportData, persistAeoRuns } from '../../lib/supabase.js';
+import { listAeoSnapshots, logReportSent, logReportGenerated, getGeneratedReport, getCachedReportData, setCachedReportData, persistAeoRuns, saveAeoSnapshot } from '../../lib/supabase.js';
 import {
   ALICE_SYSTEM, MICROSITE_SYSTEM, QA_SYSTEM,
   ALICE_AEO_SYSTEM, MICROSITE_AEO_SYSTEM, QA_AEO_SYSTEM,
@@ -92,6 +92,13 @@ function summarizeProbeIssues(probe) {
   return out;
 }
 
+function fmtEta(ms) {
+  if (!isFinite(ms) || ms <= 0) return '';
+  const s = Math.round(ms / 1000);
+  const m = Math.floor(s / 60);
+  return m > 0 ? `~${m}m ${s % 60}s left` : `~${s}s left`;
+}
+
 function parseAliceOutput(text) {
   if (!text) return { subject: '', body: '' };
   const lines = text.split('\n');
@@ -115,6 +122,7 @@ export default function MonthlyReport() {
   const [aeoSnap, setAeoSnap] = useState(null);
   const [workSummary, setWorkSummary] = useState(null);
   const [phase, setPhase] = useState('idle'); // idle | fetching | alice | micro | qa | review
+  const [aeoProgress, setAeoProgress] = useState(null); // { index, total, engine, query, iteration, iterations }
   const [err, setErr] = useState('');
   const [fetchStatus, setFetchStatus] = useState('');
   const [email, setEmail] = useState({ subject: '', body: '' });
@@ -139,6 +147,7 @@ export default function MonthlyReport() {
   // listener reads a stale fetchStatus closure, so that fed back on itself
   // into a loop that re-popped the Google auth tab and froze the report view.
   const fetchInFlightRef = useRef(false);
+  const probeStartRef = useRef(0); // wall-clock start of the AEO probe, for ETA
 
   const [savedReportLoaded, setSavedReportLoaded] = useState(false);
 
@@ -491,6 +500,18 @@ export default function MonthlyReport() {
   const previewTooLarge = previewHtml.length > MAX_INLINE_REPORT_HTML;
 
   // Generate AEO-only report — skips SEO data, focuses on AI visibility.
+  // Auto-save this month's probe as a snapshot so next month has a baseline to
+  // compare against (this is what turns "first snapshot" into MoM deltas).
+  // Only saves once per client per report-month; the report month is used so the
+  // History timeline lines up with the reports.
+  async function autoSaveSnapshot(probeResult) {
+    if (!client || !probeResult || aeoSnap) return; // already have a snapshot this month
+    try {
+      const saved = await saveAeoSnapshot({ ...probeResult, client_id: client.id, month });
+      setAeoSnap(saved);
+    } catch { /* non-fatal — report still works without the saved baseline */ }
+  }
+
   async function generateAeoOnly() {
     if (!client) return;
     setErr(''); setEmail({ subject: '', body: '' }); setMicroJson(null); setQa(null); setSent(false); setLiveAeoProbe(null);
@@ -509,10 +530,11 @@ export default function MonthlyReport() {
       if (groundedClient !== client && groundedClient.aeo_probes) saveClient(groundedClient).catch(() => {});
       const probeResult = await runSnapshot(groundedClient, {
         onRuns: (records, raws) => persistAeoRuns(records, raws).catch(() => {}),
-        onProgress: (p) => setPhase('aeo-probe: ' + (p.engine || '') + ' — ' + (p.query || '').slice(0, 40))
+        onProgress: (p) => { if (!p.index) probeStartRef.current = Date.now(); setPhase('aeo-probe'); setAeoProgress(p); }
       });
       setLiveAeoProbe(probeResult);
       setProbeWarnings(summarizeProbeIssues(probeResult));
+      autoSaveSnapshot(probeResult);
 
       // Step 2: Generate AEO-focused email
       setPhase('alice');
@@ -644,10 +666,11 @@ export default function MonthlyReport() {
           const probeResult = await runSnapshot(groundedClient, {
             maxQueries: LIVE_PROBE_MAX_QUERIES,
             onRuns: (records, raws) => persistAeoRuns(records, raws).catch(() => {}),
-            onProgress: (p) => setPhase('aeo-probe: ' + (p.engine || '') + ' — ' + (p.query || '').slice(0, 40))
+            onProgress: (p) => { if (!p.index) probeStartRef.current = Date.now(); setPhase('aeo-probe'); setAeoProgress(p); }
           });
           setLiveAeoProbe(probeResult);
           setProbeWarnings(summarizeProbeIssues(probeResult));
+          autoSaveSnapshot(probeResult);
           // Feed probe results into form for Alice email
           setForm(prev => ({
             ...prev,
@@ -1127,6 +1150,32 @@ export default function MonthlyReport() {
             ))}
           </div>
         </div>
+        {/* Live progress while the AEO probe sweeps the engines — the long
+            phase. Shows it's working, not frozen. */}
+        {phase === 'aeo-probe' && aeoProgress && aeoProgress.total > 0 && (
+          <div style={{ marginTop: 12 }}>
+            <div className="row" style={{ justifyContent: 'space-between', fontSize: 11, color: 'var(--text-muted)', marginBottom: 4, gap: 8 }}>
+              <span>
+                Probing AI engines… {aeoProgress.index} / {aeoProgress.total} responses
+                {(() => {
+                  if (!probeStartRef.current || !aeoProgress.index) return '';
+                  const per = (Date.now() - probeStartRef.current) / aeoProgress.index;
+                  const eta = fmtEta((aeoProgress.total - aeoProgress.index) * per);
+                  return eta ? ' · ' + eta : '';
+                })()}
+              </span>
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '55%' }}>
+                {aeoProgress.engine}{aeoProgress.query ? ' · ' + aeoProgress.query.slice(0, 48) : ''}
+              </span>
+            </div>
+            <div style={{ height: 7, background: 'var(--surface-2)', borderRadius: 4, overflow: 'hidden' }}>
+              <div style={{ width: Math.round((aeoProgress.index / aeoProgress.total) * 100) + '%', height: '100%', background: ACCENT, transition: 'width .3s' }} />
+            </div>
+            <div className="muted" style={{ fontSize: 10, marginTop: 4 }}>
+              This is the slow step (live calls to every AI engine). Leave it running — it does not hang.
+            </div>
+          </div>
+        )}
         {err && <div style={{ color: 'var(--red)', marginTop: 10 }}>{err}</div>}
 
         {/* AEO probe health — explains why the probe was thin/zeroed
