@@ -8,6 +8,7 @@ import { readinessFor } from '../../lib/clientReadiness.js';
 import { probeCandidatesFromGSC, groundedProbeSet } from './keywordBuckets.js';
 import { buildDiscoveryQueries, runDiscoverySweep, extractSitePhrases } from './aeoDiscovery.js';
 import { buildGoldProbesForClient } from './gridProfile.js';
+import { groundClientForAeo } from './grounding.js';
 import { parseCensus, intentCoverage, INTENT_BUCKETS } from './aeoCensus.js';
 import { generateFanout } from './aeoFanout.js';
 import { parseProbes, migrateClientProbes, addProbes, probesToProbeList } from './aeoProbes.js';
@@ -234,39 +235,22 @@ export default function AEOSnapshot() {
   async function run() {
     if (!client) return;
 
-    // Auto-ground the probe set in a strategic GOLD GRID before running, unless
-    // the client is already on the gold grid. This is the biggest quality lever:
-    // instead of guessed generic terms we build a buyer-intent panel from the
-    // client's website (LLM extraction) + Search Console + competitors — category
-    // "money" terms, competitor comparisons, qualified segments, niche industry
-    // moonshots and a service×geo grid. A client still on the old GSC-only set is
-    // UPGRADED: those probes are retired (kept for history, stopped from running)
-    // and the active set switches to the grid. Persists so the monthly report
-    // uses the same set. Falls back to the GSC-only set if extraction fails.
+    // Auto-ground the probe set in a strategic GOLD GRID before running. The
+    // decision logic (upgrade to gold, retire old junk, never shrink the active
+    // set) lives in the pure, unit-tested grounding module; here we wire in the
+    // browser-coupled builder and a GSC-derived fallback.
     let runClient = client;
-    const existingProbes = parseProbes(client) || migrateClientProbes(client);
-    const onGoldGrid = existingProbes.some(p => p.source === 'gold' && p.active !== false);
-    if (!onGoldGrid) {
-      const retired = existingProbes.map(p => (p.source === 'gsc' && p.active !== false) ? { ...p, active: false } : p);
-      try {
-        const { probes: gold } = await buildGoldProbesForClient(client, { gscQueries: gscCandidates });
-        const { probes, added } = addProbes(retired, gold);
-        if (added > 0) {
-          runClient = { ...client, aeo_probes: probes, aeo_probe_queries: probesToProbeList(probes) };
-          saveClient(runClient).catch(() => {});
-          setMsg(`Built a ${added}-probe strategic grid from the website, Search Console and competitors before running.`);
-        }
-      } catch { /* fall through to GSC-only */ }
-      if (runClient === client && !existingProbes.some(p => p.active !== false) && gscCandidates.length) {
-        const competitors = (client.competitors || '').split(/[,\n]/).map(s => s.trim()).filter(Boolean);
-        const set = groundedProbeSet(gscCandidates, { geo: client.location || client.market, competitors, limit: 25 });
-        const { probes, added } = addProbes(existingProbes, set);
-        if (added > 0) {
-          runClient = { ...client, aeo_probes: probes, aeo_probe_queries: probesToProbeList(probes) };
-          saveClient(runClient).catch(() => {});
-          setMsg(`Grounded the probe set in ${added} Search Console head-terms before running.`);
-        }
-      }
+    const competitors = (client.competitors || '').split(/[,\n]/).map(s => s.trim()).filter(Boolean);
+    const fallbackSet = gscCandidates.length
+      ? groundedProbeSet(gscCandidates, { geo: client.location || client.market, competitors, limit: 25 })
+      : [];
+    const grounded = await groundClientForAeo(client, { gscQueries: gscCandidates, buildGold: buildGoldProbesForClient, fallbackSet });
+    if (grounded.changed) {
+      runClient = grounded.client;
+      saveClient(runClient).catch(() => {});
+      setMsg(grounded.reason === 'upgraded-to-gold'
+        ? `Built a strategic ${grounded.activeAfter}-probe grid from the website, Search Console and competitors before running.`
+        : `Grounded the probe set (${grounded.activeAfter} active probes) before running.`);
     }
 
     // Cost preview + confirm (Requirement 7): block runs above the budget.

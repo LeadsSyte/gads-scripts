@@ -296,7 +296,10 @@ export function buildGoldGrid(input = {}, { maxProbes = 0 } = {}) {
     const k = probe.query.toLowerCase();
     if (seen.has(k)) continue;
     seen.add(k);
-    out.push(probe);
+    // active:true is REQUIRED — addProbes()/makeProbe() default a candidate
+    // without it to INACTIVE (the fan-out-proposal default), which would add
+    // the whole grid as probes that never run.
+    out.push({ ...probe, active: true });
     if (maxProbes && out.length >= maxProbes) break;
   }
   return out;

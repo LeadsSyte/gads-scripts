@@ -12,6 +12,7 @@ import { sanitizeEmail } from './sanitize.js';
 import { probeCandidatesFromGSC, groundedProbeSet } from './keywordBuckets.js';
 import { parseProbes, migrateClientProbes, addProbes, probesToProbeList } from './aeoProbes.js';
 import { buildGoldProbesForClient } from './gridProfile.js';
+import { groundClientForAeo } from './grounding.js';
 
 function gscKeywordStrings(reportData) {
   return (reportData?.keywords || [])
@@ -19,43 +20,20 @@ function gscKeywordStrings(reportData) {
     .map(s => String(s).trim()).filter(Boolean);
 }
 
-// Retire the old keyword-stuffed GSC probes when we upgrade a client to the
-// gold grid. Append-only rule: never delete a probe with run history — set it
-// inactive so it stops running but its history is preserved. Gold probes then
-// become the active tracked set.
-function retireGscProbes(probes) {
-  return (probes || []).map(p => (p.source === 'gsc' && p.active !== false) ? { ...p, active: false } : p);
-}
-
 // Ground a client's probe set in a strategic, buyer-intent GOLD GRID derived
-// from their website (LLM extraction) + Search Console + competitors, so an
-// auto-generated panel has the same breadth as a hand-built one: category
-// "money" terms, competitor comparisons, qualified segments, niche industry
-// moonshots and a service×geo grid. Async because profile extraction reads the
-// site and calls the LLM; falls back to the GSC-only set on any failure.
-//
-// Only a client that already carries GOLD probes is treated as grounded (so
-// month-over-month stays stable). A client still on the old GSC-only set is
-// UPGRADED: we retire those probes and switch the active set to the gold grid.
+// from their website (LLM extraction) + Search Console + competitors. The
+// decision logic (upgrade to gold, retire old junk, never shrink the active
+// set) lives in the pure, unit-tested grounding module; here we just wire in the
+// browser-coupled builder and a GSC-derived fallback set.
 async function groundClientGold(c, reportData) {
   if (!c) return c;
-  const existing = parseProbes(c) || migrateClientProbes(c);
-  if (existing.some(p => p.source === 'gold' && p.active !== false)) return { ...c, aeo_probes: existing };
   const kws = gscKeywordStrings(reportData);
-  try {
-    const { probes: gold } = await buildGoldProbesForClient(c, { gscQueries: kws });
-    if (gold.length) {
-      const { probes } = addProbes(retireGscProbes(existing), gold);
-      return { ...c, aeo_probes: probes, aeo_probe_queries: probesToProbeList(probes) };
-    }
-  } catch { /* fall through to GSC-only grounding */ }
-  // Fallback: only ground GSC-only if the client has no usable probes yet.
-  if (existing.some(p => p.active !== false)) return { ...c, aeo_probes: existing };
-  if (!kws.length) return { ...c, aeo_probes: existing };
   const competitors = (c.competitors || '').split(/[,\n]/).map(s => s.trim()).filter(Boolean);
-  const set = groundedProbeSet(probeCandidatesFromGSC(reportData.keywords, c.name, { limit: 40 }), { geo: c.location || c.market, competitors, limit: 24 });
-  const { probes } = addProbes(existing, set);
-  return { ...c, aeo_probes: probes, aeo_probe_queries: probesToProbeList(probes) };
+  const fallbackSet = kws.length
+    ? groundedProbeSet(probeCandidatesFromGSC(reportData.keywords, c.name, { limit: 40 }), { geo: c.location || c.market, competitors, limit: 24 })
+    : [];
+  const res = await groundClientForAeo(c, { gscQueries: kws, buildGold: buildGoldProbesForClient, fallbackSet });
+  return res.client;
 }
 import { runSnapshot, snapshotPreflight } from './aeoRunner.js';
 import { compareSnapshots, rankBrandWithCompetitors, normalizeSnapshot } from './aeoCompare.js';
