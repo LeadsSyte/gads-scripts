@@ -11,18 +11,36 @@ import { buildMicrositeHtml, downloadMicrosite, downloadMicrositePdf } from './m
 import { sanitizeEmail } from './sanitize.js';
 import { probeCandidatesFromGSC, groundedProbeSet } from './keywordBuckets.js';
 import { parseProbes, migrateClientProbes, addProbes, probesToProbeList } from './aeoProbes.js';
+import { buildGoldProbesForClient } from './gridProfile.js';
 
-// Ground a client's probe set in the GSC head-terms already fetched for the
-// report, as a BALANCED typed set (category + comparison + qualified +
-// conversational) so it covers the same breadth as a hand-built panel. Returns
-// a client object to run with.
-function groundClientInGsc(c, reportData) {
-  const kws = reportData?.keywords;
-  if (!c || !kws?.length) return c;
+function gscKeywordStrings(reportData) {
+  return (reportData?.keywords || [])
+    .map(k => (typeof k === 'string' ? k : (k?.query || k?.keyword || '')))
+    .map(s => String(s).trim()).filter(Boolean);
+}
+
+// Ground a client's probe set in a strategic, buyer-intent GOLD GRID derived
+// from their website (LLM extraction) + Search Console + competitors, so an
+// auto-generated panel has the same breadth as a hand-built one: category
+// "money" terms, competitor comparisons, qualified segments, niche industry
+// moonshots and a service×geo grid. Async because profile extraction reads the
+// site and calls the LLM; falls back to the GSC-only set on any failure. Once a
+// client is grounded we reuse the saved probes so month-over-month stays stable.
+async function groundClientGold(c, reportData) {
+  if (!c) return c;
   const existing = parseProbes(c) || migrateClientProbes(c);
-  if (existing.some(p => p.source === 'gsc')) return { ...c, aeo_probes: existing };
+  if (existing.some(p => p.source === 'gold' || p.source === 'gsc')) return { ...c, aeo_probes: existing };
+  const kws = gscKeywordStrings(reportData);
+  try {
+    const { probes: gold } = await buildGoldProbesForClient(c, { gscQueries: kws });
+    if (gold.length) {
+      const { probes } = addProbes(existing, gold);
+      return { ...c, aeo_probes: probes, aeo_probe_queries: probesToProbeList(probes) };
+    }
+  } catch { /* fall through to GSC-only grounding */ }
+  if (!kws.length) return { ...c, aeo_probes: existing };
   const competitors = (c.competitors || '').split(/[,\n]/).map(s => s.trim()).filter(Boolean);
-  const set = groundedProbeSet(probeCandidatesFromGSC(kws, c.name, { limit: 40 }), { geo: c.location || c.market, competitors, limit: 24 });
+  const set = groundedProbeSet(probeCandidatesFromGSC(reportData.keywords, c.name, { limit: 40 }), { geo: c.location || c.market, competitors, limit: 24 });
   const { probes } = addProbes(existing, set);
   return { ...c, aeo_probes: probes, aeo_probe_queries: probesToProbeList(probes) };
 }
@@ -525,8 +543,8 @@ export default function MonthlyReport() {
         return;
       }
       setPhase('aeo-probe');
-      // Ground the probe set in the GSC head-terms we already pulled for this report.
-      const groundedClient = groundClientInGsc(client, reportData);
+      // Ground the probe set in a strategic gold grid (website + GSC + competitors).
+      const groundedClient = await groundClientGold(client, reportData);
       if (groundedClient !== client && groundedClient.aeo_probes) saveClient(groundedClient).catch(() => {});
       const probeResult = await runSnapshot(groundedClient, {
         retrievalOnly: true, // headline is retrieval-first; skip the parametric pass to halve engine calls
@@ -662,7 +680,7 @@ export default function MonthlyReport() {
           // probe-query list can't turn Generate into a many-minute sweep.
           // The full set is available via the AEO Snapshot tool / Generate
           // AEO Report.
-          const groundedClient = groundClientInGsc(client, reportData);
+          const groundedClient = await groundClientGold(client, reportData);
           if (groundedClient !== client && groundedClient.aeo_probes) saveClient(groundedClient).catch(() => {});
           const probeResult = await runSnapshot(groundedClient, {
             maxQueries: LIVE_PROBE_MAX_QUERIES,

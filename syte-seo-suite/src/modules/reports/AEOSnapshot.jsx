@@ -7,6 +7,7 @@ import { ALL_ENGINES } from './aeoEngines.js';
 import { readinessFor } from '../../lib/clientReadiness.js';
 import { probeCandidatesFromGSC, groundedProbeSet } from './keywordBuckets.js';
 import { buildDiscoveryQueries, runDiscoverySweep, extractSitePhrases } from './aeoDiscovery.js';
+import { buildGoldProbesForClient } from './gridProfile.js';
 import { parseCensus, intentCoverage, INTENT_BUCKETS } from './aeoCensus.js';
 import { generateFanout } from './aeoFanout.js';
 import { parseProbes, migrateClientProbes, addProbes, probesToProbeList } from './aeoProbes.js';
@@ -233,22 +234,35 @@ export default function AEOSnapshot() {
   async function run() {
     if (!client) return;
 
-    // Auto-ground the probe set in the Search Console head-terms the tool
-    // already has (top 25 by impressions), if it isn't grounded yet. This is
-    // the biggest quality lever: the client's real Google rankings become AI
-    // probes instead of guessed generic terms. Persists so the monthly report
-    // uses the same grounded set.
+    // Auto-ground the probe set in a strategic GOLD GRID before running, if it
+    // isn't grounded yet. This is the biggest quality lever: instead of guessed
+    // generic terms we build a buyer-intent panel from the client's website
+    // (LLM extraction) + Search Console + competitors — category "money" terms,
+    // competitor comparisons, qualified segments, niche industry moonshots and a
+    // service×geo grid. Persists so the monthly report uses the same set. Falls
+    // back to the GSC-only set if extraction fails.
     let runClient = client;
     const existingProbes = parseProbes(client) || migrateClientProbes(client);
-    const alreadyGrounded = existingProbes.some(p => p.source === 'gsc');
-    if (!alreadyGrounded && gscCandidates.length) {
-      const competitors = (client.competitors || '').split(/[,\n]/).map(s => s.trim()).filter(Boolean);
-      const set = groundedProbeSet(gscCandidates, { geo: client.location || client.market, competitors, limit: 25 });
-      const { probes, added } = addProbes(existingProbes, set);
-      if (added > 0) {
-        runClient = { ...client, aeo_probes: probes, aeo_probe_queries: probesToProbeList(probes) };
-        saveClient(runClient).catch(() => {});
-        setMsg(`Grounded the probe set in ${added} Search Console head-terms before running.`);
+    const alreadyGrounded = existingProbes.some(p => p.source === 'gold' || p.source === 'gsc');
+    if (!alreadyGrounded) {
+      try {
+        const { probes: gold } = await buildGoldProbesForClient(client, { gscQueries: gscCandidates });
+        const { probes, added } = addProbes(existingProbes, gold);
+        if (added > 0) {
+          runClient = { ...client, aeo_probes: probes, aeo_probe_queries: probesToProbeList(probes) };
+          saveClient(runClient).catch(() => {});
+          setMsg(`Built a ${added}-probe strategic grid from the website, Search Console and competitors before running.`);
+        }
+      } catch { /* fall through to GSC-only */ }
+      if (runClient === client && gscCandidates.length) {
+        const competitors = (client.competitors || '').split(/[,\n]/).map(s => s.trim()).filter(Boolean);
+        const set = groundedProbeSet(gscCandidates, { geo: client.location || client.market, competitors, limit: 25 });
+        const { probes, added } = addProbes(existingProbes, set);
+        if (added > 0) {
+          runClient = { ...client, aeo_probes: probes, aeo_probe_queries: probesToProbeList(probes) };
+          saveClient(runClient).catch(() => {});
+          setMsg(`Grounded the probe set in ${added} Search Console head-terms before running.`);
+        }
       }
     }
 
