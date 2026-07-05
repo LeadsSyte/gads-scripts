@@ -269,6 +269,7 @@ export default function AEOSnapshot() {
     try {
       const result = await runSnapshot(runClient, {
         iterations,
+        expandWinners: true, winnerTarget: 30, maxExpansionQueries: 60, // spider-web long-tail off every winner
         onProgress: (p) => setProgress(p),
         onRuns: (records, raws) => persistAeoRuns(records, raws).catch(() => {})
       });

@@ -24,6 +24,7 @@ import {
   reverseProbesFor, countNewThemesSince, INTENT_IDS
 } from './aeoProbes.js';
 import { buildCitationGaps } from './aeoCitationGaps.js';
+import { expandWinnerQuery } from './winnerExpansion.js';
 
 const DEFAULT_ITERATIONS = 3;
 const DEFAULT_CONCURRENCY = 3;   // max in-flight requests per engine
@@ -179,7 +180,15 @@ export async function runSnapshot(client, opts = {}) {
     sleep = defaultSleep,
     temperature = 0.7,
     retrievalOnly = false,  // drop the parametric search_off pass (faster, retrieval-first headline unchanged)
-    maxQueries    // optional cap on scorable probes (bounds the live probe in the full report)
+    maxQueries,   // optional cap on scorable probes (bounds the live probe in the full report)
+    // Winner expansion (the "spider web"): when a probe wins, drill it deeper
+    // into long-tail (geo + segment) and recurse on winners-of-winners.
+    expandWinners = false,
+    winnerTarget = 30,          // stop expanding once this many distinct winners found
+    maxExpansionDepth = 2,      // how many recursion rounds
+    maxExpansionQueries = 60,   // hard cap on extra queries the expansion may add
+    expandGeos = [],            // extra cities/regions to drill into
+    expandSegments             // buyer segments/industries to qualify by (defaults inside winnerExpansion)
   } = opts;
 
   const engines = engineOverride || activeEngines();
@@ -290,16 +299,78 @@ export async function runSnapshot(client, opts = {}) {
   // at once; engines run independently of each other. Iterations stay
   // sequential within a group (probeGroup). 429s back off exponentially.
   const perEngineLimit = new Map(engines.map(e => [e.id, pLimit(Math.max(1, concurrency))]));
-  const groupPromises = [];
-  for (const probe of runnableProbes) {
-    for (const eng of engines) {
-      for (const mode of runModesFor(probe.runMode, eng, retrievalOnly)) {
-        const limit = perEngineLimit.get(eng.id);
-        groupPromises.push(limit(() => probeGroup(probe, eng, mode)));
+
+  // Sweep a list of probes across every engine × run-mode. Reused for the
+  // initial sweep and each winner-expansion round.
+  async function sweep(probeList) {
+    const promises = [];
+    for (const probe of probeList) {
+      for (const eng of engines) {
+        for (const mode of runModesFor(probe.runMode, eng, retrievalOnly)) {
+          const limit = perEngineLimit.get(eng.id);
+          promises.push(limit(() => probeGroup(probe, eng, mode)));
+        }
       }
     }
+    return Promise.all(promises);
   }
-  const groups = await Promise.all(groupPromises);
+
+  let groups = await sweep(runnableProbes);
+
+  // ── Winner expansion (spider web) ─────────────────────────────
+  // A probe "wins" when the brand appeared in any run. Drill each winner into
+  // deeper long-tail (geo + segment) and recurse on winners-of-winners until we
+  // hit the volume target, run out of new winners, or exhaust the query budget.
+  const discoveredProbes = [];   // fan-out children we actually probed (for the report / approval queue)
+  if (expandWinners) {
+    const normQ = (s) => String(s || '').toLowerCase().replace(/\s+/g, ' ').trim();
+    const winningIds = (grps) => {
+      const ids = new Set();
+      for (const g of grps) if (g.runs.some(r => r.appeared)) ids.add(g.probe.id);
+      return ids;
+    };
+    const probedNorm = new Set(runnableProbes.map(p => normQ(p.query)));
+    const expandedIds = new Set();
+    let expansionUsed = 0;
+    let seq = 0;
+    for (let depth = 0; depth < maxExpansionDepth; depth++) {
+      const winners = [...winningIds(groups)];
+      if (winners.length >= winnerTarget) break;
+      const toExpand = winners.filter(id => !expandedIds.has(id));
+      if (!toExpand.length) break;
+      const childProbes = [];
+      for (const id of toExpand) {
+        expandedIds.add(id);
+        if (expansionUsed >= maxExpansionQueries) break;
+        const parent = groups.find(g => g.probe.id === id)?.probe;
+        if (!parent) continue;
+        const kids = expandWinnerQuery(parent.query, {
+          geos: expandGeos, segments: expandSegments,
+          parentProbeId: parent.id, parentTier: parent.tier
+        });
+        for (const k of kids) {
+          const nk = normQ(k.query);
+          if (probedNorm.has(nk) || expansionUsed >= maxExpansionQueries) continue;
+          probedNorm.add(nk);
+          expansionUsed++;
+          const child = {
+            id: `${client.id}-FO${++seq}`, tier: k.tier, type: k.type, intent: k.intent,
+            query: k.query, source: 'fanout', parentProbeId: k.parentProbeId,
+            active: true, runMode: 'search_on'   // long-tail children run retrieval only
+          };
+          childProbes.push(child);
+          discoveredProbes.push(child);
+        }
+      }
+      if (!childProbes.length) break;
+      // Grow the progress denominator before sweeping the new children.
+      for (const probe of childProbes)
+        for (const eng of engines)
+          total += runModesFor(probe.runMode, eng, retrievalOnly).length * N;
+      const childGroups = await sweep(childProbes);
+      groups = groups.concat(childGroups);
+    }
+  }
 
   // Hand raw runs to the caller for persistence (UI wires DB writers).
   try { await onRuns?.(runRecords, rawEntries); } catch (e) { console.warn('[aeo] onRuns persistence failed:', e.message); }
@@ -578,6 +649,11 @@ export async function runSnapshot(client, opts = {}) {
     iterations: N,
     total_runs: runRecords.filter(r => !r.error).length,
     queries_count: probeAgg.length,
+
+    // Winner-expansion output: the long-tail children the spider web probed.
+    // The UI can offer to add the ones that won to the tracked probe set.
+    expansion_probes: discoveredProbes,
+    expansion_count: discoveredProbes.length,
 
     per_query: perQuery,
     competitors,
