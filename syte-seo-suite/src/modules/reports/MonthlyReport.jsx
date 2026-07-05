@@ -77,13 +77,20 @@ function monthLabel(m) {
 // of silently showing up as "0% visibility". Reads the engine_health map that
 // runSnapshot returns ({ [id]: { label, runs, errors, sample_error, all_failed } }).
 function summarizeProbeIssues(probe) {
+  const out = [];
+  // Degenerate probe set: too few queries actually ran, which means the
+  // strategic grid did not build (site/LLM/GSC signal missing) and the report
+  // fell back to a thin set. Flag it up front, independent of engine health.
+  const qCount = probe?.per_query?.length || 0;
+  if (qCount > 0 && qCount < 12) {
+    out.push(`Only ${qCount} probe queries ran — the strategic grid likely did not build. Check the client website URL and Search Console connection, then re-run (expected 20+ queries).`);
+  }
   const health = probe?.engine_health;
-  if (!health) return [];
+  if (!health) return out;
   const engines = Object.values(health);
   const failing = engines.filter(h => h.errors > 0);
-  if (!failing.length) return [];
+  if (!failing.length) return out;
 
-  const out = [];
   const withData = engines.filter(h => h.runs > 0 && !h.all_failed).length;
   if (engines.length > 0 && withData === 0) {
     out.push('Every AI engine failed to respond — the AEO numbers below are all zero because no engine returned data, not because visibility is actually zero.');

@@ -8,7 +8,7 @@ import { readinessFor } from '../../lib/clientReadiness.js';
 import { probeCandidatesFromGSC, groundedProbeSet } from './keywordBuckets.js';
 import { buildDiscoveryQueries, runDiscoverySweep, extractSitePhrases } from './aeoDiscovery.js';
 import { buildGoldProbesForClient } from './gridProfile.js';
-import { groundClientForAeo } from './grounding.js';
+import { groundClientForAeo, probeSetHealth } from './grounding.js';
 import { parseCensus, intentCoverage, INTENT_BUCKETS } from './aeoCensus.js';
 import { generateFanout } from './aeoFanout.js';
 import { parseProbes, migrateClientProbes, addProbes, probesToProbeList } from './aeoProbes.js';
@@ -423,6 +423,9 @@ export default function AEOSnapshot() {
 
   const queries = (client.aeo_probe_queries || '').split('\n').map(s => s.trim()).filter(Boolean);
   const costEst = preflight?.canRun ? (() => { try { return estimateRunCost(client, { iterations }); } catch { return null; } })() : null;
+  // Health of the probe set that will actually run — flags a degenerate set
+  // (the "6 prompts, all 0%" failure) before a run instead of after the PDF.
+  const probeHealth = probeSetHealth(parseProbes(client) || migrateClientProbes(client) || []);
   const census = parseCensus(client);
   const coverage = census ? intentCoverage(census) : null;
   const intentLabel = id => (INTENT_BUCKETS.find(b => b.id === id)?.label) || id;
@@ -751,6 +754,13 @@ export default function AEOSnapshot() {
             </button>
           </div>
         </div>
+
+        {probeHealth.activeCount > 0 && (
+          <div style={{ marginTop: 8, fontSize: 12, color: probeHealth.degenerate ? 'var(--orange)' : 'var(--text-muted)' }}
+            title={probeHealth.types.join(', ')}>
+            {probeHealth.degenerate ? '⚠ ' : '✓ '}{probeHealth.summary}
+          </div>
+        )}
 
         {progress && progress.total > 0 && (
           <div style={{ height: 6, background: 'var(--surface-2)', borderRadius: 3, marginTop: 10, overflow: 'hidden' }}>
