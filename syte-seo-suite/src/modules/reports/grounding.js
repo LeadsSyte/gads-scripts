@@ -35,6 +35,23 @@ function countActive(probes) {
   return (probes || []).filter(p => p && p.active !== false).length;
 }
 
+// A one-glance health read of the probe set that will actually RUN (active
+// probes only). Surfaced in the UI + report warnings so a degenerate set (the
+// "6 prompts, all 0%" failure) is never silent again.
+export function probeSetHealth(probes) {
+  const active = (probes || []).filter(p => p && p.active !== false);
+  const types = [...new Set(active.map(p => p.type).filter(Boolean))];
+  const onGoldGrid = active.some(p => p.source === 'gold');
+  const hasComparison = types.includes('comparison');
+  // Degenerate = too few probes or too few types to be a real strategic sweep.
+  const degenerate = active.length < MIN_HEALTHY_GOLD || types.length < MIN_HEALTHY_TYPES;
+  let summary;
+  if (!active.length) summary = 'No active probes — add or generate a probe set.';
+  else if (degenerate) summary = `Thin probe set: ${active.length} active across ${types.length} type(s). The strategic grid did not build — check the website URL and Search Console connection.`;
+  else summary = `${onGoldGrid ? 'Strategic grid' : 'Probe set'}: ${active.length} active probes across ${types.length} types (${types.join(', ')}).`;
+  return { activeCount: active.length, types, typeCount: types.length, onGoldGrid, hasComparison, degenerate, summary };
+}
+
 function retireGsc(probes) {
   return (probes || []).map(p => (p && p.source === 'gsc' && p.active !== false) ? { ...p, active: false } : p);
 }

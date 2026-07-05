@@ -93,5 +93,24 @@ await t('isHealthyGold gate: needs size AND type diversity', async () => {
   ok(g.isHealthyGold(healthyGold()), 'real grid healthy');
 });
 
+await t('probeSetHealth flags a degenerate active set', async () => {
+  const thin = sixManual; // 6 active, 1 type
+  const h = g.probeSetHealth(thin);
+  ok(h.degenerate, 'six manual probes should read degenerate');
+  eq(h.activeCount, 6, 'active count');
+  const healthy = healthyGold().map((p, i) => ({ ...p, id: 'x' + i, active: true }));
+  const h2 = g.probeSetHealth(healthy);
+  ok(!h2.degenerate, 'real grid should be healthy');
+  ok(h2.onGoldGrid, 'should detect gold grid');
+  ok(h2.typeCount >= 3, 'multiple types');
+});
+
+await t('probeSetHealth ignores inactive probes', async () => {
+  const mixed = [...healthyGold().map((p, i) => ({ ...p, id: 'a' + i, active: false })), ...sixManual];
+  const h = g.probeSetHealth(mixed);
+  eq(h.activeCount, 6, 'only the 6 active manual probes count');
+  ok(h.degenerate, 'active portion is degenerate');
+});
+
 console.log(`\n${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);
