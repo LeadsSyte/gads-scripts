@@ -329,11 +329,18 @@ export default function MonthlyReport() {
 
   const micrositeHtml = useMemo(() => {
     if (!microJson || !client) return '';
+    // Only weave AEO into the report when the client is actually on AEO
+    // (ticked as an AEO client), or when this is a dedicated AEO-only
+    // report. Otherwise a non-AEO client that happens to have an old
+    // snapshot on file would still get the full "AI Visibility" sections
+    // in its Full Report. `does_aeo !== false` matches the tick convention
+    // used across the suite (undefined/true = on, explicit false = off).
+    const includeAeo = aeoOnly || client.does_aeo !== false;
     // Use the live probe if we just ran one; otherwise fall back to the
     // saved snapshot for this month so the report renders even without
     // a fresh probe in the same session. Normalize either way so legacy
     // snapshots get derived visibility / detection / keyword_wins fields.
-    const aeoProbe = normalizeSnapshot(liveAeoProbe || aeoSnap || null);
+    const aeoProbe = includeAeo ? normalizeSnapshot(liveAeoProbe || aeoSnap || null) : null;
     const aeoCompare = aeoProbe
       ? compareSnapshots(aeoProbe, normalizeSnapshot(previousAeoSnap))
       : null;
@@ -462,10 +469,17 @@ export default function MonthlyReport() {
     setErr(''); setEmail({ subject: '', body: '' }); setMicroJson(null); setQa(null); setSent(false);
     setAeoOnly(false);
 
+    // Only include AEO in a Full Report when the client is ticked as an
+    // AEO client (`does_aeo !== false`). Without this gate, any client with
+    // an old snapshot on file — or one for which the live probe below ran —
+    // would get AEO momentum metrics and the full AI Visibility microsite
+    // sections even though they aren't doing AEO.
+    const clientDoesAeo = client.does_aeo !== false;
+
     // Compute MoM comparison and ranking from saved snapshot if we have one,
     // so Alice can lead with momentum metrics ("+68% citations MoM") even
     // when not running a fresh probe.
-    const aeoForCompare = aeoSnap || liveAeoProbe;
+    const aeoForCompare = clientDoesAeo ? (aeoSnap || liveAeoProbe) : null;
     const aeoCompare = aeoForCompare ? compareSnapshots(aeoForCompare, previousAeoSnap) : null;
     const aeoRanking = aeoForCompare ? rankBrandWithCompetitors(aeoForCompare, client.name) : null;
     const brandRank = aeoRanking ? aeoRanking.findIndex(r => r.isBrand) + 1 : null;
@@ -481,13 +495,15 @@ export default function MonthlyReport() {
       aeoRanking,
       brandRank,
       ...form
-    }, aeoSnap, workSummary);
+    }, clientDoesAeo ? aeoSnap : null, workSummary);
 
     try {
       // 0. Live AEO probe — run probe queries against available AI engines
       // to check brand visibility. Uses existing snapshot infrastructure.
+      // Skip entirely for non-AEO clients so a Full Report never runs (or
+      // surfaces) AEO for a client that isn't ticked as an AEO client.
       const preflight = snapshotPreflight(client);
-      if (preflight.canRun) {
+      if (clientDoesAeo && preflight.canRun) {
         setPhase('aeo-probe');
         try {
           const probeResult = await runSnapshot(client, {
