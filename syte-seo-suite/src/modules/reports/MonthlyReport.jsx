@@ -1,20 +1,63 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useClients } from '../../store/useClients.js';
 import { claudeComplete, extractJSON } from '../../lib/anthropic.js';
-import { listAeoSnapshots, logReportSent, logReportGenerated, getGeneratedReport, getCachedReportData, setCachedReportData } from '../../lib/supabase.js';
+import { listAeoSnapshots, logReportSent, logReportGenerated, getGeneratedReport, getCachedReportData, setCachedReportData, persistAeoRuns, saveAeoSnapshot } from '../../lib/supabase.js';
 import {
   ALICE_SYSTEM, MICROSITE_SYSTEM, QA_SYSTEM,
   ALICE_AEO_SYSTEM, MICROSITE_AEO_SYSTEM, QA_AEO_SYSTEM,
   buildAlicePayload, getWorkSummary, buildAeoPayload
 } from './reportPrompts.js';
 import { buildMicrositeHtml, downloadMicrosite, downloadMicrositePdf } from './microsite.js';
+import { sanitizeEmail } from './sanitize.js';
+import { probeCandidatesFromGSC, groundedProbeSet } from './keywordBuckets.js';
+import { parseProbes, migrateClientProbes, addProbes, probesToProbeList } from './aeoProbes.js';
+import { buildGoldProbesForClient } from './gridProfile.js';
+import { groundClientForAeo } from './grounding.js';
+
+function gscKeywordStrings(reportData) {
+  return (reportData?.keywords || [])
+    .map(k => (typeof k === 'string' ? k : (k?.query || k?.keyword || '')))
+    .map(s => String(s).trim()).filter(Boolean);
+}
+
+// Ground a client's probe set in a strategic, buyer-intent GOLD GRID derived
+// from their website (LLM extraction) + Search Console + competitors. The
+// decision logic (upgrade to gold, retire old junk, never shrink the active
+// set) lives in the pure, unit-tested grounding module; here we just wire in the
+// browser-coupled builder and a GSC-derived fallback set.
+async function groundClientGold(c, reportData) {
+  if (!c) return c;
+  const kws = gscKeywordStrings(reportData);
+  const competitors = (c.competitors || '').split(/[,\n]/).map(s => s.trim()).filter(Boolean);
+  const fallbackSet = kws.length
+    ? groundedProbeSet(probeCandidatesFromGSC(reportData.keywords, c.name, { limit: 40 }), { geo: c.location || c.market, competitors, limit: 24 })
+    : [];
+  const res = await groundClientForAeo(c, { gscQueries: kws, buildGold: buildGoldProbesForClient, fallbackSet });
+  return res.client;
+}
 import { runSnapshot, snapshotPreflight } from './aeoRunner.js';
 import { compareSnapshots, rankBrandWithCompetitors, normalizeSnapshot } from './aeoCompare.js';
 import { ensureToken, SCOPES, getToken, switchAccount, silentRefresh, getCurrentEmail, getTokenForEmail, TOKEN_EVENT } from '../technical/googleAuth.js';
+import { serverAuthEnabled } from '../../lib/googleServerAuth.js';
 import { fetchReportData } from './reportData.js';
 import ReportDashboard from './ReportDashboard.jsx';
 
 const ACCENT = '#a78bfa';
+
+// Cap for the live AEO probe that runs inside "Generate Full Report" when a
+// client has no saved snapshot for the month. Each query is swept across
+// every engine × iterations as live LLM calls, so an uncapped run over a
+// large probe-query list takes many minutes and looks like a frozen tab.
+const LIVE_PROBE_MAX_QUERIES = 25;
+
+// Hard ceiling on the HTML we'll inline into the microsite preview iframe.
+// A srcDoc iframe renders on the SAME main thread as the app, so a multi-MB
+// document locks the whole tab while it parses + lays out. A freshly built
+// microsite is well under this, but a persisted microsite_html_override is a
+// raw stored blob that bypasses the in-builder row caps — one saved before
+// those caps existed can be many MB and freeze the report view on load.
+// Above this size we don't inline it; we offer download / rebuild instead.
+const MAX_INLINE_REPORT_HTML = 1_800_000;
 
 // Reports always default to the PREVIOUS month (you're reporting on last month's work).
 function previousMonth() {
@@ -27,6 +70,49 @@ function monthLabel(m) {
   const [y, mo] = m.split('-');
   const d = new Date(parseInt(y), parseInt(mo) - 1, 1);
   return d.toLocaleString('en-US', { month: 'long', year: 'numeric' });
+}
+
+// Turn a probe result's per-engine health into human-readable warning lines
+// so a timed-out / rate-limited / bad-key engine is visible in the UI instead
+// of silently showing up as "0% visibility". Reads the engine_health map that
+// runSnapshot returns ({ [id]: { label, runs, errors, sample_error, all_failed } }).
+function summarizeProbeIssues(probe) {
+  const out = [];
+  // Degenerate probe set: too few queries actually ran, which means the
+  // strategic grid did not build (site/LLM/GSC signal missing) and the report
+  // fell back to a thin set. Flag it up front, independent of engine health.
+  const qCount = probe?.per_query?.length || 0;
+  if (qCount > 0 && qCount < 12) {
+    out.push(`Only ${qCount} probe queries ran — the strategic grid likely did not build. Check the client website URL and Search Console connection, then re-run (expected 20+ queries).`);
+  }
+  const health = probe?.engine_health;
+  if (!health) return out;
+  const engines = Object.values(health);
+  const failing = engines.filter(h => h.errors > 0);
+  if (!failing.length) return out;
+
+  const withData = engines.filter(h => h.runs > 0 && !h.all_failed).length;
+  if (engines.length > 0 && withData === 0) {
+    out.push('Every AI engine failed to respond — the AEO numbers below are all zero because no engine returned data, not because visibility is actually zero.');
+  }
+  for (const h of failing) {
+    const sample = (h.sample_error || 'failed').trim();
+    const reason = /timed out/i.test(sample) ? 'timed out'
+      : /\b(401|403)\b|unauthor|invalid.*key|x-api-key/i.test(sample) ? 'auth failed (check API key in Suite Settings)'
+      : /\b429\b|rate.?limit|quota/i.test(sample) ? 'rate limited / quota exhausted'
+      : /\b400\b/.test(sample) ? 'bad request (check the API key type in Suite Settings)'
+      : sample.slice(0, 120);
+    const label = h.label || 'Engine';
+    out.push(`${label}: ${reason}${h.all_failed ? ' — no usable responses' : ` (${h.errors} of ${h.runs} probes failed)`}`);
+  }
+  return out;
+}
+
+function fmtEta(ms) {
+  if (!isFinite(ms) || ms <= 0) return '';
+  const s = Math.round(ms / 1000);
+  const m = Math.floor(s / 60);
+  return m > 0 ? `~${m}m ${s % 60}s left` : `~${s}s left`;
 }
 
 function parseAliceOutput(text) {
@@ -52,6 +138,7 @@ export default function MonthlyReport() {
   const [aeoSnap, setAeoSnap] = useState(null);
   const [workSummary, setWorkSummary] = useState(null);
   const [phase, setPhase] = useState('idle'); // idle | fetching | alice | micro | qa | review
+  const [aeoProgress, setAeoProgress] = useState(null); // { index, total, engine, query, iteration, iterations }
   const [err, setErr] = useState('');
   const [fetchStatus, setFetchStatus] = useState('');
   const [email, setEmail] = useState({ subject: '', body: '' });
@@ -63,12 +150,20 @@ export default function MonthlyReport() {
   const [liveAeoProbe, setLiveAeoProbe] = useState(null);
   const [previousAeoSnap, setPreviousAeoSnap] = useState(null);
   const [aeoOnly, setAeoOnly] = useState(false);
+  const [probeWarnings, setProbeWarnings] = useState([]);
   // In-place visual editing state. When set, renders verbatim instead of
   // rebuilding from microJson — that's how operator edits to copy/figures
   // survive download / PDF / saved-report reload.
   const [htmlOverride, setHtmlOverride] = useState(null);
   const [editingMicro, setEditingMicro] = useState(false);
   const microIframeRef = useRef(null);
+  // Guards autoFetchMetrics against re-entrancy. Auth (ensureToken /
+  // silentRefresh) persists tokens, which dispatches TOKEN_EVENT, which the
+  // listener below turns back into an autoFetchMetrics(force) call — and the
+  // listener reads a stale fetchStatus closure, so that fed back on itself
+  // into a loop that re-popped the Google auth tab and froze the report view.
+  const fetchInFlightRef = useRef(false);
+  const probeStartRef = useRef(0); // wall-clock start of the AEO probe, for ETA
 
   const [savedReportLoaded, setSavedReportLoaded] = useState(false);
 
@@ -80,7 +175,7 @@ export default function MonthlyReport() {
     setMicroJson(null); setQa(null); setSent(false); setPhase('idle'); setErr('');
     setAeoOnly(false);
     setSavedReportLoaded(false);
-    setLiveAeoProbe(null);
+    setLiveAeoProbe(null); setProbeWarnings([]);
     setHtmlOverride(null); setEditingMicro(false);
     const hasSeo = client?.does_content !== false || client?.does_technical !== false;
     const hasAeo = client?.does_aeo !== false;
@@ -142,6 +237,10 @@ export default function MonthlyReport() {
     if (!client?.id) return;
     const onTokenChange = () => {
       if (!getToken()?.access_token) return;
+      // Never react to a token change while a fetch/auth cycle is already
+      // running — otherwise the token writes that cycle performs feed back
+      // into another fetch and the report view locks up.
+      if (fetchInFlightRef.current) return;
       // Only react when we're currently in an unconnected / mismatched
       // state. If a fetch is already in progress or data is already
       // loaded, the in-flight cycle will handle it.
@@ -167,20 +266,59 @@ export default function MonthlyReport() {
   const REPORT_DATA_VERSION = 3;
 
   // Pull all report data (GA4 traffic + conversions + GSC keywords) via reportData.js.
+  // Re-entrancy guard wrapper: a single fetch/auth cycle can dispatch several
+  // TOKEN_EVENTs (each persisted token fires one). Without this guard the
+  // token listener re-enters here mid-cycle and the calls pile up until the
+  // tab freezes. While one cycle is running, further calls are no-ops; the
+  // running cycle already picks up whatever token just landed.
   async function autoFetchMetrics(c, m, forceRefresh = false) {
+    if (fetchInFlightRef.current) return;
+    fetchInFlightRef.current = true;
+    try {
+      await runAutoFetchMetrics(c, m, forceRefresh);
+    } finally {
+      fetchInFlightRef.current = false;
+    }
+  }
+
+  async function runAutoFetchMetrics(c, m, forceRefresh = false) {
     if (!c) return;
+
+    // Per-API account bindings: a client can have GA4 in one Google account
+    // and GSC in another. Each API uses its own binding; both fall back to
+    // the legacy single google_account_email if the per-API field isn't set
+    // yet (clients created before this split). Computed up front so the cache
+    // check below can invalidate when the binding changes, not just the
+    // property IDs.
+    const ga4Email = c.ga4_account_email || c.google_account_email || null;
+    const gscEmail = c.gsc_account_email || c.google_account_email || null;
 
     // Check cache first (unless forced refresh).
     if (!forceRefresh) {
       try {
         const cached = await getCachedReportData(c.id, m);
         const isCurrentVersion = cached?.data?.version === REPORT_DATA_VERSION;
-        if (cached?.data && isCurrentVersion) {
+        // Cache is also stale if the client's GA4/GSC properties OR the
+        // Google account they're bound to have changed since the cached
+        // fetch — otherwise fixing a wrong property URL, or re-binding a
+        // client to a working Google account after its credentials went
+        // stale, leaves the old data / permission error stuck on screen.
+        const propsMatch = cached?.data
+          && cached.data.ga4_property_id === (c.ga4_property_id || null)
+          && cached.data.gsc_property === (c.gsc_property || null)
+          && (cached.data.ga4_account_email ?? null) === ga4Email
+          && (cached.data.gsc_account_email ?? null) === gscEmail;
+        if (cached?.data && isCurrentVersion && propsMatch) {
           setReportData(cached.data);
           setFetchStatus('Loaded from cache (fetched ' + new Date(cached.fetched_at).toLocaleDateString() + ') · Click Refresh Data to re-fetch');
           return;
         }
-        if (cached?.data && !isCurrentVersion) {
+        if (cached?.data && isCurrentVersion && !propsMatch) {
+          // Properties or account binding changed on the client — drop the
+          // cached result entirely and fall through to a fresh fetch.
+          setReportData(null);
+          setFetchStatus('GA4/GSC property or Google account changed — refetching…');
+        } else if (cached?.data && !isCurrentVersion) {
           // Old-shape cache exists. Show it as a fallback so the page
           // isn't blank, then silently try to refresh in the background
           // ONLY if a token is already present (no popup).
@@ -195,12 +333,8 @@ export default function MonthlyReport() {
     }
 
     // ── Auth handling ──
-    // Per-API bindings: a client can have GA4 in one Google account and
-    // GSC in another. Each API uses its own binding; both fall back to
-    // the legacy single google_account_email if the per-API field isn't
-    // set yet (clients created before this split).
-    const ga4Email = c.ga4_account_email || c.google_account_email || null;
-    const gscEmail = c.gsc_account_email || c.google_account_email || null;
+    // ga4Email / gscEmail were resolved above (the per-API bindings, with a
+    // fallback to the legacy single google_account_email).
     const needsGa4 = !!c.ga4_property_id;
     const needsGsc = !!c.gsc_property;
     const needsGoogle = needsGa4 || needsGsc;
@@ -209,7 +343,12 @@ export default function MonthlyReport() {
     // account, we can fetch silently with zero round-trips. Otherwise we
     // try a silent refresh per missing API; if that fails, defer to an
     // explicit Connect Google CTA (don't auto-pop on mount).
-    if (needsGoogle) {
+    //
+    // Skip this entire browser-auth preflight when server auth is on: the
+    // proxy holds the tokens, so there's nothing to sign into here. Running
+    // it anyway would pop a pointless browser sign-in AND auto-save the
+    // current browser account onto the client (the wrong-credentials bug).
+    if (needsGoogle && !serverAuthEnabled()) {
       const ga4Cached = needsGa4 && ga4Email ? !!getTokenForEmail(ga4Email, [SCOPES.ga4]) : !needsGa4;
       const gscCached = needsGsc && gscEmail ? !!getTokenForEmail(gscEmail, [SCOPES.gsc]) : !needsGsc;
       const allCached = ga4Cached && gscCached;
@@ -276,6 +415,12 @@ export default function MonthlyReport() {
     try {
       const data = await fetchReportData(c, year, mo);
       data.version = REPORT_DATA_VERSION;
+      data.ga4_property_id = c.ga4_property_id || null;
+      data.gsc_property = c.gsc_property || null;
+      // Stamp the account binding this pull used so a later re-bind (after
+      // stale credentials are re-added) is detected as a cache miss.
+      data.ga4_account_email = ga4Email;
+      data.gsc_account_email = gscEmail;
       setReportData(data);
       // Cache for future visits.
       setCachedReportData(c.id, m, data).catch(() => {});
@@ -366,11 +511,34 @@ export default function MonthlyReport() {
   // cleared when client/month change.
   const displayHtml = htmlOverride || micrositeHtml;
 
+  // Guard the inline preview against an oversized HTML blob (almost always a
+  // stale microsite_html_override saved before the per-table row caps). If
+  // the override is too big to inline safely, preview the freshly built
+  // (capped) microsite instead — the original is still downloadable and can
+  // be dropped with "Discard edits". previewTooLarge is the final backstop:
+  // if even the rebuilt HTML somehow exceeds the ceiling we skip the iframe
+  // entirely rather than freeze the tab.
+  const overrideTooLarge = !!htmlOverride && htmlOverride.length > MAX_INLINE_REPORT_HTML;
+  const previewHtml = overrideTooLarge ? (micrositeHtml || '') : displayHtml;
+  const previewTooLarge = previewHtml.length > MAX_INLINE_REPORT_HTML;
+
   // Generate AEO-only report — skips SEO data, focuses on AI visibility.
+  // Auto-save this month's probe as a snapshot so next month has a baseline to
+  // compare against (this is what turns "first snapshot" into MoM deltas).
+  // Only saves once per client per report-month; the report month is used so the
+  // History timeline lines up with the reports.
+  async function autoSaveSnapshot(probeResult) {
+    if (!client || !probeResult || aeoSnap) return; // already have a snapshot this month
+    try {
+      const saved = await saveAeoSnapshot({ ...probeResult, client_id: client.id, month });
+      setAeoSnap(saved);
+    } catch { /* non-fatal — report still works without the saved baseline */ }
+  }
+
   async function generateAeoOnly() {
     if (!client) return;
     setErr(''); setEmail({ subject: '', body: '' }); setMicroJson(null); setQa(null); setSent(false); setLiveAeoProbe(null);
-    setAeoOnly(true);
+    setAeoOnly(true); setProbeWarnings([]);
 
     try {
       // Step 1: Run AEO probe
@@ -380,10 +548,18 @@ export default function MonthlyReport() {
         return;
       }
       setPhase('aeo-probe');
-      const probeResult = await runSnapshot(client, {
-        onProgress: (p) => setPhase('aeo-probe: ' + (p.engine || '') + ' — ' + (p.query || '').slice(0, 40))
+      // Ground the probe set in a strategic gold grid (website + GSC + competitors).
+      const groundedClient = await groundClientGold(client, reportData);
+      if (groundedClient !== client && groundedClient.aeo_probes) saveClient(groundedClient).catch(() => {});
+      const probeResult = await runSnapshot(groundedClient, {
+        retrievalOnly: true, // headline is retrieval-first; skip the parametric pass to halve engine calls
+        expandWinners: true, winnerTarget: 30, maxExpansionQueries: 40, // spider-web long-tail off every winner
+        onRuns: (records, raws) => persistAeoRuns(records, raws).catch(() => {}),
+        onProgress: (p) => { if (!p.index) probeStartRef.current = Date.now(); setPhase('aeo-probe'); setAeoProgress(p); }
       });
       setLiveAeoProbe(probeResult);
+      setProbeWarnings(summarizeProbeIssues(probeResult));
+      autoSaveSnapshot(probeResult);
 
       // Step 2: Generate AEO-focused email
       setPhase('alice');
@@ -403,18 +579,18 @@ export default function MonthlyReport() {
       const aliceText = await claudeComplete({
         system: ALICE_AEO_SYSTEM,
         messages: [{ role: 'user', content: aeoPayload }],
-        model: 'claude-sonnet-4-20250514',
+        model: 'claude-sonnet-4-6',
         max_tokens: 1200,
         temperature: 0.7
       });
-      setEmail(parseAliceOutput(aliceText));
+      setEmail(sanitizeEmail(parseAliceOutput(aliceText)));
 
       // Step 3: Generate microsite JSON (AEO-only shape)
       setPhase('micro');
       const micrositeText = await claudeComplete({
         system: MICROSITE_AEO_SYSTEM,
         messages: [{ role: 'user', content: aeoPayload }],
-        model: 'claude-sonnet-4-20250514',
+        model: 'claude-sonnet-4-6',
         // Was 1200 — the AEO microsite JSON has narratives, priorities,
         // highlights, work items etc. that easily blow past that and
         // truncate mid-JSON, which then fails extractJSON. 4000 leaves
@@ -435,7 +611,7 @@ export default function MonthlyReport() {
       const qaText = await claudeComplete({
         system: QA_AEO_SYSTEM,
         messages: [{ role: 'user', content: 'Alice email to review:\n\n' + aliceText }],
-        model: 'claude-sonnet-4-20250514',
+        model: 'claude-sonnet-4-6',
         max_tokens: 500,
         temperature: 0
       });
@@ -467,7 +643,7 @@ export default function MonthlyReport() {
   async function generate() {
     if (!client) return;
     setErr(''); setEmail({ subject: '', body: '' }); setMicroJson(null); setQa(null); setSent(false);
-    setAeoOnly(false);
+    setAeoOnly(false); setProbeWarnings([]);
 
     // Only include AEO in a Full Report when the client is ticked as an
     // AEO client (`does_aeo !== false`). Without this gate, any client with
@@ -488,6 +664,7 @@ export default function MonthlyReport() {
       clientName: client.name,
       industry: client.industry || '',
       goals: client.context,
+      startDate: client.start_date,
       month: monthLabel(month),
       previousMonthLabel: previousAeoSnap ? monthLabel(previousAeoSnap.month) : null,
       algorithmContext: algContext,
@@ -498,18 +675,39 @@ export default function MonthlyReport() {
     }, clientDoesAeo ? aeoSnap : null, workSummary);
 
     try {
-      // 0. Live AEO probe — run probe queries against available AI engines
-      // to check brand visibility. Uses existing snapshot infrastructure.
-      // Skip entirely for non-AEO clients so a Full Report never runs (or
-      // surfaces) AEO for a client that isn't ticked as an AEO client.
+      // 0. Live AEO probe — only for AEO-ticked clients, and only when
+      // there's no saved AEO snapshot for this month.
+      //   - clientDoesAeo: a Full Report must never run (or surface) AEO for
+      //     a client that isn't ticked as an AEO client.
+      //   - !aeoSnap: a live probe is (probe queries × engines × iterations)
+      //     live LLM calls; for a client with a large probe-query list that's
+      //     many minutes of sequential work, which made "Generate Full Report"
+      //     look frozen. When a snapshot already exists the report renders
+      //     every AEO section from it (micrositeHtml prefers liveAeoProbe, then
+      //     falls back to aeoSnap; the Alice payload uses aeoSnap directly), so
+      //     re-probing live on each generate is pure waste — skip it. Use the
+      //     dedicated AEO Snapshot tool, or the "Generate AEO Report" button,
+      //     to pull fresh probe data on demand.
       const preflight = snapshotPreflight(client);
-      if (clientDoesAeo && preflight.canRun) {
+      if (clientDoesAeo && !aeoSnap && preflight.canRun) {
         setPhase('aeo-probe');
         try {
-          const probeResult = await runSnapshot(client, {
-            onProgress: (p) => setPhase('aeo-probe: ' + (p.engine || '') + ' — ' + (p.query || '').slice(0, 40))
+          // Cap the in-report fallback probe so a client with a large
+          // probe-query list can't turn Generate into a many-minute sweep.
+          // The full set is available via the AEO Snapshot tool / Generate
+          // AEO Report.
+          const groundedClient = await groundClientGold(client, reportData);
+          if (groundedClient !== client && groundedClient.aeo_probes) saveClient(groundedClient).catch(() => {});
+          const probeResult = await runSnapshot(groundedClient, {
+            maxQueries: LIVE_PROBE_MAX_QUERIES,
+            retrievalOnly: true, // headline is retrieval-first; skip the parametric pass to halve engine calls
+            expandWinners: true, winnerTarget: 30, maxExpansionQueries: 40, // spider-web long-tail off every winner
+            onRuns: (records, raws) => persistAeoRuns(records, raws).catch(() => {}),
+            onProgress: (p) => { if (!p.index) probeStartRef.current = Date.now(); setPhase('aeo-probe'); setAeoProgress(p); }
           });
           setLiveAeoProbe(probeResult);
+          setProbeWarnings(summarizeProbeIssues(probeResult));
+          autoSaveSnapshot(probeResult);
           // Feed probe results into form for Alice email
           setForm(prev => ({
             ...prev,
@@ -528,11 +726,11 @@ export default function MonthlyReport() {
       const aliceText = await claudeComplete({
         system: ALICE_SYSTEM,
         messages: [{ role: 'user', content: payload }],
-        model: 'claude-sonnet-4-20250514',
+        model: 'claude-sonnet-4-6',
         max_tokens: 1000,
         temperature: 0.7
       });
-      const parsed = parseAliceOutput(aliceText);
+      const parsed = sanitizeEmail(parseAliceOutput(aliceText));
       setEmail(parsed);
 
       // 2. Microsite JSON
@@ -540,7 +738,7 @@ export default function MonthlyReport() {
       const micrositeText = await claudeComplete({
         system: MICROSITE_SYSTEM,
         messages: [{ role: 'user', content: payload }],
-        model: 'claude-sonnet-4-20250514',
+        model: 'claude-sonnet-4-6',
         // Was 1000 — same truncation issue as the AEO path. Bumped to 4000.
         max_tokens: 4000,
         temperature: 0.5
@@ -558,7 +756,7 @@ export default function MonthlyReport() {
       const qaText = await claudeComplete({
         system: QA_SYSTEM,
         messages: [{ role: 'user', content: 'Alice email to review:\n\n' + aliceText }],
-        model: 'claude-sonnet-4-20250514',
+        model: 'claude-sonnet-4-6',
         max_tokens: 500,
         temperature: 0
       });
@@ -989,7 +1187,49 @@ export default function MonthlyReport() {
             ))}
           </div>
         </div>
+        {/* Live progress while the AEO probe sweeps the engines — the long
+            phase. Shows it's working, not frozen. */}
+        {phase === 'aeo-probe' && aeoProgress && aeoProgress.total > 0 && (
+          <div style={{ marginTop: 12 }}>
+            <div className="row" style={{ justifyContent: 'space-between', fontSize: 11, color: 'var(--text-muted)', marginBottom: 4, gap: 8 }}>
+              <span>
+                Probing AI engines… {aeoProgress.index} / {aeoProgress.total} responses
+                {(() => {
+                  if (!probeStartRef.current || !aeoProgress.index) return '';
+                  const per = (Date.now() - probeStartRef.current) / aeoProgress.index;
+                  const eta = fmtEta((aeoProgress.total - aeoProgress.index) * per);
+                  return eta ? ' · ' + eta : '';
+                })()}
+              </span>
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '55%' }}>
+                {aeoProgress.engine}{aeoProgress.query ? ' · ' + aeoProgress.query.slice(0, 48) : ''}
+              </span>
+            </div>
+            <div style={{ height: 7, background: 'var(--surface-2)', borderRadius: 4, overflow: 'hidden' }}>
+              <div style={{ width: Math.round((aeoProgress.index / aeoProgress.total) * 100) + '%', height: '100%', background: ACCENT, transition: 'width .3s' }} />
+            </div>
+            <div className="muted" style={{ fontSize: 10, marginTop: 4 }}>
+              This is the slow step (live calls to every AI engine). Leave it running — it does not hang.
+            </div>
+          </div>
+        )}
         {err && <div style={{ color: 'var(--red)', marginTop: 10 }}>{err}</div>}
+
+        {/* AEO probe health — explains why the probe was thin/zeroed
+            (timeout, bad key, rate limit) instead of failing silently. */}
+        {probeWarnings.length > 0 && (
+          <div style={{
+            marginTop: 12, padding: '10px 14px', borderRadius: 10,
+            background: 'rgba(255,159,67,.08)', border: '1px solid rgba(255,159,67,.3)'
+          }}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--orange)', marginBottom: 6 }}>
+              ⚠ AEO probe ran with issues
+            </div>
+            <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: 'var(--text-muted)' }}>
+              {probeWarnings.map((w, i) => <li key={i} style={{ marginBottom: 2 }}>{w}</li>)}
+            </ul>
+          </div>
+        )}
       </div>
 
       {/* Review section */}
@@ -1104,18 +1344,35 @@ export default function MonthlyReport() {
                   <button onClick={() => setShowMicroFull(v => !v)}>{showMicroFull ? 'Collapse' : 'Open full screen'}</button>
                 </div>
               </div>
-              <iframe
-                ref={microIframeRef}
-                title="microsite"
-                srcDoc={displayHtml}
-                style={{
-                  width: '100%',
-                  height: showMicroFull ? '80vh' : 520,
-                  border: editingMicro ? '2px solid ' + ACCENT : '1px solid var(--border)',
-                  borderRadius: 'var(--radius)',
-                  background: 'var(--bg)'
-                }}
-              />
+              {overrideTooLarge && (
+                <div className="muted" style={{ fontSize: 12, marginBottom: 10, padding: '8px 10px', border: '1px solid var(--orange)', borderRadius: 8, color: 'var(--orange)' }}>
+                  This report has large saved manual edits ({Math.round(htmlOverride.length / 1024)} KB). Previewing the freshly built version instead to keep the page responsive — the saved edits are still in your downloads, or click <strong>Discard edits</strong> to drop them.
+                </div>
+              )}
+              {previewTooLarge ? (
+                <div style={{ padding: 24, border: '1px dashed var(--border)', borderRadius: 'var(--radius)', textAlign: 'center', background: 'var(--bg)' }}>
+                  <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 6 }}>Preview skipped — report too large to render inline</div>
+                  <div className="muted" style={{ fontSize: 12, marginBottom: 14 }}>
+                    This report is {Math.round(previewHtml.length / 1024)} KB, which would lock the page if rendered here. Use the buttons above to download the .html or PDF, where it opens in its own window.
+                  </div>
+                  {htmlOverride && (
+                    <button onClick={discardMicroEdits} style={{ color: 'var(--red)' }}>Discard manual edits and rebuild</button>
+                  )}
+                </div>
+              ) : (
+                <iframe
+                  ref={microIframeRef}
+                  title="microsite"
+                  srcDoc={previewHtml}
+                  style={{
+                    width: '100%',
+                    height: showMicroFull ? '80vh' : 520,
+                    border: editingMicro ? '2px solid ' + ACCENT : '1px solid var(--border)',
+                    borderRadius: 'var(--radius)',
+                    background: 'var(--bg)'
+                  }}
+                />
+              )}
             </div>
           )}
 

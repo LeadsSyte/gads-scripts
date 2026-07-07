@@ -88,32 +88,72 @@ function categorySeeds(client) {
   return [...seeds].slice(0, 6); // cap to keep total query count sane
 }
 
-// Build the full discovery query list for a client. Returns deduped,
-// lower-cased query strings. Total = templates × cities × categories
-// after dedup, capped at the limit.
-export function buildDiscoveryQueries(client, { limit = 120 } = {}) {
-  const cats = categorySeeds(client);
-  if (!cats.length) return [];
+// The client's own geo(s) for local templates — from their market/location,
+// NOT a hardcoded country. Falls back to no-geo (global) phrasing.
+function geosFor(client) {
+  const raw = String(client.location || client.market || client.geo || '')
+    .split(/[,/]/).map(s => s.trim()).filter(Boolean);
+  return raw.slice(0, 3);
+}
 
+// Extract candidate service/topic phrases from a client's fetched website HTML
+// (title, H1-H3, meta description). Pure + dependency-free. This grounds
+// discovery in what the brand actually says it does.
+export function extractSitePhrases(html, { limit = 15 } = {}) {
+  if (!html) return [];
+  const strip = s => String(s).replace(/<[^>]+>/g, ' ').replace(/&[a-z#0-9]+;/gi, ' ').replace(/\s+/g, ' ').trim();
+  const raw = [];
+  const grab = (re) => { let m; while ((m = re.exec(html))) raw.push(strip(m[1])); };
+  grab(/<title[^>]*>([\s\S]*?)<\/title>/gi);
+  grab(/<h1[^>]*>([\s\S]*?)<\/h1>/gi);
+  grab(/<h2[^>]*>([\s\S]*?)<\/h2>/gi);
+  grab(/<h3[^>]*>([\s\S]*?)<\/h3>/gi);
+  const md = html.match(/<meta[^>]+name=["']description["'][^>]+content=["']([^"']+)["']/i);
+  if (md) raw.push(strip(md[1]));
+  const seen = new Set();
+  const out = [];
+  for (const p of raw) {
+    const words = p.split(' ').filter(Boolean);
+    if (words.length < 1 || words.length > 6) continue;             // keep short noun phrases
+    const k = p.toLowerCase();
+    if (seen.has(k) || /^(home|about|about us|contact|contact us|privacy|cookies?|menu|sign in|log ?in|careers|blog|news)$/.test(k)) continue;
+    seen.add(k); out.push(p);
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
+// Build the discovery query list. Grounded, in priority order:
+//   1. GSC head-terms — the real queries the brand ranks for on Google (gold),
+//      probed directly plus a couple of buyer-intent variants.
+//   2. Website + industry phrases, expanded with buyer templates and the
+//      client's OWN geo (not a hardcoded country).
+// Returns deduped, lower-cased query strings capped at `limit`.
+export function buildDiscoveryQueries(client, { limit = 120, gscSeeds = [], sitePhrases = [] } = {}) {
   const out = new Set();
-  for (const cat of cats) {
-    for (const tmpl of QUERY_TEMPLATES) {
-      const needsCity = tmpl.includes('{city}');
-      const needsRegion = tmpl.includes('{region}');
-      if (needsCity) {
-        for (const city of SA_CITIES) {
-          out.add(tmpl.replace('{category}', cat).replace('{city}', city).toLowerCase());
-        }
-      } else if (needsRegion) {
-        for (const region of SA_REGIONS) {
-          out.add(tmpl.replace('{category}', cat).replace('{region}', region).toLowerCase());
-        }
-      } else {
-        out.add(tmpl.replace('{category}', cat).toLowerCase());
-      }
+  const norm = s => String(s || '').trim().toLowerCase();
+
+  // 1. GSC head-terms first — strongest grounding.
+  for (const raw of gscSeeds) {
+    const q = norm(raw);
+    if (!q) continue;
+    out.add(q);
+    out.add('best ' + q);
+    out.add('top ' + q + ' companies');
+    if (out.size >= limit) break;
+  }
+
+  // 2. Category seeds = website phrases + industry, expanded with the client geo.
+  const cats = [...new Set([...categorySeeds(client), ...sitePhrases.map(norm)])].filter(Boolean);
+  const geos = geosFor(client);
+  const VERBS = ['best {c}', 'top {c} companies', '{c} companies', '{c} providers', 'who offers {c}', 'recommended {c}'];
+  for (const c of cats) {
+    if (out.size >= limit) break;
+    for (const v of VERBS) {
+      out.add(v.replace('{c}', c));
+      for (const g of geos) out.add(v.replace('{c}', c) + ' in ' + g.toLowerCase());
       if (out.size >= limit) break;
     }
-    if (out.size >= limit) break;
   }
   return [...out].slice(0, limit);
 }

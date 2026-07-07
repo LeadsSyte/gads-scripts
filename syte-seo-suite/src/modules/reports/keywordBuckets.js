@@ -50,11 +50,6 @@ function tokenize(s) {
   return (s || '').toLowerCase().replace(/[^\w\s&-]/g, ' ').split(/\s+/).filter(Boolean);
 }
 
-// Significant tokens = total words minus stopwords.
-function significantTokens(s) {
-  return tokenize(s).filter(t => !STOPWORDS.has(t));
-}
-
 // Build brand-token list once per classifier call. We treat any keyword
 // containing the brand name (or a strong fragment of it) as branded.
 function brandTokens(brandName) {
@@ -67,13 +62,19 @@ function brandTokens(brandName) {
   return out;
 }
 
-export function classifyKeyword(keyword, brandName) {
+// `brandSet` is the brand-token Set for `brandName`. It is identical for
+// every keyword in a pull, so callers classifying a list (classifyKeywords)
+// build it ONCE and pass it in — rebuilding it per keyword tokenized the
+// brand name tens of thousands of times on a 10k-row GSC pull, which blocked
+// the main thread long enough to freeze the tab when opening a report.
+export function classifyKeyword(keyword, brandName, brandSet = brandTokens(brandName)) {
   const q = (keyword?.query || '').toLowerCase().trim();
   if (!q) return { branded: false, headTerm: false, longTail: true, hasLocation: false, wordCount: 0 };
 
   const tokens = tokenize(q);
-  const sig = significantTokens(q);
-  const brandSet = brandTokens(brandName);
+  // Significant tokens = words minus stopwords. Derived from the single
+  // tokenization above rather than re-tokenizing the query string.
+  const sig = tokens.filter(t => !STOPWORDS.has(t));
 
   const branded = tokens.some(t => brandSet.has(t)) ||
                   (brandSet.has(tokens.join('')));
@@ -92,9 +93,16 @@ export function classifyKeyword(keyword, brandName) {
   return { branded, headTerm, longTail, hasLocation, hasQualifier, wordCount: tokens.length };
 }
 
-// Return a copy of `keywords` with .classification attached.
+// Return `keywords` with .classification attached. Builds the brand-token
+// set once and reuses it for every row. Rows that already carry a
+// classification are passed through untouched — buildKeywordBuckets is fed
+// the already-classified list from fetchReportData, so without this guard a
+// 10k-row pull was classified twice (once here, once inside buildKeywordBuckets).
 export function classifyKeywords(keywords, brandName) {
-  return (keywords || []).map(kw => ({ ...kw, classification: classifyKeyword(kw, brandName) }));
+  const brandSet = brandTokens(brandName);
+  return (keywords || []).map(kw =>
+    kw.classification ? kw : { ...kw, classification: classifyKeyword(kw, brandName, brandSet) }
+  );
 }
 
 // Build the bucketed views used by the report microsite.
@@ -200,6 +208,74 @@ export function probeCandidatesFromGSC(keywords, brandName, { limit = 30 } = {})
     if (!q || seen.has(q)) continue;
     seen.add(q);
     out.push(q);
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
+// Reshape raw GSC head-terms into BUYER prompts so probing them surfaces
+// vendor recommendations. A term that already reads commercially (contains
+// consultant/partner/company/agency/services/…) is kept as-is; a bare
+// category term ("business central", "azure document intelligence") becomes
+// "best <term> company in <geo>". Deduped, lowercased, capped at `limit`.
+// Stem match (no trailing boundary) so plurals/suffixes count:
+// consult→consultants/consultancy, compan→companies, service→services, etc.
+const COMMERCIAL_RE = /\b(consult|partner|agenc|compan|firm|provider|service|solution|specialist|vendor|supplier|develop)/i;
+
+export function gscBuyerPrompts(queries, { geo = '', limit = 20 } = {}) {
+  const g = String(geo || '').split(/[,/]/)[0].trim();
+  const seen = new Set();
+  const out = [];
+  for (const raw of (queries || [])) {
+    const q = String(raw || '').toLowerCase().trim();
+    if (!q) continue;
+    let prompt;
+    if (COMMERCIAL_RE.test(q)) {
+      // Already buyer-shaped; add geo only if it names none.
+      prompt = (g && !q.includes(g.toLowerCase())) ? `${q} in ${g.toLowerCase()}` : q;
+    } else {
+      prompt = g ? `best ${q} company in ${g.toLowerCase()}` : `best ${q} company`;
+    }
+    prompt = prompt.replace(/\s+/g, ' ').trim();
+    if (seen.has(prompt)) continue;
+    seen.add(prompt);
+    out.push(prompt);
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
+// Build a BALANCED, typed probe set grounded in GSC + competitors, so an
+// auto-generated set covers the same breadth as a hand-built panel: category
+// (GSC head-terms), comparison (alternatives-to-competitor), qualified
+// (mid-market), and conversational (who-should-I-hire). Returns probe-candidate
+// objects ready for addProbes. `gscQueries` are raw GSC head-terms.
+export function groundedProbeSet(gscQueries, { geo = '', competitors = [], limit = 28 } = {}) {
+  const g = String(geo || '').split(/[,/]/)[0].trim();
+  const tail = g ? ` in ${g.toLowerCase()}` : '';
+  const category = gscBuyerPrompts(gscQueries, { geo, limit: 18 })
+    .map(q => ({ query: q, type: 'category', intent: 'commercial' }));
+
+  const comparison = [];
+  for (const c of (competitors || []).slice(0, 3)) {
+    const name = String(c).trim();
+    if (!name) continue;
+    comparison.push({ query: `alternatives to ${name}${tail}`.toLowerCase(), type: 'comparison', intent: 'comparison' });
+  }
+
+  // Qualified + conversational off the top couple of raw GSC terms.
+  const topTerms = (gscQueries || []).slice(0, 2)
+    .map(t => String(t).toLowerCase().trim()).filter(Boolean);
+  const qualified = topTerms.map(t => ({ query: `best ${t} for mid-market companies${tail}`.toLowerCase(), type: 'qualified', intent: 'commercial' }));
+  const conversational = topTerms.slice(0, 1).map(t => ({ query: `who should i hire for ${t}${tail}?`.toLowerCase(), type: 'conversational', intent: 'problem' }));
+
+  const seen = new Set();
+  const out = [];
+  for (const p of [...category, ...comparison, ...qualified, ...conversational]) {
+    const k = (p.query || '').trim();
+    if (!k || seen.has(k)) continue;
+    seen.add(k);
+    out.push({ ...p, tier: 1, source: 'gsc', active: true });
     if (out.length >= limit) break;
   }
   return out;

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { loadSettings, saveSettings, engineStatus, estimateSweepCost } from '../lib/settings.js';
 import { useClients } from '../store/useClients.js';
+import GoogleServerAccounts from './GoogleServerAccounts.jsx';
 
 // Global Suite Settings modal. Holds external API keys for the AEO Snapshot
 // module. Opened from the sidebar footer "Settings" button.
@@ -174,6 +175,8 @@ export default function SuiteSettingsModal({ onClose }) {
             <span style={{ fontSize: 12 }}>{statusDot(status.claude)}Claude (built-in)</span>
           </div>
         </div>
+
+        <GoogleServerAccounts />
 
         <div className="card" style={{ marginBottom: 14 }}>
           <strong>Cost Estimator</strong>

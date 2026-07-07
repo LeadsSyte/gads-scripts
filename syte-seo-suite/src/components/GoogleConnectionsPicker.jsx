@@ -11,10 +11,13 @@ import {
 import {
   fetchGa4Properties,
   fetchGscSites,
+  fetchGa4PropertiesForAccount,
+  fetchGscSitesForAccount,
   normalizeGa4Id,
   normalizeGscProperty,
   clearPropertyCache
 } from '../lib/googleProperties.js';
+import { serverAuthEnabled, listConnectedAccounts } from '../lib/googleServerAuth.js';
 
 // Combined GA4 + GSC picker for the client edit modal.
 // Props:
@@ -37,10 +40,23 @@ export default function GoogleConnectionsPicker({
   ga4Value, onChangeGa4,
   gscValue, onChangeGsc,
   savedEmail, onChangeEmail,
-  savedGa4Email, savedGscEmail
+  savedGa4Email, savedGscEmail,
+  onBindAccount
 }) {
   const [signedIn, setSignedIn] = useState(!!getToken());
   const [email, setEmail] = useState(null);
+  // Server-auth: the list of accounts connected once on the backend. In that
+  // mode binding a client = picking one of these from a dropdown, instead of
+  // signing into Google in this browser.
+  const serverAuth = serverAuthEnabled();
+  const [connectedAccounts, setConnectedAccounts] = useState([]);
+  useEffect(() => {
+    if (!serverAuth) return;
+    listConnectedAccounts()
+      .then(a => setConnectedAccounts((a || []).filter(x => !x.revoked).map(x => x.email)))
+      .catch(() => {});
+  }, [serverAuth]);
+  const boundAccount = savedGa4Email || savedGscEmail || savedEmail || '';
 
   // The picker is often rendered before App.jsx's background silent
   // refresh has finished. Re-check signed-in state whenever the auth
@@ -69,31 +85,46 @@ export default function GoogleConnectionsPicker({
   useEffect(() => setGa4Local(ga4Value || ''), [ga4Value]);
   useEffect(() => setGscLocal(gscValue || ''), [gscValue]);
 
-  // Load properties whenever we're signed in.
+  // Load properties. Browser mode: whenever signed in. Server mode: whenever a
+  // connected account is bound (and re-load when it changes) — properties come
+  // from THAT account via the proxy, not from whatever the browser is signed
+  // into.
   useEffect(() => {
+    if (serverAuth) {
+      if (!boundAccount) { setGa4Props([]); setGscSites([]); return; }
+      loadProperties();
+      return;
+    }
     if (!signedIn) { setGa4Props([]); setGscSites([]); return; }
     loadProperties();
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [signedIn]);
+  }, [signedIn, serverAuth, boundAccount]);
 
   async function loadProperties({ bypassCache = false } = {}) {
     setLoading(true); setErr(''); setApiErrors([]);
     const errors = [];
     let genericErr = '';
 
-    const ga = await fetchGa4Properties({ bypassCache }).catch(e => {
+    const gaFetch = serverAuth
+      ? fetchGa4PropertiesForAccount(boundAccount, { bypassCache })
+      : fetchGa4Properties({ bypassCache });
+    const ga = await gaFetch.catch(e => {
       console.error('GA4 fetch failed', e);
       if (e.apiDisabled) errors.push({ service: 'GA4 Admin', message: e.message, enableUrl: e.enableUrl });
       else genericErr += (genericErr ? ' · ' : '') + 'GA4: ' + e.message;
       return [];
     });
-    const sites = await fetchGscSites({ bypassCache }).catch(e => {
+    const gscFetch = serverAuth
+      ? fetchGscSitesForAccount(boundAccount, { bypassCache })
+      : fetchGscSites({ bypassCache });
+    const sites = await gscFetch.catch(e => {
       console.error('GSC fetch failed', e);
       if (e.apiDisabled) errors.push({ service: 'Search Console', message: e.message, enableUrl: e.enableUrl });
       else genericErr += (genericErr ? ' · ' : '') + 'GSC: ' + e.message;
       return [];
     });
-    const e = await getCurrentEmail();
+    // In server mode the "current account" is the bound one; no browser lookup.
+    const e = serverAuth ? boundAccount : await getCurrentEmail();
 
     setEmail(e);
     setGa4Props(ga);
@@ -101,11 +132,14 @@ export default function GoogleConnectionsPicker({
     setApiErrors(errors);
     if (genericErr) setErr(genericErr);
     setLoading(false);
-    // First-time auto-bind only — if the client has no saved email yet,
-    // remember whichever account is currently signed in. Subsequent re-binding
-    // happens via doSwitch or the explicit "Use this account" button so we
-    // never silently overwrite a known-good email.
-    if (e && onChangeEmail && !savedEmail) onChangeEmail(e);
+    // NOTE: we deliberately do NOT auto-bind the currently signed-in account
+    // to the client here. Doing so silently rebound a client to whatever
+    // account the browser was signed into when you opened/switched to it —
+    // corrupting clients whose properties live in a different account (you'd
+    // see "saved property not visible to <wrong account>"). Binding now only
+    // happens through deliberate actions: picking a property (sets the per-API
+    // ga4/gsc account), the explicit "Use this account" button, or Switch
+    // account.
   }
 
   async function doSignIn() {
@@ -200,12 +234,12 @@ export default function GoogleConnectionsPicker({
       <div className="row" style={{ justifyContent: 'space-between', marginBottom: 10, flexWrap: 'wrap', gap: 8 }}>
         <strong>Google Connections</strong>
         <div className="row" style={{ gap: 8 }}>
-          {!signedIn && (
+          {!serverAuth && !signedIn && (
             <button onClick={doSignIn} style={{ borderColor: '#4F8EF7', color: '#4F8EF7' }}>
               Sign in with Google
             </button>
           )}
-          {signedIn && (
+          {!serverAuth && signedIn && (
             <>
               <span className="muted" style={{ fontSize: 11 }}>
                 <span className="dot" style={{ background: 'var(--green)', marginRight: 6 }} />
@@ -221,13 +255,37 @@ export default function GoogleConnectionsPicker({
         </div>
       </div>
 
-      <div className="muted" style={{ fontSize: 12, marginBottom: 12 }}>
-        Sign in with Google to pick GA4 properties and Search Console sites from a dropdown,
-        or enter them manually below. Your clients are spread across 6 accounts — use Switch account
-        to sign into each one when setting up clients.
-      </div>
+      {serverAuth ? (
+        <div style={{ marginBottom: 12 }}>
+          <label style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--text-dim)' }}>
+            Google account for this client
+          </label>
+          <select
+            value={boundAccount}
+            onChange={e => onBindAccount?.(e.target.value)}
+            style={{ width: '100%', marginTop: 4 }}
+          >
+            <option value="">— select a connected account —</option>
+            {connectedAccounts.map(em => <option key={em} value={em}>{em}</option>)}
+            {boundAccount && !connectedAccounts.includes(boundAccount) && (
+              <option value={boundAccount}>{boundAccount} (not connected — connect it in Suite Settings)</option>
+            )}
+          </select>
+          <div className="muted" style={{ fontSize: 11, marginTop: 6 }}>
+            Reports pull this client's GA4 + GSC through the account selected here. Connect accounts once
+            under <strong>Suite Settings → Connected Google Accounts</strong>. Enter the GA4 property ID and
+            Search Console URL manually below.
+          </div>
+        </div>
+      ) : (
+        <div className="muted" style={{ fontSize: 12, marginBottom: 12 }}>
+          Sign in with Google to pick GA4 properties and Search Console sites from a dropdown,
+          or enter them manually below. Your clients are spread across 6 accounts — use Switch account
+          to sign into each one when setting up clients.
+        </div>
+      )}
 
-      {savedEmail && (
+      {!serverAuth && savedEmail && (
         <div style={{
           marginBottom: 10,
           padding: 10,

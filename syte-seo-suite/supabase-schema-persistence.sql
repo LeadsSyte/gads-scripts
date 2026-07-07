@@ -26,6 +26,10 @@ create index if not exists syte_suite_tseo_tasks_client_idx
 
 alter table syte_suite_tseo_tasks disable row level security;
 
+-- Link a task to the permanent implementation record it was logged as when
+-- marked Done/Verified, so re-scans can't erase the completed-work history.
+alter table syte_suite_tseo_tasks add column if not exists impl_id uuid;
+
 -- 2. AEO optimization results — generated optimizations per page per client.
 create table if not exists syte_suite_aeo_results (
   id uuid primary key default gen_random_uuid(),
@@ -166,3 +170,62 @@ alter table syte_suite_report_generated_log add column if not exists report_data
 -- verbatim instead of re-building from microsite_json + report_data — so
 -- in-place visual edits made before sending survive the round-trip.
 alter table syte_suite_report_generated_log add column if not exists microsite_html_override text;
+
+-- 8. Rejected optimizations — operator-driven blocklist so a task or AEO
+-- snippet that's been explicitly rejected doesn't reappear next month
+-- when the audit / sitemap re-discovers the same underlying issue.
+--
+-- Technical SEO rejections are keyed by a stable dedup key
+-- (client_id|page_url|title) so a freshly-triaged task with a new UUID
+-- but the same logical issue is filtered out automatically.
+create table if not exists syte_suite_tseo_rejections (
+  client_id uuid references syte_suite_clients(id) on delete cascade,
+  dedup_key text not null,
+  reason text,
+  rejected_at timestamptz default now(),
+  primary key (client_id, dedup_key)
+);
+
+create index if not exists syte_suite_tseo_rejections_client_idx
+  on syte_suite_tseo_rejections(client_id);
+
+alter table syte_suite_tseo_rejections disable row level security;
+
+-- AEO rejections are keyed per (client, page_url, opt_key) where opt_key
+-- combines the optimization's type + name. A re-run that produces an
+-- optimization with the same type+name on the same page is filtered out.
+create table if not exists syte_suite_aeo_rejections (
+  client_id uuid references syte_suite_clients(id) on delete cascade,
+  page_url text not null,
+  opt_key text not null,
+  reason text,
+  rejected_at timestamptz default now(),
+  primary key (client_id, page_url, opt_key)
+);
+
+create index if not exists syte_suite_aeo_rejections_client_idx
+  on syte_suite_aeo_rejections(client_id);
+
+alter table syte_suite_aeo_rejections disable row level security;
+
+-- 9. External work log — work done OUTSIDE the suite (WebCEO, Google Search
+-- Console, Screaming Frog, Ahrefs, etc.). Manually logged with an optional
+-- screenshot (stored as a data URL) as proof of work.
+create table if not exists syte_suite_external_work (
+  id uuid primary key default gen_random_uuid(),
+  client_id uuid references syte_suite_clients(id) on delete cascade,
+  client_name text,
+  tool text not null,                    -- WebCEO | Google Search Console | Screaming Frog | Ahrefs | etc.
+  category text,                         -- Audit | Fix | Submission | Research | Monitoring | Other
+  description text not null,             -- what was done
+  work_url text,                         -- optional related page/report URL
+  screenshot text,                       -- optional proof — data URL or pasted image URL
+  work_date date default now(),
+  done_by text,
+  created_at timestamptz default now()
+);
+
+create index if not exists syte_suite_external_work_client_idx
+  on syte_suite_external_work(client_id, work_date desc);
+
+alter table syte_suite_external_work disable row level security;

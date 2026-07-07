@@ -239,6 +239,138 @@ export async function deleteAeoSnapshot(id) {
   localStorage.setItem(LS_PREFIX + 'aeo_history', JSON.stringify(list.filter(r => r.id !== id)));
 }
 
+// ---------------------------------------------------------------------------
+// AEO v2 — per-run result capture + raw-response storage (90-day retention).
+// Runs are append-only; raw bodies are deduped by content hash. Both fall
+// back to localStorage so the runner keeps working offline.
+// ---------------------------------------------------------------------------
+
+const AEO_RUNS_KEY = LS_PREFIX + 'aeo_runs';
+const AEO_RAW_KEY = LS_PREFIX + 'aeo_raw';
+
+export async function saveAeoRuns(rows) {
+  if (!Array.isArray(rows) || rows.length === 0) return;
+  for (const r of rows) assertClientId(r?.client_id, 'saveAeoRuns');
+  if (supabase) {
+    try {
+      const { error } = await supabase.from('syte_suite_aeo_runs').insert(rows);
+      if (error) throw error;
+      return;
+    } catch (e) {
+      console.warn('[aeo] saveAeoRuns DB write failed, using localStorage:', e.message);
+    }
+  }
+  const list = JSON.parse(localStorage.getItem(AEO_RUNS_KEY) || '[]');
+  for (const r of rows) list.push({ id: crypto.randomUUID(), created_at: new Date().toISOString(), ...r });
+  localStorage.setItem(AEO_RUNS_KEY, JSON.stringify(list));
+}
+
+// Convenience: persist a snapshot's per-run records + deduped raw bodies.
+// Wired to runSnapshot's onRuns callback. Maps camelCase runner records to the
+// snake_case aeo_runs columns.
+export async function persistAeoRuns(records, rawEntries) {
+  const rows = (records || []).map(r => ({
+    client_id: r.client_id,
+    month: r.month,
+    probe_id: r.probeId,
+    engine: r.engine,
+    run_index: r.runIndex,
+    run_mode: r.runMode,
+    appeared: r.appeared,
+    position: r.position,
+    list_length: r.listLength,
+    segment_label: r.segmentLabel,
+    reason_phrase: r.reasonPhrase,
+    sentiment: r.sentiment,
+    competitors_named: r.competitorsNamed || [],
+    cited_urls: r.citedUrls || [],
+    raw_response_hash: r.rawResponseHash,
+    timestamp: r.timestamp
+  }));
+  await saveAeoRuns(rows);
+  // Dedupe raw bodies by hash and write them in ONE bulk upsert. The old
+  // per-hash SELECT+INSERT loop made ~2 round-trips per response (hundreds
+  // per run), which blocked the end of every snapshot for minutes.
+  const seen = new Set();
+  const rawRows = [];
+  for (const e of (rawEntries || [])) {
+    if (!e.hash || seen.has(e.hash)) continue;
+    seen.add(e.hash);
+    rawRows.push({ hash: e.hash, client_id: e.client_id, engine: e.engine, run_mode: e.run_mode, raw_response: e.raw_response });
+  }
+  if (!rawRows.length) return;
+  if (supabase) {
+    try {
+      await supabase.from('syte_suite_aeo_raw').upsert(rawRows, { onConflict: 'hash', ignoreDuplicates: true });
+      return;
+    } catch (e) {
+      console.warn('[aeo] bulk raw upsert failed, using localStorage:', e.message);
+    }
+  }
+  try {
+    const store = JSON.parse(localStorage.getItem(AEO_RAW_KEY) || '{}');
+    for (const r of rawRows) if (!store[r.hash]) store[r.hash] = { engine: r.engine, run_mode: r.run_mode, raw_response: r.raw_response, created_at: new Date().toISOString() };
+    localStorage.setItem(AEO_RAW_KEY, JSON.stringify(store));
+  } catch {}
+}
+
+export async function listAeoRuns(clientId, month) {
+  if (supabase) {
+    try {
+      let q = supabase.from('syte_suite_aeo_runs').select('*').order('timestamp', { ascending: false });
+      if (clientId) q = q.eq('client_id', clientId);
+      if (month) q = q.eq('month', month);
+      const { data, error } = await q;
+      if (error) throw error;
+      return data || [];
+    } catch { /* fall through */ }
+  }
+  const list = JSON.parse(localStorage.getItem(AEO_RUNS_KEY) || '[]');
+  return list.filter(r =>
+    (!clientId || r.client_id === clientId) && (!month || r.month === month));
+}
+
+// Store a raw response body keyed by hash. Deduped: if the hash already exists
+// we skip the write. Retention (90 days) is enforced by a scheduled SQL delete
+// (see supabase-schema-aeo-v2.sql).
+export async function saveRawResponse({ hash, client_id, engine, run_mode, raw_response }) {
+  if (!hash) return;
+  if (supabase) {
+    try {
+      const { data: existing } = await supabase
+        .from('syte_suite_aeo_raw').select('hash').eq('hash', hash).limit(1);
+      if (existing?.length) return;
+      await supabase.from('syte_suite_aeo_raw')
+        .insert({ hash, client_id, engine, run_mode, raw_response });
+      return;
+    } catch (e) {
+      console.warn('[aeo] saveRawResponse DB write failed, using localStorage:', e.message);
+    }
+  }
+  try {
+    const store = JSON.parse(localStorage.getItem(AEO_RAW_KEY) || '{}');
+    if (!store[hash]) {
+      store[hash] = { engine, run_mode, raw_response, created_at: new Date().toISOString() };
+      localStorage.setItem(AEO_RAW_KEY, JSON.stringify(store));
+    }
+  } catch {}
+}
+
+export async function getRawResponse(hash) {
+  if (!hash) return null;
+  if (supabase) {
+    try {
+      const { data } = await supabase
+        .from('syte_suite_aeo_raw').select('raw_response').eq('hash', hash).limit(1).single();
+      return data?.raw_response || null;
+    } catch { /* fall through */ }
+  }
+  try {
+    const store = JSON.parse(localStorage.getItem(AEO_RAW_KEY) || '{}');
+    return store[hash]?.raw_response || null;
+  } catch { return null; }
+}
+
 export async function logReportSent(row) {
   assertClientId(row?.client_id, 'logReportSent');
   if (supabase) {
@@ -403,11 +535,22 @@ export async function updateImplementation(id, patch) {
   return list[idx];
 }
 
+// Columns safe to pull in bulk. Deliberately EXCLUDES verification_detail —
+// the "Upload screenshot" verification path embeds a base64 image inside that
+// column ([SCREENSHOT]…[/SCREENSHOT]), so selecting it for every row made
+// listAllImplementations() balloon to multiple MB and time out server-side
+// (HTTP 500: "…/syte_suite_implementations?select=*&order=created_at.desc").
+// The dashboards only need status + dates; the explanation/screenshot is
+// fetched per row, on demand, via getImplementationDetail().
+const IMPL_LIST_COLS =
+  'id, client_id, module, change_type, page_url, title, description, ' +
+  'implemented_by, implemented_at, verification_status, verified_at, created_at';
+
 export async function listImplementations(clientId) {
   if (supabase) {
     let q = supabase
       .from('syte_suite_implementations')
-      .select('*')
+      .select(IMPL_LIST_COLS)
       .order('created_at', { ascending: false });
     if (clientId) q = q.eq('client_id', clientId);
     const { data, error } = await q;
@@ -420,6 +563,79 @@ export async function listImplementations(clientId) {
 
 export async function listAllImplementations() {
   return listImplementations(null);
+}
+
+// Fetch the heavy verification_detail (Claude's explanation + any embedded
+// base64 proof screenshot) for a SINGLE implementation, on demand. Kept out
+// of the bulk list query above so screenshots never bloat the dashboard read.
+export async function getImplementationDetail(id) {
+  if (!id) return null;
+  if (supabase) {
+    const { data, error } = await supabase
+      .from('syte_suite_implementations')
+      .select('id, verification_detail')
+      .eq('id', id)
+      .single();
+    if (error) throw error;
+    return data?.verification_detail || '';
+  }
+  const list = JSON.parse(localStorage.getItem(LS_PREFIX + 'implementations') || '[]');
+  return (list.find(r => r.id === id) || {}).verification_detail || '';
+}
+
+// ---------------------------------------------------------------------------
+// External work log — work done OUTSIDE the suite (WebCEO, Google Search
+// Console, Screaming Frog, Ahrefs, etc.). Manually logged with an optional
+// screenshot as proof, so it counts toward the client's progress record.
+// ---------------------------------------------------------------------------
+
+const EXTERNAL_WORK_KEY = LS_PREFIX + 'external_work';
+
+export async function logExternalWork(row) {
+  if (supabase) {
+    const { data, error } = await supabase
+      .from('syte_suite_external_work')
+      .insert(row)
+      .select()
+      .single();
+    if (error) throw error;
+    return data;
+  }
+  const list = JSON.parse(localStorage.getItem(EXTERNAL_WORK_KEY) || '[]');
+  const saved = {
+    id: crypto.randomUUID(),
+    ...row,
+    work_date: row.work_date || new Date().toISOString().slice(0, 10),
+    created_at: new Date().toISOString()
+  };
+  list.unshift(saved);
+  localStorage.setItem(EXTERNAL_WORK_KEY, JSON.stringify(list));
+  return saved;
+}
+
+export async function listExternalWork(clientId) {
+  if (supabase) {
+    let q = supabase
+      .from('syte_suite_external_work')
+      .select('*')
+      .order('work_date', { ascending: false });
+    if (clientId) q = q.eq('client_id', clientId);
+    const { data, error } = await q;
+    if (error) throw error;
+    return data || [];
+  }
+  const list = JSON.parse(localStorage.getItem(EXTERNAL_WORK_KEY) || '[]');
+  return clientId ? list.filter(r => r.client_id === clientId) : list;
+}
+
+export async function deleteExternalWork(id) {
+  if (supabase) {
+    const { error } = await supabase.from('syte_suite_external_work').delete().eq('id', id);
+    if (error) throw error;
+    return;
+  }
+  const list = JSON.parse(localStorage.getItem(EXTERNAL_WORK_KEY) || '[]');
+  localStorage.setItem(EXTERNAL_WORK_KEY, JSON.stringify(list.filter(r => r.id !== id)));
 }
 
 // ---------------------------------------------------------------------------
@@ -454,6 +670,7 @@ export async function saveTseoTasks(tasks) {
           status: t.status || 'open',
           assignee: t.assignee,
           data_source: t.data_source,
+          impl_id: t.impl_id || null,
           created_at: t.created_at || new Date().toISOString()
         }))
       );
@@ -565,6 +782,99 @@ export async function deleteAeoResult(clientId, url) {
     const key = clientId + '::' + url;
     delete obj[key];
     localStorage.setItem(AEO_RESULTS_KEY, JSON.stringify(obj));
+  } catch {}
+}
+
+// ---------------------------------------------------------------------------
+// Rejected optimizations — operator-driven blocklist so a task or AEO
+// snippet that's been explicitly rejected doesn't reappear when the next
+// month's audit re-discovers the same underlying issue.
+// ---------------------------------------------------------------------------
+
+const TSEO_REJECTIONS_KEY = LS_PREFIX + 'tseo_rejections';
+const AEO_REJECTIONS_KEY = LS_PREFIX + 'aeo_rejections';
+
+export async function saveTseoRejection(clientId, dedupKey, reason = '') {
+  assertClientId(clientId, 'saveTseoRejection');
+  const row = { client_id: clientId, dedup_key: dedupKey, reason, rejected_at: new Date().toISOString() };
+  if (supabase) {
+    const { error } = await supabase
+      .from('syte_suite_tseo_rejections')
+      .upsert(row, { onConflict: 'client_id,dedup_key' });
+    if (error) throw error;
+  }
+  try {
+    const list = JSON.parse(localStorage.getItem(TSEO_REJECTIONS_KEY) || '[]');
+    const idx = list.findIndex(r => r.client_id === clientId && r.dedup_key === dedupKey);
+    if (idx >= 0) list[idx] = row; else list.push(row);
+    localStorage.setItem(TSEO_REJECTIONS_KEY, JSON.stringify(list));
+  } catch {}
+  return row;
+}
+
+export async function listTseoRejections() {
+  if (supabase) {
+    const { data, error } = await supabase.from('syte_suite_tseo_rejections').select('*');
+    if (!error && data) {
+      try { localStorage.setItem(TSEO_REJECTIONS_KEY, JSON.stringify(data)); } catch {}
+      return data;
+    }
+  }
+  try { return JSON.parse(localStorage.getItem(TSEO_REJECTIONS_KEY) || '[]'); } catch { return []; }
+}
+
+export async function deleteTseoRejection(clientId, dedupKey) {
+  if (supabase) {
+    await supabase.from('syte_suite_tseo_rejections')
+      .delete().eq('client_id', clientId).eq('dedup_key', dedupKey);
+  }
+  try {
+    const list = JSON.parse(localStorage.getItem(TSEO_REJECTIONS_KEY) || '[]');
+    localStorage.setItem(TSEO_REJECTIONS_KEY, JSON.stringify(
+      list.filter(r => !(r.client_id === clientId && r.dedup_key === dedupKey))
+    ));
+  } catch {}
+}
+
+export async function saveAeoRejection(clientId, pageUrl, optKey, reason = '') {
+  assertClientId(clientId, 'saveAeoRejection');
+  const row = { client_id: clientId, page_url: pageUrl, opt_key: optKey, reason, rejected_at: new Date().toISOString() };
+  if (supabase) {
+    const { error } = await supabase
+      .from('syte_suite_aeo_rejections')
+      .upsert(row, { onConflict: 'client_id,page_url,opt_key' });
+    if (error) throw error;
+  }
+  try {
+    const list = JSON.parse(localStorage.getItem(AEO_REJECTIONS_KEY) || '[]');
+    const idx = list.findIndex(r => r.client_id === clientId && r.page_url === pageUrl && r.opt_key === optKey);
+    if (idx >= 0) list[idx] = row; else list.push(row);
+    localStorage.setItem(AEO_REJECTIONS_KEY, JSON.stringify(list));
+  } catch {}
+  return row;
+}
+
+export async function listAeoRejections() {
+  if (supabase) {
+    const { data, error } = await supabase.from('syte_suite_aeo_rejections').select('*');
+    if (!error && data) {
+      try { localStorage.setItem(AEO_REJECTIONS_KEY, JSON.stringify(data)); } catch {}
+      return data;
+    }
+  }
+  try { return JSON.parse(localStorage.getItem(AEO_REJECTIONS_KEY) || '[]'); } catch { return []; }
+}
+
+export async function deleteAeoRejection(clientId, pageUrl, optKey) {
+  if (supabase) {
+    await supabase.from('syte_suite_aeo_rejections')
+      .delete().eq('client_id', clientId).eq('page_url', pageUrl).eq('opt_key', optKey);
+  }
+  try {
+    const list = JSON.parse(localStorage.getItem(AEO_REJECTIONS_KEY) || '[]');
+    localStorage.setItem(AEO_REJECTIONS_KEY, JSON.stringify(
+      list.filter(r => !(r.client_id === clientId && r.page_url === pageUrl && r.opt_key === optKey))
+    ));
   } catch {}
 }
 
@@ -825,13 +1135,16 @@ export async function loadContentHistory() {
 
 export async function getCachedReportData(clientId, month) {
   if (supabase) {
+    // maybeSingle() (not single()) — a missing cache row is the normal
+    // first-run case, and single() answers "no rows" with an HTTP 406 that
+    // shows up as a scary console error. maybeSingle() returns null instead.
     const { data } = await supabase
       .from('syte_suite_report_cache')
       .select('data, fetched_at')
       .eq('client_id', clientId)
       .eq('month', month)
       .limit(1)
-      .single();
+      .maybeSingle();
     return data || null;
   }
   try {

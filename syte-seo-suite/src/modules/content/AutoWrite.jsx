@@ -12,7 +12,7 @@ import PushToCmsButton from '../../components/PushToCmsButton.jsx';
 import MarkImplementedButton from '../../components/MarkImplementedButton.jsx';
 import PipelineView from '../../components/PipelineView.jsx';
 import LogExternalWork from '../../components/LogExternalWork.jsx';
-import { contentPipelineStatus } from '../../lib/pipelineStatus.js';
+import { contentPipelineStatus, monthOptions } from '../../lib/pipelineStatus.js';
 import { listAllImplementations, saveBlogResult, loadContentHistory, deleteBlogResult } from '../../lib/supabase.js';
 import { parseOutputSections, markdownToHtml } from './articleParser.js';
 
@@ -153,8 +153,10 @@ export default function AutoWrite() {
   const withGsc = contentClients.filter(c => c.gsc_property);
   const withoutGsc = contentClients.filter(c => !c.gsc_property);
 
-  const currentMonth = new Date().toISOString().slice(0, 7);
-  const monthLabel = new Date().toLocaleString('en-US', { month: 'long', year: 'numeric' });
+  const months = useMemo(() => monthOptions(), []);
+  const [selMonth, setSelMonth] = useState(new Date().toISOString().slice(0, 7));
+  const currentMonth = selMonth;
+  const monthLabel = months.find(m => m.value === selMonth)?.label || selMonth;
 
   // Load implementations + content history for pipeline view.
   useEffect(() => {
@@ -357,6 +359,11 @@ export default function AutoWrite() {
       <PipelineView
         title={`Content Engine — ${monthLabel}`}
         month={monthLabel}
+        monthSelector={
+          <select value={selMonth} onChange={e => setSelMonth(e.target.value)} style={{ width: 170, fontSize: 12 }}>
+            {months.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
+          </select>
+        }
         sections={pipelineSections}
         onAction={(client, action) => {
           if (action === 'generate') {
@@ -463,6 +470,7 @@ export default function AutoWrite() {
                       <MarkImplementedButton
                         module="content"
                         changeType="article"
+                        client={client}
                         pageUrl={pushedUrls[a.id || i] || client.url || ''}
                         title={a.topic || a.keyword || 'Article'}
                         description={`Article: ${a.topic || ''}`}

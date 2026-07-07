@@ -53,182 +53,418 @@ var ORPHAN_LOOKBACK_DAYS = 7;
 var ACTIVITY_LOOKBACK_DAYS = 7;
 // Skip the section entirely if every account is silent (no signal in showing zeros)
 var ACTIVITY_HIDE_IF_ALL_ZERO = true;
+// change_event is the slowest part of the digest (one AdsApp.search per account
+// plus an account-context switch). On large MCCs it can push past Google's
+// 30-min execution limit. Modes:
+//   'all' (default)        — query every spending account. The MCC scan
+//                            already selects each account for the revenue
+//                            fetch, so the extra GAQL is cheap.
+//   'drops-only'           — only query accounts flagged as lead-drop anomalies.
+//   'off'                  — skip the activity scrape entirely.
+var ACTIVITY_SCOPE = 'all';
 
 function main() {
-  var ss = SpreadsheetApp.openById(SHEET_ID);
+  Logger.log('=== DAILY DIGEST v3 (with quota logging) — code is loaded ===');
+  try {
+    _runDigest();
+  } catch (err) {
+    // Surface failure via email so the user knows the trigger fired but errored,
+    // instead of failing silently into the Logger.
+    Logger.log('Daily digest fatal error: ' + (err && err.stack ? err.stack : err));
+    try {
+      MailApp.sendEmail({
+        to: EMAIL_TO,
+        subject: 'Syte Daily Digest | FAILED',
+        htmlBody: '<p>The daily digest script threw an error before it could send the report.</p>'
+                + '<pre style="background:#f8f9fa;padding:10px;border:1px solid #eee;white-space:pre-wrap;">'
+                + _escapeHtml(String(err && err.stack ? err.stack : err))
+                + '</pre>'
+                + '<p style="color:#666;font-size:12px;">Check the Google Ads Scripts execution log for full context.</p>'
+      });
+    } catch (mailErr) {
+      Logger.log('Also failed to send error email: ' + mailErr.message);
+    }
+    throw err;
+  }
+}
+
+function _runDigest() {
+  // Accept either a bare ID or a full Google Sheets URL in SHEET_ID.
+  var sheetId = _extractSheetId(SHEET_ID);
+  if (!sheetId) {
+    throw new Error('SHEET_ID is not set or unrecognised: "' + SHEET_ID + '". Paste either the sheet ID or the full URL.');
+  }
+
+  var ss;
+  try {
+    ss = SpreadsheetApp.openById(sheetId);
+  } catch (e) {
+    throw new Error('Could not open spreadsheet "' + sheetId + '": ' + e.message
+                  + ' — make sure the script account has access to the sheet.');
+  }
+
   var sheet = ss.getSheetByName('DailyDigest');
-  if (!sheet) { Logger.log('No DailyDigest tab found'); return; }
-
-  var data = sheet.getDataRange().getValues();
-  if (data.length < 2) { Logger.log('No data in DailyDigest'); return; }
-
-  var headers = data[0];
   var today = Utilities.formatDate(new Date(), TIMEZONE, 'yyyy-MM-dd');
 
-  // Filter to today's rows
-  var todayRows = [];
-  for (var i = 1; i < data.length; i++) {
-    if (String(data[i][0]) === today) {
-      var row = {};
-      for (var j = 0; j < headers.length; j++) {
-        row[headers[j]] = data[i][j];
+  // Read sheet data if the tab exists. Missing/empty tab is fine — in MCC
+  // mode we can still render a digest from MCC stats alone, every account
+  // just won't have optimization-script columns.
+  var data = [], headers = [], digestByAccount = {};
+  if (sheet) {
+    data = sheet.getDataRange().getValues();
+    if (data.length >= 2) {
+      headers = data[0];
+      for (var i = 1; i < data.length; i++) {
+        if (_toDateStr(data[i][0]) === today) {
+          var row = {};
+          for (var j = 0; j < headers.length; j++) row[headers[j]] = data[i][j];
+          if (row.account) digestByAccount[String(row.account).toLowerCase().trim()] = row;
+        }
       }
-      todayRows.push(row);
     }
   }
 
-  if (todayRows.length === 0) {
-    Logger.log('No runs found for today (' + today + ')');
+  // Compute anomalies BEFORE the MCC pass so we can pass drop accounts as
+  // the change_event filter (avoids per-account context switch + GAQL query
+  // for accounts we don't need activity data on).
+  var todayRowsArr = [];
+  for (var k in digestByAccount) todayRowsArr.push(digestByAccount[k]);
+  var anomaliesPre = (todayRowsArr.length > 0 && headers.length > 0)
+    ? _detectAnomalies(todayRowsArr, data, headers, today)
+    : [];
+
+  var activityFilter = null;
+  if (ACTIVITY_SCOPE === 'drops-only') {
+    activityFilter = {};
+    for (var afi = 0; afi < anomaliesPre.length; afi++) {
+      if (anomaliesPre[afi].severity === 'drop') {
+        activityFilter[String(anomaliesPre[afi].account).toLowerCase().trim()] = true;
+      }
+    }
+  } else if (ACTIVITY_SCOPE === 'off') {
+    activityFilter = {}; // empty = scrape nothing
+  }
+  // 'all' => activityFilter stays null = scrape every account
+
+  // Single MCC pass: stats + (optional) change_event scrape. This used to be
+  // two separate AdsManagerApp.accounts() iterations; merging them halves
+  // the per-account iterator overhead.
+  Logger.log('Starting MCC scan... (activity scope: ' + ACTIVITY_SCOPE + ')');
+  var mccData = _collectMccData(activityFilter);
+  var mccStats = { mode: mccData.mode, byAccount: mccData.byAccount, error: mccData.error };
+  var activity = mccData.activity;
+  Logger.log('MCC scan complete: ' + Object.keys(mccData.byAccount).length + ' accounts with stats, '
+           + Object.keys(activity.byAccount).length + ' with activity data');
+
+  var accountList = _buildUnifiedAccountList(mccStats, digestByAccount);
+
+  if (accountList.length === 0) {
+    var hint;
+    if (mccStats.mode === 'unsupported') {
+      hint = 'No client script wrote a row for today (' + today + ', timezone ' + TIMEZONE + '), '
+           + 'and this script is not running at MCC level so we can\'t pull stats directly.';
+    } else if (mccStats.error) {
+      // MCC scan threw partway through — surface the actual error instead
+      // of pretending nothing spent money. Common causes: a per-account
+      // API quota hit, a malformed account in the MCC, or a timeout.
+      hint = 'The MCC scan raised an error before any account stats could be collected: '
+           + '<code style="background:#fdecea;padding:2px 4px;">' + _escapeHtml(mccStats.error) + '</code>. '
+           + 'Check the Google Ads Scripts execution log for the full stack trace, then re-run.';
+    } else {
+      hint = 'No MCC sub-account spent money in the last 14 days, and no client script wrote a row for today. '
+           + '<br><br>If this is unexpected, check the execution log for "MCC scan progress" lines — '
+           + 'they show how many accounts were iterated vs how many had spend.';
+    }
+    _sendEmptyDigest(today, hint);
     return;
   }
 
-  // === Compute anomalies per account ===
-  var anomalies = _detectAnomalies(todayRows, data, headers, today);
+  var anomalies = anomaliesPre;
 
-  // === Find orphan accounts (MCC mode only) ===
-  var orphans = _findOrphanAccounts(data, headers);
+  // === Coverage counts ===
+  var withScript = 0, withoutScript = 0, ecommerceCount = 0;
+  for (var ai = 0; ai < accountList.length; ai++) {
+    if (accountList[ai].hasScript) withScript++; else withoutScript++;
+    if (accountList[ai].isEcommerce) ecommerceCount++;
+  }
+  var hasEcommerce = ecommerceCount > 0;
 
-  // === Collect change_event activity per account (MCC mode only) ===
-  var activity = _collectChangeActivity();
-
-  // Build email
-  var email = '<html><body style="font-family:Arial,sans-serif;max-width:900px;margin:0 auto;color:#333;">';
-  email += '<div style="background:linear-gradient(135deg,#1a1a2e,#16213e);color:white;padding:20px;border-radius:8px 8px 0 0;">';
-  email += '<h1 style="margin:0;font-size:20px;">Syte Daily Digest</h1>';
-  email += '<p style="margin:5px 0 0;opacity:0.8;">' + today + ' | ' + todayRows.length + ' accounts processed</p></div>';
-
-  // Summary totals
-  var totals = { kwPaused: 0, stNegated: 0, aiNegated: 0, aiReview: 0, winners: 0,
-                 audit: 0, errors: 0, convThis: 0, convLast: 0 };
-
-  for (var i = 0; i < todayRows.length; i++) {
-    var r = todayRows[i];
-    totals.kwPaused += Number(r.keywords_paused) || 0;
-    totals.stNegated += Number(r.search_terms_negated) || 0;
-    totals.aiNegated += Number(r.ai_negated) || 0;
-    totals.aiReview += Number(r.ai_review) || 0;
-    totals.winners += Number(r.winners_promoted) || 0;
-    totals.audit += Number(r.audit_findings) || 0;
-    totals.errors += Number(r.errors) || 0;
-    totals.convThis += Number(r.conv_this_week) || 0;
-    totals.convLast += Number(r.conv_last_week) || 0;
+  // === Aggregate totals ===
+  var totals = { aiNegated: 0, aiReview: 0, winners: 0, errors: 0,
+                 convThis: 0, convPrev: 0, costThis: 0,
+                 convMtd: 0, convPrevMtd: 0,
+                 revThis: 0, revPrev: 0, revMtd: 0, revPrevMtd: 0 };
+  for (var ti = 0; ti < accountList.length; ti++) {
+    var a = accountList[ti];
+    totals.convThis += a.convThis || 0;
+    totals.convPrev += a.convPrev || 0;
+    totals.costThis += a.costThis || 0;
+    totals.convMtd += a.convMtd || 0;
+    totals.convPrevMtd += a.convPrevMtd || 0;
+    if (a.isEcommerce) {
+      totals.revThis += a.revThis || 0;
+      totals.revPrev += a.revPrev || 0;
+      totals.revMtd += a.revMtd || 0;
+      totals.revPrevMtd += a.revPrevMtd || 0;
+    }
+    if (a.digest) {
+      totals.aiNegated += Number(a.digest.ai_negated) || 0;
+      totals.aiReview += Number(a.digest.ai_review) || 0;
+      totals.winners += Number(a.digest.winners_promoted) || 0;
+      totals.errors += Number(a.digest.errors) || 0;
+    }
   }
 
-  var convChange = totals.convLast > 0 ? ((totals.convThis - totals.convLast) / totals.convLast * 100).toFixed(0) : 'N/A';
-  var convColor = totals.convThis >= totals.convLast ? '#2e7d32' : '#c62828';
+  var convChange = totals.convPrev > 0 ? ((totals.convThis - totals.convPrev) / totals.convPrev * 100).toFixed(0) : 'N/A';
+  var convColor = totals.convThis >= totals.convPrev ? '#2e7d32' : '#c62828';
+  var mtdChange = totals.convPrevMtd > 0 ? ((totals.convMtd - totals.convPrevMtd) / totals.convPrevMtd * 100).toFixed(0) : 'N/A';
+  var mtdColor = totals.convMtd >= totals.convPrevMtd ? '#2e7d32' : '#c62828';
+  var revChange = totals.revPrev > 0 ? ((totals.revThis - totals.revPrev) / totals.revPrev * 100).toFixed(0) : 'N/A';
+  var revColor = totals.revThis >= totals.revPrev ? '#2e7d32' : '#c62828';
+  var revMtdChange = totals.revPrevMtd > 0 ? ((totals.revMtd - totals.revPrevMtd) / totals.revPrevMtd * 100).toFixed(0) : 'N/A';
+  var revMtdColor = totals.revMtd >= totals.revPrevMtd ? '#2e7d32' : '#c62828';
+
+  // === Build email ===
+  var email = '<html><body style="font-family:Arial,sans-serif;max-width:1000px;margin:0 auto;color:#333;">';
+  email += '<div style="background:linear-gradient(135deg,#1a1a2e,#16213e);color:white;padding:20px;border-radius:8px 8px 0 0;">';
+  email += '<h1 style="margin:0;font-size:20px;">Syte Daily Digest</h1>';
+  email += '<p style="margin:5px 0 0;opacity:0.8;">' + today + ' | ' + accountList.length + ' accounts ('
+        + withScript + ' running optimization script, ' + withoutScript + ' without)</p></div>';
 
   // Totals bar
   email += '<div style="background:#f8f9fa;padding:15px;border-bottom:1px solid #e0e5ec;">';
   email += '<table style="border:none;border-collapse:collapse;"><tr>';
-  email += '<td style="padding:0 20px 0 0;"><strong style="font-size:24px;color:' + convColor + ';">' + totals.convThis.toFixed(0) + '</strong><br><span style="font-size:12px;color:#666;">Conv this week</span></td>';
-  email += '<td style="padding:0 20px 0 0;"><strong style="font-size:24px;">' + convChange + '%</strong><br><span style="font-size:12px;color:#666;">vs last week</span></td>';
+  email += '<td style="padding:0 20px 0 0;"><strong style="font-size:24px;color:' + convColor + ';">' + totals.convThis.toFixed(0) + '</strong><br><span style="font-size:12px;color:#666;">Conv last 7d</span></td>';
+  email += '<td style="padding:0 20px 0 0;"><strong style="font-size:24px;">' + convChange + '%</strong><br><span style="font-size:12px;color:#666;">vs prev 7d</span></td>';
+  if (mccStats.mode === 'mcc') {
+    email += '<td style="padding:0 20px 0 0;"><strong style="font-size:24px;color:' + mtdColor + ';">' + totals.convMtd.toFixed(0) + '</strong><br><span style="font-size:12px;color:#666;">Conv MTD</span></td>';
+    email += '<td style="padding:0 20px 0 0;"><strong style="font-size:24px;">' + mtdChange + '%</strong><br><span style="font-size:12px;color:#666;">vs prev MTD</span></td>';
+    if (hasEcommerce) {
+      email += '<td style="padding:0 20px 0 0;"><strong style="font-size:24px;color:' + revColor + ';">' + _fmtMoney(totals.revThis) + '</strong><br><span style="font-size:12px;color:#666;">Revenue 7d</span></td>';
+      email += '<td style="padding:0 20px 0 0;"><strong style="font-size:24px;color:' + revMtdColor + ';">' + _fmtMoney(totals.revMtd) + '</strong><br><span style="font-size:12px;color:#666;">Revenue MTD (' + revMtdChange + '%)</span></td>';
+    }
+    email += '<td style="padding:0 20px 0 0;"><strong style="font-size:24px;">' + totals.costThis.toFixed(0) + '</strong><br><span style="font-size:12px;color:#666;">Spend last 7d</span></td>';
+  }
   email += '<td style="padding:0 20px 0 0;"><strong style="font-size:24px;color:#2d6cdf;">' + totals.aiNegated + '</strong><br><span style="font-size:12px;color:#666;">AI negated</span></td>';
   email += '<td style="padding:0 20px 0 0;"><strong style="font-size:24px;color:#e65100;">' + totals.aiReview + '</strong><br><span style="font-size:12px;color:#666;">Need review</span></td>';
   email += '<td style="padding:0 20px 0 0;"><strong style="font-size:24px;">' + totals.winners + '</strong><br><span style="font-size:12px;color:#666;">Winners</span></td>';
   if (totals.errors > 0) email += '<td style="padding:0 20px 0 0;"><strong style="font-size:24px;color:#c62828;">' + totals.errors + '</strong><br><span style="font-size:12px;color:#666;">Errors</span></td>';
   email += '</tr></table></div>';
 
-  // === COVERAGE GAP: MCC accounts without the script — pinned to the top so
-  // it can't be missed. Only fires in MCC mode and only when there are gaps.
-  if (orphans.mode === 'mcc' && orphans.list.length > 0) {
-    email += _renderOrphansSection(orphans);
+  // === Anomalies section ===
+  if (anomalies.length > 0) email += _renderAnomaliesSection(anomalies);
+
+  // === MTD Biggest Losers / Winners summary (MCC mode only) ===
+  if (mccStats.mode === 'mcc') {
+    email += _renderMtdSummary(accountList);
   }
 
-  // === ANOMALIES SECTION (drops + spikes vs per-account 14d baseline) ===
-  if (anomalies.length > 0) {
-    email += _renderAnomaliesSection(anomalies);
-  }
-
-  // Per-account table (with anomaly badges inline)
+  // === Per-account table (unified MCC + sheet) ===
   var anomalyByAccount = {};
-  for (var ai = 0; ai < anomalies.length; ai++) anomalyByAccount[anomalies[ai].account] = anomalies[ai];
+  for (var aii = 0; aii < anomalies.length; aii++) anomalyByAccount[String(anomalies[aii].account).toLowerCase().trim()] = anomalies[aii];
 
   email += '<div style="padding:15px;"><table style="width:100%;border-collapse:collapse;font-size:12px;">';
   email += '<tr style="background:#e3f2fd;">';
   email += '<th style="padding:8px;text-align:left;">Account</th>';
-  email += '<th style="padding:8px;text-align:center;">Mode</th>';
-  email += '<th style="padding:8px;text-align:center;">Run</th>';
-  email += '<th style="padding:8px;text-align:right;">Conv</th>';
-  email += '<th style="padding:8px;text-align:right;">vs Baseline</th>';
-  email += '<th style="padding:8px;text-align:right;">AI Neg</th>';
-  email += '<th style="padding:8px;text-align:right;">Review</th>';
-  email += '<th style="padding:8px;text-align:right;">KW Paused</th>';
-  email += '<th style="padding:8px;text-align:right;">Winners</th>';
-  email += '<th style="padding:8px;text-align:right;">Audit</th>';
-  email += '<th style="padding:8px;text-align:right;">Errors</th>';
-  email += '<th style="padding:8px;text-align:right;">Time</th>';
+  email += '<th style="padding:8px;text-align:center;">Script</th>';
+  email += '<th style="padding:8px;text-align:right;">Conv 7d</th>';
+  email += '<th style="padding:8px;text-align:right;">vs Prev 7d</th>';
+  if (mccStats.mode === 'mcc') {
+    email += '<th style="padding:8px;text-align:right;">Conv MTD</th>';
+    email += '<th style="padding:8px;text-align:right;">vs Prev MTD</th>';
+    if (hasEcommerce) {
+      email += '<th style="padding:8px;text-align:right;background:#e8f5e9;" title="Conversion value (revenue) for ecommerce accounts">Rev 7d</th>';
+      email += '<th style="padding:8px;text-align:right;background:#e8f5e9;">vs Prev 7d</th>';
+      email += '<th style="padding:8px;text-align:right;background:#e8f5e9;">Rev MTD</th>';
+      email += '<th style="padding:8px;text-align:right;background:#e8f5e9;">vs Prev MTD</th>';
+    }
+    email += '<th style="padding:8px;text-align:right;">Spend 7d</th>';
+    email += '<th style="padding:8px;text-align:right;">Spend MTD</th>';
+    email += '<th style="padding:8px;text-align:right;">vs Prev MTD</th>';
+  }
   email += '</tr>';
 
-  for (var i = 0; i < todayRows.length; i++) {
-    var r = todayRows[i];
-    var isPreview = r.run_mode === 'PREVIEW';
-    var hasErrors = (Number(r.errors) || 0) > 0;
-    var anom = anomalyByAccount[r.account];
-    var rowBg = hasErrors ? '#ffebee'
+  // Helpers for column count so the group-divider colspan stays in sync
+  var fixedCols = 4; // Account, Script, Conv 7d, vs Prev 7d
+  if (mccStats.mode === 'mcc') fixedCols += 5; // Conv MTD, vs Prev MTD, Spend 7d, Spend MTD, vs Prev MTD
+  if (mccStats.mode === 'mcc' && hasEcommerce) fixedCols += 4; // Rev 7d, vs prev 7d, Rev MTD, vs prev MTD
+
+  // Track group boundary so we can render a divider between losers and winners.
+  var winnersStartIdx = -1;
+  if (mccStats.mode === 'mcc') {
+    for (var fi = 0; fi < accountList.length; fi++) {
+      var fp = accountList[fi].mtdDeltaPct;
+      if (fp !== null && fp >= 0) { winnersStartIdx = fi; break; }
+    }
+  }
+
+  for (var ri = 0; ri < accountList.length; ri++) {
+    var acc = accountList[ri];
+
+    // Group divider rows
+    if (mccStats.mode === 'mcc') {
+      if (ri === 0 && winnersStartIdx !== 0 && acc.mtdDeltaPct !== null && acc.mtdDeltaPct < 0) {
+        email += '<tr style="background:#ffe0e0;"><td colspan="' + fixedCols + '" style="padding:6px 8px;font-weight:700;color:#c62828;text-transform:uppercase;letter-spacing:0.5px;font-size:11px;">▼ Biggest Losers (MTD vs same period last month)</td></tr>';
+      }
+      if (ri === winnersStartIdx && winnersStartIdx !== -1) {
+        email += '<tr style="background:#e0f2e0;"><td colspan="' + fixedCols + '" style="padding:6px 8px;font-weight:700;color:#2e7d32;text-transform:uppercase;letter-spacing:0.5px;font-size:11px;">▲ Biggest Winners (MTD vs same period last month)</td></tr>';
+      }
+      if (acc.mtdDeltaPct === null && (ri === 0 || accountList[ri - 1].mtdDeltaPct !== null)) {
+        email += '<tr style="background:#f0f0f0;"><td colspan="' + fixedCols + '" style="padding:6px 8px;font-weight:700;color:#666;text-transform:uppercase;letter-spacing:0.5px;font-size:11px;">— No Prior MTD Baseline</td></tr>';
+      }
+    }
+
+    var key = String(acc.name).toLowerCase().trim();
+    var anom = anomalyByAccount[key];
+    var d = acc.digest;
+    var hasErrors = d && (Number(d.errors) || 0) > 0;
+    var isPreview = d && d.run_mode === 'PREVIEW';
+
+    var rowBg = !acc.hasScript ? '#fff8f0'
+              : hasErrors ? '#ffebee'
               : anom && anom.severity === 'drop' ? '#fff5f5'
               : anom && anom.severity === 'spike' ? '#f1f8e9'
-              : (i % 2 === 0 ? '#fff' : '#fafbfc');
-    var convW = Number(r.conv_this_week) || 0;
-    var convL = Number(r.conv_last_week) || 0;
-    var convTrend = convL > 0 ? (convW >= convL ? '↑' : '↓') : '—';
-    var convTrendColor = convW >= convL ? '#2e7d32' : '#c62828';
+              : (ri % 2 === 0 ? '#fff' : '#fafbfc');
 
-    var baselineCell = '<span style="color:#bbb;">—</span>';
-    if (anom) {
-      var sign = anom.deltaPct >= 0 ? '+' : '';
-      var color = anom.severity === 'drop' ? '#c62828' : anom.severity === 'spike' ? '#2e7d32' : '#666';
-      baselineCell = '<span style="color:' + color + ';font-weight:600;">' + sign + anom.deltaPct.toFixed(0) + '%</span>'
-                   + ' <span style="font-size:10px;color:#888;">(med ' + anom.baseline.toFixed(0) + ')</span>';
+    var convTrendArrow = acc.convPrev > 0 ? (acc.convThis >= acc.convPrev ? '↑' : '↓') : '—';
+    var convTrendPct = acc.convPrev > 0 ? ((acc.convThis - acc.convPrev) / acc.convPrev * 100).toFixed(0) : null;
+    var convTrendColor = acc.convThis >= acc.convPrev ? '#2e7d32' : '#c62828';
+    var trendCell = convTrendPct === null
+      ? '<span style="color:#bbb;">—</span>'
+      : '<span style="color:' + convTrendColor + ';font-weight:600;">' + (convTrendPct >= 0 ? '+' : '') + convTrendPct + '% ' + convTrendArrow + '</span>';
+
+    var scriptBadge;
+    if (!acc.hasScript) {
+      scriptBadge = '<span style="padding:2px 6px;border-radius:4px;font-size:10px;font-weight:600;background:#ffcdd2;color:#c62828;">NO SCRIPT</span>';
+    } else if (isPreview) {
+      scriptBadge = '<span style="padding:2px 6px;border-radius:4px;font-size:10px;font-weight:600;background:#fff3e0;color:#e65100;">PREVIEW</span>';
+    } else {
+      scriptBadge = '<span style="padding:2px 6px;border-radius:4px;font-size:10px;font-weight:600;background:#e8f5e9;color:#2e7d32;">LIVE</span>';
+    }
+
+    // MTD cells
+    var mtdCell = '<span style="color:#bbb;">—</span>';
+    var mtdTrendCell = '<span style="color:#bbb;">—</span>';
+    if (mccStats.mode === 'mcc') {
+      mtdCell = (acc.convMtd || 0).toFixed(0);
+      if (acc.mtdDeltaPct === null) {
+        mtdTrendCell = '<span style="color:#bbb;">new</span>';
+      } else {
+        var mtdColor = acc.mtdDeltaPct >= 0 ? '#2e7d32' : '#c62828';
+        var mtdSign = acc.mtdDeltaPct >= 0 ? '+' : '';
+        var mtdArrow = acc.mtdDeltaPct >= 0 ? '↑' : '↓';
+        mtdTrendCell = '<span style="color:' + mtdColor + ';font-weight:600;">'
+                     + mtdSign + acc.mtdDeltaPct.toFixed(0) + '% ' + mtdArrow + '</span>'
+                     + ' <span style="font-size:10px;color:#888;">(prev ' + (acc.convPrevMtd || 0).toFixed(0) + ')</span>';
+      }
     }
 
     email += '<tr style="background:' + rowBg + ';border-bottom:1px solid #eee;">';
-    email += '<td style="padding:6px 8px;font-weight:600;">' + r.account + (anom ? ' ' + _anomalyBadge(anom.severity) : '') + '</td>';
-    email += '<td style="padding:6px 8px;text-align:center;font-size:11px;">' + r.mode + '</td>';
-    email += '<td style="padding:6px 8px;text-align:center;"><span style="padding:2px 6px;border-radius:4px;font-size:10px;font-weight:600;background:' + (isPreview ? '#fff3e0;color:#e65100' : '#e8f5e9;color:#2e7d32') + ';">' + r.run_mode + '</span></td>';
-    email += '<td style="padding:6px 8px;text-align:right;">' + convW.toFixed(0) + ' <span style="color:' + convTrendColor + ';">' + convTrend + '</span></td>';
-    email += '<td style="padding:6px 8px;text-align:right;">' + baselineCell + '</td>';
-    email += '<td style="padding:6px 8px;text-align:right;">' + (Number(r.ai_negated) || 0) + '</td>';
-    email += '<td style="padding:6px 8px;text-align:right;color:#e65100;font-weight:' + ((Number(r.ai_review) || 0) > 0 ? '600' : '400') + ';">' + (Number(r.ai_review) || 0) + '</td>';
-    email += '<td style="padding:6px 8px;text-align:right;">' + (Number(r.keywords_paused) || 0) + '</td>';
-    email += '<td style="padding:6px 8px;text-align:right;color:#2e7d32;">' + (Number(r.winners_promoted) || 0) + '</td>';
-    email += '<td style="padding:6px 8px;text-align:right;">' + (Number(r.audit_findings) || 0) + '</td>';
-    email += '<td style="padding:6px 8px;text-align:right;' + (hasErrors ? 'color:#c62828;font-weight:600;' : '') + '">' + (Number(r.errors) || 0) + '</td>';
-    email += '<td style="padding:6px 8px;text-align:right;font-size:11px;color:#888;">' + r.duration_s + 's</td>';
+    email += '<td style="padding:6px 8px;font-weight:600;">' + acc.name + (anom ? ' ' + _anomalyBadge(anom.severity) : '') + '</td>';
+    email += '<td style="padding:6px 8px;text-align:center;">' + scriptBadge + '</td>';
+    email += '<td style="padding:6px 8px;text-align:right;">' + (acc.convThis || 0).toFixed(0) + '</td>';
+    email += '<td style="padding:6px 8px;text-align:right;">' + trendCell + '</td>';
+    if (mccStats.mode === 'mcc') {
+      email += '<td style="padding:6px 8px;text-align:right;font-weight:600;">' + mtdCell + '</td>';
+      email += '<td style="padding:6px 8px;text-align:right;">' + mtdTrendCell + '</td>';
+      if (hasEcommerce) {
+        // Revenue cells — populated only for ecommerce accounts. Lead-gen
+        // rows get dashes so the column reads as "not applicable" rather
+        // than "zero".
+        if (acc.isEcommerce) {
+          email += '<td style="padding:6px 8px;text-align:right;background:#f6fbf6;font-weight:600;">' + _fmtMoney(acc.revThis) + '</td>';
+
+          var revTrendArrow = acc.revPrev > 0 ? (acc.revThis >= acc.revPrev ? '↑' : '↓') : '—';
+          var revTrendPct = acc.revPrev > 0 ? ((acc.revThis - acc.revPrev) / acc.revPrev * 100).toFixed(0) : null;
+          var revTrendColor = acc.revThis >= acc.revPrev ? '#2e7d32' : '#c62828';
+          var revTrendCell = revTrendPct === null
+            ? '<span style="color:#bbb;">—</span>'
+            : '<span style="color:' + revTrendColor + ';font-weight:600;">' + (revTrendPct >= 0 ? '+' : '') + revTrendPct + '% ' + revTrendArrow + '</span>';
+          email += '<td style="padding:6px 8px;text-align:right;background:#f6fbf6;">' + revTrendCell + '</td>';
+
+          email += '<td style="padding:6px 8px;text-align:right;background:#f6fbf6;font-weight:600;">' + _fmtMoney(acc.revMtd) + '</td>';
+
+          var revMtdCell;
+          if (acc.revMtdDeltaPct === null) {
+            revMtdCell = '<span style="color:#bbb;">new</span>';
+          } else {
+            var revMtdColorR = acc.revMtdDeltaPct >= 0 ? '#2e7d32' : '#c62828';
+            var revMtdSign = acc.revMtdDeltaPct >= 0 ? '+' : '';
+            var revMtdArrow = acc.revMtdDeltaPct >= 0 ? '↑' : '↓';
+            revMtdCell = '<span style="color:' + revMtdColorR + ';font-weight:600;">'
+                       + revMtdSign + acc.revMtdDeltaPct.toFixed(0) + '% ' + revMtdArrow + '</span>'
+                       + ' <span style="font-size:10px;color:#888;">(prev ' + _fmtMoney(acc.revPrevMtd) + ')</span>';
+          }
+          email += '<td style="padding:6px 8px;text-align:right;background:#f6fbf6;">' + revMtdCell + '</td>';
+        } else {
+          email += '<td style="padding:6px 8px;text-align:right;background:#f6fbf6;color:#ccc;">—</td>';
+          email += '<td style="padding:6px 8px;text-align:right;background:#f6fbf6;color:#ccc;">—</td>';
+          email += '<td style="padding:6px 8px;text-align:right;background:#f6fbf6;color:#ccc;">—</td>';
+          email += '<td style="padding:6px 8px;text-align:right;background:#f6fbf6;color:#ccc;">—</td>';
+        }
+      }
+      email += '<td style="padding:6px 8px;text-align:right;color:#666;">' + (acc.costThis || 0).toFixed(0) + '</td>';
+
+      // Spend MTD + delta vs prev MTD
+      var spendMtdCell = (acc.costMtd || 0).toFixed(0);
+      var spendMtdTrendCell;
+      var costPrevMtdVal = acc.costPrevMtd || 0;
+      if (costPrevMtdVal > 0) {
+        var spendDelta = ((acc.costMtd || 0) - costPrevMtdVal) / costPrevMtdVal * 100;
+        var spendColor = spendDelta >= 0 ? '#2e7d32' : '#c62828';
+        var spendSign = spendDelta >= 0 ? '+' : '';
+        var spendArrow = spendDelta >= 0 ? '↑' : '↓';
+        spendMtdTrendCell = '<span style="color:' + spendColor + ';font-weight:600;">'
+                          + spendSign + spendDelta.toFixed(0) + '% ' + spendArrow + '</span>'
+                          + ' <span style="font-size:10px;color:#888;">(prev ' + costPrevMtdVal.toFixed(0) + ')</span>';
+      } else {
+        spendMtdTrendCell = '<span style="color:#bbb;">' + ((acc.costMtd || 0) > 0 ? 'new' : '—') + '</span>';
+      }
+      email += '<td style="padding:6px 8px;text-align:right;font-weight:600;">' + spendMtdCell + '</td>';
+      email += '<td style="padding:6px 8px;text-align:right;">' + spendMtdTrendCell + '</td>';
+    }
     email += '</tr>';
   }
-
   email += '</table></div>';
 
-  // === COVERAGE STATUS FOOTER ===
-  // If we ran in MCC mode AND found nothing, render the green "full coverage"
-  // confirmation here so people can see the check ran. Gap case is rendered
-  // at the top of the email instead.
-  if (orphans.mode === 'mcc' && orphans.list.length === 0) {
-    email += _renderOrphansSection(orphans);
-  } else if (orphans.mode === 'unsupported') {
+  // === Coverage footer (replaces dedicated orphan section) ===
+  if (mccStats.mode === 'mcc') {
+    if (withoutScript > 0) {
+      email += '<div style="padding:12px 15px;background:#fff8e1;border-top:1px solid #ffe082;color:#5d4037;font-size:12px;">'
+            + '<strong style="color:#e65100;">Coverage gap:</strong> ' + withoutScript
+            + ' account' + (withoutScript > 1 ? 's' : '') + ' marked <strong>NO SCRIPT</strong> above. '
+            + 'Install the optimization script on those accounts to enable AI negatives, anomaly detection, and the rest of the columns.'
+            + '</div>';
+    } else {
+      email += '<div style="padding:10px 15px;background:#e8f5e9;color:#2e7d32;font-size:12px;border-top:1px solid #c8e6c9;">'
+            + 'Full coverage: optimization script is running on every active MCC sub-account.'
+            + '</div>';
+    }
+  } else if (mccStats.mode === 'unsupported') {
     email += '<div style="padding:10px 15px;background:#f8f9fa;color:#888;font-size:11px;border-top:1px solid #eee;">'
-          + 'Coverage check requires running this script at the MCC level (AdsManagerApp not available in current context).'
+          + 'Install this script at the MCC level to see all spending accounts, not just those reporting via DailyDigest.'
           + '</div>';
   }
 
-  // === RECENT ACTIVITY SECTION + DROP-CORRELATION CALLOUT (MCC mode only) ===
+  // Recent activity + drop correlation
   if (activity.mode === 'mcc') {
     email += _renderDropCorrelation(activity, anomalies);
     email += _renderActivitySection(activity);
   }
 
-  // Accounts needing attention (kept — different signal: errors / review backlog)
-  var attention = todayRows.filter(function(r) {
-    return (Number(r.errors) || 0) > 0 ||
-           (Number(r.ai_review) || 0) > 10;
-  });
-
+  // Attention list — only meaningful for accounts running the script
+  var attention = [];
+  for (var att = 0; att < accountList.length; att++) {
+    var ad = accountList[att].digest;
+    if (!ad) continue;
+    if ((Number(ad.errors) || 0) > 0 || (Number(ad.ai_review) || 0) > 10) attention.push(ad);
+  }
   if (attention.length > 0) {
     email += '<div style="padding:15px;background:#fff8e1;border-top:1px solid #ffe082;">';
     email += '<h3 style="color:#e65100;margin:0 0 10px;">Needs Attention (' + attention.length + ' accounts)</h3>';
     email += '<ul style="font-size:13px;margin:0;padding:0 0 0 20px;">';
-    for (var a = 0; a < attention.length; a++) {
-      var ra = attention[a];
+    for (var an = 0; an < attention.length; an++) {
+      var ra = attention[an];
       var issues = [];
       if ((Number(ra.errors) || 0) > 0) issues.push(ra.errors + ' errors');
       if ((Number(ra.ai_review) || 0) > 10) issues.push(ra.ai_review + ' terms need review');
@@ -241,20 +477,413 @@ function main() {
   email += '</body></html>';
 
   // Subject line surfaces the most urgent signal
-  var subjectBits = [today, todayRows.length + ' accts', totals.convThis.toFixed(0) + ' conv'];
+  var subjectBits = [today, accountList.length + ' accts', totals.convThis.toFixed(0) + ' conv'];
   var drops = anomalies.filter(function(a) { return a.severity === 'drop'; }).length;
   if (drops > 0) subjectBits.push('⚠ ' + drops + ' drop' + (drops > 1 ? 's' : ''));
-  if (orphans.mode === 'mcc' && orphans.list.length > 0) subjectBits.push('⚠ ' + orphans.list.length + ' uninstalled');
+  if (withoutScript > 0) subjectBits.push('⚠ ' + withoutScript + ' uninstalled');
   var correlatedDrops = _correlatedDropAccounts(activity, anomalies).length;
   if (correlatedDrops > 0) subjectBits.push('🔥 ' + correlatedDrops + ' correlated');
 
-  MailApp.sendEmail({
-    to: EMAIL_TO,
-    subject: 'Syte Daily Digest | ' + subjectBits.join(' | '),
-    htmlBody: email
-  });
+  _sendMail('Syte Daily Digest | ' + subjectBits.join(' | '), email);
 
-  Logger.log('Daily digest sent: ' + todayRows.length + ' accounts, ' + anomalies.length + ' anomalies, ' + (orphans.list ? orphans.list.length : 0) + ' orphans');
+  Logger.log('Daily digest sent: ' + accountList.length + ' accounts ('
+           + withScript + ' with script, ' + withoutScript + ' without), '
+           + anomalies.length + ' anomalies');
+}
+
+
+// ============================================
+// MCC ACCOUNT STATS (new — drives the unified table)
+// ============================================
+
+/**
+ * Iterate every MCC sub-account and return last-7-day and previous-7-day
+ * conv/cost stats. Used to populate the digest table for every spending
+ * account, not just those reporting via DailyDigest.
+ *
+ * Returns { mode: 'mcc'|'unsupported', byAccount: { normName: stats } }.
+ */
+// Top losers + top winners by MTD vs prev-month-same-period.
+function _renderMtdSummary(accountList) {
+  // Require some volume in either window so a 1-conv jump doesn't dominate.
+  var MIN_CONV = 3;
+
+  var ranked = [];
+  for (var i = 0; i < accountList.length; i++) {
+    var a = accountList[i];
+    if (a.mtdDeltaPct === null) continue;
+    if ((a.convMtd || 0) < MIN_CONV && (a.convPrevMtd || 0) < MIN_CONV) continue;
+    ranked.push(a);
+  }
+  if (ranked.length === 0) return '';
+
+  var losers = ranked.filter(function(a) { return a.mtdDeltaPct < 0; })
+                     .sort(function(a, b) { return a.mtdDeltaPct - b.mtdDeltaPct; })
+                     .slice(0, 5);
+  var winners = ranked.filter(function(a) { return a.mtdDeltaPct >= 0; })
+                      .sort(function(a, b) { return b.mtdDeltaPct - a.mtdDeltaPct; })
+                      .slice(0, 5);
+
+  if (losers.length === 0 && winners.length === 0) return '';
+
+  function row(a, isLoser) {
+    var color = isLoser ? '#c62828' : '#2e7d32';
+    var sign = a.mtdDeltaPct >= 0 ? '+' : '';
+    return '<li><strong>' + a.name + '</strong> — '
+         + (a.convMtd || 0).toFixed(0) + ' MTD vs ' + (a.convPrevMtd || 0).toFixed(0) + ' prior '
+         + '<span style="color:' + color + ';font-weight:600;">(' + sign + a.mtdDeltaPct.toFixed(0) + '%)</span></li>';
+  }
+
+  var html = '<div style="padding:15px;background:#fafafa;border-top:1px solid #eee;border-bottom:1px solid #eee;">';
+  html += '<h3 style="margin:0 0 10px;color:#1a1a2e;font-size:14px;">MTD performance vs same period last month</h3>';
+  html += '<table style="width:100%;border-collapse:collapse;"><tr style="vertical-align:top;">';
+
+  html += '<td style="width:50%;padding-right:10px;">';
+  if (losers.length > 0) {
+    html += '<strong style="color:#c62828;">▼ Biggest losers (' + losers.length + ')</strong>';
+    html += '<ul style="margin:4px 0 0;padding:0 0 0 20px;font-size:13px;">';
+    losers.forEach(function(a) { html += row(a, true); });
+    html += '</ul>';
+  } else {
+    html += '<span style="color:#999;font-size:13px;">No accounts down vs same period last month.</span>';
+  }
+  html += '</td>';
+
+  html += '<td style="width:50%;padding-left:10px;">';
+  if (winners.length > 0) {
+    html += '<strong style="color:#2e7d32;">▲ Biggest winners (' + winners.length + ')</strong>';
+    html += '<ul style="margin:4px 0 0;padding:0 0 0 20px;font-size:13px;">';
+    winners.forEach(function(a) { html += row(a, false); });
+    html += '</ul>';
+  } else {
+    html += '<span style="color:#999;font-size:13px;">No accounts up vs same period last month.</span>';
+  }
+  html += '</td>';
+
+  html += '</tr></table></div>';
+  return html;
+}
+
+
+/**
+ * Single-pass MCC scan: per spending account, collects stats (LAST_7_DAYS,
+ * LAST_14_DAYS, MTD, prev-MTD) and — if the account matches activityFilter —
+ * also scrapes change_event activity. Returns stats and activity in one
+ * object so we only iterate AdsManagerApp.accounts() once.
+ *
+ * activityFilter:
+ *   null         => scrape change_event for every spending account
+ *   {} (empty)   => scrape nothing
+ *   { name: 1 }  => scrape only listed accounts (lowercase, trimmed)
+ *
+ * Returns { mode, byAccount, activity: { mode, byAccount } } where activity
+ * is shaped the same as the old _collectChangeActivity for downstream
+ * compatibility.
+ */
+function _collectMccData(activityFilter) {
+  if (typeof AdsManagerApp === 'undefined') {
+    return { mode: 'unsupported', byAccount: {}, activity: { mode: 'unsupported', byAccount: {} } };
+  }
+
+  // Compute the MTD and "previous month, same period" date ranges once,
+  // anchored to TIMEZONE so accounts always compare on the calendar months
+  // the user reads. Format: yyyyMMdd (what getStatsFor accepts).
+  var tzToday = Utilities.formatDate(new Date(), TIMEZONE, 'yyyy-MM-dd').split('-');
+  var Y = Number(tzToday[0]), M = Number(tzToday[1]), D = Number(tzToday[2]);
+  var pY = M === 1 ? Y - 1 : Y;
+  var pM = M === 1 ? 12 : M - 1;
+  var daysInPrev = new Date(pY, pM, 0).getDate();
+  var pD = Math.min(D, daysInPrev);
+  var pad = function(n) { return n < 10 ? '0' + n : '' + n; };
+  var mtdStart = '' + Y + pad(M) + '01';
+  var mtdEnd = '' + Y + pad(M) + pad(D);
+  var prevMtdStart = '' + pY + pad(pM) + '01';
+  var prevMtdEnd = '' + pY + pad(pM) + pad(pD);
+
+  var byAccount = {};
+  var activityByAccount = {};
+  var processed = 0, withSpend = 0, withActivity = 0;
+
+  // Pre-compute the widest revenue window we need (from prev-MTD start through
+  // today) so a single GAQL query per account covers all 4 buckets.
+  var revRangeStart = (prevMtdStart < _ymd(new Date(new Date().getTime() - 14 * 86400000)))
+                    ? prevMtdStart : _ymd(new Date(new Date().getTime() - 14 * 86400000));
+  var revRangeEnd = mtdEnd;
+  // Bucket boundaries (yyyyMMdd) for the JS-side date splitting
+  var d7Start = _ymd(new Date(new Date().getTime() - 6 * 86400000));
+  var d7End = mtdEnd; // today
+  var d14Start = _ymd(new Date(new Date().getTime() - 13 * 86400000));
+  var d14End = _ymd(new Date(new Date().getTime() - 7 * 86400000));
+
+  try {
+    var iter = AdsManagerApp.accounts().get();
+    while (iter.hasNext()) {
+      var account = iter.next();
+      processed++;
+      if (processed % 25 === 0) {
+        Logger.log('MCC scan progress: ' + processed + ' iterated, ' + withSpend + ' spending, ' + withActivity + ' activity scraped');
+      }
+      var name = account.getName();
+      if (!name) continue;
+
+      // Cheap pre-filter via ManagedAccount.Stats (no select needed yet).
+      var s14 = account.getStatsFor('LAST_14_DAYS');
+      if (s14.getCost() <= 0) continue;
+      withSpend++;
+
+      var s7 = account.getStatsFor('LAST_7_DAYS');
+      var sMtd = account.getStatsFor(mtdStart, mtdEnd);
+      var sPrevMtd = account.getStatsFor(prevMtdStart, prevMtdEnd);
+
+      var cost7 = s7.getCost();
+      var conv7 = s7.getConversions();
+      var key = name.toLowerCase().trim();
+      byAccount[key] = {
+        name: name,
+        cid: account.getCustomerId(),
+        costThis: cost7,
+        convThis: conv7,
+        revThis: 0,
+        // Previous 7 days = days 8-14 = 14d total minus last 7d
+        costPrev: Math.max(0, s14.getCost() - cost7),
+        convPrev: Math.max(0, s14.getConversions() - conv7),
+        revPrev: 0,
+        // MTD vs same period last month
+        costMtd: sMtd.getCost(),
+        convMtd: sMtd.getConversions(),
+        revMtd: 0,
+        costPrevMtd: sPrevMtd.getCost(),
+        convPrevMtd: sPrevMtd.getConversions(),
+        revPrevMtd: 0
+      };
+
+      // Switch into account scope for revenue (GAQL on `customer`) and the
+      // change_event scrape — both require account context. Stats has no
+      // getConversionValue(), so we have to read it via the report API.
+      AdsManagerApp.select(account);
+
+      _fillRevenueBuckets(byAccount[key], revRangeStart, revRangeEnd,
+                          d7Start, d7End, d14Start, d14End,
+                          mtdStart, mtdEnd, prevMtdStart, prevMtdEnd);
+
+      var scrapeActivity = (activityFilter === null) || (activityFilter[key] === true);
+      if (scrapeActivity) {
+        activityByAccount[key] = _scrapeChangeEvents();
+        withActivity++;
+      }
+    }
+  } catch (e) {
+    Logger.log('MCC scan error: ' + e.message);
+    return { mode: 'mcc', byAccount: byAccount, error: e.message,
+             activity: { mode: 'mcc', byAccount: activityByAccount, error: e.message } };
+  }
+
+  return {
+    mode: 'mcc',
+    byAccount: byAccount,
+    activity: { mode: 'mcc', byAccount: activityByAccount }
+  };
+}
+
+// yyyyMMdd formatter using the script TIMEZONE.
+function _ymd(date) {
+  return Utilities.formatDate(date, TIMEZONE, 'yyyyMMdd');
+}
+
+// Convert yyyyMMdd to GAQL date literal yyyy-MM-dd.
+function _ymdToDash(s) {
+  return s.substring(0, 4) + '-' + s.substring(4, 6) + '-' + s.substring(6, 8);
+}
+
+/**
+ * Single GAQL query against `customer` segmented by date, summing
+ * metrics.conversions_value into the four revenue buckets the digest
+ * needs. Stats objects don't expose conversion value, so this is the
+ * documented reliable path in account scope.
+ *
+ * All date args are yyyyMMdd. The widest-range query covers prev-MTD
+ * start through today; rows are bucketed in JS by date string compare.
+ */
+function _fillRevenueBuckets(target, rangeStart, rangeEnd,
+                             d7Start, d7End, d14Start, d14End,
+                             mtdStart, mtdEnd, prevMtdStart, prevMtdEnd) {
+  try {
+    var q = "SELECT segments.date, metrics.conversions_value "
+          + "FROM customer "
+          + "WHERE segments.date BETWEEN '" + _ymdToDash(rangeStart) + "' "
+          + "AND '" + _ymdToDash(rangeEnd) + "'";
+    var rows = AdsApp.search(q);
+    while (rows.hasNext()) {
+      var row = rows.next();
+      var segs = row.segments || {};
+      var mets = row.metrics || {};
+      // segments.date comes back as 'YYYY-MM-DD' — strip dashes for compare.
+      var ymd = String(segs.date || '').replace(/-/g, '');
+      var v = Number(mets.conversionsValue) || 0;
+      if (v === 0 || !ymd) continue;
+      if (ymd >= d7Start && ymd <= d7End) target.revThis += v;
+      if (ymd >= d14Start && ymd <= d14End) target.revPrev += v;
+      if (ymd >= mtdStart && ymd <= mtdEnd) target.revMtd += v;
+      if (ymd >= prevMtdStart && ymd <= prevMtdEnd) target.revPrevMtd += v;
+    }
+  } catch (e) {
+    Logger.log('Revenue fetch failed for ' + target.name + ': ' + e.message);
+  }
+}
+
+/** Scrape change_event for the currently-selected account. */
+function _scrapeChangeEvents() {
+  var bucket = {
+    human: 0, script: 0, googleAuto: 0, other: 0,
+    bidBudgetTouches: 0,
+    lastHuman: null,
+    lastGoogleAuto: null
+  };
+  try {
+    // GAQL's LAST_N_DAYS presets exclude today, so a change the user made an
+    // hour ago wouldn't appear. Use an explicit datetime range covering the
+    // full lookback window up through right now (end-of-current-day) so
+    // changes made today are included.
+    var nowMs = new Date().getTime();
+    var fromStr = Utilities.formatDate(new Date(nowMs - ACTIVITY_LOOKBACK_DAYS * 86400000), TIMEZONE, 'yyyy-MM-dd') + ' 00:00:00';
+    var toStr = Utilities.formatDate(new Date(nowMs), TIMEZONE, 'yyyy-MM-dd') + ' 23:59:59';
+    var q = "SELECT change_event.change_date_time, change_event.user_email, " +
+            "change_event.client_type, change_event.change_resource_type, " +
+            "change_event.resource_change_operation " +
+            "FROM change_event " +
+            "WHERE change_event.change_date_time >= '" + fromStr + "' " +
+            "AND change_event.change_date_time <= '" + toStr + "' " +
+            "ORDER BY change_event.change_date_time DESC LIMIT 10000";
+    var rows = AdsApp.search(q);
+    while (rows.hasNext()) {
+      var row = rows.next();
+      var ev = row.changeEvent || {};
+      var clientType = String(ev.clientType || 'UNKNOWN').toUpperCase();
+      var resType = String(ev.changeResourceType || '').toUpperCase();
+      var when = ev.changeDateTime || '';
+      var user = ev.userEmail || '';
+
+      var isHuman = clientType === 'GOOGLE_ADS_WEB_CLIENT' ||
+                    clientType === 'GOOGLE_ADS_EDITOR' ||
+                    clientType === 'GOOGLE_ADS_MOBILE_APP';
+      var isScript = clientType === 'GOOGLE_ADS_SCRIPTS' ||
+                     clientType === 'GOOGLE_ADS_API' ||
+                     clientType === 'GOOGLE_ADS_BULK_UPLOAD';
+      var isGoogleAuto = clientType === 'GOOGLE_ADS_AUTOMATED_RULE' ||
+                         clientType === 'GOOGLE_ADS_RECOMMENDATIONS';
+
+      if (isHuman) {
+        bucket.human++;
+        if (!bucket.lastHuman) bucket.lastHuman = { user: user, time: when };
+        if (resType === 'CAMPAIGN_BUDGET' || resType === 'BIDDING_STRATEGY' ||
+            resType === 'CAMPAIGN' || resType === 'AD_GROUP_CRITERION' ||
+            resType === 'AD_GROUP' || resType === 'AD_GROUP_AD') {
+          bucket.bidBudgetTouches++;
+        }
+      } else if (isScript) {
+        bucket.script++;
+      } else if (isGoogleAuto) {
+        bucket.googleAuto++;
+        if (!bucket.lastGoogleAuto) bucket.lastGoogleAuto = { time: when };
+      } else {
+        bucket.other++;
+      }
+    }
+  } catch (e) {
+    bucket.error = e.message;
+  }
+  return bucket;
+}
+
+/**
+ * Merge MCC stats with sheet rows into one ordered list. Every spending MCC
+ * sub-account appears; ones running the optimization script also carry the
+ * day's DailyDigest row.
+ *
+ * Sorted by MTD-vs-previous-MTD delta ascending: biggest losers at the top,
+ * biggest winners at the bottom. The render layer inserts a group divider
+ * between negative and non-negative deltas so the two groups read cleanly.
+ *
+ * If MCC isn't available, fall back to sheet-only (sub-account install mode).
+ */
+function _buildUnifiedAccountList(mccStats, digestByAccount) {
+  var list = [];
+
+  if (mccStats.mode === 'mcc') {
+    for (var key in mccStats.byAccount) {
+      var s = mccStats.byAccount[key];
+      var d = digestByAccount[key] || null;
+      var convMtd = s.convMtd || 0;
+      var convPrevMtd = s.convPrevMtd || 0;
+      var mtdDeltaPct = convPrevMtd > 0
+        ? ((convMtd - convPrevMtd) / convPrevMtd) * 100
+        : (convMtd > 0 ? null : 0); // new account / no prior baseline
+
+      var revMtd = s.revMtd || 0;
+      var revPrevMtd = s.revPrevMtd || 0;
+      var revMtdDeltaPct = revPrevMtd > 0
+        ? ((revMtd - revPrevMtd) / revPrevMtd) * 100
+        : (revMtd > 0 ? null : 0);
+
+      // Ecommerce detection: explicit mode from digest, or non-zero
+      // conversion value in any window (means the account tracks rev).
+      var isEcommerce = (d && String(d.mode || '').toUpperCase() === 'ECOMMERCE')
+                     || s.revThis > 0 || s.revPrev > 0 || s.revMtd > 0;
+
+      list.push({
+        name: s.name,
+        cid: s.cid,
+        hasScript: !!d,
+        isEcommerce: isEcommerce,
+        convThis: s.convThis,
+        convPrev: s.convPrev,
+        costThis: s.costThis,
+        convMtd: convMtd,
+        convPrevMtd: convPrevMtd,
+        costMtd: s.costMtd || 0,
+        costPrevMtd: s.costPrevMtd || 0,
+        mtdDeltaPct: mtdDeltaPct,
+        revThis: s.revThis || 0,
+        revPrev: s.revPrev || 0,
+        revMtd: revMtd,
+        revPrevMtd: revPrevMtd,
+        revMtdDeltaPct: revMtdDeltaPct,
+        digest: d
+      });
+    }
+    // Losers first (most-negative MTD delta on top), winners at bottom.
+    // Accounts with no prior baseline sink to the bottom.
+    list.sort(function(a, b) {
+      var aN = a.mtdDeltaPct === null;
+      var bN = b.mtdDeltaPct === null;
+      if (aN && !bN) return 1;
+      if (bN && !aN) return -1;
+      if (aN && bN) return (b.convMtd || 0) - (a.convMtd || 0);
+      return a.mtdDeltaPct - b.mtdDeltaPct;
+    });
+  } else {
+    // Sub-account / sheet-only mode — no MTD data available
+    for (var dk in digestByAccount) {
+      var dr = digestByAccount[dk];
+      list.push({
+        name: dr.account,
+        cid: null,
+        hasScript: true,
+        convThis: Number(dr.conv_this_week) || 0,
+        convPrev: Number(dr.conv_last_week) || 0,
+        costThis: null,
+        convMtd: null,
+        convPrevMtd: null,
+        costMtd: null,
+        costPrevMtd: null,
+        mtdDeltaPct: null,
+        digest: dr
+      });
+    }
+    list.sort(function(a, b) { return (b.convThis || 0) - (a.convThis || 0); });
+  }
+
+  return list;
 }
 
 
@@ -284,9 +913,9 @@ function _detectAnomalies(todayRows, data, headers, todayStr) {
   // Group historical conv_this_week per account (excluding today)
   var byAcct = {};
   for (var i = 1; i < data.length; i++) {
-    var dateStr = String(data[i][0]);
+    var dateStr = _toDateStr(data[i][0]);
     if (dateStr === todayStr) continue;
-    var rowDate = _parseSheetDate(dateStr);
+    var rowDate = _parseSheetDate(data[i][0]);
     if (!rowDate || rowDate < cutoff) continue;
     var acct = data[i][colIdx['account']];
     if (!acct) continue;
@@ -399,31 +1028,29 @@ function _findOrphanAccounts(data, headers) {
   var cutoff = new Date(now.getTime() - ORPHAN_LOOKBACK_DAYS * 24 * 60 * 60 * 1000);
   var installed = {};
   for (var i = 1; i < data.length; i++) {
-    var rowDate = _parseSheetDate(String(data[i][0]));
+    var rowDate = _parseSheetDate(data[i][0]);
     if (!rowDate || rowDate < cutoff) continue;
     var acct = data[i][colIdx['account']];
     if (acct) installed[String(acct).toLowerCase().trim()] = true;
   }
 
-  // Iterate all sub-accounts with spend in the last 7 days (broader window
-  // catches accounts that didn't happen to spend yesterday but are still
-  // active and need the script). We pull 7-day stats so each row is
-  // priority-rankable by recent spend, not just one day.
+  // Iterate all sub-accounts and filter by spend after we have the stats.
+  // Filtering with .withCondition("metrics.cost_micros > 0") on
+  // AdsManagerApp.accounts() now raises PROHIBITED_METRIC_IN_SELECT_OR_WHERE
+  // because cost_micros is not selectable on customer_client.
   var orphans = [];
   try {
-    var iter = AdsManagerApp.accounts()
-      .withCondition("metrics.cost_micros > 0")
-      .forDateRange("LAST_7_DAYS")
-      .get();
+    var iter = AdsManagerApp.accounts().get();
 
     while (iter.hasNext()) {
       var account = iter.next();
       var name = account.getName();
       if (!name) continue;
+
+      var stats7 = account.getStatsFor("LAST_7_DAYS");
+      if (stats7.getCost() <= 0) continue; // no spend in the window — ignore
       if (installed[name.toLowerCase().trim()]) continue;
 
-      // 7-day stats for sorting + context, plus yesterday for "is it still active"
-      var stats7 = account.getStatsFor("LAST_7_DAYS");
       var stats1 = account.getStatsFor("YESTERDAY");
       orphans.push({
         name: name,
@@ -500,12 +1127,89 @@ function _renderOrphansSection(orphans) {
 // HELPERS
 // ============================================
 
-function _parseSheetDate(str) {
-  if (!str) return null;
-  // Expected format: yyyy-MM-dd
-  var m = String(str).match(/^(\d{4})-(\d{2})-(\d{2})/);
-  if (!m) return null;
-  return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+// Accept either a bare sheet ID or a full Google Sheets URL.
+function _extractSheetId(s) {
+  if (!s) return null;
+  s = String(s).trim();
+  if (!s || s === 'PASTE_SHEET_ID_HERE') return null;
+  var m = s.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+  if (m) return m[1];
+  // Already a bare ID
+  if (/^[a-zA-Z0-9-_]{20,}$/.test(s)) return s;
+  return null;
+}
+
+function _escapeHtml(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// Compact money format for ecommerce revenue: 1,234 ; 12.5k ; 1.2M.
+// No currency symbol because Google Ads sub-accounts can be in different
+// currencies and the unified totals would be misleading with a single symbol.
+function _fmtMoney(n) {
+  n = Number(n) || 0;
+  if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+  if (n >= 10000) return (n / 1000).toFixed(1) + 'k';
+  if (n >= 1000) return (n / 1000).toFixed(2) + 'k';
+  return n.toFixed(0);
+}
+
+// Send a minimal status email when there's no data to digest, so the user
+// gets confirmation that the script ran and a hint about why it's quiet.
+function _sendEmptyDigest(today, reasonHtml) {
+  var html = '<html><body style="font-family:Arial,sans-serif;max-width:700px;margin:0 auto;color:#333;">'
+    + '<div style="background:linear-gradient(135deg,#1a1a2e,#16213e);color:white;padding:20px;border-radius:8px 8px 0 0;">'
+    + '<h1 style="margin:0;font-size:20px;">Syte Daily Digest</h1>'
+    + '<p style="margin:5px 0 0;opacity:0.8;">' + today + ' | no data</p></div>'
+    + '<div style="padding:20px;background:#fff8e1;border-top:3px solid #e65100;">'
+    + '<h3 style="margin:0 0 8px;color:#e65100;">Nothing to report</h3>'
+    + '<p style="margin:0;font-size:13px;color:#5d4037;">' + reasonHtml + '</p>'
+    + '</div>'
+    + '<div style="padding:15px;color:#999;font-size:11px;text-align:center;">Syte Digital Agency | Daily Digest | syte.co.za</div>'
+    + '</body></html>';
+  _sendMail('Syte Daily Digest | ' + today + ' | no data', html);
+}
+
+// Centralised send so every code path logs quota + result and we can tell
+// from the execution log whether delivery actually happened.
+function _sendMail(subject, htmlBody) {
+  var remaining = -1;
+  try { remaining = MailApp.getRemainingDailyQuota(); } catch (qe) { Logger.log('Quota check failed: ' + qe.message); }
+  Logger.log('Sending email to "' + EMAIL_TO + '" (remaining daily quota: ' + remaining + ')');
+  if (remaining === 0) {
+    Logger.log('ABORT: MailApp daily quota exhausted — email will not be sent.');
+    return;
+  }
+  MailApp.sendEmail({ to: EMAIL_TO, subject: subject, htmlBody: htmlBody });
+  Logger.log('Email send call returned without error. Subject: ' + subject);
+}
+
+function _parseSheetDate(val) {
+  if (val === null || val === undefined || val === '') return null;
+  if (val instanceof Date) {
+    if (isNaN(val.getTime())) return null;
+    // Use the configured TIMEZONE so a Date stored as midnight-in-some-zone
+    // collapses to the same calendar day the user thinks of as "today".
+    var s = Utilities.formatDate(val, TIMEZONE, 'yyyy-MM-dd');
+    var p = s.split('-');
+    return new Date(Number(p[0]), Number(p[1]) - 1, Number(p[2]));
+  }
+  var str = String(val);
+  var m = str.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (m) return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  // Last resort: let JS try to parse it (handles "Mon May 18 2026 ..." form)
+  var d = new Date(str);
+  if (isNaN(d.getTime())) return null;
+  var s2 = Utilities.formatDate(d, TIMEZONE, 'yyyy-MM-dd').split('-');
+  return new Date(Number(s2[0]), Number(s2[1]) - 1, Number(s2[2]));
+}
+
+// Normalise a sheet cell value to a yyyy-MM-dd string in TIMEZONE.
+// Handles Date objects and any string the sheet might give us.
+function _toDateStr(val) {
+  var d = _parseSheetDate(val);
+  if (!d) return '';
+  return Utilities.formatDate(d, TIMEZONE, 'yyyy-MM-dd');
 }
 
 function _median(arr) {
@@ -513,108 +1217,6 @@ function _median(arr) {
   var sorted = arr.slice().sort(function(a, b) { return a - b; });
   var mid = Math.floor(sorted.length / 2);
   return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
-}
-
-
-// ============================================
-// CHANGE_EVENT SCRAPER (MCC mode) — last 7 days, bucketed by client_type
-// ============================================
-
-/**
- * For each MCC sub-account that spent yesterday, query the change_event
- * resource for the last ACTIVITY_LOOKBACK_DAYS and bucket every event
- * into HUMAN / SCRIPT / GOOGLE_AUTO based on client_type.
- *
- * High-signal counters track changes that directly affect performance:
- *   bidBudgetTouches = human-driven changes to CAMPAIGN_BUDGET, BIDDING_STRATEGY,
- *   CAMPAIGN status, or AD_GROUP_CRITERION (keyword bids/status). These are
- *   the things most likely to explain a sudden lead drop.
- *
- * Returns { mode: 'mcc' | 'unsupported', byAccount: { name: bucket } }.
- */
-function _collectChangeActivity() {
-  if (typeof AdsManagerApp === 'undefined') {
-    return { mode: 'unsupported', byAccount: {} };
-  }
-
-  var byAccount = {};
-
-  try {
-    var iter = AdsManagerApp.accounts()
-      .withCondition("metrics.cost_micros > 0")
-      .forDateRange("LAST_" + ACTIVITY_LOOKBACK_DAYS + "_DAYS")
-      .get();
-
-    while (iter.hasNext()) {
-      var account = iter.next();
-      var name = account.getName();
-      if (!name) continue;
-
-      AdsManagerApp.select(account);
-      var bucket = {
-        human: 0, script: 0, googleAuto: 0, other: 0,
-        bidBudgetTouches: 0,
-        lastHuman: null,   // { user, time }
-        lastGoogleAuto: null
-      };
-
-      try {
-        var q = "SELECT change_event.change_date_time, change_event.user_email, " +
-                "change_event.client_type, change_event.change_resource_type, " +
-                "change_event.resource_change_operation " +
-                "FROM change_event " +
-                "WHERE change_event.change_date_time DURING LAST_" + ACTIVITY_LOOKBACK_DAYS + "_DAYS " +
-                "ORDER BY change_event.change_date_time DESC LIMIT 10000";
-
-        var rows = AdsApp.search(q);
-        while (rows.hasNext()) {
-          var row = rows.next();
-          var ev = row.changeEvent || {};
-          var clientType = String(ev.clientType || 'UNKNOWN').toUpperCase();
-          var resType = String(ev.changeResourceType || '').toUpperCase();
-          var when = ev.changeDateTime || '';
-          var user = ev.userEmail || '';
-
-          var isHuman = clientType === 'GOOGLE_ADS_WEB_CLIENT' ||
-                        clientType === 'GOOGLE_ADS_EDITOR' ||
-                        clientType === 'GOOGLE_ADS_MOBILE_APP';
-          var isScript = clientType === 'GOOGLE_ADS_SCRIPTS' ||
-                         clientType === 'GOOGLE_ADS_API' ||
-                         clientType === 'GOOGLE_ADS_BULK_UPLOAD';
-          var isGoogleAuto = clientType === 'GOOGLE_ADS_AUTOMATED_RULE' ||
-                             clientType === 'GOOGLE_ADS_RECOMMENDATIONS';
-
-          if (isHuman) {
-            bucket.human++;
-            if (!bucket.lastHuman) bucket.lastHuman = { user: user, time: when };
-            // High-signal: human touched bids / budgets / status
-            if (resType === 'CAMPAIGN_BUDGET' || resType === 'BIDDING_STRATEGY' ||
-                resType === 'CAMPAIGN' || resType === 'AD_GROUP_CRITERION' ||
-                resType === 'AD_GROUP' || resType === 'AD_GROUP_AD') {
-              bucket.bidBudgetTouches++;
-            }
-          } else if (isScript) {
-            bucket.script++;
-          } else if (isGoogleAuto) {
-            bucket.googleAuto++;
-            if (!bucket.lastGoogleAuto) bucket.lastGoogleAuto = { time: when };
-          } else {
-            bucket.other++;
-          }
-        }
-      } catch (innerE) {
-        Logger.log('change_event query for "' + name + '": ' + innerE.message);
-        bucket.error = innerE.message;
-      }
-
-      byAccount[name] = bucket;
-    }
-  } catch (e) {
-    Logger.log('Activity collection error: ' + e.message);
-    return { mode: 'mcc', byAccount: byAccount, error: e.message };
-  }
-
-  return { mode: 'mcc', byAccount: byAccount };
 }
 
 

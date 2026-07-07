@@ -17,12 +17,13 @@ CRITICAL TONE RULES (NEVER BREAK):
 - Frame PPC equivalent value prominently: "Your organic traffic this month would have cost approximately RX,XXX in Google Ads."
 
 AEO TONE RULES:
-- Lead with momentum: if citations or visibility are up MoM, that comes first ("Citations jumped 68% in 30 days").
+- Lead with COVERAGE growth: the headline is "now named in X of Y buyer prompts" and how that moved month-on-month, plus the number of new prompt themes we discovered this month. Coverage and new themes come before any single-metric story.
 - Lead with rank when leading: if the client is #1 vs SA competitors on visibility, say so explicitly.
-- Treat low absolute scores as a starting baseline, not a crisis. 5% visibility with no MoM data is "we now have a baseline to attack" — never "AI Visibility Crisis".
-- Highlight active wins (queries where the brand is hitting 70%+ visibility on at least one engine) before listing zero-visibility opportunities.
-- For zero-visibility category terms, frame as "the next opportunity" not "the missing 93%".
-- FORBIDDEN PHRASES (and any close paraphrase): "AI visibility crisis", "missing from X% of responses", "virtually invisible", "critical gap", "alarming", "concerning", "shortfall", "the bad news". These NEVER appear in any AEO discussion.
+- Treat low absolute scores as a starting baseline, not a crisis. Being named in a few of many prompts with no MoM data is "we now have a baseline to attack" — never "AI Visibility Crisis".
+- When coverage is low, frame the citation gap table as the GROWTH PLAN: name the top one or two source domains competitors appear on and give ONE sentence per priority action for getting the brand onto them.
+- Highlight active wins (prompts where the brand appears on at least 70% of runs) before listing zero-coverage opportunities.
+- For zero-coverage category terms, frame as "the next opportunity" not "the missing 93%".
+- FORBIDDEN PHRASES (and any close paraphrase): "AI visibility crisis", "missing from X% of responses", "virtually invisible", "critical gap", "alarming", "concerning", "shortfall", "the bad news", "hallucination", "the AI is wrong about you". These NEVER appear in any AEO discussion.
 
 VOICE & POINT OF VIEW (NEVER BREAK):
 - Write TO the client, not ABOUT them. Use second person ("your", "you've", "you're seeing") and first-person plural ("we", "we've", "our work together").
@@ -34,6 +35,7 @@ WRITING RULES:
 - No bullet points. Flowing paragraphs only.
 - Never open with "I hope this email finds you well" or any cliché.
 - Under 250 words total.
+- NEVER use em dashes or en dashes. Use commas or colons instead. This is a hard house rule.
 - End with a specific observation that shows genuine attention to this account.
 - Sign off: Alice | Syte Digital Agency | hello@syte.co.za
 
@@ -72,8 +74,9 @@ Return ONLY valid JSON matching this exact shape. No prose before/after, no code
   "topPages": [
     { "page": "/lead-generation/", "users": "57", "delta": "+42%" }
   ],
-  "aeoMomNarrative": "1-2 sentence story about how AEO has moved month-on-month. Mention the strongest delta (citations, visibility, or sentiment). If no previous month, say 'this is our baseline going forward'.",
-  "aeoCompetitiveNarrative": "1-2 sentence story about where the client sits vs SA competitors on visibility. Use rank + closest rival's gap. Example: 'Krost leads every SA competitor we track — 1.3pp ahead of Universal Storage on visibility.'",
+  "aeoMomNarrative": "1-2 sentence story about how AEO has moved month-on-month. Lead with COVERAGE growth (named in X of Y prompts, up from Z) and new themes discovered. If no previous month, say 'this is our baseline going forward'.",
+  "aeoCompetitiveNarrative": "1-2 sentence story about where the client sits vs SA competitors on visibility. Use rank + closest rival's gap. Example: 'Krost leads every SA competitor we track, 1.3pp ahead of Universal Storage on visibility.'",
+  "citationGapsNarrative": "1-2 sentences on the citation gaps: the top source domains competitors appear on where the brand does not, framed as the growth plan (not a shortfall). Omit if there are no gaps.",
   "aeoStrategy": {
     "show": true,
     "priorities": [
@@ -107,8 +110,10 @@ Rules:
 - aeoStrategy.zeroOpportunity: pick 2-3 zero-visibility queries from the payload that look like high-volume category terms ("pallet racking", "industrial shelving") and frame them as the next month's foundation play.
 - If no AEO data, omit aeoMomNarrative, aeoCompetitiveNarrative, aeoStrategy.
 - If no click data for PPC estimate, set ppcEquivalent.show = false.
-- workDone: ONLY populate items from the explicit "=== WHAT SYTE DID THIS MONTH ===" section in the user payload. If that section says "NO WORK DATA AVAILABLE" or contains no concrete numbers (articles, fixes, optimizations, verified changes), set workDone.show = false and workDone.items = []. NEVER invent generic strategy items like "Complete site assessment" or "SEO roadmap development". Each card must correspond to a specific line in the payload — no inferences from the brand or industry.
-- Highlights: 3-6 metrics, pick the MOST POSITIVE ones for this client. Prefer MoM delta-positive metrics first (visibility +X%, citations +Y%).
+- workDone: ONLY populate items from the explicit "=== WHAT SYTE DID THIS MONTH ===" section in the user payload. If that section says "NO WORK DATA AVAILABLE" or contains no concrete numbers (articles, fixes, optimizations, verified changes), set workDone.show = false and workDone.items = []. NEVER invent generic strategy items like "Complete site assessment" or "SEO roadmap development". Each card must correspond to a specific line in the payload, no inferences from the brand or industry.
+- Highlights: 3-6 metrics. Prefer coverage-led metrics FIRST: "named in X of Y prompts", coverage rate + MoM delta, share of voice, then the AEO Index. Use citations/sentiment as secondary.
+- citationGapsNarrative: frame the top competitor source domains as the growth plan, never as a failure. Omit if no gaps in the payload.
+- NEVER use em dashes or en dashes anywhere in the JSON strings. Use commas or colons. Hard house rule.
 - topPages: up to 5, mirror what's in the payload.`;
 
 export const QA_SYSTEM = `You are a senior copy reviewer at Syte Digital Agency. Review the Alice email against the rules and return ONLY JSON in this shape (no prose, no code fences):
@@ -147,20 +152,26 @@ You are Alice, AI account manager at Syte Digital Agency, Johannesburg, writing 
 
 ABSOLUTE RULE — STRICT SCOPE:
 - This email is AEO ONLY. Do NOT mention organic traffic, sessions, conversions, leads, GA4, Google Search Console rankings, keyword positions, top pages, or PPC equivalent value. Those belong in the SEO report — not here.
-- The only metrics you may cite are: AEO visibility %, mentions, citations, detection rate, top-3 rate, sentiment %, engine-by-engine visibility, competitive rank, query-level wins.
+- The only metrics you may cite are: share of voice across the prompt census, AEO visibility %, mentions, citations, detection rate, top-3 rate, sentiment %, engine-by-engine visibility, competitive rank, query-level wins, per-intent visibility.
+- FRAMING: measurement is a representative CENSUS of how buyers ask AI about this category (not a handful of guessed prompts). Lead with SHARE OF VOICE when it's a strong story — it's the most defensible number because the census is broad and representative.
 
 ABSOLUTE RULE — NO DOOM FRAMING:
-- Forbidden phrases (and any close paraphrase): "AI visibility crisis", "missing from X% of responses", "virtually invisible", "critical gap", "alarming", "concerning", "underperforming", "behind", "doom", "trouble", "warning sign", "red flag", "shortfall", "the bad news".
-- AEO is a long-game discipline. A 5% visibility score is a baseline to grow from, not a crisis. Frame everything as either momentum (if there's MoM data) or starting position (if month one).
-- If the brand is #1 vs SA competitors, lead with that — even if absolute visibility is in single digits.
-- If MoM citations or visibility moved up at all, that's the headline regardless of absolute level.
-- If neither, lead with the strongest active query win or the strongest engine.
+- Forbidden phrases (and any close paraphrase): "AI visibility crisis", "missing from X% of responses", "virtually invisible", "critical gap", "alarming", "concerning", "underperforming", "behind", "doom", "trouble", "warning sign", "red flag", "shortfall", "the bad news", "hallucination", "the AI is wrong about you".
+- AEO is a long-game discipline. Being named in a few of many prompts is a baseline to grow from, not a crisis. Frame everything as either momentum (if there's MoM data) or starting position (if month one).
+- If the brand is #1 vs SA competitors, lead with that, even if absolute coverage is in single digits.
+- If coverage or citations moved up at all, that is the headline regardless of absolute level.
+- If neither, lead with the strongest active prompt win or the strongest engine.
+
+LEAD WITH COVERAGE: the primary story is "now named in X of Y buyer prompts" and how that moved month-on-month, plus how many NEW prompt themes we discovered and are now tracking. State coverage and new themes before any other metric.
+
+GROWTH PLAN WHEN COVERAGE IS LOW: when coverage is low, frame the citation gap table as the plan. Name the top one or two source domains where competitors appear and the brand does not, and give ONE sentence per priority (P1) action for earning a presence there.
 
 OPENING LINES (pick the strongest available, in this priority order):
-1. "Two months in, [Brand] now leads/sits #X among South African [category] brands on AI visibility." (if competitive position is strong)
-2. "[Brand] gained X citations and Y mentions across AI engines this month — a +Z% jump on last month." (if MoM positive)
-3. "[Brand] is showing up in [Engine] for [N] head-of-category queries including '[query]'." (if active wins exist)
-4. "Month 1 of AEO tracking is in. We now have a baseline across [N] queries × [M] engines, and the highest-yield queries are already mapped for next month's push." (true first-month with no wins)
+1. "[Brand] is now named in X of Y buyer prompts across AI answers in [category], up from Z last month." (coverage growth, the default lead)
+2. "[Brand] holds X% share of voice across AI answers in [category], [ahead of / closing on] [competitor]." (if share of voice is a strong story)
+3. "Two months in, [Brand] now leads/sits #X among South African [category] brands on AI visibility." (if competitive position is strong)
+4. "[Brand] is showing up in [Engine] for [N] head-of-category prompts including '[query]'." (if active wins exist)
+5. "We've now added AI-visibility measurement to your program. [Brand] is tracked across [Y] buyer prompts x [M] engines, with [K] new prompt themes mapped for next month." (first AEO snapshot — do NOT say "Month 1" or imply the client is new unless the payload's ENGAGEMENT CONTEXT confirms it)
 
 VOICE & POINT OF VIEW (NEVER BREAK):
 - Write TO the client, not ABOUT them. Second person ("your", "you've") and first-person plural ("we", "we've", "our") only.
@@ -171,8 +182,9 @@ WRITING RULES:
 - No bullet points. Flowing paragraphs only.
 - Never open with "I hope this email finds you well" or any cliché.
 - Under 250 words total.
-- Cite specific numbers from the payload — visibility %, citation count, MoM delta, engine names, query examples.
-- End with a forward-looking sentence about what we're attacking next month — pull from the EMERGING WINS list in the payload, not the ZERO list.
+- Cite specific numbers from the payload: prompt coverage (X of Y), coverage MoM delta, new themes discovered, share of voice, citation count, engine names, prompt examples.
+- NEVER use em dashes or en dashes. Use commas or colons instead. This is a hard house rule.
+- End with a forward-looking sentence about what we're attacking next month, pulled from the EMERGING WINS or the CITATION GAPS in the payload, not the ZERO list.
 - Sign off: Alice | Syte Digital Agency | hello@syte.co.za
 
 FORMAT:
@@ -201,11 +213,14 @@ Return ONLY valid JSON, no prose, no code fences:
   "subheadline": "one sentence reinforcing the headline with a concrete number",
   "narrative": "2-3 sentences telling a confident momentum/baseline story. Use real numbers from the payload.",
   "highlights": [
-    { "label": "Visibility Score", "value": "8.0%", "delta": "+2.8pp", "positive": true },
-    { "label": "Citations", "value": "47", "delta": "+68%", "positive": true }
+    { "label": "Named In", "value": "8 of 20", "delta": "+3", "positive": true },
+    { "label": "Coverage Rate", "value": "40%", "delta": "+8pp", "positive": true },
+    { "label": "Share of Voice", "value": "34%", "delta": "+6pp", "positive": true },
+    { "label": "AEO Index", "value": "52", "delta": "+9", "positive": true }
   ],
-  "aeoMomNarrative": "1-2 sentences on MoM movement. If first month, say 'this is our baseline going forward — every metric is now tracked monthly'.",
+  "aeoMomNarrative": "1-2 sentences on MoM movement. LEAD with coverage growth (named in X of Y prompts, up from Z) and new themes discovered. If first month, say 'this is our baseline going forward, every metric is now tracked monthly'.",
   "aeoCompetitiveNarrative": "1-2 sentences on competitive standing vs SA rivals. Use rank + closest competitor's gap. If brand is #1 say so explicitly.",
+  "citationGapsNarrative": "1-2 sentences on the citation gaps as the growth plan: the top source domains competitors appear on where the brand does not. Omit if no gaps in the payload.",
   "aeoStrategy": {
     "show": true,
     "priorities": [
@@ -223,8 +238,10 @@ Return ONLY valid JSON, no prose, no code fences:
 }
 
 Rules:
-- DO NOT include workDone, topPages, ppcEquivalent — those are SEO. They will be ignored anyway.
-- highlights: 4-6 items, drawn ONLY from AEO metrics (visibility, mentions, citations, detection rate, top-3 rate, sentiment).
+- DO NOT include workDone, topPages, ppcEquivalent. Those are SEO and will be ignored anyway.
+- highlights: 4-6 items, drawn ONLY from AEO metrics. Order coverage-led: "named in X of Y prompts" and coverage rate FIRST, then share of voice, then the AEO Index, then citations/sentiment.
+- citationGapsNarrative: frame the top competitor source domains as the growth plan, never a failure. Omit if no gaps in the payload.
+- NEVER use em dashes or en dashes anywhere in the JSON strings. Use commas or colons. Hard house rule.
 - aeoStrategy.priorities: 3-5 items based on the EMERGING WINS in the payload (queries with 30-69% visibility — these are close to winning). Use Quick Win for highest-visibility emerging items, Grow Share for mid-tier, Own the Category for high-volume zero-visibility terms.
 - Use real numbers from the payload, not made-up ones.`;
 
@@ -335,12 +352,36 @@ export function getWorkSummary(clientId, month) {
 // Build the user-message payload for Alice and the Microsite.
 // ---------------------------------------------------------------------------
 
+// Engagement context: how long the client has been with us, and whether this
+// is genuinely their first month. A missing prior AEO snapshot means the first
+// AEO MEASUREMENT, not the client's first month — keep those distinct so the
+// copy never calls a long-standing client "Month 1".
+export function engagementNote(startDate, monthLabel) {
+  if (!startDate) return null;
+  const start = new Date(startDate);
+  if (isNaN(start.getTime())) return null;
+  let end = new Date();
+  const m = /([A-Za-z]+)\s+(\d{4})/.exec(monthLabel || '');
+  if (m) { const d = new Date(m[1] + ' 1, ' + m[2]); if (!isNaN(d.getTime())) end = d; }
+  const months = (end.getFullYear() - start.getFullYear()) * 12 + (end.getMonth() - start.getMonth()) + 1;
+  return { start: startDate, months: Math.max(1, months) };
+}
+
+function engagementLine(client, monthLabel) {
+  const e = engagementNote(client?.start_date, monthLabel);
+  if (!e) return null;
+  if (e.months <= 1) return null; // genuinely new client — "month 1" is fine
+  return `ENGAGEMENT CONTEXT: this client has been with Syte since ${e.start}, so ${monthLabel || 'this month'} is month ${e.months} of the engagement. This is the FIRST AEO snapshot, but NOT the client's first month. Do NOT call it "Month 1", a "month-1 campaign", or imply the relationship is new. Frame it as: we have now added AI-visibility (AEO) measurement to your existing program, establishing the baseline we track from here.`;
+}
+
 export function buildAlicePayload(form, aeo, workSummary) {
   const lines = [];
   lines.push(`Client: ${form.clientName}`);
   if (form.industry) lines.push(`Industry: ${form.industry}`);
   if (form.goals)    lines.push(`Client goals / context: ${form.goals}`);
   lines.push(`Month: ${form.month}`);
+  const aliceEng = engagementLine({ start_date: form.startDate }, form.month);
+  if (aliceEng) lines.push(aliceEng);
   lines.push('');
   lines.push('TONE INSTRUCTION: Always lead with the biggest positive. If traffic is down MoM, check if YoY is up. If everything is down, lead with work done (articles, fixes, AEO improvements). NEVER make this read like bad news.');
 
@@ -396,7 +437,14 @@ export function buildAlicePayload(form, aeo, workSummary) {
   // --- AEO data ---
   if (form.hasAeo && aeo) {
     lines.push('\n=== AEO (AI SEARCH VISIBILITY) ===');
-    lines.push(`Visibility score: ${aeo.visibility_score ?? '—'}% of all probe responses mention the brand`);
+    lines.push('Measured across a representative set of buyer prompts (how buyers actually ask AI about this category), not a handful of guessed prompts.');
+    lines.push(`Named in: ${aeo.prompt_coverage ?? 'n/a'} of ${aeo.scorable_probes ?? aeo.queries_count ?? 'n/a'} buyer prompts (coverage rate ${aeo.coverage_rate != null ? Math.round(aeo.coverage_rate * 100) + '%' : 'n/a'}). LEAD WITH THIS.`);
+    lines.push(`AEO Index (composite): ${aeo.composite_index ?? aeo.overall_score ?? 'n/a'}`);
+    lines.push(`New prompt themes discovered this month: ${aeo.new_themes ?? 0}`);
+    if (aeo.share_of_voice != null) {
+      lines.push(`Share of voice: ${aeo.share_of_voice}% of all brand mentions across the census were the brand (vs tracked competitors)`);
+    }
+    lines.push(`Visibility score: ${aeo.visibility_score ?? '—'}% of all census responses mention the brand`);
     lines.push(`Detection rate: ${aeo.detection_rate ?? '—'}% of queries hit at least once`);
     lines.push(`Top-3 rate: ${aeo.top3_rate ?? '—'}% of responses place us in positions 1-3`);
     lines.push(`Mentions: ${aeo.mentions ?? '—'}`);
@@ -410,9 +458,11 @@ export function buildAlicePayload(form, aeo, workSummary) {
     if (form.aeoCompare?.has_previous && form.aeoCompare?.deltas) {
       lines.push(`\nMonth-on-month vs ${form.previousMonthLabel || 'last month'}:`);
       const d = form.aeoCompare.deltas;
-      const fmt = (delta, suffix = 'pp') => delta == null ? '—'
+      const fmt = (delta, suffix = 'pp') => delta == null ? 'n/a'
         : (delta.absolute >= 0 ? '+' : '') + delta.absolute + suffix
         + (delta.percent != null ? ' (' + (delta.percent >= 0 ? '+' : '') + delta.percent + '%)' : '');
+      lines.push(`  Coverage: ${fmt(d.coverage)}  <-- LEAD WITH THIS`);
+      lines.push(`  AEO Index: ${fmt(d.composite, '')}`);
       lines.push(`  Visibility: ${fmt(d.visibility)}`);
       lines.push(`  Citations: ${fmt(d.citations, '')}`);
       lines.push(`  Mentions: ${fmt(d.mentions, '')}`);
@@ -420,7 +470,7 @@ export function buildAlicePayload(form, aeo, workSummary) {
       lines.push(`  Top-3 rate: ${fmt(d.top3)}`);
       lines.push(`  Sentiment: ${fmt(d.sentiment)}`);
     } else {
-      lines.push('\nThis is the first AEO snapshot — no MoM comparison available.');
+      lines.push('\nThis is the first AEO snapshot (first AEO measurement, not necessarily the client\'s first month — see ENGAGEMENT CONTEXT). No MoM comparison available yet.');
     }
 
     // Competitive ranking — gives Alice rank + closest rival.
@@ -444,8 +494,16 @@ export function buildAlicePayload(form, aeo, workSummary) {
     }
     // Zero — what's the biggest gap
     if (aeo.keyword_wins?.zero?.length) {
-      lines.push(`\nZero visibility (${aeo.keyword_wins.zero.length} queries) — biggest opportunity:`);
+      lines.push(`\nZero coverage (${aeo.keyword_wins.zero.length} prompts): the biggest opportunity:`);
       lines.push(aeo.keyword_wins.zero.slice(0, 6).map(w => `  "${w.query}"`).join('\n'));
+    }
+    // Citation gaps — the growth plan when coverage is low.
+    if (aeo.citation_gaps?.length) {
+      lines.push('\nCitation gaps (the growth plan): commercial prompts the brand missed but competitors were cited on:');
+      lines.push(aeo.citation_gaps.slice(0, 5).map(g =>
+        `  ${g.domain}: cited ${g.hitCount}x, competitors ${(g.competitors || []).join(', ')}. Action: ${g.suggestedAction}`
+      ).join('\n'));
+      lines.push('When coverage is low, lead the plan with these, one sentence per top action.');
     }
   } else if (form.hasAeo) {
     lines.push('\n=== AEO (manual input) ===');
@@ -478,26 +536,47 @@ export function buildAeoPayload({ client, monthLabel: ml, previousMonthLabel, pr
   if (client.industry) lines.push(`Industry: ${client.industry}`);
   if (client.url)      lines.push(`URL: ${client.url}`);
   lines.push(`Month: ${ml}`);
+  const engLine = engagementLine(client, ml);
+  if (engLine) lines.push(engLine);
   lines.push('');
   lines.push('AEO PERFORMANCE REPORT — write a confident, momentum-led story about how the brand is showing up in AI engines.');
-  lines.push('Lead with the strongest positive: best MoM delta, or competitive rank, or top engine. Never frame this as a crisis.');
+  lines.push('Lead with the strongest positive: share of voice across the census, best MoM delta, competitive rank, or top engine. Never frame this as a crisis.');
+  lines.push('');
+  lines.push('=== METHODOLOGY (how to frame this) ===');
+  lines.push(`We don't guess a handful of prompts. We measure ${client.name} across a representative census of ${probe.queries_count} prompts covering how real buyers ask AI engines about this category — spread across buyer intents (awareness, commercial, comparison, local, problem-solving). The headline is SHARE OF VOICE: of all the brand-naming the AI engines did across that census, what fraction was ${client.name}.`);
   lines.push('');
   lines.push('=== HEADLINE METRICS ===');
-  lines.push(`Visibility: ${probe.visibility_score}% of probe responses mention ${client.name}`);
-  lines.push(`Detection rate: ${probe.detection_rate}% of queries triggered at least one mention`);
+  lines.push(`Named in: ${probe.prompt_coverage ?? 'n/a'} of ${probe.scorable_probes ?? probe.queries_count ?? 'n/a'} buyer prompts (coverage rate ${probe.coverage_rate != null ? Math.round(probe.coverage_rate * 100) + '%' : 'n/a'}). THIS IS THE HEADLINE.`);
+  lines.push(`AEO Index (composite 0-100): ${probe.composite_index ?? probe.overall_score ?? 'n/a'}`);
+  lines.push(`New prompt themes discovered and now tracked this month: ${probe.new_themes ?? 0}`);
+  if (probe.share_of_voice != null) {
+    lines.push(`Share of voice: ${probe.share_of_voice}% of all brand mentions across the census were ${client.name} (vs tracked competitors)`);
+  }
+  lines.push(`Visibility: ${probe.visibility_score}% of census responses mention ${client.name}`);
+  lines.push(`Detection rate: ${probe.detection_rate}% of prompts triggered at least one mention`);
   lines.push(`Top-3 rate: ${probe.top3_rate}% of responses placed ${client.name} in positions 1-3`);
   lines.push(`Mentions: ${probe.mentions} · Citations (URL/domain): ${probe.citations}`);
   lines.push(`Sentiment: ${probe.sentiment_score}% positive`);
-  lines.push(`Engines tested: ${(probe.engines_used || []).join(', ')} (${probe.iterations || 1} iterations × ${probe.queries_count} queries)`);
+  lines.push(`Engines tested: ${(probe.engines_used || []).join(', ')} (${probe.iterations || 1} iterations × ${probe.queries_count} prompts)`);
   lines.push(`Per-engine visibility (%): ${JSON.stringify(probe.engine_scores || {})}`);
+
+  if (probe.intent_breakdown?.length) {
+    lines.push('\n=== VISIBILITY BY BUYER INTENT ===');
+    probe.intent_breakdown.forEach(b =>
+      lines.push(`  ${b.intent}: ${b.visibility}% visibility across ${b.queries} prompt(s)`)
+    );
+    lines.push('Use this to show breadth — strong on some intents, the next opportunity on others.');
+  }
 
   if (compare?.has_previous && compare.deltas) {
     lines.push(`\n=== MONTH-ON-MONTH (vs ${previousMonthLabel}) ===`);
     const d = compare.deltas;
-    const fmt = (delta, suffix = 'pp') => delta == null ? '—'
+    const fmt = (delta, suffix = 'pp') => delta == null ? 'n/a'
       : (delta.absolute >= 0 ? '+' : '') + delta.absolute + suffix
       + (delta.percent != null ? ' (' + (delta.percent >= 0 ? '+' : '') + delta.percent + '%)' : '');
-    lines.push(`Visibility: ${compare.previous?.visibility ?? '—'}% → ${compare.current?.visibility ?? '—'}% (${fmt(d.visibility)})`);
+    lines.push(`Coverage: ${compare.previous?.coverage ?? 'n/a'}% to ${compare.current?.coverage ?? 'n/a'}% (${fmt(d.coverage)})  <-- LEAD WITH THIS`);
+    lines.push(`AEO Index: ${compare.previous?.composite ?? 'n/a'} to ${compare.current?.composite ?? 'n/a'} (${fmt(d.composite, '')})`);
+    lines.push(`Visibility: ${compare.previous?.visibility ?? 'n/a'}% to ${compare.current?.visibility ?? 'n/a'}% (${fmt(d.visibility)})`);
     lines.push(`Citations:  ${compare.previous?.citations ?? '—'} → ${compare.current?.citations ?? '—'} (${fmt(d.citations, '')})`);
     lines.push(`Mentions:   ${compare.previous?.mentions ?? '—'} → ${compare.current?.mentions ?? '—'} (${fmt(d.mentions, '')})`);
     lines.push(`Detection:  ${compare.previous?.detection ?? '—'}% → ${compare.current?.detection ?? '—'}% (${fmt(d.detection)})`);
@@ -505,7 +584,7 @@ export function buildAeoPayload({ client, monthLabel: ml, previousMonthLabel, pr
     lines.push(`Sentiment:  ${compare.previous?.sentiment ?? '—'}% → ${compare.current?.sentiment ?? '—'}% (${fmt(d.sentiment)})`);
     lines.push('LEAD WITH THE STRONGEST POSITIVE DELTA — citations and mentions are the gold-standard metrics.');
   } else {
-    lines.push('\nThis is the first AEO snapshot — no MoM comparison. Frame it as the baseline we are now attacking.');
+    lines.push('\nThis is the first AEO SNAPSHOT (the first AEO measurement, not necessarily the client\'s first month — see ENGAGEMENT CONTEXT above). No MoM comparison yet; frame it as the measurement baseline we now track from here.');
   }
 
   if (ranking?.length && brandRank) {
@@ -535,6 +614,14 @@ export function buildAeoPayload({ client, monthLabel: ml, previousMonthLabel, pr
     probe.keyword_wins.zero.slice(0, 8).forEach(w => lines.push(`  "${w.query}"`));
   }
 
-  lines.push('\nWrite an AEO performance email AND microsite JSON covering: where the brand is winning, the strongest MoM movement or competitive position, the queries to attack next month, and one concrete deliverable for next month. Confident, forward-looking, momentum-led.');
+  if (probe.citation_gaps?.length) {
+    lines.push(`\n=== CITATION GAPS (the growth plan when coverage is low) ===`);
+    probe.citation_gaps.slice(0, 6).forEach(g =>
+      lines.push(`  ${g.domain}: cited ${g.hitCount}x on commercial prompts the brand missed. Competitors here: ${(g.competitors || []).join(', ')}. Action: ${g.suggestedAction}`)
+    );
+    lines.push('If coverage is low, frame these as the plan: one sentence per top (P1) action.');
+  }
+
+  lines.push('\nWrite an AEO performance email AND microsite JSON. LEAD with coverage growth (named in X of Y prompts, MoM) and new themes discovered. Then the strongest competitive position, the prompts to attack next month (from emerging wins or citation gaps), and one concrete deliverable. Confident, forward-looking, coverage-led. Never use em dashes or en dashes.');
   return lines.join('\n');
 }

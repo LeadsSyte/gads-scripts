@@ -22,7 +22,9 @@ import { verifyImplementation, verifyImplementationFromHtml, verifyImplementatio
 //                pipeline view shows tasks from many clients). Without
 //                this, the button verified against the topbar client and
 //                produced the "checked bamdiy.com/robots.txt for a Syte
-//                task" bug.
+//                task" bug. It's also what kept the button disabled (the
+//                not-allowed cursor) when no client was selected in the
+//                topbar — falling back to a null current() left it dead.
 //   disabled?:   boolean
 export default function MarkImplementedButton({
   module, changeType, pageUrl, title, description, disabled, onVerified, client: clientProp
