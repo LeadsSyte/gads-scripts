@@ -886,8 +886,13 @@ export default function MonthlyReport() {
 
   const hasSnapshot = !!aeoSnap;
 
+  // Drop the AEO Probe step from the pipeline display for clients that
+  // aren't ticked as AEO clients — a Full Report for them never probes,
+  // so advertising the step is misleading (this is what made Gym Gear,
+  // which is not on AEO, still "show AEO probe"). form.hasAeo mirrors the
+  // does_aeo !== false tick convention.
   const PHASES = [
-    { key: 'aeo-probe', label: 'AEO Probe' },
+    ...(form.hasAeo ? [{ key: 'aeo-probe', label: 'AEO Probe' }] : []),
     { key: 'alice', label: 'Alice email' },
     { key: 'micro', label: 'Microsite JSON' },
     { key: 'qa',    label: 'QA check' }
