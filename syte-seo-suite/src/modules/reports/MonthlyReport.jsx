@@ -935,7 +935,7 @@ export default function MonthlyReport() {
             <span style={{ color: fetchStatus.includes('✓') ? 'var(--green)' : fetchStatus.includes('failed') || fetchStatus.includes('403') ? 'var(--orange)' : 'var(--text-muted)', flex: 1 }}>
               {fetchStatus}
             </span>
-            {(fetchStatus.includes('cache') || fetchStatus.includes('Not connected') || fetchStatus.includes('Loaded saved report')) && (
+            {(fetchStatus.includes('cache') || fetchStatus.includes('Not connected') || fetchStatus.includes('Loaded saved report') || fetchStatus.includes('session expired')) && (
               <button
                 onClick={async () => {
                   // Refresh-data path also clears the saved-report-loaded
@@ -949,7 +949,7 @@ export default function MonthlyReport() {
                 {fetchStatus.includes('Not connected') ? 'Connect Google' : 'Refresh Data'}
               </button>
             )}
-            {(fetchStatus.includes('403') || fetchStatus.includes('permission') || fetchStatus.includes('failed') || fetchStatus.includes('Wrong Google account') || fetchStatus.includes('sign-in needed') || fetchStatus.includes('Not connected')) && (
+            {(fetchStatus.includes('403') || fetchStatus.includes('permission') || fetchStatus.includes('failed') || fetchStatus.includes('Wrong Google account') || fetchStatus.includes('sign-in needed') || fetchStatus.includes('Not connected') || fetchStatus.includes('session expired')) && (
               <button
                 onClick={async () => {
                   try {
