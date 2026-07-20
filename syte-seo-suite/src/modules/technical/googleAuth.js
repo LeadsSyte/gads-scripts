@@ -253,7 +253,14 @@ export async function requestToken(scopes, { forcePicker = false, loginHint = nu
 // Step 1 is the multi-account win: once the operator has signed into all
 // six client accounts, switching between clients is instant — the map
 // holds a live token per email and we just hand back the right one.
-export async function ensureToken(scopes, { expectedEmail = null } = {}) {
+// interactive:false makes this SILENT-ONLY — it never opens an OAuth popup and
+// instead throws a { requiresInteraction:true } error when a fresh token can't
+// be obtained silently. Data-fetch pipelines MUST use this: a popup opened deep
+// in an async flow has no user activation, so the browser blocks it and Google
+// Identity returns `popup_failed_to_open` (which then surfaces as "GSC:
+// popup_failed_to_open"). Interactive popups may only be triggered directly
+// from a user click (the Connect / Refresh buttons).
+export async function ensureToken(scopes, { expectedEmail = null, interactive = true } = {}) {
   const needed = Array.isArray(scopes) ? scopes : [scopes];
 
   // (1) Per-email cache — only consulted when the caller knows which
@@ -290,9 +297,15 @@ export async function ensureToken(scopes, { expectedEmail = null } = {}) {
   let fresh;
   if (silent) {
     fresh = silent;
-  } else {
-    // (4) Interactive — last resort.
+  } else if (interactive) {
+    // (4) Interactive — last resort. Only safe from a direct user gesture.
     fresh = await requestToken(needed, { loginHint: hint });
+  } else {
+    // Silent-only caller (a data-fetch pipeline): don't pop a popup that the
+    // browser will block. Signal that a user-initiated reconnect is needed.
+    const err = new Error('Google session expired — reconnect to refresh this data.');
+    err.requiresInteraction = true;
+    throw err;
   }
   if (expectedEmail) await assertEmailMatches(fresh, expectedEmail);
   return fresh;

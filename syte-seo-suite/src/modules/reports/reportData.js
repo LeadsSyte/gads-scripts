@@ -73,7 +73,9 @@ async function fetchGA4Period(propertyId, dateRange, clientType, expectedEmail =
     // Server-side flow: the proxy attaches the account's token server-side.
     res = await proxyGoogleFetch(url, { method: 'POST', body: reqBody }, expectedEmail);
   } else {
-    const token = await ensureToken([SCOPES.ga4], { expectedEmail });
+    // Silent-only: never pop an OAuth popup from inside the fetch pipeline
+    // (no user gesture here → the browser blocks it → popup_failed_to_open).
+    const token = await ensureToken([SCOPES.ga4], { expectedEmail, interactive: false });
     res = await fetchWithTimeout(
       url,
       {
@@ -175,7 +177,9 @@ export async function fetchReportData(client, year, month1Based) {
       ]);
       traffic = { current: cur, previous: prev, yoy };
     } catch (e) {
-      errors.push('GA4: ' + e.message);
+      errors.push(e?.requiresInteraction
+        ? 'GA4: Google session expired — click Connect Google (or Refresh Data) to re-authorize, then re-run.'
+        : 'GA4: ' + e.message);
     }
   } else {
     errors.push('GA4: No property ID configured');
@@ -186,7 +190,9 @@ export async function fetchReportData(client, year, month1Based) {
   let topPages = [];
   if (client.gsc_property) {
     try {
-      await ensureToken([SCOPES.gsc], { expectedEmail: gscEmail });
+      // Silent-only: a popup here (deep in the async fetch) has no user gesture,
+      // so the browser blocks it and Google returns popup_failed_to_open.
+      await ensureToken([SCOPES.gsc], { expectedEmail: gscEmail, interactive: false });
       const [curKw, prevKw, pages] = await Promise.all([
         fetchKeywordRankings(client.gsc_property, periods.current, gscEmail),
         fetchKeywordRankings(client.gsc_property, periods.prev, gscEmail),
@@ -223,7 +229,9 @@ export async function fetchReportData(client, year, month1Based) {
         position: Number(row.position?.toFixed(1) || 0)
       }));
     } catch (e) {
-      errors.push('GSC: ' + e.message);
+      errors.push(e?.requiresInteraction
+        ? 'GSC: Google session expired — click Connect Google (or Refresh Data) to re-authorize, then re-run.'
+        : 'GSC: ' + e.message);
     }
   } else {
     errors.push('GSC: No property configured');
