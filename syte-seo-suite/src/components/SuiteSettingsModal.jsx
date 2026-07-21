@@ -8,6 +8,10 @@ import GoogleServerAccounts from './GoogleServerAccounts.jsx';
 export default function SuiteSettingsModal({ onClose }) {
   const initial = loadSettings();
   const [form, setForm] = useState(initial);
+  // What's ACTUALLY in localStorage — the only thing AEO runs read. The status
+  // dots track THIS, not the input boxes, so a pasted-but-unsaved key can't show
+  // green while runs silently skip the engine (the "only Claude showed up" bug).
+  const [persisted, setPersisted] = useState(initial);
   const [saved, setSaved] = useState(false);
   // Per-field show/hide toggle. Keys stay password-masked by default
   // for shoulder-surfing protection but the operator can flip the eye
@@ -19,9 +23,9 @@ export default function SuiteSettingsModal({ onClose }) {
   // Track unsaved-edit state so a stray backdrop click doesn't blow
   // away half-pasted keys. Click-away on a clean modal still closes.
   const isDirty =
-    (form.openaiKey || '') !== (initial.openaiKey || '') ||
-    (form.perplexityKey || '') !== (initial.perplexityKey || '') ||
-    (form.googleAiKey || '') !== (initial.googleAiKey || '');
+    (form.openaiKey || '') !== (persisted.openaiKey || '') ||
+    (form.perplexityKey || '') !== (persisted.perplexityKey || '') ||
+    (form.googleAiKey || '') !== (persisted.googleAiKey || '');
 
   function tryClose() {
     if (isDirty && !window.confirm('You have unsaved changes. Discard them?')) return;
@@ -47,16 +51,26 @@ export default function SuiteSettingsModal({ onClose }) {
     };
     saveSettings(cleaned);
     setForm(cleaned);
+    setPersisted(cleaned);   // dots now reflect what runs will actually use
     setSaved(true);
     setTimeout(() => setSaved(false), 1500);
   }
 
+  // Dots reflect the SAVED keys (what AEO runs read), not the input boxes.
   const status = {
-    chatgpt:    !!form.openaiKey,
-    perplexity: !!form.perplexityKey,
-    gemini:     !!form.googleAiKey,
+    chatgpt:    !!persisted.openaiKey,
+    perplexity: !!persisted.perplexityKey,
+    gemini:     !!persisted.googleAiKey,
     claude:     true
   };
+  // A field is "pending" when the box holds a key that hasn't been saved yet —
+  // green dot would be a lie, so we warn and show it as not-yet-active.
+  const pending = {
+    openaiKey:    (form.openaiKey || '').trim() !== (persisted.openaiKey || ''),
+    perplexityKey:(form.perplexityKey || '').trim() !== (persisted.perplexityKey || ''),
+    googleAiKey:  (form.googleAiKey || '').trim() !== (persisted.googleAiKey || ''),
+  };
+  const hasUnsaved = pending.openaiKey || pending.perplexityKey || pending.googleAiKey;
 
   // Sniff for the most common copy-paste mistake — pasting an Anthropic
   // key into the OpenAI field. The two services use distinct prefixes
@@ -169,11 +183,16 @@ export default function SuiteSettingsModal({ onClose }) {
           {row('Google AI API Key (Gemini)', 'googleAiKey', 'AIza…')}
 
           <div className="row" style={{ gap: 14, marginTop: 8, flexWrap: 'wrap' }}>
-            <span style={{ fontSize: 12 }}>{statusDot(status.chatgpt)}ChatGPT</span>
-            <span style={{ fontSize: 12 }}>{statusDot(status.perplexity)}Perplexity</span>
-            <span style={{ fontSize: 12 }}>{statusDot(status.gemini)}Gemini</span>
+            <span style={{ fontSize: 12 }}>{statusDot(status.chatgpt)}ChatGPT{pending.openaiKey ? ' (unsaved)' : ''}</span>
+            <span style={{ fontSize: 12 }}>{statusDot(status.perplexity)}Perplexity{pending.perplexityKey ? ' (unsaved)' : ''}</span>
+            <span style={{ fontSize: 12 }}>{statusDot(status.gemini)}Gemini{pending.googleAiKey ? ' (unsaved)' : ''}</span>
             <span style={{ fontSize: 12 }}>{statusDot(status.claude)}Claude (built-in)</span>
           </div>
+          {hasUnsaved && (
+            <div style={{ marginTop: 8, fontSize: 12, color: 'var(--orange)' }}>
+              ⚠ You have unsaved key changes. A dot only turns green once you click <strong>Save Settings</strong> — until then AEO runs won't use that engine.
+            </div>
+          )}
         </div>
 
         <GoogleServerAccounts />
