@@ -133,18 +133,34 @@ await t('errored engine does not abort; engines_used reflects engines that ran',
   eq(snap.engine_health.chatgpt.all_failed, false, 'chatgpt healthy');
 });
 
-// ── Engine disabled mid-sweep on sustained rate-limit (ported from main) ─
-await t('rateLimited engine is disabled for the rest of the sweep', async () => {
+// ── Engine cools down (not killed) on sustained rate-limit ──
+await t('rateLimited engine cools down — bounded calls, not every probe', async () => {
   let calls = 0;
   const limited = {
     id: 'chatgpt', label: 'ChatGPT', model: 'gpt-4o', retrievalNative: false, supportsSearchOff: true, isConfigured: () => true,
     ask: async () => { calls++; return { error: 'OpenAI 429 rate limit', rateLimited: true }; }
   };
   await mod.runSnapshot(CLIENT, { engines: [limited], extract: extractAppears, iterations: 3, retryDelayMs: 0, sleep: async () => {}, now: NOW });
-  // 2 scorable (both modes) + 2 reverse (search_on) = many groups x3 iters, but
-  // once the first call flags rateLimited the engine is disabled, so the number
-  // of real calls stays far below the full precount.
-  ok(calls >= 1 && calls < 10, 'engine disabled after first rate-limit (calls=' + calls + ')');
+  // A 429 triggers a cooldown window rather than paying the API on every probe,
+  // so real calls stay well below the full precount (but the engine does retry).
+  ok(calls >= 1 && calls < 10, 'cooldown kept calls bounded (calls=' + calls + ')');
+});
+
+// ── Cooldown RECOVERS: an engine that rate-limits early still contributes ──
+await t('engine that rate-limits early recovers and returns data after cooldown', async () => {
+  let calls = 0;
+  const recovering = {
+    id: 'chatgpt', label: 'ChatGPT', model: 'gpt-4o', retrievalNative: false, supportsSearchOff: true, isConfigured: () => true,
+    ask: async (q, { search } = {}) => {
+      calls++;
+      // First call 429s (would previously bench the engine for the whole sweep);
+      // every call after the cooldown succeeds.
+      if (calls === 1) return { error: 'OpenAI 429 rate limit', rateLimited: true };
+      return { text: 'Acme is the best.', raw: {}, searchMode: search ? 'search_on' : 'search_off' };
+    }
+  };
+  const snap = await mod.runSnapshot(CLIENT, { engines: [recovering], extract: extractAppears, iterations: 3, retryDelayMs: 0, sleep: async () => {}, now: NOW });
+  ok(snap.engines_used.includes('chatgpt'), 'engine recovered after cooldown (was permanently benched before)');
 });
 
 // ── Reverse probes excluded from coverage/index ─────────────
@@ -198,17 +214,28 @@ await t('concurrency cap: never more than 2 requests in-flight per engine', asyn
   ok(maxSeen <= 2 && maxSeen > 0, 'peak in-flight was ' + maxSeen + ' (<=2)');
 });
 
-// ── A repeatedly-failing engine benches itself (no hang) ────
-await t('engine failing repeatedly (e.g. 504 storm) is benched after 3 misses', async () => {
+// ── A repeatedly-failing engine cools down (no hang, but not permanently dead) ──
+await t('engine failing repeatedly (e.g. 504 storm) cools down after 3 misses', async () => {
   let calls = 0;
   const flaky = {
     id: 'chatgpt', label: 'ChatGPT', model: 'gpt-4o', retrievalNative: false, supportsSearchOff: true, isConfigured: () => true,
     ask: async () => { calls++; return { error: 'OpenAI 504 gateway timeout' }; } // not rateLimited/configError
   };
   await mod.runSnapshot(CLIENT, { engines: [flaky], extract: extractAppears, iterations: 3, retryDelayMs: 0, sleep: async () => {}, now: NOW });
-  // 2 scorable (both modes) + 2 reverse = many groups x3, but after 3 straight
-  // failures the engine is disabled, so total real calls stay small.
-  ok(calls >= 3 && calls < 12, 'benched after a few failures (calls=' + calls + ')');
+  // After 3 straight failures the engine cools down instead of paying the API on
+  // every probe, so total real calls stay small (a few bursts, not one-per-probe).
+  ok(calls >= 3 && calls < 14, 'cooled down after a few failures (calls=' + calls + ')');
+});
+
+// ── A genuine config / bad-key error DOES permanently disable ──
+await t('configError permanently disables the engine (no pointless retries)', async () => {
+  let calls = 0;
+  const badKey = {
+    id: 'chatgpt', label: 'ChatGPT', model: 'gpt-4o', retrievalNative: false, supportsSearchOff: true, isConfigured: () => true,
+    ask: async () => { calls++; return { error: 'OpenAI 401 invalid key', configError: true }; }
+  };
+  await mod.runSnapshot(CLIENT, { engines: [badKey], extract: extractAppears, iterations: 3, concurrency: 1, retryDelayMs: 0, sleep: async () => {}, now: NOW });
+  ok(calls === 1, 'benched permanently on the first config error (calls=' + calls + ')');
 });
 
 // ── Retrieval-first scoring: parametric runs must not dilute the score ─

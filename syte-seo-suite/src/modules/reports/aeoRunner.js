@@ -217,9 +217,11 @@ export async function runSnapshot(client, opts = {}) {
   const runRecords = [];   // persisted per-run records
   const rawEntries = [];   // { hash, engine, run_mode, raw_response }
   const enginesRan = new Set();
-  const disabledEngines = new Set();  // engines a sustained 429 / bad key took out mid-sweep
+  const disabledEngines = new Set();  // PERMANENTLY out this sweep (bad key / config error only)
   const consecErrors = {};            // engine.id -> consecutive error count
-  const FAIL_DISABLE_THRESHOLD = 3;   // bench an engine after this many misses in a row (e.g. 504 storm)
+  const cooldown = {};                // engine.id -> probe-attempts to skip before retrying
+  const FAIL_DISABLE_THRESHOLD = 3;   // consecutive transient misses (429/504 storm) → cooldown
+  const ENGINE_COOLDOWN = 8;          // attempts an engine sits out before it retries (recovers from per-minute 429 / 503 blips)
   const nowISO = (now ? new Date(now) : new Date()).toISOString();
   const runMonth = nowISO.slice(0, 7);
 
@@ -237,9 +239,18 @@ export async function runSnapshot(client, opts = {}) {
   async function probeGroup(probe, eng, mode) {
     const runs = [];
     for (let i = 0; i < N; i++) {
-      // Skip an engine that a sustained rate-limit / bad key already took out.
+      // Skip an engine a bad key / config error took out for good.
       if (disabledEngines.has(eng.id)) {
         runRecords.push(errorRecord(probe, eng, i, mode, 'engine disabled for this sweep'));
+        done++;
+        continue;
+      }
+      // Skip an engine that's cooling down after a rate-limit / timeout, but
+      // only for a window — then it retries, so a per-minute 429 or a transient
+      // 503/504 blip doesn't wipe the engine out of the whole sweep.
+      if (cooldown[eng.id] > 0) {
+        cooldown[eng.id] -= 1;
+        runRecords.push(errorRecord(probe, eng, i, mode, 'engine cooling down after rate-limit/timeout'));
         done++;
         continue;
       }
@@ -248,14 +259,27 @@ export async function runSnapshot(client, opts = {}) {
       const resp = await askWithBackoff(eng, probe.query, { search }, { retries, baseMs: retryDelayMs, sleep });
       done++;
       onProgress?.({ phase: 'done', engine: eng.label, query: probe.query, mode, index: done, total });
-      // A sustained rate-limit or config error takes the engine out for the
-      // rest of the sweep (main's behaviour) instead of paying it every probe.
-      if (resp.rateLimited || resp.configError) disabledEngines.add(eng.id);
+      // A config / bad-key error is permanent — retrying is futile, so bench it
+      // for good. A rate-limit (429) or a repeated transient error (503/504)
+      // only triggers a COOLDOWN: the engine sits out a window then retries,
+      // so one early 429 no longer erases the engine from all 115 prompts.
+      if (resp.configError) {
+        disabledEngines.add(eng.id);
+        runRecords.push(errorRecord(probe, eng, i, mode, resp.error));
+        continue;
+      }
+      if (resp.rateLimited) {
+        cooldown[eng.id] = ENGINE_COOLDOWN;
+        consecErrors[eng.id] = 0;
+        runRecords.push(errorRecord(probe, eng, i, mode, resp.error));
+        continue;
+      }
       if (resp.error) {
-        // Bench an engine that keeps failing (e.g. a 504 storm from a slow
-        // proxy, or a dead key) so it doesn't drag the whole run for minutes.
         consecErrors[eng.id] = (consecErrors[eng.id] || 0) + 1;
-        if (consecErrors[eng.id] >= FAIL_DISABLE_THRESHOLD) disabledEngines.add(eng.id);
+        if (consecErrors[eng.id] >= FAIL_DISABLE_THRESHOLD) {
+          cooldown[eng.id] = ENGINE_COOLDOWN;   // cool down, don't kill — it may recover
+          consecErrors[eng.id] = 0;
+        }
         runRecords.push(errorRecord(probe, eng, i, mode, resp.error));
         continue;
       }
