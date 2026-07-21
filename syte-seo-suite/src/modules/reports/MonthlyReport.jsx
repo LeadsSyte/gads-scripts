@@ -36,6 +36,7 @@ async function groundClientGold(c, reportData) {
   return res.client;
 }
 import { runSnapshot, snapshotPreflight } from './aeoRunner.js';
+import { CORE_ENGINE_IDS } from './aeoEngines.js';
 import { compareSnapshots, rankBrandWithCompetitors, normalizeSnapshot } from './aeoCompare.js';
 import { ensureToken, SCOPES, getToken, switchAccount, silentRefresh, getCurrentEmail, getTokenForEmail, TOKEN_EVENT } from '../technical/googleAuth.js';
 import { serverAuthEnabled } from '../../lib/googleServerAuth.js';
@@ -84,6 +85,17 @@ function summarizeProbeIssues(probe) {
   const qCount = probe?.per_query?.length || 0;
   if (qCount > 0 && qCount < 12) {
     out.push(`Only ${qCount} probe queries ran — the strategic grid likely did not build. Check the client website URL and Search Console connection, then re-run (expected 20+ queries).`);
+  }
+  // Engine coverage: which of the core engines actually returned data. A run
+  // that only covers Claude (the built-in key) — because ChatGPT/Gemini keys
+  // weren't on the device that ran it — is easy to miss, so flag it explicitly.
+  const used = new Set(probe?.engines_used || []);
+  if (used.size > 0) {
+    const missing = CORE_ENGINE_IDS.filter(id => !used.has(id));
+    if (missing.length) {
+      const labels = { claude: 'Claude', chatgpt: 'ChatGPT', gemini: 'Gemini' };
+      out.push(`Only ${used.size} of 3 engines returned data (${[...used].join(', ')}). ${missing.map(id => labels[id] || id).join(' and ')} did not run — either no API key on the device that generated this snapshot, or the engine failed. Add the key in Suite Settings and re-run the AEO snapshot for a full cross-engine picture.`);
+    }
   }
   const health = probe?.engine_health;
   if (!health) return out;

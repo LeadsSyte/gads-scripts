@@ -22,6 +22,8 @@ const PATCHED = SRC
            'const fetchWithTimeout = (...a) => globalThis.__fetchWithTimeout(...a);')
   // Make backoff instant so the retries-exhausted path doesn't take 7s.
   .replace('const RETRY_DELAYS_MS = [1000, 2000, 4000];', 'const RETRY_DELAYS_MS = [0, 0, 0];')
+  // engineReadiness + CORE_ENGINE_IDS are already exported by the source;
+  // only fetchJsonWithRetry is internal and needs re-exporting for the test.
   + '\nexport { fetchJsonWithRetry };\n';
 
 const tmp = path.join(os.tmpdir(), 'aeoEngines-' + Date.now() + '.mjs');
@@ -104,6 +106,18 @@ await t('all attempts throw → rejects with the last error', async () => {
   try { await mod.fetchJsonWithRetry('u', {}); }
   catch (e) { threw = /boom/.test(e.message); }
   assertEq(threw, true, 'threw the network error');
+});
+
+await t('CORE_ENGINE_IDS covers claude/chatgpt/gemini', async () => {
+  assertEq([...mod.CORE_ENGINE_IDS].sort().join(','), 'chatgpt,claude,gemini', 'core ids');
+});
+
+await t('engineReadiness reports one entry per engine with a ready flag', async () => {
+  const r = mod.engineReadiness();
+  assertEq(r.length, 4, 'four engines');
+  // loadSettings/getStoredApiKey are stubbed empty here, so nothing is ready.
+  assertEq(r.every(e => e.ready === false), true, 'all not ready with no keys');
+  assertEq(r.every(e => typeof e.label === 'string' && !!e.id), true, 'shape');
 });
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');

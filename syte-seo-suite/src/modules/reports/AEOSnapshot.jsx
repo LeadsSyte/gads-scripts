@@ -3,7 +3,7 @@ import { useClients } from '../../store/useClients.js';
 import { snapshotPreflight, runSnapshot, estimateRunCost } from './aeoRunner.js';
 import { normalizeSnapshot } from './aeoCompare.js';
 import { saveAeoSnapshot, listAeoSnapshots, getCachedReportData, persistAeoRuns } from '../../lib/supabase.js';
-import { ALL_ENGINES } from './aeoEngines.js';
+import { ALL_ENGINES, CORE_ENGINE_IDS } from './aeoEngines.js';
 import { readinessFor } from '../../lib/clientReadiness.js';
 import { probeCandidatesFromGSC, groundedProbeSet } from './keywordBuckets.js';
 import { buildDiscoveryQueries, runDiscoverySweep, extractSitePhrases } from './aeoDiscovery.js';
@@ -762,6 +762,22 @@ export default function AEOSnapshot() {
             {probeHealth.degenerate ? '⚠ ' : '✓ '}{probeHealth.summary}
           </div>
         )}
+
+        {/* Engine readiness: which engines have a key ON THIS DEVICE and will
+            run. Keys are per-browser, so a Claude-only run is easy to hit and
+            silent — this makes it visible before the run. */}
+        {(() => {
+          const missingCore = engineRow.filter(e => CORE_ENGINE_IDS.includes(e.id) && !e.configured);
+          return (
+            <div style={{ marginTop: 6, fontSize: 12, color: missingCore.length ? 'var(--orange)' : 'var(--text-muted)' }}>
+              {missingCore.length ? '⚠ ' : '✓ '}
+              Engines that will run:{' '}
+              {engineRow.filter(e => e.configured).map(e => e.label).join(', ') || 'none'}
+              {missingCore.length > 0 &&
+                ` · no key on this device for ${missingCore.map(e => e.label).join(', ')} (add in Suite Settings → Engine Keys)`}
+            </div>
+          );
+        })()}
 
         {progress && progress.total > 0 && (
           <div style={{ height: 6, background: 'var(--surface-2)', borderRadius: 3, marginTop: 10, overflow: 'hidden' }}>

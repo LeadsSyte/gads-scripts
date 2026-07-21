@@ -321,6 +321,19 @@ export function activeEngines() {
   return ALL_ENGINES.filter(e => e.isConfigured());
 }
 
+// Per-device engine readiness for the UI: which engines have a key on THIS
+// device and will therefore run. Keys live in localStorage (per browser), so a
+// fresh device / profile silently drops ChatGPT + Gemini and runs Claude only —
+// this makes that visible before a run instead of after the PDF.
+export function engineReadiness() {
+  return ALL_ENGINES.map(e => ({ id: e.id, label: e.label, ready: !!e.isConfigured() }));
+}
+
+// The engines a full cross-engine snapshot is expected to cover. Perplexity is
+// optional (rarely keyed), so it's not part of the "did the run cover the core
+// three?" check the report uses.
+export const CORE_ENGINE_IDS = ['claude', 'chatgpt', 'gemini'];
+
 // Resolve which run modes a probe runs on an engine (Requirement 5).
 // Retrieval-native engines are hard-coded to search_on regardless of the probe.
 export function resolveRunModes(probeRunMode, engine) {
