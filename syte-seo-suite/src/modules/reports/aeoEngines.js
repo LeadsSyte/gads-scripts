@@ -117,22 +117,25 @@ export const chatgpt = {
         if (r.error) return { ...r, searchMode };
         return { text: r.text, raw: r.raw, model: 'gpt-4o', searchMode };
       }
-      // Retrieval: try a deeper 'medium' web search first so ChatGPT surfaces
-      // small/local brands the way it does for you manually. 'low' starves
-      // recall (that was the "ChatGPT 0% on everything" symptom). If 'medium'
-      // times out on Netlify's 10s function limit (504/502/timeout), fall back
-      // to 'low' once so we still return real data instead of benching the
-      // engine to all-zeros.
-      let r = await this._searchAt(query, 'medium', openaiKey);
-      if (r.error && !r.rateLimited && (r.status === 504 || r.status === 502 || /timeout|timed out/i.test(r.error))) {
-        r = await this._searchAt(query, 'low', openaiKey);
+      // Retrieval: reliability first. A 'low' web search finishes inside
+      // Netlify's 10s function limit far more often than 'medium' — and a
+      // 'medium' 504 storm was benching ChatGPT out of the whole report (the
+      // "only Claude showed up" symptom). So try 'low' web search first; if it
+      // still times out, fall back to a parametric (no-search) call, which is
+      // fast and can't 504, so ChatGPT returns SOMETHING instead of nothing.
+      const isTimeout = (x) => x.error && !x.rateLimited && (x.status === 504 || x.status === 502 || /timeout|timed out/i.test(x.error));
+      let usedMode = searchMode;
+      let r = await this._searchAt(query, 'low', openaiKey);
+      if (isTimeout(r)) {
+        const p = await this._searchAt(query, null, openaiKey);
+        if (!p.error) { r = p; usedMode = 'search_off'; }   // parametric fallback succeeded
       }
       if (r.error) {
         // A 429 that survived retries is a sustained rate-limit — flag it so
-        // the runner benches ChatGPT for the rest of the sweep.
+        // the runner cools ChatGPT down (not permanently benched).
         return { error: r.error, rateLimited: r.rateLimited, searchMode };
       }
-      return { text: r.text, raw: r.raw, model: 'gpt-4o', searchMode };
+      return { text: r.text, raw: r.raw, model: 'gpt-4o', searchMode: usedMode };
     } catch (e) { return { error: e.message, searchMode }; }
   }
 };
