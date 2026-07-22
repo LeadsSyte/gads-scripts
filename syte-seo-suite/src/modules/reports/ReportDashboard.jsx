@@ -39,7 +39,7 @@ function KeywordRow({ kw }) {
       </td>
       <td style={{ padding: '6px 10px', textAlign: 'right' }}>
         {kw.change != null
-          ? <ChangeArrow value={kw.change} suffix=" pos" invert />
+          ? <ChangeArrow value={kw.change} suffix=" pos" />
           : <span className="muted" style={{ fontSize: 10 }}>new</span>}
       </td>
       <td style={{ padding: '6px 10px', textAlign: 'right' }}>{fmt(kw.clicks)}</td>
