@@ -8,7 +8,7 @@ import { serverAuthEnabled, proxyGoogleFetch } from '../../lib/googleServerAuth.
 // the report records it in errors[] instead of freezing.
 const GSC_TIMEOUT_MS = 45000;
 
-async function gscFetch(path, init = {}, { expectedEmail = null } = {}) {
+async function gscFetch(path, init = {}, { expectedEmail = null, interactive = false } = {}) {
   const url = 'https://searchconsole.googleapis.com' + path;
   let res;
   if (serverAuthEnabled()) {
@@ -16,7 +16,14 @@ async function gscFetch(path, init = {}, { expectedEmail = null } = {}) {
     // Response-like object so the error handling below is unchanged.
     res = await proxyGoogleFetch(url, { method: init.method || 'GET', body: init.body }, expectedEmail);
   } else {
-    const token = await ensureToken([SCOPES.gsc], { expectedEmail });
+    // interactive:false by default — this runs inside the report fetch pipeline
+    // (paginating up to 10k rows), with no user gesture. An interactive token
+    // acquisition here opens an OAuth popup the browser blocks, which Google
+    // reports as `popup_failed_to_open` (surfaced as "GSC: popup_failed_to_open").
+    // Silent-only means a missing/expired token throws requiresInteraction and
+    // the report shows a "reconnect" prompt instead. Interactive sign-in only
+    // ever happens from an explicit Connect / Switch button (a real gesture).
+    const token = await ensureToken([SCOPES.gsc], { expectedEmail, interactive });
     res = await fetchWithTimeout(url, {
       ...init,
       headers: {
