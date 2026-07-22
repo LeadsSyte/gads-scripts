@@ -70,9 +70,14 @@ export async function collectResearchData(client, { days = 90 } = {}) {
     throw new Error('This client has no Search Console property set. Open Edit Client → Google Connections to pick one.');
   }
 
+  // Resolve which Google account this client's GSC lives on (same convention as
+  // the monthly report). Required under server auth — the proxy attaches that
+  // account's token; without it proxyGoogleFetch throws "no Google account bound".
+  const gscEmail = client.gsc_account_email || client.google_account_email || null;
+
   const [queries, pageQueries] = await Promise.all([
-    topQueriesByImpression(client.gsc_property, days),
-    topPagesWithQueries(client.gsc_property, days)
+    topQueriesByImpression(client.gsc_property, days, gscEmail),
+    topPagesWithQueries(client.gsc_property, days, gscEmail)
   ]);
 
   const totalImpressions = queries.reduce((a, b) => a + b.impressions, 0);
