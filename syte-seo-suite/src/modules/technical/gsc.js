@@ -80,8 +80,8 @@ export async function querySearchAnalytics(siteUrl, {
 }
 
 // Convenience wrappers used by the Content Engine topic researcher.
-export async function topQueriesByImpression(siteUrl, days = 90) {
-  const data = await querySearchAnalytics(siteUrl, { days, dimensions: ['query'], rowLimit: 1000 });
+export async function topQueriesByImpression(siteUrl, days = 90, expectedEmail = null) {
+  const data = await querySearchAnalytics(siteUrl, { days, dimensions: ['query'], rowLimit: 1000, expectedEmail });
   return (data.rows || [])
     .map(r => ({
       query: r.keys[0],
@@ -93,11 +93,12 @@ export async function topQueriesByImpression(siteUrl, days = 90) {
     .sort((a, b) => b.impressions - a.impressions);
 }
 
-export async function topPagesWithQueries(siteUrl, days = 90) {
+export async function topPagesWithQueries(siteUrl, days = 90, expectedEmail = null) {
   const data = await querySearchAnalytics(siteUrl, {
     days,
     dimensions: ['page', 'query'],
-    rowLimit: 2500
+    rowLimit: 2500,
+    expectedEmail
   });
   return (data.rows || []).map(r => ({
     page: r.keys[0],
