@@ -64,7 +64,7 @@ create table if not exists syte_suite_implementations (
   description text,                -- details / the actual change
   implemented_by text,             -- who clicked the button
   implemented_at timestamptz default now(),
-  verification_status text default 'pending', -- 'pending' | 'verified' | 'failed'
+  verification_status text default 'pending', -- 'pending' | 'verified' | 'failed' | 'manual_required' | 'sent_to_developer'
   verification_detail text,        -- Claude's explanation of what it found
   verified_at timestamptz,
   created_at timestamptz default now()

@@ -333,6 +333,96 @@ function hasUsefulBody(html) {
   return text.length >= 60;
 }
 
+// "Sent to Developer" verification — used when we hand technical
+// optimizations or content changes to the client's developer instead of
+// implementing them ourselves. The team member uploads a screenshot of the
+// email they sent; Claude Vision confirms it actually shows a sent email
+// that relates to this change, then the record is marked
+// 'sent_to_developer'. If the screenshot can't be confirmed, NOTHING is
+// persisted — the caller can retry with a better screenshot or use
+// markSentToDeveloper() to override manually.
+export async function verifySentToDeveloper(impl, { imageBase64, mediaType = 'image/jpeg', sentBy = '' } = {}) {
+  if (!imageBase64 || imageBase64.length < 100) {
+    return { status: 'rejected', detail: 'Screenshot is empty or too small — upload a screenshot of the email you sent.' };
+  }
+  try {
+    const resp = await claudeComplete({
+      system: 'You verify that a screenshot shows an email sent to a website developer about an SEO/content change. Return ONLY valid JSON.',
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'image', source: { type: 'base64', media_type: mediaType, data: imageBase64 } },
+          {
+            type: 'text',
+            text: `This screenshot should show an email (Gmail, Outlook, or any mail client — compose window or sent message) sent to a website developer, handing over the following change for implementation:
+
+CHANGE:
+- Type: ${impl.change_type || ''}
+- Title/topic: ${impl.title || ''}
+- Page: ${impl.page_url || ''}
+
+RULES:
+- Confirm two things only: (1) the screenshot shows an email (a recipient, subject, or message body is visible), and (2) the email plausibly relates to this change or to SEO/content/technical website work for this client in general.
+- Be LENIENT. The email does not need to quote the change word-for-word — a general handover email covering several changes counts. Attachments, forwarded threads, and partial screenshots are all fine.
+- Only reject if the image is clearly NOT an email (e.g. a random webpage, a blank image) or is completely unreadable.
+
+Return ONLY JSON:
+{
+  "is_email": true or false,
+  "recipient": "who the email is addressed to, if visible, else empty string",
+  "subject": "email subject if visible, else empty string",
+  "relates": true or false,
+  "evidence": "1-2 sentences describing what the screenshot shows"
+}`
+          }
+        ]
+      }],
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 400,
+      temperature: 0
+    });
+    let parsed;
+    try {
+      const m = resp.match(/\{[\s\S]*\}/);
+      parsed = m ? JSON.parse(m[0]) : null;
+    } catch { parsed = null; }
+    if (!parsed) {
+      return { status: 'rejected', detail: 'Could not read the screenshot verification response. Try again or mark as sent manually.' };
+    }
+    if (!parsed.is_email) {
+      return { status: 'rejected', detail: 'The screenshot does not look like an email: ' + (parsed.evidence || 'no email visible.') + ' Upload a screenshot of the sent email, or mark as sent manually.' };
+    }
+    const detail = [
+      'Email screenshot confirmed' + (parsed.recipient ? ' — sent to ' + parsed.recipient : ''),
+      parsed.subject ? 'Subject: "' + parsed.subject + '"' : '',
+      parsed.evidence || '',
+      sentBy ? 'Sent by ' + sentBy : '',
+      '(Sent to developer — awaiting implementation on site)'
+    ].filter(Boolean).join(' · ');
+    await updateImplementation(impl.id, {
+      verification_status: 'sent_to_developer',
+      verification_detail: detail,
+      verified_at: new Date().toISOString()
+    });
+    return { status: 'sent_to_developer', detail };
+  } catch (e) {
+    return { status: 'rejected', detail: 'Could not check the screenshot (' + (e.message || 'API error') + '). Try again or mark as sent manually.' };
+  }
+}
+
+// Manual override for the sent-to-developer flow — used when the AI check
+// on the screenshot fails but the team member confirms the email was sent.
+export async function markSentToDeveloper(impl, sentBy = '') {
+  const detail = 'Marked as sent to developer' + (sentBy ? ' by ' + sentBy : '') +
+    ' (manual confirmation, screenshot check skipped) · (Awaiting implementation on site)';
+  await updateImplementation(impl.id, {
+    verification_status: 'sent_to_developer',
+    verification_detail: detail,
+    verified_at: new Date().toISOString()
+  });
+  return { status: 'sent_to_developer', detail };
+}
+
 // Verify using pasted HTML — used when automated fetching fails (Shopify
 // bot blocks, Cloudflare challenges, login walls, etc.). The user pastes
 // the live page HTML (view source → copy/paste) and Claude verifies.

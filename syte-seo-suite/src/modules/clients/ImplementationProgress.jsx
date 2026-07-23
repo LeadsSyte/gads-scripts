@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useClients } from '../../store/useClients.js';
-import { listAllImplementations } from '../../lib/supabase.js';
+import { listAllImplementations, updateImplementation } from '../../lib/supabase.js';
 import { verifyImplementation } from '../../lib/verification.js';
 
 // In-app view of the same data the weekly email shows. Lets Michael and
@@ -11,7 +11,8 @@ const STATUS_STYLES = {
   verified:        { color: 'var(--green)',  label: '✓ Verified',         badge: 'green' },
   failed:          { color: 'var(--red)',    label: '✗ Failed',           badge: 'red' },
   pending:         { color: 'var(--orange)', label: '⏳ Pending',          badge: 'orange' },
-  manual_required: { color: 'var(--orange)', label: '⚑ Manual required',  badge: 'orange' }
+  manual_required: { color: 'var(--orange)', label: '⚑ Manual required',  badge: 'orange' },
+  sent_to_developer: { color: 'var(--blue)', label: '📧 Sent to Developer', badge: 'blue' }
 };
 
 export default function ImplementationProgress() {
@@ -64,7 +65,8 @@ export default function ImplementationProgress() {
     verified:        items.filter(r => r.verification_status === 'verified').length,
     failed:          items.filter(r => r.verification_status === 'failed').length,
     pending:         items.filter(r => r.verification_status === 'pending').length,
-    manual_required: items.filter(r => r.verification_status === 'manual_required').length
+    manual_required: items.filter(r => r.verification_status === 'manual_required').length,
+    sent_to_developer: items.filter(r => r.verification_status === 'sent_to_developer').length
   }), [items]);
 
   const modules = useMemo(() => {
@@ -75,7 +77,18 @@ export default function ImplementationProgress() {
   async function reverify(impl) {
     setVerifyingId(impl.id);
     try {
-      await verifyImplementation(impl, clientMap[impl.client_id]);
+      const r = await verifyImplementation(impl, clientMap[impl.client_id]);
+      // A "sent to developer" record stays sent-to-developer until the
+      // change is actually live — a failed page scan just means the dev
+      // hasn't implemented it yet, so restore the handoff status instead
+      // of flipping it to failed.
+      if (impl.verification_status === 'sent_to_developer' && r?.status !== 'verified') {
+        await updateImplementation(impl.id, {
+          verification_status: 'sent_to_developer',
+          verification_detail: (impl.verification_detail || 'Sent to developer.') +
+            ' · Re-check ' + new Date().toLocaleDateString('en-ZA') + ': not live on the page yet.'
+        });
+      }
       await load(); // refresh the list
     } catch {}
     finally { setVerifyingId(null); }
@@ -120,7 +133,7 @@ export default function ImplementationProgress() {
 
       {/* Filters */}
       <div className="row" style={{ gap: 8, marginBottom: 14, flexWrap: 'wrap' }}>
-        {['all', 'verified', 'failed', 'manual_required', 'pending'].map(f => (
+        {['all', 'verified', 'sent_to_developer', 'failed', 'manual_required', 'pending'].map(f => (
           <button
             key={f}
             onClick={() => setFilter(f)}
@@ -156,6 +169,7 @@ export default function ImplementationProgress() {
         const v = g.items.filter(r => r.verification_status === 'verified').length;
         const f = g.items.filter(r => r.verification_status === 'failed').length;
         const p = g.items.filter(r => r.verification_status === 'pending').length;
+        const s = g.items.filter(r => r.verification_status === 'sent_to_developer').length;
         const pct = g.items.length > 0 ? Math.round((v / g.items.length) * 100) : 0;
 
         return (
@@ -164,7 +178,7 @@ export default function ImplementationProgress() {
               <div className="row" style={{ justifyContent: 'space-between' }}>
                 <strong>{g.client.name || '?'}</strong>
                 <span className="muted" style={{ fontSize: 12 }}>
-                  {v} verified · {f} failed · {p} pending · {pct}% complete
+                  {v} verified{s > 0 ? ` · ${s} sent to dev` : ''} · {f} failed · {p} pending · {pct}% complete
                 </span>
               </div>
               <div style={{ height: 4, background: 'var(--surface)', borderRadius: 2, marginTop: 8, overflow: 'hidden' }}>
