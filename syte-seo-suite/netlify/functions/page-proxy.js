@@ -22,6 +22,13 @@ export async function handler(event) {
     return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'Missing url parameter' }) };
   }
 
+  // raw=true skips Jina Reader entirely. Jina re-renders pages and
+  // strips/normalises <meta> tags — including meta robots — so the
+  // technical SEO crawler was getting false "noindex" detections on
+  // pages that ARE indexed. Anything that needs the real <head> markup
+  // (robots, canonical, schema, OG tags) must pass raw: true.
+  const raw = !!payload.raw;
+
   const browserHeaders = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -106,6 +113,9 @@ export async function handler(event) {
 
   const failures = [];
   for (const tier of tiers) {
+    // raw=true needs the real served markup — Jina re-renders pages and
+    // strips/normalises <meta> tags, so it must be skipped (see above).
+    if (raw && tier.name === 'jina-reader') { failures.push('jina-reader (skipped: raw)'); continue; }
     try {
       const out = await tier.run();
       if (out && hasUsefulBody(out.html)) {

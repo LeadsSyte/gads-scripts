@@ -288,8 +288,13 @@ await t('off-page robots: live robots.txt without Sitemap directive', async () =
 
 await t('off-page robots: 404 / unreachable -> failed', async () => {
   globalThis.__mockCorsFetchText = async () => { throw new Error('not reachable'); };
+  // Use the unambiguous 'robots_txt' type. Bare 'robots' with empty
+  // title/description/url is now intentionally treated as ambiguous
+  // (could be a meta robots tag or robots.txt), so we route it to the
+  // on-page path. Real off-page tasks should emit 'robots_txt' or
+  // include "robots.txt" in the title/description/url.
   const r = await verif.verifyImplementation(
-    { id: 'r3', change_type: 'robots', title: '', description: '', page_url: '' },
+    { id: 'r3', change_type: 'robots_txt', title: '', description: '', page_url: '' },
     { url: 'https://example.com/' }
   );
   assertEq(r.status, 'failed');

@@ -34,15 +34,23 @@ export default async function handler() {
   // 1. Fetch all implementations from the last 7 days + all still pending/failed.
   const weekAgo = new Date(Date.now() - 7 * 86400000).toISOString();
 
+  // Explicit column list — NEVER select('*') here. verification_detail can
+  // hold a multi-hundred-KB base64 proof screenshot ([SCREENSHOT]…), and this
+  // email needs none of it (only status, title, who, when). Pulling it for
+  // every row — especially the unbounded pending/failed set below — bloated
+  // the payload until the query timed out (HTTP 500) and the Monday email
+  // stopped going out. The same select=* on this table broke the dashboard.
+  const IMPL_COLS = 'id, client_id, module, change_type, title, implemented_by, implemented_at, verification_status, created_at';
+
   const [recentRes, pendingRes, clientsRes] = await Promise.all([
     supabase
       .from('syte_suite_implementations')
-      .select('*')
+      .select(IMPL_COLS)
       .gte('created_at', weekAgo)
       .order('created_at', { ascending: false }),
     supabase
       .from('syte_suite_implementations')
-      .select('*')
+      .select(IMPL_COLS)
       .in('verification_status', ['pending', 'failed', 'sent_to_developer'])
       .order('created_at', { ascending: false }),
     supabase

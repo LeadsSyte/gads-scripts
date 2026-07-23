@@ -5,6 +5,7 @@
 import { wpRequest, findBySlug, updatePostMeta, createDraftPost, uploadMedia } from './wpApi.js';
 import { generateHeroImage } from '../content/imageGen.js';
 import { loadSettings } from '../../lib/settings.js';
+import { markdownToHtml } from '../content/articleParser.js';
 
 function slugFromUrl(pageUrl) {
   try {
@@ -47,41 +48,10 @@ function parseArticleBody(raw) {
   };
 }
 
-// Convert Markdown → HTML. If the content is already HTML (starts with a
-// tag like <h1> or <p>), pass it through with minimal cleanup instead of
-// double-converting.
-function markdownToHtml(md) {
-  if (!md) return '';
-
-  // Detect if the content is already HTML.
-  const trimmed = md.trim();
-  const isAlreadyHtml = /^<(?:h[1-6]|p|div|section|article|ul|ol|table|!DOCTYPE)/i.test(trimmed);
-
-  if (isAlreadyHtml) {
-    // Already HTML — just clean up any stray markdown artifacts.
-    return trimmed
-      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-      .replace(/\*(.+?)\*/g, '<em>$1</em>');
-  }
-
-  // Markdown → HTML conversion.
-  return md
-    .replace(/^#### (.+)$/gm, '<h4>$1</h4>')
-    .replace(/^### (.+)$/gm, '<h3>$1</h3>')
-    .replace(/^## (.+)$/gm, '<h2>$1</h2>')
-    .replace(/^# (.+)$/gm, '<h1>$1</h1>')
-    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    .replace(/\*(.+?)\*/g, '<em>$1</em>')
-    .replace(/^[-*] (.+)$/gm, '<li>$1</li>')
-    .replace(/(<li>[\s\S]*?<\/li>)/gm, (m) => '<ul>' + m + '</ul>')
-    .replace(/<\/ul>\s*<ul>/g, '')
-    .replace(/^\d+\. (.+)$/gm, '<li>$1</li>')
-    .replace(/```[\s\S]*?```/g, m => '<pre>' + m.slice(3, -3).trim() + '</pre>')
-    .replace(/`([^`]+)`/g, '<code>$1</code>')
-    .replace(/\n{2,}/g, '</p><p>')
-    .replace(/^(?!<[hluop])(.+)$/gm, '<p>$1</p>')
-    .replace(/<p><\/p>/g, '');
-}
+// markdownToHtml lives in ../content/articleParser.js so the CMS push,
+// AutoWrite "Copy as HTML" button, and the .docx export all share the
+// same converter — including GFM table support, which this file's
+// previous local copy was missing.
 
 export async function testWordPress(client) {
   const user = await wpRequest(client, { path: 'wp/v2/users/me' });
@@ -133,7 +103,9 @@ export async function pushContentToWordPress(client, item) {
   const hasImageApi = !!(settings.openaiKey || settings.googleAiKey);
   if (hasImageApi) {
     try {
-      const img = await generateHeroImage(title, keyword, client);
+      // Auto flow on CMS push — try whichever provider works, since the
+      // user isn't watching to pick.
+      const img = await generateHeroImage(title, keyword, client, { allowFallback: true });
       const base64 = img.dataUrl.replace(/^data:image\/\w+;base64,/, '');
       const safeName = (title || 'hero').replace(/[^a-z0-9]+/gi, '-').slice(0, 50) + '.png';
       const attachment = await uploadMedia(client, base64, safeName);
