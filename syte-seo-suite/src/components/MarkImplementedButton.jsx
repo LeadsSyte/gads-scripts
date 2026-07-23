@@ -1,7 +1,31 @@
 import React, { useState } from 'react';
 import { useClients } from '../store/useClients.js';
 import { logImplementation, updateImplementation } from '../lib/supabase.js';
-import { verifyImplementation, verifyImplementationFromHtml, verifyImplementationVisually, isOffPageTask } from '../lib/verification.js';
+import { verifyImplementation, verifyImplementationFromHtml, verifyImplementationVisually, isOffPageTask, verifySentToDeveloper, markSentToDeveloper } from '../lib/verification.js';
+
+// Downscale an image file to a JPEG base64 string (no data: prefix).
+// Email screenshots straight off a retina display can be several MB —
+// resizing keeps the Vision call cheap and the stored evidence small.
+async function fileToJpegBase64(file, maxWidth = 1200, quality = 0.8) {
+  const dataUrl = await new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result);
+    r.onerror = () => reject(new Error('Could not read the image file.'));
+    r.readAsDataURL(file);
+  });
+  const img = await new Promise((resolve, reject) => {
+    const i = new Image();
+    i.onload = () => resolve(i);
+    i.onerror = () => reject(new Error('The file is not a readable image.'));
+    i.src = dataUrl;
+  });
+  const scale = Math.min(1, maxWidth / img.width);
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(img.width * scale);
+  canvas.height = Math.round(img.height * scale);
+  canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL('image/jpeg', quality).split(',')[1];
+}
 
 // Reusable "Mark as Implemented" button. Place it next to any generated
 // output (article, schema, meta fix, AEO optimization). When clicked:
@@ -39,6 +63,85 @@ export default function MarkImplementedButton({
   const [verifyPhase, setVerifyPhase] = useState('');
   const [pastedHtml, setPastedHtml] = useState('');
   const [pasteBusy, setPasteBusy] = useState(false);
+  const [showSentPanel, setShowSentPanel] = useState(false);
+  const [sentFile, setSentFile] = useState(null);
+  const [sentBy, setSentBy] = useState('');
+  const [sentBusy, setSentBusy] = useState(false);
+  const [sentMsg, setSentMsg] = useState('');
+
+  // "Sent to Developer" entry point. If no implementation record exists yet
+  // (idle state), log one first; then open the email-screenshot panel.
+  async function handleSentToDeveloper() {
+    if (!client) { setErr('Select a client first.'); return; }
+    setErr(''); setSentMsg('');
+    if (result?.impl?.id) { setShowSentPanel(true); return; }
+
+    const actualUrl = prompt(
+      'Which page is this change for? (URL the developer will update)',
+      pageUrl || client.url || ''
+    );
+    if (actualUrl === null) return; // user cancelled
+    const who = prompt('Who sent the email to the developer?', 'Team member') || 'Unknown';
+
+    setPhase('logging');
+    try {
+      const impl = await logImplementation({
+        client_id: client.id,
+        module,
+        change_type: changeType,
+        page_url: (actualUrl || '').trim(),
+        title: title || 'Untitled change',
+        description: (description || '').slice(0, 2000),
+        implemented_by: who,
+        verification_status: 'pending'
+      });
+      setResult({ status: 'pending', detail: 'Upload a screenshot of the email you sent to the developer.', impl });
+      setSentBy(who);
+      setPhase('done');
+      setShowSentPanel(true);
+    } catch (e) {
+      setErr(e.message);
+      setPhase('idle');
+    }
+  }
+
+  async function submitSentScreenshot() {
+    if (!result?.impl?.id || !sentFile) return;
+    setSentBusy(true); setSentMsg(''); setErr('');
+    try {
+      const imageBase64 = await fileToJpegBase64(sentFile);
+      const r = await verifySentToDeveloper(result.impl, { imageBase64, sentBy });
+      if (r.status === 'sent_to_developer') {
+        setResult({ ...result, status: r.status, detail: r.detail });
+        setShowSentPanel(false);
+        setSentFile(null);
+      } else {
+        setSentMsg(r.detail); // rejected — keep the panel open for retry / manual override
+      }
+    } catch (e) {
+      setSentMsg(e.message);
+    } finally {
+      setSentBusy(false);
+    }
+  }
+
+  async function sentManualOverride() {
+    if (!result?.impl?.id) return;
+    setSentBusy(true);
+    try {
+      let imageBase64;
+      try { if (sentFile) imageBase64 = await fileToJpegBase64(sentFile); } catch {}
+      const r = await markSentToDeveloper(result.impl, sentBy, { imageBase64 });
+      setResult({ ...result, status: r.status, detail: r.detail });
+      setShowSentPanel(false);
+      setSentFile(null);
+      setSentMsg('');
+    } catch (e) {
+      setSentMsg(e.message);
+    } finally {
+      setSentBusy(false);
+    }
+  }
 
   async function verifyFromPastedHtml() {
     if (!result?.impl?.id) return;
@@ -212,27 +315,43 @@ export default function MarkImplementedButton({
 
   const statusColor =
     result?.status === 'verified' ? 'var(--green)' :
-    result?.status === 'manual_required' ? 'var(--orange)' :
+    result?.status === 'sent_to_developer' ? 'var(--blue)' :
+    result?.status === 'manual_required' || result?.status === 'pending' ? 'var(--orange)' :
     'var(--red)';
   const statusLabel =
     result?.status === 'verified' ? '✓ Verified' :
+    result?.status === 'sent_to_developer' ? '📧 Sent to Developer' :
     result?.status === 'manual_required' ? '⚑ Manual verification required' :
+    result?.status === 'pending' ? '⏳ Pending' :
     '✗ Auto-verify failed';
 
   return (
     <div style={{ display: 'inline-flex', flexDirection: 'column', gap: 6 }}>
       <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
         {phase === 'idle' && (
-          <button
-            onClick={handleClick}
-            disabled={disabled || !client}
-            style={{
-              fontSize: 11, padding: '5px 14px',
-              borderColor: 'var(--green)', color: 'var(--green)'
-            }}
-          >
-            ✓ Mark as Implemented
-          </button>
+          <>
+            <button
+              onClick={handleClick}
+              disabled={disabled || !client}
+              style={{
+                fontSize: 11, padding: '5px 14px',
+                borderColor: 'var(--green)', color: 'var(--green)'
+              }}
+            >
+              ✓ Mark as Implemented
+            </button>
+            <button
+              onClick={handleSentToDeveloper}
+              disabled={disabled || !client}
+              title="We emailed this change to the client's developer — upload a screenshot of the email as proof"
+              style={{
+                fontSize: 11, padding: '5px 14px',
+                borderColor: 'var(--blue)', color: 'var(--blue)'
+              }}
+            >
+              📧 Sent to Developer
+            </button>
+          </>
         )}
         {phase === 'logging' && (
           <span className="muted" style={{ fontSize: 11 }}>Logging…</span>
@@ -274,7 +393,15 @@ export default function MarkImplementedButton({
             )}
             {result.status !== 'verified' && result.impl?.id && (
               <>
-                {result.status !== 'manual_required' && (
+                {result.status !== 'sent_to_developer' && (
+                  <button
+                    onClick={() => { setSentMsg(''); setShowSentPanel(v => !v); }}
+                    style={{ fontSize: 10, padding: '3px 10px', marginLeft: 8, borderColor: 'var(--blue)', color: 'var(--blue)' }}
+                  >
+                    📧 Sent to Developer
+                  </button>
+                )}
+                {result.status !== 'manual_required' && result.status !== 'sent_to_developer' && (
                   <button
                     onClick={() => setShowPreview(v => !v)}
                     style={{ fontSize: 10, padding: '3px 10px', marginLeft: 8, borderColor: 'var(--blue)', color: 'var(--blue)' }}
@@ -409,6 +536,56 @@ export default function MarkImplementedButton({
                 {pasteBusy ? 'Verifying…' : 'Verify'}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {showSentPanel && result?.impl?.id && (
+        <div style={{ marginTop: 6, padding: 10, background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 6, maxWidth: 500 }}>
+          <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 4 }}>📧 Upload a screenshot of the email</div>
+          <div className="muted" style={{ fontSize: 10, marginBottom: 6, lineHeight: 1.4 }}>
+            Screenshot the email you sent to the client's developer (Gmail/Outlook — the sent message or compose window is fine).
+            The AI just checks it's a real email about this work, then marks the change as <strong>Sent to Developer</strong>.
+          </div>
+          <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+            <input
+              type="file"
+              accept="image/*"
+              disabled={sentBusy}
+              onChange={e => { setSentFile(e.target.files?.[0] || null); setSentMsg(''); }}
+              style={{ fontSize: 10 }}
+            />
+            <input
+              type="text"
+              placeholder="Who sent it? (optional)"
+              value={sentBy}
+              onChange={e => setSentBy(e.target.value)}
+              disabled={sentBusy}
+              style={{ fontSize: 10, padding: '3px 8px', width: 150 }}
+            />
+          </div>
+          {sentMsg && (
+            <div style={{ fontSize: 10, color: 'var(--orange)', marginTop: 6, lineHeight: 1.4 }}>
+              {sentMsg}
+              <div style={{ marginTop: 4 }}>
+                <button onClick={sentManualOverride} disabled={sentBusy} style={{ fontSize: 10, padding: '3px 10px' }}>
+                  I definitely sent it — Mark as Sent anyway
+                </button>
+              </div>
+            </div>
+          )}
+          <div className="row" style={{ justifyContent: 'flex-end', gap: 6, marginTop: 8 }}>
+            <button onClick={() => { setShowSentPanel(false); setSentFile(null); setSentMsg(''); }} disabled={sentBusy} style={{ fontSize: 10, padding: '3px 10px' }}>
+              Cancel
+            </button>
+            <button
+              onClick={submitSentScreenshot}
+              disabled={sentBusy || !sentFile}
+              className="primary"
+              style={{ fontSize: 10, padding: '3px 12px', background: 'var(--blue)', borderColor: 'var(--blue)', color: '#0a0a0c' }}
+            >
+              {sentBusy ? 'Checking screenshot…' : 'Verify & Mark Sent'}
+            </button>
           </div>
         </div>
       )}

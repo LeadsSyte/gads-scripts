@@ -55,6 +55,7 @@ export function contentPipelineStatus(client, implementations, month, contentHis
       (i.implemented_at || i.created_at || '').slice(0, 7) === m
   );
   const verified = monthImpls.filter(i => i.verification_status === 'verified');
+  const sentToDev = monthImpls.filter(i => i.verification_status === 'sent_to_developer');
 
   const history = contentHistory || loadContentHistoryLocal();
   const monthArticles = history.filter(
@@ -88,6 +89,7 @@ export function contentPipelineStatus(client, implementations, month, contentHis
     // moved on quota (required) or completion (written).
     const parts = [written + ' written'];
     parts.push(verifiedCount + ' verified');
+    if (sentToDev.length > 0) parts.push(sentToDev.length + ' sent to dev');
     // We only reach here if allVerified was false above, so verifiedCount
     // < required. remainingForQuota is always >= 1 in this branch.
     const remainingForQuota = required - verifiedCount;
@@ -109,6 +111,7 @@ export function contentPipelineStatus(client, implementations, month, contentHis
   if (written > 0) {
     const parts = [written + '/' + required + ' articles'];
     if (verifiedCount > 0) parts.push(verifiedCount + ' verified');
+    if (sentToDev.length > 0) parts.push(sentToDev.length + ' sent to dev');
     return {
       section: 'articles-written',
       summary: parts.join(' · '),
@@ -137,6 +140,7 @@ export function technicalPipelineStatus(client, implementations, tasks, month) {
       (i.implemented_at || i.created_at || '').slice(0, 7) === m
   );
   const verifiedImpls = monthImpls.filter(i => i.verification_status === 'verified');
+  const sentToDev = monthImpls.filter(i => i.verification_status === 'sent_to_developer');
 
   const clientTasks = (tasks || []).filter(
     t => t.client_id === client.id && (t.created_at || '').slice(0, 7) === m
@@ -159,6 +163,7 @@ export function technicalPipelineStatus(client, implementations, tasks, month) {
   if (verifiedCount > 0) {
     const parts = [clientTasks.length + ' tasks'];
     parts.push(verifiedCount + ' verified');
+    if (sentToDev.length > 0) parts.push(sentToDev.length + ' sent to dev');
     if (open > 0) parts.push(open + ' open');
     return {
       section: 'verified-on-site',
@@ -172,6 +177,7 @@ export function technicalPipelineStatus(client, implementations, tasks, month) {
   if (clientTasks.length > 0) {
     const parts = [clientTasks.length + ' tasks'];
     if (done > 0) parts.push(done + ' done');
+    if (sentToDev.length > 0) parts.push(sentToDev.length + ' sent to dev');
     if (open > 0) parts.push(open + ' open');
     return {
       // "fixes-generated" = a scan was run and tasks exist (regardless of
@@ -208,6 +214,7 @@ export function aeoPipelineStatus(client, implementations, aeoResults, month, de
       (i.implemented_at || i.created_at || '').slice(0, 7) === m
   );
   const verified = monthImpls.filter(i => i.verification_status === 'verified');
+  const sentToDev = monthImpls.filter(i => i.verification_status === 'sent_to_developer');
 
   // Check if AEO optimizations were generated this month.
   const monthResults = Object.values(aeoResults || {}).filter(
@@ -253,6 +260,7 @@ export function aeoPipelineStatus(client, implementations, aeoResults, month, de
     if (totalOpts > 0) parts.push(totalOpts + ' quick-win optimizations');
     if (deepCount > 0) parts.push(deepCount + ' deep rewrite' + (deepCount > 1 ? 's' : ''));
     if (verified.length > 0) parts.push(verified.length + ' verified');
+    if (sentToDev.length > 0) parts.push(sentToDev.length + ' sent to dev');
     const remaining = totalWork - verified.length;
     if (remaining > 0) parts.push(remaining + ' awaiting implementation');
     if (isStale) parts.push('from prior month — re-run for ' + m);
