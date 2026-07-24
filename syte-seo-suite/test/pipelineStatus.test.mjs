@@ -110,6 +110,27 @@ await t('technical: completely empty client IS credentials-missing', async () =>
   assertEq(r.section, 'credentials-missing', 'empty client');
 });
 
+// Regression: tasks are one evolving working set per client (re-scan replaces
+// open tasks with a fresh created_at but keeps verified/done history with an
+// older created_at). The summary must count the WHOLE set — matching the
+// expandable list — not just tasks created in the selected month, else the bar
+// shows e.g. "14 tasks · 3 verified" while the list shows 19 tasks, 6 verified.
+await t('technical: counts include verified/done tasks from prior months', async () => {
+  const c = { id: 'ix', name: 'Ixaxa', url: 'https://ixaxa.test' };
+  const tasks = [
+    { client_id: 'ix', status: 'verified', created_at: '2026-04-10' }, // prior month
+    { client_id: 'ix', status: 'verified', created_at: '2026-04-11' }, // prior month
+    { client_id: 'ix', status: 'open',     created_at: '2026-05-01' }, // this month
+    { client_id: 'ix', status: 'open',     created_at: '2026-05-02' }  // this month
+  ];
+  const r = technicalPipelineStatus(c, [], tasks, '2026-05');
+  assertEq(/4 tasks/.test(r.summary), true, 'summary should count all 4 tasks: ' + r.summary);
+  assertEq(/2 verified/.test(r.summary), true, 'summary should show 2 verified: ' + r.summary);
+  assertEq(/2 of 4 verified/.test(r.detail), true, 'detail should read "2 of 4 verified": ' + r.detail);
+  // The two verified counts (summary vs detail) must never contradict.
+  assertEq(/2 still open/.test(r.detail), true, 'detail should read "2 still open": ' + r.detail);
+});
+
 // =========================================================================
 // Same client, run through readinessFor — must agree with pipelineStatus.
 // If pipelineStatus says "credentials-missing", readiness must show missing

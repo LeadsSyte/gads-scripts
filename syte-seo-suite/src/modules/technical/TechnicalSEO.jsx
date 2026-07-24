@@ -681,7 +681,9 @@ export default function TechnicalSEO({ sub }) {
       'credentials-missing': []
     };
     for (const c of techClients) {
-      const status = technicalPipelineStatus(c, techImpls, tasks, currentMonth);
+      // Use visibleTasks (rejected removed) so the summary counts match the
+      // expandable per-client list, which also renders from visibleTasks.
+      const status = technicalPipelineStatus(c, techImpls, visibleTasks, currentMonth);
       buckets[status.section]?.push({ client: c, summary: status.summary, detail: status.detail });
     }
     return [
@@ -690,7 +692,7 @@ export default function TechnicalSEO({ sub }) {
       { key: 'not-scanned',        label: 'Not Scanned Yet',        color: 'var(--text-muted)', borderColor: 'var(--border)',      clients: buckets['not-scanned'] },
       { key: 'credentials-missing', label: 'Credentials Missing',   color: 'var(--red)',        borderColor: 'var(--red)',        clients: buckets['credentials-missing'] }
     ];
-  }, [techClients, techImpls, tasks, currentMonth]);
+  }, [techClients, techImpls, visibleTasks, currentMonth]);
 
   const [expandedClient, setExpandedClient] = useState(null);
 

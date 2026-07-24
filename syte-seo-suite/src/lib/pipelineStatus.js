@@ -142,9 +142,14 @@ export function technicalPipelineStatus(client, implementations, tasks, month) {
   const verifiedImpls = monthImpls.filter(i => i.verification_status === 'verified');
   const sentToDev = monthImpls.filter(i => i.verification_status === 'sent_to_developer');
 
-  const clientTasks = (tasks || []).filter(
-    t => t.client_id === client.id && (t.created_at || '').slice(0, 7) === m
-  );
+  // Tasks form ONE evolving working set per client: a re-scan REPLACES the
+  // open tasks (giving them a fresh created_at) but KEEPS done/verified tasks
+  // as history (with their original, older created_at). Filtering the count by
+  // created_at month therefore drops verified/done history from the totals,
+  // which made the summary bar ("14 tasks · 3 verified") disagree with the
+  // expandable task list ("19 tasks", 6 of them verified). Count the whole
+  // working set so the summary matches exactly what the list renders.
+  const clientTasks = (tasks || []).filter(t => t.client_id === client.id);
   const verifiedTasks = clientTasks.filter(t => t.status === 'verified');
   const open = clientTasks.filter(t => t.status === 'open').length;
   const done = clientTasks.filter(t => t.status === 'done' || t.status === 'verified').length;
