@@ -11,6 +11,7 @@ import ReportsModule from './modules/reports/ReportsModule.jsx';
 import ClientsMaster from './modules/clients/ClientsMaster.jsx';
 import ImplementationProgress from './modules/clients/ImplementationProgress.jsx';
 import Approvals from './modules/clients/Approvals.jsx';
+import AccountManagers from './modules/clients/AccountManagers.jsx';
 import { useClients } from './store/useClients.js';
 import { getStoredApiKey } from './lib/auth.js';
 import { needsMigration, countLegacyClients, runMigration } from './lib/migration.js';
@@ -117,7 +118,8 @@ export default function App() {
         <ErrorBoundary key={module} label={module.charAt(0).toUpperCase() + module.slice(1) + ' module'}>
           {module === 'clients' && sub === 'Implementation Progress' && <ImplementationProgress />}
           {module === 'clients' && sub === 'Approvals' && <Approvals />}
-          {module === 'clients' && sub !== 'Implementation Progress' && sub !== 'Approvals' && <ClientsMaster />}
+          {module === 'clients' && sub === 'Account Managers' && <AccountManagers />}
+          {module === 'clients' && sub !== 'Implementation Progress' && sub !== 'Approvals' && sub !== 'Account Managers' && <ClientsMaster />}
           {module === 'content'   && <ContentEngine sub={sub} setSub={setSub} />}
           {module === 'technical' && <TechnicalSEO sub={sub} />}
           {module === 'aeo'       && <AEOEngine sub={sub} />}

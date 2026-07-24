@@ -40,12 +40,43 @@ function ServiceToggle({ on, color, onChange, disabled }) {
   );
 }
 
+// Inline, editable account-manager cell. Commits on blur / Enter only when
+// the value actually changed, so we don't spam Supabase on every focus.
+function AccountManagerCell({ client, disabled, onSave }) {
+  const [val, setVal] = useState(client.account_manager || '');
+  useEffect(() => { setVal(client.account_manager || ''); }, [client.account_manager]);
+
+  function commit() {
+    const trimmed = val.trim();
+    if (trimmed === (client.account_manager || '')) return;
+    onSave(trimmed);
+  }
+
+  return (
+    <input
+      list="am-suggestions"
+      value={val}
+      onChange={e => setVal(e.target.value)}
+      onBlur={commit}
+      onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+      disabled={disabled}
+      placeholder="—"
+      style={{
+        width: 130, padding: '5px 8px', fontSize: 12,
+        background: 'var(--surface)', border: '1px solid var(--border)',
+        borderRadius: 6, color: 'var(--text)'
+      }}
+    />
+  );
+}
+
 export default function ClientsMaster() {
   const clients = useClients(s => s.clients);
   const reload = useClients(s => s.load);
   const [editing, setEditing] = useState(null);     // client being opened in modal
   const [importing, setImporting] = useState(false);
   const [filter, setFilter] = useState('');
+  const [managerFilter, setManagerFilter] = useState(''); // '' = all, '__none__' = unassigned
   const [busy, setBusy] = useState(false);
   const [rowBusy, setRowBusy] = useState(null);     // id of row currently saving
   const [msg, setMsg] = useState('');
@@ -68,15 +99,29 @@ export default function ClientsMaster() {
     setHealth(r);
   }
 
+  // Unique, sorted list of account managers currently assigned.
+  const managers = useMemo(
+    () => [...new Set(clients.map(c => (c.account_manager || '').trim()).filter(Boolean))].sort(),
+    [clients]
+  );
+
   const filtered = useMemo(() => {
-    if (!filter.trim()) return clients;
-    const q = filter.toLowerCase();
-    return clients.filter(c =>
-      (c.name || '').toLowerCase().includes(q) ||
-      (c.url || '').toLowerCase().includes(q) ||
-      (c.industry || '').toLowerCase().includes(q)
-    );
-  }, [clients, filter]);
+    const q = filter.trim().toLowerCase();
+    return clients.filter(c => {
+      if (managerFilter === '__none__') {
+        if ((c.account_manager || '').trim()) return false;
+      } else if (managerFilter) {
+        if ((c.account_manager || '').trim() !== managerFilter) return false;
+      }
+      if (!q) return true;
+      return (
+        (c.name || '').toLowerCase().includes(q) ||
+        (c.url || '').toLowerCase().includes(q) ||
+        (c.industry || '').toLowerCase().includes(q) ||
+        (c.account_manager || '').toLowerCase().includes(q)
+      );
+    });
+  }, [clients, filter, managerFilter]);
 
   const stats = useMemo(() => ({
     total: clients.length,
@@ -90,6 +135,15 @@ export default function ClientsMaster() {
     setRowBusy(client.id); setErr('');
     try {
       await upsertClient({ ...client, [key]: value });
+      await reload();
+    } catch (e) { setErr(e.message); }
+    finally { setRowBusy(null); }
+  }
+
+  async function setManager(client, value) {
+    setRowBusy(client.id); setErr('');
+    try {
+      await upsertClient({ ...client, account_manager: value });
       await reload();
     } catch (e) { setErr(e.message); }
     finally { setRowBusy(null); }
@@ -245,16 +299,31 @@ export default function ClientsMaster() {
         </details>
       )}
 
-      {/* Search */}
-      <div className="row" style={{ marginBottom: 10 }}>
+      {/* Search + account-manager filter */}
+      <div className="row" style={{ marginBottom: 10, gap: 10, flexWrap: 'wrap' }}>
         <input
           value={filter}
           onChange={e => setFilter(e.target.value)}
-          placeholder="Search by name, URL, or industry…"
+          placeholder="Search by name, URL, industry, or manager…"
           style={{ maxWidth: 360 }}
         />
-        {filter && <span className="muted" style={{ fontSize: 12 }}>{filtered.length} / {clients.length}</span>}
+        <select
+          value={managerFilter}
+          onChange={e => setManagerFilter(e.target.value)}
+          style={{ width: 200 }}
+          title="Filter by account manager"
+        >
+          <option value="">All account managers</option>
+          <option value="__none__">Unassigned</option>
+          {managers.map(m => <option key={m} value={m}>{m}</option>)}
+        </select>
+        {(filter || managerFilter) && <span className="muted" style={{ fontSize: 12 }}>{filtered.length} / {clients.length}</span>}
       </div>
+
+      {/* Suggestions for inline account-manager inputs. */}
+      <datalist id="am-suggestions">
+        {managers.map(m => <option key={m} value={m} />)}
+      </datalist>
 
       {/* Master table */}
       <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
@@ -264,6 +333,7 @@ export default function ClientsMaster() {
               <th>Name</th>
               <th>URL</th>
               <th>Industry</th>
+              <th>Account Manager</th>
               {SERVICES.map(s => (
                 <th key={s.key} style={{ textAlign: 'center', color: s.color }}>{s.label}</th>
               ))}
@@ -273,7 +343,7 @@ export default function ClientsMaster() {
           <tbody>
             {filtered.length === 0 && (
               <tr>
-                <td colSpan={4 + SERVICES.length} className="muted" style={{ textAlign: 'center', padding: 32 }}>
+                <td colSpan={5 + SERVICES.length} className="muted" style={{ textAlign: 'center', padding: 32 }}>
                   {clients.length === 0
                     ? 'No clients yet. Click Sync from WebCEO, Import from Old Tools, or + Add Client.'
                     : 'No clients match that search.'}
@@ -292,6 +362,13 @@ export default function ClientsMaster() {
                   {c.url || '—'}
                 </td>
                 <td className="muted">{c.industry || '—'}</td>
+                <td>
+                  <AccountManagerCell
+                    client={c}
+                    disabled={rowBusy === c.id}
+                    onSave={v => setManager(c, v)}
+                  />
+                </td>
                 {SERVICES.map(s => (
                   <td key={s.key} style={{ textAlign: 'center' }}>
                     <ServiceToggle

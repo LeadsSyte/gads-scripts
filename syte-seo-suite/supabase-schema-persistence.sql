@@ -50,6 +50,8 @@ alter table syte_suite_clients add column if not exists looker_url text;
 alter table syte_suite_clients add column if not exists client_type text;  -- 'ecommerce' | 'lead_gen'
 -- Brand reference material for the Content Engine: uploaded docs + website scan.
 alter table syte_suite_clients add column if not exists brand_docs text;
+-- Account manager / owner responsible for the client.
+alter table syte_suite_clients add column if not exists account_manager text;
 
 -- 4. AEO Deep Optimizations — full-page rewrites with FAQ + changes log.
 -- Distinct from syte_suite_aeo_results (which holds the 5-snippet quick-wins).

@@ -344,6 +344,22 @@ Return ONLY valid JSON: { "queries": ["...", "..."] }`;
           ))}
         </div>
 
+        {/* Account manager / owner — who runs this client internally. */}
+        <div style={{ marginTop: 4 }}>
+          <label>
+            Account Manager{' '}
+            <span className="muted" style={{ textTransform: 'none', letterSpacing: 0, fontSize: 11 }}>
+              — the person responsible for this client
+            </span>
+          </label>
+          <input
+            type="text"
+            value={f.account_manager || ''}
+            onChange={e => update('account_manager', e.target.value)}
+            placeholder="e.g. Michael H"
+          />
+        </div>
+
         {/* Brand & Content */}
         <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '.08em', color: 'var(--text-dim)', margin: '16px 0 8px' }}>
           Brand & Content
