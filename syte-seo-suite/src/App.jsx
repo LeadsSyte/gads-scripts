@@ -16,6 +16,7 @@ import { useClients } from './store/useClients.js';
 import { getStoredApiKey } from './lib/auth.js';
 import { needsMigration, countLegacyClients, runMigration } from './lib/migration.js';
 import { hasSupabase } from './lib/supabase.js';
+import { backgroundSilentRefresh, getToken } from './modules/technical/googleAuth.js';
 
 const ACCENTS = {
   clients:   '#e8e8ed',
@@ -88,6 +89,21 @@ export default function App() {
       const needed = needsMigration();
       setMigration({ checked: true, needed, count: needed ? countLegacyClients() : 0 });
     })();
+
+    // On app start, attempt to silently renew the Google access token
+    // if it's missing or expired. The user is usually still signed into
+    // Google in this browser; this brings the token back without any
+    // popup, so subsequent GA4/GSC calls just work after a page refresh.
+    if (!getToken()) {
+      backgroundSilentRefresh();
+    }
+
+    // Also kick a refresh every 50 minutes so a long session doesn't
+    // catch a stale token mid-action. Tokens are 1-hour TTL.
+    const interval = setInterval(() => {
+      backgroundSilentRefresh();
+    }, 50 * 60 * 1000);
+    return () => clearInterval(interval);
   }, [unlocked, load]);
 
   if (!unlocked) return <LockScreen onUnlock={() => setUnlocked(true)} />;

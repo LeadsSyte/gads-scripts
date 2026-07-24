@@ -4,6 +4,7 @@ import { upsertClient, diagnoseSupabase } from '../../lib/supabase.js';
 import { syncWebceoClients } from '../technical/webceo.js';
 import ClientModal from '../../components/ClientModal.jsx';
 import ImportClientsModal from '../../components/ImportClientsModal.jsx';
+import { serverAuthEnabled, listConnectedAccounts } from '../../lib/googleServerAuth.js';
 
 // Master Clients view — the single source-of-truth UI for managing every
 // client across every module. Service flags are toggled inline; changes
@@ -92,6 +93,37 @@ export default function ClientsMaster() {
     diagnoseSupabase().then(r => { if (!cancelled) setHealth(r); });
     return () => { cancelled = true; };
   }, []);
+
+  // Server-auth: which Google accounts are connected, so we can flag clients
+  // that still need an account assigned (or are bound to one that isn't
+  // connected). Empty/no-op when server auth is off.
+  const serverAuth = serverAuthEnabled();
+  const [connectedAccounts, setConnectedAccounts] = useState([]);
+  useEffect(() => {
+    if (!serverAuth) return;
+    listConnectedAccounts()
+      .then(a => setConnectedAccounts((a || []).filter(x => !x.revoked).map(x => (x.email || '').toLowerCase())))
+      .catch(() => {});
+  }, [serverAuth]);
+
+  // Per-client Google-account binding status (server-auth only).
+  // Returns null when there's nothing to flag.
+  function accountStatus(c) {
+    if (!serverAuth) return null;
+    const needsGoogle = !!(c.ga4_property_id || c.gsc_property);
+    if (!needsGoogle) return null;
+    const bound = (c.ga4_account_email || c.gsc_account_email || c.google_account_email || '').toLowerCase();
+    if (!bound) return { text: 'No Google account', color: 'var(--orange)' };
+    if (connectedAccounts.length && !connectedAccounts.includes(bound)) {
+      return { text: 'Account not connected', color: 'var(--red)' };
+    }
+    return null;
+  }
+  const needsAccountCount = useMemo(
+    () => (serverAuth ? clients.filter(c => accountStatus(c)).length : 0),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [serverAuth, clients, connectedAccounts]
+  );
 
   async function recheckHealth() {
     setHealth(null);
@@ -325,6 +357,12 @@ export default function ClientsMaster() {
         {managers.map(m => <option key={m} value={m} />)}
       </datalist>
 
+      {serverAuth && needsAccountCount > 0 && (
+        <div style={{ marginBottom: 12, padding: '8px 12px', border: '1px solid var(--orange)', borderRadius: 8, color: 'var(--orange)', fontSize: 12 }}>
+          ⚠ {needsAccountCount} client{needsAccountCount === 1 ? '' : 's'} need a Google account assigned before reports can pull GA4/GSC. Open each flagged client → Google Connections → pick its connected account.
+        </div>
+      )}
+
       {/* Master table */}
       <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
         <table>
@@ -353,7 +391,20 @@ export default function ClientsMaster() {
             {filtered.map(c => (
               <tr key={c.id}>
                 <td>
-                  <div style={{ fontWeight: 600 }}>{c.name}</div>
+                  <div style={{ fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8 }}>
+                    {c.name}
+                    {(() => {
+                      const st = accountStatus(c);
+                      return st ? (
+                        <span
+                          title="Open this client and set its Google account under Google Connections"
+                          style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: st.color, border: '1px solid ' + st.color, borderRadius: 4, padding: '1px 6px' }}
+                        >
+                          ⚠ {st.text}
+                        </span>
+                      ) : null;
+                    })()}
+                  </div>
                   {c.wceo_project_id && (
                     <div className="muted" style={{ fontSize: 10 }}>WebCEO: {c.wceo_project_id}</div>
                   )}

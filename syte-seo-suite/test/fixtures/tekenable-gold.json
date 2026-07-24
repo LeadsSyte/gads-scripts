@@ -1,0 +1,1058 @@
+{
+  "profile": {
+    "brand": "TEKenable",
+    "geo": "Ireland",
+    "geoVariants": [
+      "Ireland",
+      "Dublin",
+      "UK and Ireland",
+      "Northern Ireland"
+    ],
+    "primaryCity": "Dublin",
+    "services": [
+      "Dynamics 365",
+      "Dynamics 365 Business Central",
+      "Dynamics 365 CRM",
+      "Power Platform",
+      "Power Apps",
+      "Power Automate",
+      "Power BI",
+      "Copilot Studio",
+      "Azure cloud migration",
+      "AI consultancy",
+      "AI agent development",
+      "custom software development",
+      "data and analytics",
+      "low-code development"
+    ],
+    "headlineServices": [
+      "Microsoft partners",
+      "Dynamics 365 partners",
+      "AI consultancies",
+      "Power Platform consultants",
+      "Business Central partners",
+      "custom software development companies"
+    ],
+    "gridQualifierServices": [
+      "Dynamics 365",
+      "Power Platform",
+      "Business Central",
+      "AI consultancy"
+    ],
+    "segments": [
+      "mid-market company",
+      "SME",
+      "enterprise",
+      "regulated business",
+      "public sector organisation"
+    ],
+    "industries": [
+      "credit unions",
+      "insurance companies",
+      "aviation leasing",
+      "renewable energy companies",
+      "food and ingredient manufacturers",
+      "healthcare organisations",
+      "Irish government and public sector",
+      "life and pensions companies"
+    ],
+    "competitors": [
+      "Codec",
+      "Storm Technology"
+    ]
+  },
+  "goldProbes": [
+    {
+      "id": "TEK-001",
+      "tier": 1,
+      "theme": "Reverse probe",
+      "type": "reverse",
+      "query": "What is TEKenable known for?",
+      "mode": "both"
+    },
+    {
+      "id": "TEK-002",
+      "tier": 1,
+      "theme": "Reverse probe",
+      "type": "reverse",
+      "query": "What kind of company is TEKenable and who are their competitors in Ireland?",
+      "mode": "both"
+    },
+    {
+      "id": "TEK-003",
+      "tier": 1,
+      "theme": "Reverse probe",
+      "type": "reverse",
+      "query": "List companies similar to TEKenable",
+      "mode": "both"
+    },
+    {
+      "id": "TEK-004",
+      "tier": 1,
+      "theme": "Confirmed segment",
+      "type": "qualified",
+      "query": "Best Dynamics 365 integration partners in Ireland",
+      "mode": "both"
+    },
+    {
+      "id": "TEK-005",
+      "tier": 1,
+      "theme": "Confirmed segment",
+      "type": "qualified",
+      "query": "Best consulting firms in Ireland for Copilot Studio agents",
+      "mode": "both"
+    },
+    {
+      "id": "TEK-006",
+      "tier": 1,
+      "theme": "Confirmed segment",
+      "type": "qualified",
+      "query": "Microsoft partner Ireland for Dataverse and Power Platform integration",
+      "mode": "both"
+    },
+    {
+      "id": "TEK-007",
+      "tier": 1,
+      "theme": "Core money",
+      "type": "category",
+      "query": "Best Microsoft partners in Ireland",
+      "mode": "both"
+    },
+    {
+      "id": "TEK-008",
+      "tier": 1,
+      "theme": "Core money",
+      "type": "category",
+      "query": "Best Dynamics 365 partners in Ireland",
+      "mode": "both"
+    },
+    {
+      "id": "TEK-009",
+      "tier": 1,
+      "theme": "Core money",
+      "type": "category",
+      "query": "Top AI consultancies in Ireland",
+      "mode": "both"
+    },
+    {
+      "id": "TEK-010",
+      "tier": 1,
+      "theme": "Core money",
+      "type": "category",
+      "query": "Best Power Platform consultants in Ireland",
+      "mode": "both"
+    },
+    {
+      "id": "TEK-011",
+      "tier": 1,
+      "theme": "Core money",
+      "type": "category",
+      "query": "Business Central partners Ireland",
+      "mode": "both"
+    },
+    {
+      "id": "TEK-012",
+      "tier": 1,
+      "theme": "Core money",
+      "type": "category",
+      "query": "Top custom software development companies Dublin",
+      "mode": "both"
+    },
+    {
+      "id": "TEK-013",
+      "tier": 1,
+      "theme": "Qualified money",
+      "type": "qualified",
+      "query": "Best Dynamics 365 partner in Ireland for mid-market companies",
+      "mode": "both"
+    },
+    {
+      "id": "TEK-014",
+      "tier": 1,
+      "theme": "Qualified money",
+      "type": "qualified",
+      "query": "Microsoft partner Ireland for regulated financial services",
+      "mode": "both"
+    },
+    {
+      "id": "TEK-015",
+      "tier": 1,
+      "theme": "Qualified money",
+      "type": "qualified",
+      "query": "AI consultancy Dublin for building AI agents",
+      "mode": "both"
+    },
+    {
+      "id": "TEK-016",
+      "tier": 1,
+      "theme": "Qualified money",
+      "type": "qualified",
+      "query": "Who should implement Dynamics 365 for an Irish insurance company",
+      "mode": "both"
+    },
+    {
+      "id": "TEK-017",
+      "tier": 1,
+      "theme": "Comparison",
+      "type": "comparison",
+      "query": "Alternatives to Codec for Dynamics 365 in Ireland",
+      "mode": "both"
+    },
+    {
+      "id": "TEK-018",
+      "tier": 1,
+      "theme": "Comparison",
+      "type": "comparison",
+      "query": "Alternatives to Storm Technology for Power Platform work",
+      "mode": "both"
+    },
+    {
+      "id": "TEK-019",
+      "tier": 1,
+      "theme": "Comparison",
+      "type": "comparison",
+      "query": "Codec vs TEKenable vs Storm Technology for Dynamics 365",
+      "mode": "both"
+    },
+    {
+      "id": "TEK-020",
+      "tier": 1,
+      "theme": "Niche moonshot",
+      "type": "niche",
+      "query": "AI solutions for aircraft leasing companies",
+      "mode": "both"
+    },
+    {
+      "id": "TEK-021",
+      "tier": 1,
+      "theme": "Niche moonshot",
+      "type": "niche",
+      "query": "Digital platform for credit unions Ireland",
+      "mode": "both"
+    },
+    {
+      "id": "TEK-022",
+      "tier": 1,
+      "theme": "Niche moonshot",
+      "type": "niche",
+      "query": "AI document redaction software for GDPR compliance",
+      "mode": "both"
+    },
+    {
+      "id": "TEK-023",
+      "tier": 1,
+      "theme": "Niche moonshot",
+      "type": "niche",
+      "query": "AI call centre agent for Irish businesses",
+      "mode": "both"
+    },
+    {
+      "id": "TEK-024",
+      "tier": 1,
+      "theme": "Buyer journey",
+      "type": "conversational",
+      "query": "I run an Irish insurance company and our CRM is outdated, who should I talk to about Dynamics 365?",
+      "mode": "both"
+    },
+    {
+      "id": "TEK-025",
+      "tier": 2,
+      "theme": "Grid: Dynamics 365",
+      "type": "qualified",
+      "query": "Best Dynamics 365 implementation partner in Ireland",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-026",
+      "tier": 2,
+      "theme": "Grid: Dynamics 365",
+      "type": "qualified",
+      "query": "Top Dynamics 365 implementation partner in Dublin",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-027",
+      "tier": 2,
+      "theme": "Grid: Dynamics 365",
+      "type": "qualified",
+      "query": "Recommended Dynamics 365 implementation partner in UK and Ireland",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-028",
+      "tier": 2,
+      "theme": "Grid: Dynamics 365",
+      "type": "qualified",
+      "query": "Best Dynamics 365 implementation partner in Northern Ireland",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-029",
+      "tier": 2,
+      "theme": "Grid: Dynamics 365 Business Central",
+      "type": "qualified",
+      "query": "Top Dynamics 365 Business Central implementation partner in Ireland",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-030",
+      "tier": 2,
+      "theme": "Grid: Dynamics 365 Business Central",
+      "type": "qualified",
+      "query": "Recommended Dynamics 365 Business Central implementation partner in Dublin",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-031",
+      "tier": 2,
+      "theme": "Grid: Dynamics 365 Business Central",
+      "type": "qualified",
+      "query": "Best Dynamics 365 Business Central implementation partner in UK and Ireland",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-032",
+      "tier": 2,
+      "theme": "Grid: Dynamics 365 Business Central",
+      "type": "qualified",
+      "query": "Top Dynamics 365 Business Central implementation partner in Northern Ireland",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-033",
+      "tier": 2,
+      "theme": "Grid: Dynamics 365 CRM",
+      "type": "qualified",
+      "query": "Recommended Dynamics 365 CRM implementation partner in Ireland",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-034",
+      "tier": 2,
+      "theme": "Grid: Dynamics 365 CRM",
+      "type": "qualified",
+      "query": "Best Dynamics 365 CRM implementation partner in Dublin",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-035",
+      "tier": 2,
+      "theme": "Grid: Dynamics 365 CRM",
+      "type": "qualified",
+      "query": "Top Dynamics 365 CRM implementation partner in UK and Ireland",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-036",
+      "tier": 2,
+      "theme": "Grid: Dynamics 365 CRM",
+      "type": "qualified",
+      "query": "Recommended Dynamics 365 CRM implementation partner in Northern Ireland",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-037",
+      "tier": 2,
+      "theme": "Grid: Power Platform",
+      "type": "qualified",
+      "query": "Best Power Platform implementation partner in Ireland",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-038",
+      "tier": 2,
+      "theme": "Grid: Power Platform",
+      "type": "qualified",
+      "query": "Top Power Platform implementation partner in Dublin",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-039",
+      "tier": 2,
+      "theme": "Grid: Power Platform",
+      "type": "qualified",
+      "query": "Recommended Power Platform implementation partner in UK and Ireland",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-040",
+      "tier": 2,
+      "theme": "Grid: Power Platform",
+      "type": "qualified",
+      "query": "Best Power Platform implementation partner in Northern Ireland",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-041",
+      "tier": 2,
+      "theme": "Grid: Power Apps",
+      "type": "qualified",
+      "query": "Top Power Apps implementation partner in Ireland",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-042",
+      "tier": 2,
+      "theme": "Grid: Power Apps",
+      "type": "qualified",
+      "query": "Recommended Power Apps implementation partner in Dublin",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-043",
+      "tier": 2,
+      "theme": "Grid: Power Apps",
+      "type": "qualified",
+      "query": "Best Power Apps implementation partner in UK and Ireland",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-044",
+      "tier": 2,
+      "theme": "Grid: Power Apps",
+      "type": "qualified",
+      "query": "Top Power Apps implementation partner in Northern Ireland",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-045",
+      "tier": 2,
+      "theme": "Grid: Power Automate",
+      "type": "qualified",
+      "query": "Recommended Power Automate implementation partner in Ireland",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-046",
+      "tier": 2,
+      "theme": "Grid: Power Automate",
+      "type": "qualified",
+      "query": "Best Power Automate implementation partner in Dublin",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-047",
+      "tier": 2,
+      "theme": "Grid: Power Automate",
+      "type": "qualified",
+      "query": "Top Power Automate implementation partner in UK and Ireland",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-048",
+      "tier": 2,
+      "theme": "Grid: Power Automate",
+      "type": "qualified",
+      "query": "Recommended Power Automate implementation partner in Northern Ireland",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-049",
+      "tier": 2,
+      "theme": "Grid: Power BI",
+      "type": "qualified",
+      "query": "Best Power BI implementation partner in Ireland",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-050",
+      "tier": 2,
+      "theme": "Grid: Power BI",
+      "type": "qualified",
+      "query": "Top Power BI implementation partner in Dublin",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-051",
+      "tier": 2,
+      "theme": "Grid: Power BI",
+      "type": "qualified",
+      "query": "Recommended Power BI implementation partner in UK and Ireland",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-052",
+      "tier": 2,
+      "theme": "Grid: Power BI",
+      "type": "qualified",
+      "query": "Best Power BI implementation partner in Northern Ireland",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-053",
+      "tier": 2,
+      "theme": "Grid: Copilot Studio",
+      "type": "qualified",
+      "query": "Top Copilot Studio implementation partner in Ireland",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-054",
+      "tier": 2,
+      "theme": "Grid: Copilot Studio",
+      "type": "qualified",
+      "query": "Recommended Copilot Studio implementation partner in Dublin",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-055",
+      "tier": 2,
+      "theme": "Grid: Copilot Studio",
+      "type": "qualified",
+      "query": "Best Copilot Studio implementation partner in UK and Ireland",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-056",
+      "tier": 2,
+      "theme": "Grid: Copilot Studio",
+      "type": "qualified",
+      "query": "Top Copilot Studio implementation partner in Northern Ireland",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-057",
+      "tier": 2,
+      "theme": "Grid: Azure cloud migration",
+      "type": "qualified",
+      "query": "Recommended Azure cloud migration implementation partner in Ireland",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-058",
+      "tier": 2,
+      "theme": "Grid: Azure cloud migration",
+      "type": "qualified",
+      "query": "Best Azure cloud migration implementation partner in Dublin",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-059",
+      "tier": 2,
+      "theme": "Grid: Azure cloud migration",
+      "type": "qualified",
+      "query": "Top Azure cloud migration implementation partner in UK and Ireland",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-060",
+      "tier": 2,
+      "theme": "Grid: Azure cloud migration",
+      "type": "qualified",
+      "query": "Recommended Azure cloud migration implementation partner in Northern Ireland",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-061",
+      "tier": 2,
+      "theme": "Grid: AI consultancy",
+      "type": "qualified",
+      "query": "Best AI consultancy implementation partner in Ireland",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-062",
+      "tier": 2,
+      "theme": "Grid: AI consultancy",
+      "type": "qualified",
+      "query": "Top AI consultancy implementation partner in Dublin",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-063",
+      "tier": 2,
+      "theme": "Grid: AI consultancy",
+      "type": "qualified",
+      "query": "Recommended AI consultancy implementation partner in UK and Ireland",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-064",
+      "tier": 2,
+      "theme": "Grid: AI consultancy",
+      "type": "qualified",
+      "query": "Best AI consultancy implementation partner in Northern Ireland",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-065",
+      "tier": 2,
+      "theme": "Grid: AI agent development",
+      "type": "qualified",
+      "query": "Top AI agent development implementation partner in Ireland",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-066",
+      "tier": 2,
+      "theme": "Grid: AI agent development",
+      "type": "qualified",
+      "query": "Recommended AI agent development implementation partner in Dublin",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-067",
+      "tier": 2,
+      "theme": "Grid: AI agent development",
+      "type": "qualified",
+      "query": "Best AI agent development implementation partner in UK and Ireland",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-068",
+      "tier": 2,
+      "theme": "Grid: AI agent development",
+      "type": "qualified",
+      "query": "Top AI agent development implementation partner in Northern Ireland",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-069",
+      "tier": 2,
+      "theme": "Grid: custom software development",
+      "type": "qualified",
+      "query": "Recommended custom software development implementation partner in Ireland",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-070",
+      "tier": 2,
+      "theme": "Grid: custom software development",
+      "type": "qualified",
+      "query": "Best custom software development implementation partner in Dublin",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-071",
+      "tier": 2,
+      "theme": "Grid: custom software development",
+      "type": "qualified",
+      "query": "Top custom software development implementation partner in UK and Ireland",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-072",
+      "tier": 2,
+      "theme": "Grid: custom software development",
+      "type": "qualified",
+      "query": "Recommended custom software development implementation partner in Northern Ireland",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-073",
+      "tier": 2,
+      "theme": "Grid: data and analytics",
+      "type": "qualified",
+      "query": "Best data and analytics implementation partner in Ireland",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-074",
+      "tier": 2,
+      "theme": "Grid: data and analytics",
+      "type": "qualified",
+      "query": "Top data and analytics implementation partner in Dublin",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-075",
+      "tier": 2,
+      "theme": "Grid: data and analytics",
+      "type": "qualified",
+      "query": "Recommended data and analytics implementation partner in UK and Ireland",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-076",
+      "tier": 2,
+      "theme": "Grid: data and analytics",
+      "type": "qualified",
+      "query": "Best data and analytics implementation partner in Northern Ireland",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-077",
+      "tier": 2,
+      "theme": "Grid: low-code development",
+      "type": "qualified",
+      "query": "Top low-code development implementation partner in Ireland",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-078",
+      "tier": 2,
+      "theme": "Grid: low-code development",
+      "type": "qualified",
+      "query": "Recommended low-code development implementation partner in Dublin",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-079",
+      "tier": 2,
+      "theme": "Grid: low-code development",
+      "type": "qualified",
+      "query": "Best low-code development implementation partner in UK and Ireland",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-080",
+      "tier": 2,
+      "theme": "Grid: low-code development",
+      "type": "qualified",
+      "query": "Top low-code development implementation partner in Northern Ireland",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-081",
+      "tier": 2,
+      "theme": "Grid: qualifier",
+      "type": "qualified",
+      "query": "Best Dynamics 365 partner in Ireland for a mid-market company",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-082",
+      "tier": 2,
+      "theme": "Grid: qualifier",
+      "type": "qualified",
+      "query": "Best Dynamics 365 partner in Ireland for a SME",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-083",
+      "tier": 2,
+      "theme": "Grid: qualifier",
+      "type": "qualified",
+      "query": "Best Dynamics 365 partner in Ireland for a enterprise",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-084",
+      "tier": 2,
+      "theme": "Grid: qualifier",
+      "type": "qualified",
+      "query": "Best Dynamics 365 partner in Ireland for a regulated business",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-085",
+      "tier": 2,
+      "theme": "Grid: qualifier",
+      "type": "qualified",
+      "query": "Best Dynamics 365 partner in Ireland for a public sector organisation",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-086",
+      "tier": 2,
+      "theme": "Grid: qualifier",
+      "type": "qualified",
+      "query": "Best Power Platform partner in Ireland for a mid-market company",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-087",
+      "tier": 2,
+      "theme": "Grid: qualifier",
+      "type": "qualified",
+      "query": "Best Power Platform partner in Ireland for a SME",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-088",
+      "tier": 2,
+      "theme": "Grid: qualifier",
+      "type": "qualified",
+      "query": "Best Power Platform partner in Ireland for a enterprise",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-089",
+      "tier": 2,
+      "theme": "Grid: qualifier",
+      "type": "qualified",
+      "query": "Best Power Platform partner in Ireland for a regulated business",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-090",
+      "tier": 2,
+      "theme": "Grid: qualifier",
+      "type": "qualified",
+      "query": "Best Power Platform partner in Ireland for a public sector organisation",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-091",
+      "tier": 2,
+      "theme": "Grid: qualifier",
+      "type": "qualified",
+      "query": "Best Business Central partner in Ireland for a mid-market company",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-092",
+      "tier": 2,
+      "theme": "Grid: qualifier",
+      "type": "qualified",
+      "query": "Best Business Central partner in Ireland for a SME",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-093",
+      "tier": 2,
+      "theme": "Grid: qualifier",
+      "type": "qualified",
+      "query": "Best Business Central partner in Ireland for a enterprise",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-094",
+      "tier": 2,
+      "theme": "Grid: qualifier",
+      "type": "qualified",
+      "query": "Best Business Central partner in Ireland for a regulated business",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-095",
+      "tier": 2,
+      "theme": "Grid: qualifier",
+      "type": "qualified",
+      "query": "Best Business Central partner in Ireland for a public sector organisation",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-096",
+      "tier": 2,
+      "theme": "Grid: qualifier",
+      "type": "qualified",
+      "query": "Best AI consultancy partner in Ireland for a mid-market company",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-097",
+      "tier": 2,
+      "theme": "Grid: qualifier",
+      "type": "qualified",
+      "query": "Best AI consultancy partner in Ireland for a SME",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-098",
+      "tier": 2,
+      "theme": "Grid: qualifier",
+      "type": "qualified",
+      "query": "Best AI consultancy partner in Ireland for a enterprise",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-099",
+      "tier": 2,
+      "theme": "Grid: qualifier",
+      "type": "qualified",
+      "query": "Best AI consultancy partner in Ireland for a regulated business",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-100",
+      "tier": 2,
+      "theme": "Grid: qualifier",
+      "type": "qualified",
+      "query": "Best AI consultancy partner in Ireland for a public sector organisation",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-101",
+      "tier": 3,
+      "theme": "Industry",
+      "type": "niche",
+      "query": "Best technology partner for credit unions Ireland",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-102",
+      "tier": 3,
+      "theme": "Industry",
+      "type": "niche",
+      "query": "Dynamics 365 for credit unions Ireland",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-103",
+      "tier": 3,
+      "theme": "Industry",
+      "type": "niche",
+      "query": "AI solutions for credit unions Ireland",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-104",
+      "tier": 3,
+      "theme": "Industry",
+      "type": "niche",
+      "query": "Best technology partner for insurance companies Ireland",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-105",
+      "tier": 3,
+      "theme": "Industry",
+      "type": "niche",
+      "query": "Dynamics 365 for insurance companies Ireland",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-106",
+      "tier": 3,
+      "theme": "Industry",
+      "type": "niche",
+      "query": "AI solutions for insurance companies Ireland",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-107",
+      "tier": 3,
+      "theme": "Industry",
+      "type": "niche",
+      "query": "Best technology partner for aviation leasing",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-108",
+      "tier": 3,
+      "theme": "Industry",
+      "type": "niche",
+      "query": "Dynamics 365 for aviation leasing",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-109",
+      "tier": 3,
+      "theme": "Industry",
+      "type": "niche",
+      "query": "AI solutions for aviation leasing",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-110",
+      "tier": 3,
+      "theme": "Industry",
+      "type": "niche",
+      "query": "Best technology partner for renewable energy companies Ireland",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-111",
+      "tier": 3,
+      "theme": "Industry",
+      "type": "niche",
+      "query": "Dynamics 365 for renewable energy companies Ireland",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-112",
+      "tier": 3,
+      "theme": "Industry",
+      "type": "niche",
+      "query": "AI solutions for renewable energy companies Ireland",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-113",
+      "tier": 3,
+      "theme": "Industry",
+      "type": "niche",
+      "query": "Best technology partner for food and ingredient manufacturers Ireland",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-114",
+      "tier": 3,
+      "theme": "Industry",
+      "type": "niche",
+      "query": "Dynamics 365 for food and ingredient manufacturers Ireland",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-115",
+      "tier": 3,
+      "theme": "Industry",
+      "type": "niche",
+      "query": "AI solutions for food and ingredient manufacturers Ireland",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-116",
+      "tier": 3,
+      "theme": "Industry",
+      "type": "niche",
+      "query": "Best technology partner for healthcare organisations Ireland",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-117",
+      "tier": 3,
+      "theme": "Industry",
+      "type": "niche",
+      "query": "Dynamics 365 for healthcare organisations Ireland",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-118",
+      "tier": 3,
+      "theme": "Industry",
+      "type": "niche",
+      "query": "AI solutions for healthcare organisations Ireland",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-119",
+      "tier": 3,
+      "theme": "Industry",
+      "type": "niche",
+      "query": "Best technology partner for Irish government and public sector",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-120",
+      "tier": 3,
+      "theme": "Industry",
+      "type": "niche",
+      "query": "Dynamics 365 for Irish government and public sector",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-121",
+      "tier": 3,
+      "theme": "Industry",
+      "type": "niche",
+      "query": "AI solutions for Irish government and public sector",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-122",
+      "tier": 3,
+      "theme": "Industry",
+      "type": "niche",
+      "query": "Best technology partner for life and pensions companies Ireland",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-123",
+      "tier": 3,
+      "theme": "Industry",
+      "type": "niche",
+      "query": "Dynamics 365 for life and pensions companies Ireland",
+      "mode": "search_on"
+    },
+    {
+      "id": "TEK-124",
+      "tier": 3,
+      "theme": "Industry",
+      "type": "niche",
+      "query": "AI solutions for life and pensions companies Ireland",
+      "mode": "search_on"
+    }
+  ]
+}

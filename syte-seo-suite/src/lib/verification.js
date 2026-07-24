@@ -22,10 +22,18 @@ import { listSites } from '../modules/technical/gsc.js';
 
 // Task types whose evidence does NOT live in the page HTML or screenshot.
 // For these we run a targeted external check (or fall back to manual).
+//
+// IMPORTANT: 'robots' is intentionally NOT in this set because it's
+// ambiguous. A task can mean either:
+//   - meta robots <meta name="robots" content="noindex">    → ON-page
+//   - the robots.txt file                                    → OFF-page
+// Only 'robots_txt' is unambiguously off-page. For tasks tagged plain
+// 'robots', we look at the title/description to decide; see
+// isOffPageTask below.
 const OFF_PAGE_TYPES = new Set([
   'gsc_setup', 'gsc', 'search_console', 'domain_ownership', 'ownership_verification',
   'sitemap', 'sitemap_submission', 'xml_sitemap',
-  'robots', 'robots_txt',
+  'robots_txt',
   'analytics_setup', 'ga_setup', 'gtm_setup', 'tracking_install',
   'indexing_request', 'index_now', 'page_speed', 'core_web_vitals',
   'redirect', 'dns', 'ssl', 'https_setup'
@@ -38,9 +46,21 @@ function normalizeType(t) {
 export function isOffPageTask(impl) {
   const ct = normalizeType(impl?.change_type);
   if (OFF_PAGE_TYPES.has(ct)) return true;
-  // Heuristic: look at title/description for off-page keywords. Catches
-  // tasks the AI labeled "other" but described GSC/sitemap/analytics work.
   const blob = ((impl?.title || '') + ' ' + (impl?.description || '')).toLowerCase();
+
+  // change_type 'robots' is ambiguous (meta robots vs robots.txt). Only
+  // route to off-page if the title/description specifically mentions
+  // robots.txt OR the page_url is itself /robots.txt. A task to remove
+  // noindex from a page or add an indexable meta robots tag is an
+  // ON-page task — it lives in the page's HTML <head>, not in
+  // robots.txt — and was previously misrouted to the off-page robots.txt
+  // check, which then failed because the file was never the issue.
+  if (ct === 'robots') {
+    return /robots\.txt/.test(blob) || /\/robots\.txt(?:\?|$)/.test(impl?.page_url || '');
+  }
+
+  // Heuristic for unlabeled tasks ('other'/'fix'): only flag as off-page
+  // if specific off-page keywords are present.
   return /\bsearch console\b|\bgsc\b|\bdomain ownership\b|\bxml sitemap\b|submit\s+(?:the\s+)?sitemap|google analytics|gtag|gtm|tag manager|robots\.txt/i.test(blob);
 }
 
@@ -188,7 +208,12 @@ export async function checkOffPageTask(impl, client) {
   let result;
   if (ct === 'sitemap' || ct === 'sitemap_submission' || ct === 'xml_sitemap' || /\bxml sitemap\b|submit.*sitemap/.test(blob)) {
     result = await verifySitemap(impl.page_url, client?.url);
-  } else if (ct === 'robots' || ct === 'robots_txt' || /robots\.txt/.test(blob)) {
+  } else if (
+    ct === 'robots_txt' ||
+    (ct === 'robots' && (/robots\.txt/.test(blob) || /\/robots\.txt(?:\?|$)/.test(impl?.page_url || ''))) ||
+    /robots\.txt/.test(blob) ||
+    /\/robots\.txt(?:\?|$)/.test(impl?.page_url || '')
+  ) {
     result = await verifyRobots(impl.page_url, client?.url);
   } else if (ct === 'gsc_setup' || ct === 'gsc' || ct === 'search_console' || ct === 'domain_ownership' || ct === 'ownership_verification' || /search console|domain ownership/.test(blob)) {
     result = await verifyGscOwnership(client);
@@ -221,8 +246,19 @@ export async function verifyOffPageTask(impl, client) {
 async function fetchPageContent(impl, client) {
   const slug = (impl.page_url || '').split('/').filter(Boolean).pop() || '';
 
-  // 1. WordPress REST API (preferred — reliable, authenticated, WAF-proof).
-  if (client?.wp_url && client?.wp_username && client?.wp_app_password) {
+  // For HEAD-tag tasks (robots meta, canonical, schema, og tags) we
+  // MUST fetch the full HTML — not the WordPress REST API which only
+  // returns the post body content (no <head> markup at all). Skip the
+  // wp-api branch entirely for these and go straight to page-proxy
+  // with raw=true. Articles + AEO content optimizations still benefit
+  // from wp-api (drafts, WAF bypass).
+  const ct = normalizeType(impl?.change_type);
+  const headTask = ct !== 'article' && ct !== 'aeo_optimization';
+
+  // 1. WordPress REST API (preferred — reliable, authenticated, WAF-proof)
+  //    BUT only when the change lives in the post body. For head-tag
+  //    changes, skip straight to page-proxy.
+  if (!headTask && client?.wp_url && client?.wp_username && client?.wp_app_password) {
     const wpBase = client.wp_url.replace(/\/+$/, '');
 
     // Strategy A: find by slug (most reliable when URL is correct).
@@ -280,15 +316,25 @@ async function fetchPageContent(impl, client) {
 
   // 2. Server-side page proxy (bypasses CORS + most WAFs with real browser
   //    headers). This is the most reliable option for public pages.
+  //
+  // Pass raw=true for any change that lives in <head> markup (robots
+  // meta, canonical, schema, og/twitter tags, html lang, etc.) so the
+  // proxy skips Jina Reader. Jina re-renders pages to extract main
+  // content and silently strips/normalises <head> tags, which made
+  // verification of "removed noindex" / "added schema" / "fixed
+  // canonical" tasks fail even when the user had correctly applied the
+  // fix on the live page. Articles use Jina-rendered HTML because
+  // we want the body text after JS rendering. (ct + headTask declared
+  // at the top of this function.)
   try {
     const res = await fetch('/.netlify/functions/page-proxy', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url: impl.page_url })
+      body: JSON.stringify({ url: impl.page_url, raw: headTask })
     });
     if (res.ok) {
       const data = await res.json();
-      if (data.html && data.html.length > 500 && !/<title>.*(Log In|Attention Required).*<\/title>/i.test(data.html)) {
+      if (data.html && hasUsefulBody(data.html) && !/<title>.*(Log In|Attention Required).*<\/title>/i.test(data.html)) {
         return { html: data.html, source: 'page-proxy' + (data.status !== 200 ? '-' + data.status : '') };
       }
     }
@@ -297,7 +343,7 @@ async function fetchPageContent(impl, client) {
   // 3. Public fetch via CORS proxy (fallback).
   try {
     const html = await corsFetchText(impl.page_url);
-    if (html.length > 500 && !/<title>.*Log In.*<\/title>/i.test(html)) {
+    if (hasUsefulBody(html) && !/<title>.*Log In.*<\/title>/i.test(html)) {
       return { html, source: 'public' };
     }
   } catch {}
@@ -305,10 +351,131 @@ async function fetchPageContent(impl, client) {
   // 4. Last resort CORS with different proxies.
   try {
     const html = await corsFetchText(impl.page_url);
-    return { html, source: 'cors-fallback' };
+    if (hasUsefulBody(html)) return { html, source: 'cors-fallback' };
+    throw new Error('All sources returned head-only or empty HTML');
   } catch (e) {
     throw new Error('Could not fetch the page via any method: ' + e.message);
   }
+}
+
+// Reject responses that are head + CSS only (a class of upstream-proxy
+// failures). Without this we sent empty bodies to Claude and got the
+// false "page HTML contains only the head section" error from the
+// verifier.
+function hasUsefulBody(html) {
+  if (!html || html.length < 200) return false;
+  const bodyMatch = html.match(/<body\b[^>]*>([\s\S]*?)<\/body>/i);
+  const inner = bodyMatch ? bodyMatch[1] : html;
+  const text = inner
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  // Threshold of 60 chars cleanly separates head-only stubs (0 body
+  // text, or "Loading..."/"Error") from any real page (every meaningful
+  // page has at least a heading + some content). Set low enough that
+  // we don't reject genuinely small pages.
+  return text.length >= 60;
+}
+
+// "Sent to Developer" verification — used when we hand technical
+// optimizations or content changes to the client's developer instead of
+// implementing them ourselves. The team member uploads a screenshot of the
+// email they sent; Claude Vision confirms it actually shows a sent email
+// that relates to this change, then the record is marked
+// 'sent_to_developer'. If the screenshot can't be confirmed, NOTHING is
+// persisted — the caller can retry with a better screenshot or use
+// markSentToDeveloper() to override manually.
+export async function verifySentToDeveloper(impl, { imageBase64, mediaType = 'image/jpeg', sentBy = '' } = {}) {
+  if (!imageBase64 || imageBase64.length < 100) {
+    return { status: 'rejected', detail: 'Screenshot is empty or too small — upload a screenshot of the email you sent.' };
+  }
+  try {
+    const resp = await claudeComplete({
+      system: 'You verify that a screenshot shows an email sent to a website developer about an SEO/content change. Return ONLY valid JSON.',
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'image', source: { type: 'base64', media_type: mediaType, data: imageBase64 } },
+          {
+            type: 'text',
+            text: `This screenshot should show an email (Gmail, Outlook, or any mail client — compose window or sent message) sent to a website developer, handing over the following change for implementation:
+
+CHANGE:
+- Type: ${impl.change_type || ''}
+- Title/topic: ${impl.title || ''}
+- Page: ${impl.page_url || ''}
+
+RULES:
+- Confirm two things only: (1) the screenshot shows an email (a recipient, subject, or message body is visible), and (2) the email plausibly relates to this change or to SEO/content/technical website work for this client in general.
+- Be LENIENT. The email does not need to quote the change word-for-word — a general handover email covering several changes counts. Attachments, forwarded threads, and partial screenshots are all fine.
+- Only reject if the image is clearly NOT an email (e.g. a random webpage, a blank image) or is completely unreadable.
+
+Return ONLY JSON:
+{
+  "is_email": true or false,
+  "recipient": "who the email is addressed to, if visible, else empty string",
+  "subject": "email subject if visible, else empty string",
+  "relates": true or false,
+  "evidence": "1-2 sentences describing what the screenshot shows"
+}`
+          }
+        ]
+      }],
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 400,
+      temperature: 0
+    });
+    let parsed;
+    try {
+      const m = resp.match(/\{[\s\S]*\}/);
+      parsed = m ? JSON.parse(m[0]) : null;
+    } catch { parsed = null; }
+    if (!parsed) {
+      return { status: 'rejected', detail: 'Could not read the screenshot verification response. Try again or mark as sent manually.' };
+    }
+    if (!parsed.is_email) {
+      return { status: 'rejected', detail: 'The screenshot does not look like an email: ' + (parsed.evidence || 'no email visible.') + ' Upload a screenshot of the sent email, or mark as sent manually.' };
+    }
+    const detail = [
+      'Email screenshot confirmed' + (parsed.recipient ? ' — sent to ' + parsed.recipient : ''),
+      parsed.subject ? 'Subject: "' + parsed.subject + '"' : '',
+      parsed.evidence || '',
+      sentBy ? 'Sent by ' + sentBy : '',
+      '(Sent to developer — awaiting implementation on site)'
+    ].filter(Boolean).join(' · ');
+    // Keep the email screenshot as proof, using the same [SCREENSHOT]
+    // marker the history view already renders (fetched on demand via
+    // getImplementationDetail — never in bulk list queries).
+    const stored = detail + '\n[SCREENSHOT]data:' + mediaType + ';base64,' + imageBase64 + '[/SCREENSHOT]';
+    await updateImplementation(impl.id, {
+      verification_status: 'sent_to_developer',
+      verification_detail: stored,
+      verified_at: new Date().toISOString()
+    });
+    return { status: 'sent_to_developer', detail: stored };
+  } catch (e) {
+    return { status: 'rejected', detail: 'Could not check the screenshot (' + (e.message || 'API error') + '). Try again or mark as sent manually.' };
+  }
+}
+
+// Manual override for the sent-to-developer flow — used when the AI check
+// on the screenshot fails but the team member confirms the email was sent.
+// If a screenshot was uploaded, keep it as proof even though the AI
+// couldn't confirm it.
+export async function markSentToDeveloper(impl, sentBy = '', { imageBase64, mediaType = 'image/jpeg' } = {}) {
+  const detail = 'Marked as sent to developer' + (sentBy ? ' by ' + sentBy : '') +
+    ' (manual confirmation, screenshot check skipped) · (Awaiting implementation on site)';
+  const stored = imageBase64
+    ? detail + '\n[SCREENSHOT]data:' + mediaType + ';base64,' + imageBase64 + '[/SCREENSHOT]'
+    : detail;
+  await updateImplementation(impl.id, {
+    verification_status: 'sent_to_developer',
+    verification_detail: stored,
+    verified_at: new Date().toISOString()
+  });
+  return { status: 'sent_to_developer', detail: stored };
 }
 
 // Verify using pasted HTML — used when automated fetching fails (Shopify
@@ -465,7 +632,7 @@ Return ONLY JSON:
           }
         ]
       }],
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-sonnet-4-6',
       max_tokens: 500,
       temperature: 0
     });
@@ -547,9 +714,14 @@ ${truncated}
 
 VERIFICATION RULES:
 - For articles: the page has the article if the main body contains substantial content about the same TOPIC. The H1 and meta title may differ slightly — that's normal SEO practice. Look for matching key themes, not exact title strings.
-- For AEO optimizations (change_type = aeo_optimization): the team REFORMATS the raw HTML before publishing — they add images, change headings, use icons instead of bullets, reword slightly for brand voice. Do NOT compare exact HTML. Instead check: does the page now contain the CORE INFORMATION from the optimization? For answer blocks, check if the page has a concise overview paragraph near the top. For FAQ sections, check if similar questions + answers exist anywhere on the page. For key takeaways / bullet lists, check if the page has a structured list covering the same topics. For schema, check for JSON-LD script tags. If 60%+ of the core content themes are present on the page, mark it as implemented.
+- For AEO optimizations (change_type = aeo_optimization): be LENIENT. The team REFORMATS the raw HTML before publishing — they add images, change headings, use icons instead of bullets, reword for brand voice, paraphrase for tone. Do NOT compare exact HTML or exact wording. Check ONLY: does the page now contain the CORE INFORMATION? For answer blocks, the page has a concise overview paragraph near the top covering the same topic — exact wording does not matter. For FAQ sections, the page has questions + answers covering similar topics — paraphrased questions count. For key takeaways / bullet lists, the page has a structured list covering similar topics — different bullet wording counts. For comparison tables, the page has a table with matching column meanings. For schema, check for the JSON-LD script tag with matching @type.
+
+  IMPORTANT — bundled multi-opt push: if the description mentions "Combined AEO push" or lists multiple opts (numbered 1., 2., 3., …), mark implemented when AT LEAST 60% of the listed opts have matching content on the page. Don't require all of them. The user may have paraphrased / merged some sections during paste.
+
+  IMPORTANT — accordions: <details>/<summary> blocks count as fully present even when collapsed. The content is in the page source on initial load; bots see it; that's all that matters for AEO. Don't penalize because the visible page state is collapsed.
 - For schema changes: check for the JSON-LD script tag.
 - For meta changes: check the <title> tag or meta description.
+- For robots / noindex changes (change_type 'robots'): check the <meta name="robots"> tag in <head>. The fix is IMPLEMENTED when the page is indexable — that means: meta robots is "index, follow" or "all", OR there is NO meta robots tag at all (defaults to indexable), OR the X-Robots-Tag header indicates index. The fix is NOT implemented only if a meta robots tag explicitly contains "noindex". WordPress / Yoast / Rank Math may render the tag with various attributes — accept any form as long as "noindex" is absent.
 - If content was fetched via wp-api (WordPress REST API), the HTML is the raw post body — check for the article content directly.
 - A WordPress draft that contains the article counts as "implemented" (it exists, just not published yet).
 - IMPORTANT: be LENIENT. The goal is to confirm the team did the work, not to grade exact copy-paste accuracy. Different formatting, slightly different wording, added images, or rearranged sections are ALL acceptable.

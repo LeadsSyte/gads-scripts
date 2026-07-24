@@ -1,7 +1,31 @@
 import React, { useState } from 'react';
 import { useClients } from '../store/useClients.js';
 import { logImplementation, updateImplementation } from '../lib/supabase.js';
-import { verifyImplementation, verifyImplementationFromHtml, verifyImplementationVisually, isOffPageTask } from '../lib/verification.js';
+import { verifyImplementation, verifyImplementationFromHtml, verifyImplementationVisually, isOffPageTask, verifySentToDeveloper, markSentToDeveloper } from '../lib/verification.js';
+
+// Downscale an image file to a JPEG base64 string (no data: prefix).
+// Email screenshots straight off a retina display can be several MB —
+// resizing keeps the Vision call cheap and the stored evidence small.
+async function fileToJpegBase64(file, maxWidth = 1200, quality = 0.8) {
+  const dataUrl = await new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result);
+    r.onerror = () => reject(new Error('Could not read the image file.'));
+    r.readAsDataURL(file);
+  });
+  const img = await new Promise((resolve, reject) => {
+    const i = new Image();
+    i.onload = () => resolve(i);
+    i.onerror = () => reject(new Error('The file is not a readable image.'));
+    i.src = dataUrl;
+  });
+  const scale = Math.min(1, maxWidth / img.width);
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(img.width * scale);
+  canvas.height = Math.round(img.height * scale);
+  canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL('image/jpeg', quality).split(',')[1];
+}
 
 // Reusable "Mark as Implemented" button. Place it next to any generated
 // output (article, schema, meta fix, AEO optimization). When clicked:
@@ -16,11 +40,21 @@ import { verifyImplementation, verifyImplementationFromHtml, verifyImplementatio
 //   pageUrl:     the URL where the change should appear
 //   title:       short description of what was implemented
 //   description: longer detail (the actual change content)
+//   client?:     OPTIONAL — explicit client object to verify against. Use
+//                this when the button lives on a per-task / per-article
+//                row whose client is NOT the topbar selection (e.g. a
+//                pipeline view shows tasks from many clients). Without
+//                this, the button verified against the topbar client and
+//                produced the "checked bamdiy.com/robots.txt for a Syte
+//                task" bug. It's also what kept the button disabled (the
+//                not-allowed cursor) when no client was selected in the
+//                topbar — falling back to a null current() left it dead.
 //   disabled?:   boolean
 export default function MarkImplementedButton({
-  module, changeType, pageUrl, title, description, disabled, onVerified
+  module, changeType, pageUrl, title, description, disabled, onVerified, client: clientProp
 }) {
-  const client = useClients(s => s.current());
+  const topbarClient = useClients(s => s.current());
+  const client = clientProp || topbarClient;
   const [phase, setPhase] = useState('idle'); // idle | logging | verifying | done
   const [result, setResult] = useState(null); // { status, detail, impl }
   const [err, setErr] = useState('');
@@ -29,6 +63,85 @@ export default function MarkImplementedButton({
   const [verifyPhase, setVerifyPhase] = useState('');
   const [pastedHtml, setPastedHtml] = useState('');
   const [pasteBusy, setPasteBusy] = useState(false);
+  const [showSentPanel, setShowSentPanel] = useState(false);
+  const [sentFile, setSentFile] = useState(null);
+  const [sentBy, setSentBy] = useState('');
+  const [sentBusy, setSentBusy] = useState(false);
+  const [sentMsg, setSentMsg] = useState('');
+
+  // "Sent to Developer" entry point. If no implementation record exists yet
+  // (idle state), log one first; then open the email-screenshot panel.
+  async function handleSentToDeveloper() {
+    if (!client) { setErr('Select a client first.'); return; }
+    setErr(''); setSentMsg('');
+    if (result?.impl?.id) { setShowSentPanel(true); return; }
+
+    const actualUrl = prompt(
+      'Which page is this change for? (URL the developer will update)',
+      pageUrl || client.url || ''
+    );
+    if (actualUrl === null) return; // user cancelled
+    const who = prompt('Who sent the email to the developer?', 'Team member') || 'Unknown';
+
+    setPhase('logging');
+    try {
+      const impl = await logImplementation({
+        client_id: client.id,
+        module,
+        change_type: changeType,
+        page_url: (actualUrl || '').trim(),
+        title: title || 'Untitled change',
+        description: (description || '').slice(0, 2000),
+        implemented_by: who,
+        verification_status: 'pending'
+      });
+      setResult({ status: 'pending', detail: 'Upload a screenshot of the email you sent to the developer.', impl });
+      setSentBy(who);
+      setPhase('done');
+      setShowSentPanel(true);
+    } catch (e) {
+      setErr(e.message);
+      setPhase('idle');
+    }
+  }
+
+  async function submitSentScreenshot() {
+    if (!result?.impl?.id || !sentFile) return;
+    setSentBusy(true); setSentMsg(''); setErr('');
+    try {
+      const imageBase64 = await fileToJpegBase64(sentFile);
+      const r = await verifySentToDeveloper(result.impl, { imageBase64, sentBy });
+      if (r.status === 'sent_to_developer') {
+        setResult({ ...result, status: r.status, detail: r.detail });
+        setShowSentPanel(false);
+        setSentFile(null);
+      } else {
+        setSentMsg(r.detail); // rejected — keep the panel open for retry / manual override
+      }
+    } catch (e) {
+      setSentMsg(e.message);
+    } finally {
+      setSentBusy(false);
+    }
+  }
+
+  async function sentManualOverride() {
+    if (!result?.impl?.id) return;
+    setSentBusy(true);
+    try {
+      let imageBase64;
+      try { if (sentFile) imageBase64 = await fileToJpegBase64(sentFile); } catch {}
+      const r = await markSentToDeveloper(result.impl, sentBy, { imageBase64 });
+      setResult({ ...result, status: r.status, detail: r.detail });
+      setShowSentPanel(false);
+      setSentFile(null);
+      setSentMsg('');
+    } catch (e) {
+      setSentMsg(e.message);
+    } finally {
+      setSentBusy(false);
+    }
+  }
 
   async function verifyFromPastedHtml() {
     if (!result?.impl?.id) return;
@@ -44,6 +157,76 @@ export default function MarkImplementedButton({
       setErr(e.message);
     } finally {
       setPasteBusy(false);
+    }
+  }
+
+  // Compress + read an image File as a base64 data URL. Caps the long
+  // edge at ~1600px so a phone screenshot doesn't bloat the DB row to
+  // multi-MB. JPEG quality 0.85 keeps the file legible while
+  // shrinking ~10× vs the raw photo.
+  async function fileToCompressedDataUrl(file) {
+    if (!file) return '';
+    const dataUrl = await new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(r.result);
+      r.onerror = () => reject(r.error);
+      r.readAsDataURL(file);
+    });
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        const MAX = 1600;
+        let { width, height } = img;
+        if (width > MAX || height > MAX) {
+          const scale = MAX / Math.max(width, height);
+          width = Math.round(width * scale);
+          height = Math.round(height * scale);
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = width; canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#fff'; // flatten transparency
+        ctx.fillRect(0, 0, width, height);
+        ctx.drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL('image/jpeg', 0.85));
+      };
+      img.onerror = reject;
+      img.src = dataUrl;
+    });
+  }
+
+  // Verify-with-screenshot path. User picks an image → compress to JPEG
+  // base64 → store in verification_detail prefixed with a marker so the
+  // history view can split it back out and render the image. The whole
+  // implementation row is updated to verified. Available on EVERY
+  // verification state per user request — even after auto-verify said
+  // OK, the user might still want to attach proof for the audit trail.
+  const screenshotInputRef = React.useRef(null);
+  const [uploading, setUploading] = useState(false);
+
+  async function uploadScreenshot(file) {
+    if (!file || !result?.impl?.id) return;
+    if (!file.type.startsWith('image/')) {
+      setErr('Please upload an image (JPEG, PNG, etc.)');
+      return;
+    }
+    setUploading(true); setErr('');
+    try {
+      const dataUrl = await fileToCompressedDataUrl(file);
+      const note = (result?.detail ? result.detail + '\n\n' : '') +
+        '✓ Verified via uploaded screenshot.\n[SCREENSHOT]' + dataUrl + '[/SCREENSHOT]';
+      await updateImplementation(result.impl.id, {
+        verification_status: 'verified',
+        verification_detail: note,
+        verified_at: new Date().toISOString()
+      });
+      setResult({ ...result, status: 'verified', detail: note });
+      onVerified?.();
+    } catch (e) {
+      setErr('Upload failed: ' + e.message);
+    } finally {
+      setUploading(false);
+      if (screenshotInputRef.current) screenshotInputRef.current.value = '';
     }
   }
 
@@ -132,27 +315,43 @@ export default function MarkImplementedButton({
 
   const statusColor =
     result?.status === 'verified' ? 'var(--green)' :
-    result?.status === 'manual_required' ? 'var(--orange)' :
+    result?.status === 'sent_to_developer' ? 'var(--blue)' :
+    result?.status === 'manual_required' || result?.status === 'pending' ? 'var(--orange)' :
     'var(--red)';
   const statusLabel =
     result?.status === 'verified' ? '✓ Verified' :
+    result?.status === 'sent_to_developer' ? '📧 Sent to Developer' :
     result?.status === 'manual_required' ? '⚑ Manual verification required' :
+    result?.status === 'pending' ? '⏳ Pending' :
     '✗ Auto-verify failed';
 
   return (
     <div style={{ display: 'inline-flex', flexDirection: 'column', gap: 6 }}>
       <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
         {phase === 'idle' && (
-          <button
-            onClick={handleClick}
-            disabled={disabled || !client}
-            style={{
-              fontSize: 11, padding: '5px 14px',
-              borderColor: 'var(--green)', color: 'var(--green)'
-            }}
-          >
-            ✓ Mark as Implemented
-          </button>
+          <>
+            <button
+              onClick={handleClick}
+              disabled={disabled || !client}
+              style={{
+                fontSize: 11, padding: '5px 14px',
+                borderColor: 'var(--green)', color: 'var(--green)'
+              }}
+            >
+              ✓ Mark as Implemented
+            </button>
+            <button
+              onClick={handleSentToDeveloper}
+              disabled={disabled || !client}
+              title="We emailed this change to the client's developer — upload a screenshot of the email as proof"
+              style={{
+                fontSize: 11, padding: '5px 14px',
+                borderColor: 'var(--blue)', color: 'var(--blue)'
+              }}
+            >
+              📧 Sent to Developer
+            </button>
+          </>
         )}
         {phase === 'logging' && (
           <span className="muted" style={{ fontSize: 11 }}>Logging…</span>
@@ -168,12 +367,41 @@ export default function MarkImplementedButton({
             <span style={{ color: statusColor, fontWeight: 600 }}>
               {statusLabel}
             </span>
+            {/* Universal "Upload screenshot proof" — available on every
+                verification result (verified / failed / manual_required).
+                User can always attach evidence; uploading marks the row
+                verified regardless of the auto-check outcome. */}
+            <input
+              ref={screenshotInputRef}
+              type="file"
+              accept="image/*"
+              style={{ display: 'none' }}
+              onChange={(e) => uploadScreenshot(e.target.files?.[0])}
+            />
+            <button
+              onClick={() => screenshotInputRef.current?.click()}
+              disabled={uploading}
+              style={{
+                fontSize: 10, padding: '2px 8px', marginLeft: 6,
+                borderColor: 'var(--green)', color: 'var(--green)'
+              }}
+            >
+              {uploading ? 'Uploading…' : (result.status === 'verified' ? '+ Add proof screenshot' : '📸 Upload screenshot to verify')}
+            </button>
             {result.status === 'verified' && (
               <button onClick={handleClick} style={{ fontSize: 10, padding: '2px 8px', marginLeft: 6 }}>Re-verify</button>
             )}
             {result.status !== 'verified' && result.impl?.id && (
               <>
-                {result.status !== 'manual_required' && (
+                {result.status !== 'sent_to_developer' && (
+                  <button
+                    onClick={() => { setSentMsg(''); setShowSentPanel(v => !v); }}
+                    style={{ fontSize: 10, padding: '3px 10px', marginLeft: 8, borderColor: 'var(--blue)', color: 'var(--blue)' }}
+                  >
+                    📧 Sent to Developer
+                  </button>
+                )}
+                {result.status !== 'manual_required' && result.status !== 'sent_to_developer' && (
                   <button
                     onClick={() => setShowPreview(v => !v)}
                     style={{ fontSize: 10, padding: '3px 10px', marginLeft: 8, borderColor: 'var(--blue)', color: 'var(--blue)' }}
@@ -240,18 +468,43 @@ export default function MarkImplementedButton({
         )}
       </div>
 
-      {result?.detail && (
-        <div style={{
-          fontSize: 11, lineHeight: 1.4, maxWidth: 500,
-          color: result.status === 'verified' ? 'var(--text-muted)' : 'var(--orange)',
-          padding: '4px 8px',
-          background: 'var(--surface-2)',
-          borderRadius: 6,
-          borderLeft: '2px solid ' + statusColor
-        }}>
-          {result.detail}
-        </div>
-      )}
+      {result?.detail && (() => {
+        // Split out an embedded screenshot data-URL (added by the upload
+        // path) so we can render the image inline. Marker convention:
+        //   …prose…[SCREENSHOT]data:image/jpeg;base64,XXX[/SCREENSHOT]
+        const m = String(result.detail).match(/\[SCREENSHOT\]([\s\S]+?)\[\/SCREENSHOT\]/);
+        const text = m ? result.detail.replace(m[0], '').trim() : result.detail;
+        const screenshot = m ? m[1] : '';
+        return (
+          <div style={{
+            fontSize: 11, lineHeight: 1.4, maxWidth: 500,
+            color: result.status === 'verified' ? 'var(--text-muted)' : 'var(--orange)',
+            padding: '4px 8px',
+            background: 'var(--surface-2)',
+            borderRadius: 6,
+            borderLeft: '2px solid ' + statusColor
+          }}>
+            <div style={{ whiteSpace: 'pre-wrap' }}>{text}</div>
+            {screenshot && (
+              <div style={{ marginTop: 8 }}>
+                <a href={screenshot} target="_blank" rel="noreferrer" style={{ display: 'block' }}>
+                  <img
+                    src={screenshot}
+                    alt="Verification proof screenshot"
+                    style={{
+                      maxWidth: '100%', maxHeight: 240,
+                      border: '1px solid var(--border)', borderRadius: 4
+                    }}
+                  />
+                </a>
+                <div className="muted" style={{ fontSize: 10, marginTop: 4 }}>
+                  Click the screenshot to open full size.
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
       {showPasteHtml && (
         <div style={{ marginTop: 6, padding: 10, background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 6, maxWidth: 500 }}>
@@ -283,6 +536,56 @@ export default function MarkImplementedButton({
                 {pasteBusy ? 'Verifying…' : 'Verify'}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {showSentPanel && result?.impl?.id && (
+        <div style={{ marginTop: 6, padding: 10, background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 6, maxWidth: 500 }}>
+          <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 4 }}>📧 Upload a screenshot of the email</div>
+          <div className="muted" style={{ fontSize: 10, marginBottom: 6, lineHeight: 1.4 }}>
+            Screenshot the email you sent to the client's developer (Gmail/Outlook — the sent message or compose window is fine).
+            The AI just checks it's a real email about this work, then marks the change as <strong>Sent to Developer</strong>.
+          </div>
+          <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+            <input
+              type="file"
+              accept="image/*"
+              disabled={sentBusy}
+              onChange={e => { setSentFile(e.target.files?.[0] || null); setSentMsg(''); }}
+              style={{ fontSize: 10 }}
+            />
+            <input
+              type="text"
+              placeholder="Who sent it? (optional)"
+              value={sentBy}
+              onChange={e => setSentBy(e.target.value)}
+              disabled={sentBusy}
+              style={{ fontSize: 10, padding: '3px 8px', width: 150 }}
+            />
+          </div>
+          {sentMsg && (
+            <div style={{ fontSize: 10, color: 'var(--orange)', marginTop: 6, lineHeight: 1.4 }}>
+              {sentMsg}
+              <div style={{ marginTop: 4 }}>
+                <button onClick={sentManualOverride} disabled={sentBusy} style={{ fontSize: 10, padding: '3px 10px' }}>
+                  I definitely sent it — Mark as Sent anyway
+                </button>
+              </div>
+            </div>
+          )}
+          <div className="row" style={{ justifyContent: 'flex-end', gap: 6, marginTop: 8 }}>
+            <button onClick={() => { setShowSentPanel(false); setSentFile(null); setSentMsg(''); }} disabled={sentBusy} style={{ fontSize: 10, padding: '3px 10px' }}>
+              Cancel
+            </button>
+            <button
+              onClick={submitSentScreenshot}
+              disabled={sentBusy || !sentFile}
+              className="primary"
+              style={{ fontSize: 10, padding: '3px 12px', background: 'var(--blue)', borderColor: 'var(--blue)', color: '#0a0a0c' }}
+            >
+              {sentBusy ? 'Checking screenshot…' : 'Verify & Mark Sent'}
+            </button>
           </div>
         </div>
       )}

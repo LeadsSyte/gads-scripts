@@ -1,7 +1,13 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useClients } from '../../store/useClients.js';
-import { listAllImplementations } from '../../lib/supabase.js';
-import { approvalsStatus } from '../../lib/pipelineStatus.js';
+import {
+  listAllImplementations,
+  loadTseoTasks,
+  loadAeoResults,
+  listDeepResults,
+  loadContentHistory
+} from '../../lib/supabase.js';
+import { approvalsStatus, monthOptions } from '../../lib/pipelineStatus.js';
 
 // Cross-module approvals matrix. Shows every client × every module for the
 // selected month. Refreshes monthly but keeps history via the month picker.
@@ -36,32 +42,39 @@ function StatusCell({ status }) {
   );
 }
 
-// Generate month options for the last 12 months.
-function monthOptions() {
-  const out = [];
-  const now = new Date();
-  for (let i = 0; i < 12; i++) {
-    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-    const value = d.toISOString().slice(0, 7);
-    const label = d.toLocaleString('en-US', { month: 'long', year: 'numeric' });
-    out.push({ value, label });
-  }
-  return out;
-}
-
 export default function Approvals() {
   const clients = useClients(s => s.clients);
   const [implementations, setImplementations] = useState([]);
+  const [tasks, setTasks] = useState([]);
+  const [aeoResults, setAeoResults] = useState({});
+  const [deepResults, setDeepResults] = useState([]);
+  const [contentHistory, setContentHistory] = useState([]);
   const [month, setMonth] = useState(new Date().toISOString().slice(0, 7));
   const [managerFilter, setManagerFilter] = useState(''); // '' = all, '__none__' = unassigned
   const [loading, setLoading] = useState(true);
 
+  // Load every input the matrix needs from Supabase — the same source of
+  // truth the rest of the suite uses. Reading these from localStorage (as
+  // this page used to) showed stale/empty data after a reload or on another
+  // machine, making completed work look "not done".
   useEffect(() => {
+    let cancelled = false;
     setLoading(true);
-    listAllImplementations()
-      .then(setImplementations)
-      .catch(() => {})
-      .finally(() => setLoading(false));
+    Promise.all([
+      listAllImplementations().catch(() => []),
+      loadTseoTasks().catch(() => []),
+      loadAeoResults().catch(() => ({})),
+      listDeepResults().catch(() => []),
+      loadContentHistory().catch(() => [])
+    ]).then(([impls, tseo, aeo, deep, content]) => {
+      if (cancelled) return;
+      setImplementations(impls || []);
+      setTasks(tseo || []);
+      setAeoResults(aeo || {});
+      setDeepResults(deep || []);
+      setContentHistory(content || []);
+    }).finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
   }, []);
 
   const months = useMemo(() => monthOptions(), []);
@@ -80,20 +93,10 @@ export default function Approvals() {
     return true;
   }), [clients, managerFilter]);
 
-  // Tasks from localStorage for technical pipeline.
-  const tasks = useMemo(() => {
-    try { return JSON.parse(localStorage.getItem('syte-suite-tseo-tasks') || '[]'); } catch { return []; }
-  }, []);
-
-  // AEO results from localStorage for AEO pipeline.
-  const aeoResults = useMemo(() => {
-    try { return JSON.parse(localStorage.getItem('syte-suite-aeo-results') || '{}'); } catch { return {}; }
-  }, []);
-
   // Compute status per client per module.
   const rows = useMemo(() => {
     return scopedClients.map(c => {
-      const status = approvalsStatus(c, implementations, tasks, aeoResults, month);
+      const status = approvalsStatus(c, implementations, tasks, aeoResults, month, contentHistory, deepResults);
       // Overall: all three modules verified?
       const allDone = ['content', 'technical', 'aeo'].every(
         mod => status[mod]?.section === 'verified-on-site' ||
@@ -101,7 +104,7 @@ export default function Approvals() {
       );
       return { client: c, status, allDone };
     });
-  }, [scopedClients, implementations, tasks, aeoResults, month]);
+  }, [scopedClients, implementations, tasks, aeoResults, deepResults, contentHistory, month]);
 
   // Sort: incomplete first, then by name.
   const sorted = useMemo(() => {

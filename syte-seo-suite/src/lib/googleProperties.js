@@ -2,6 +2,7 @@
 // token, plus format validation helpers for manual entry fallback.
 
 import { ensureToken, SCOPES, GOOGLE_CLIENT_ID } from '../modules/technical/googleAuth.js';
+import { proxyGoogleFetch } from './googleServerAuth.js';
 
 // Google's "API not enabled" errors come back as 403 with a message that
 // includes the phrase "has not been used in project" followed by the project
@@ -151,6 +152,81 @@ export async function fetchGscSites({ bypassCache = false } = {}) {
   console.log('[GSC] fetched', out.length, 'sites');
   out.sort((a, b) => a.siteUrl.localeCompare(b.siteUrl));
   setCache(GSC_CACHE_KEY, out);
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Server-auth variants — list a SPECIFIC connected account's GA4 properties /
+// GSC sites through the proxy (the proxy holds that account's token). Cached
+// per account so switching the bound account in the picker re-fetches the
+// right list instead of showing whatever the browser happened to be signed
+// into. Used by the connections picker when VITE_GOOGLE_SERVER_AUTH is on.
+// ---------------------------------------------------------------------------
+
+export async function fetchGa4PropertiesForAccount(accountEmail, { bypassCache = false } = {}) {
+  if (!accountEmail) return [];
+  const cacheKey = GA4_CACHE_KEY + ':' + accountEmail.toLowerCase();
+  if (!bypassCache) {
+    const cached = getCached(cacheKey);
+    if (cached) return cached;
+  }
+  const all = [];
+  let pageToken = null;
+  let safety = 0;
+  do {
+    const params = new URLSearchParams({ pageSize: '200' });
+    if (pageToken) params.set('pageToken', pageToken);
+    const res = await proxyGoogleFetch(
+      'https://analyticsadmin.googleapis.com/v1beta/accountSummaries?' + params.toString(),
+      { method: 'GET' },
+      accountEmail
+    );
+    await handleApiError(res, 'GA4 Admin', 'analyticsadmin.googleapis.com');
+    const data = await res.json();
+    for (const acc of data.accountSummaries || []) {
+      for (const p of acc.propertySummaries || []) {
+        all.push({
+          id: (p.property || '').replace(/^properties\//, ''),
+          name: p.displayName || '(unnamed)',
+          account: acc.displayName || '(no account name)',
+          accountId: (acc.account || '').replace(/^accounts\//, '')
+        });
+      }
+    }
+    pageToken = data.nextPageToken || null;
+    safety++;
+    if (safety > 50) break;
+  } while (pageToken);
+  all.sort((a, b) => {
+    const a1 = (a.account || '').toLowerCase();
+    const b1 = (b.account || '').toLowerCase();
+    if (a1 !== b1) return a1.localeCompare(b1);
+    return (a.name || '').toLowerCase().localeCompare((b.name || '').toLowerCase());
+  });
+  setCache(cacheKey, all);
+  return all;
+}
+
+export async function fetchGscSitesForAccount(accountEmail, { bypassCache = false } = {}) {
+  if (!accountEmail) return [];
+  const cacheKey = GSC_CACHE_KEY + ':' + accountEmail.toLowerCase();
+  if (!bypassCache) {
+    const cached = getCached(cacheKey);
+    if (cached) return cached;
+  }
+  const res = await proxyGoogleFetch(
+    'https://searchconsole.googleapis.com/webmasters/v3/sites',
+    { method: 'GET' },
+    accountEmail
+  );
+  await handleApiError(res, 'Search Console', 'searchconsole.googleapis.com');
+  const data = await res.json();
+  const out = (data.siteEntry || []).map(s => ({
+    siteUrl: s.siteUrl,
+    permissionLevel: s.permissionLevel || 'unknown'
+  }));
+  out.sort((a, b) => a.siteUrl.localeCompare(b.siteUrl));
+  setCache(cacheKey, out);
   return out;
 }
 
