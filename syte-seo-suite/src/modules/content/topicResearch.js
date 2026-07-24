@@ -140,7 +140,7 @@ Shape (return ONLY this JSON):
       "opportunity_type": "low-hanging-fruit | content-gap | ranking-defend | meta-rewrite",
       "rationale": "1-2 sentences explaining why this is valuable and what the gap is",
       "suggested_angle": "how the article should be framed to beat current top results",
-      "recommended_length": 1200,
+      "recommended_length": 1400,
       "priority": 1
     }
   ],
@@ -152,6 +152,7 @@ Rules:
 - For queries already in the top 3, only suggest if they need refreshing.
 - Identify content gaps where multiple related queries share a theme.
 - Use REAL numbers from the provided data — don't invent positions or impressions.
+- "recommended_length" MUST be between 1000 and 2000 words. Never suggest a length above 2000. Pick a value inside this band based on topic depth (simpler topics ~1100-1300, comprehensive guides ~1600-1900).
 - Consider the brand's industry, location, and audience when framing angles.
 - Return THE EXACT NUMBER of opportunities requested by the user (see TARGET_ARTICLES below). Quality over quantity — but hit the target count. If there aren't enough strong GSC signals, use your SEO expertise to suggest topical gaps based on the brand's industry.
 - Priority field: 1 = highest urgency, N = lowest.

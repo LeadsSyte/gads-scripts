@@ -1,5 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { useClients } from '../store/useClients.js';
+import { scanBrandFromWebsite } from '../lib/brandScan.js';
 import { normalizeGa4Id, normalizeGscProperty } from '../lib/googleProperties.js';
 import GoogleConnectionsPicker from './GoogleConnectionsPicker.jsx';
 import {
@@ -119,6 +120,9 @@ export default function ClientModal({ initial, onClose }) {
   const [err, setErr] = useState('');
   const [genBusy, setGenBusy] = useState(false);
   const [genMsg, setGenMsg] = useState('');
+  // Website scan + brand-doc upload state.
+  const [scanBusy, setScanBusy] = useState(false);
+  const [scanMsg, setScanMsg] = useState('');
   // Brand voice: is the current value one of the presets, or custom?
   const [voiceMode, setVoiceMode] = useState(
     f.voice && !BRAND_VOICES.includes(f.voice) ? 'custom' : 'preset'
@@ -202,6 +206,77 @@ export default function ClientModal({ initial, onClose }) {
       setErr('Census generation failed: ' + e.message);
     } finally {
       setGenBusy(false);
+    }
+  }
+
+  // Scan the client's website and append a brand brief to Brand Documents.
+  // Re-scanning replaces the previous scan block instead of stacking copies.
+  async function scanWebsite() {
+    if (!f.url) { setErr('Add the Website URL first, then scan.'); return; }
+    setScanBusy(true); setScanMsg('Starting…'); setErr('');
+    try {
+      const brief = await scanBrandFromWebsite({ ...f }, { onProgress: setScanMsg });
+      const dateLabel = new Date().toLocaleDateString('en-ZA');
+      const scanSection = [
+        `=== Website Brand Scan (${dateLabel}) ===`,
+        `Source: ${brief.sourceUrl}`,
+        brief.voice ? `Voice: ${brief.voice}` : '',
+        brief.audience ? `Audience: ${brief.audience}` : '',
+        '',
+        brief.brief
+      ].filter(Boolean).join('\n');
+      setF(prev => {
+        const existing = (prev.brand_docs || '').trim();
+        // Drop any earlier scan block so re-scanning doesn't duplicate it.
+        const withoutOld = existing
+          .replace(/=== Website Brand Scan[\s\S]*?(?=\n=== |$)/, '')
+          .trim();
+        const next = {
+          ...prev,
+          brand_docs: [withoutOld, scanSection].filter(Boolean).join('\n\n')
+        };
+        // Fill audience only if it's empty — don't clobber a human's wording.
+        if (!prev.audience && brief.audience) next.audience = brief.audience;
+        return next;
+      });
+      setScanMsg('Website scanned — brand brief added to Brand Documents ✓');
+    } catch (e) {
+      setErr('Website scan failed: ' + e.message);
+      setScanMsg('');
+    } finally {
+      setScanBusy(false);
+    }
+  }
+
+  // Read uploaded text docs (.txt/.md/.csv) and append them to Brand Documents.
+  async function handleDocUpload(e) {
+    const files = Array.from(e.target.files || []);
+    e.target.value = ''; // let the same file be re-selected later
+    if (!files.length) return;
+    setErr('');
+    const parts = [];
+    for (const file of files) {
+      if (file.size > 500 * 1024) {
+        setErr(`"${file.name}" is larger than 500KB — paste the relevant text instead.`);
+        continue;
+      }
+      const textLike = /\.(txt|md|markdown|csv)$/i.test(file.name) || /^text\//.test(file.type);
+      if (!textLike) {
+        setErr(`"${file.name}" isn't a text file. Upload .txt / .md, or paste the text (PDF/Word not supported).`);
+        continue;
+      }
+      try {
+        const content = (await file.text()).trim();
+        if (content) parts.push(`=== ${file.name} ===\n${content}`);
+      } catch (err) {
+        setErr(`Could not read "${file.name}": ` + (err?.message || err));
+      }
+    }
+    if (parts.length) {
+      setF(prev => ({
+        ...prev,
+        brand_docs: [(prev.brand_docs || '').trim(), ...parts].filter(Boolean).join('\n\n')
+      }));
     }
   }
 
@@ -290,6 +365,22 @@ export default function ClientModal({ initial, onClose }) {
           ))}
         </div>
 
+        {/* Account manager / owner — who runs this client internally. */}
+        <div style={{ marginTop: 4 }}>
+          <label>
+            Account Manager{' '}
+            <span className="muted" style={{ textTransform: 'none', letterSpacing: 0, fontSize: 11 }}>
+              — the person responsible for this client
+            </span>
+          </label>
+          <input
+            type="text"
+            value={f.account_manager || ''}
+            onChange={e => update('account_manager', e.target.value)}
+            placeholder="e.g. Michael H"
+          />
+        </div>
+
         {/* Brand & Content */}
         <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '.08em', color: 'var(--text-dim)', margin: '16px 0 8px' }}>
           Brand & Content
@@ -365,6 +456,52 @@ export default function ClientModal({ initial, onClose }) {
             rows={3}
             placeholder={`Leave blank for pure data-driven topics from Search Console.\n\nOr steer this month's focus, e.g.\n  "Focus on South African ecommerce case studies this month"\n  "Lead every article with a real customer story"`}
           />
+        </div>
+
+        {/* Brand Documents & Reference — uploaded docs + a scan of the
+            client's website. Feeds directly into the article system prompt
+            so the writer stays genuinely on-brand. */}
+        <div style={{ marginTop: 14 }}>
+          <div className="row" style={{ justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 4, gap: 8, flexWrap: 'wrap' }}>
+            <label style={{ margin: 0 }}>
+              Brand Documents & Reference{' '}
+              <span className="muted" style={{ textTransform: 'none', letterSpacing: 0, fontSize: 11 }}>
+                — steers every article to be on-brand; never shown to client
+              </span>
+            </label>
+            <div className="row" style={{ gap: 6 }}>
+              <label
+                style={{
+                  margin: 0, padding: '4px 10px', fontSize: 11, cursor: 'pointer',
+                  border: '1px solid var(--border)', borderRadius: 'var(--radius)', color: 'var(--text)'
+                }}
+              >
+                + Upload .txt/.md
+                <input
+                  type="file"
+                  accept=".txt,.md,.markdown,.csv,text/*"
+                  multiple
+                  onChange={handleDocUpload}
+                  style={{ display: 'none' }}
+                />
+              </label>
+              <button
+                type="button"
+                onClick={scanWebsite}
+                disabled={scanBusy}
+                style={{ padding: '4px 10px', fontSize: 11, borderColor: 'var(--mod-content)', color: 'var(--mod-content)' }}
+              >
+                {scanBusy ? 'Scanning…' : '🔍 Scan website'}
+              </button>
+            </div>
+          </div>
+          <textarea
+            value={f.brand_docs || ''}
+            onChange={e => update('brand_docs', e.target.value)}
+            rows={6}
+            placeholder={`Paste brand guidelines, tone-of-voice notes, product one-pagers, or a past on-brand article.\n\nOr upload .txt / .md files, or click "Scan website" to auto-build a brand brief from ${f.url || "the client's site"}.`}
+          />
+          {scanMsg && <div style={{ color: 'var(--green)', fontSize: 11, marginTop: 4 }}>{scanMsg}</div>}
         </div>
 
         {/* Google connections (GA4 + GSC) */}

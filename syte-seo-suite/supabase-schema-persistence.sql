@@ -52,6 +52,10 @@ alter table syte_suite_aeo_results disable row level security;
 -- 3. Add columns to clients (safe to re-run).
 alter table syte_suite_clients add column if not exists looker_url text;
 alter table syte_suite_clients add column if not exists client_type text;  -- 'ecommerce' | 'lead_gen'
+-- Brand reference material for the Content Engine: uploaded docs + website scan.
+alter table syte_suite_clients add column if not exists brand_docs text;
+-- Account manager / owner responsible for the client.
+alter table syte_suite_clients add column if not exists account_manager text;
 -- The Google account email that has access to this client's GA4 + GSC
 -- properties. Captured when the operator picks properties via the Google
 -- Connections picker. Used as login_hint on subsequent visits so the right
