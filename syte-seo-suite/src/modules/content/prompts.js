@@ -2,10 +2,26 @@
 // Ports the exact rule set from the original tool — do not edit
 // without cross-checking with the legacy SEO Content Engine.
 
+// House length policy. Articles must land inside this band — Claude tends to
+// over-write (we were seeing 5000-word essays), so the range is enforced in
+// the prompt, clamped on the recommended_length, and backed by a max_tokens
+// ceiling in the caller.
+export const MIN_WORDS = 1000;
+export const MAX_WORDS = 2000;
+
+// Clamp any requested length into the house band. Defaults to 1500 when the
+// value is missing or unparseable.
+export function clampLength(n) {
+  const v = Number(n);
+  if (!Number.isFinite(v) || v <= 0) return 1500;
+  return Math.min(MAX_WORDS, Math.max(MIN_WORDS, Math.round(v)));
+}
+
 export const CORE_RULES = `
 You are Syte SEO Content Engine, an elite SEO + AEO copywriter.
 
 HARD RULES:
+- LENGTH: The article body MUST be between 1000 and 2000 words. NEVER exceed 2000 words. This is a strict ceiling — if you are running long, cut examples and tighten prose rather than adding sections. A concise 1200-word article beats a padded 2500-word one. Word count is measured on the visible body only (it excludes the meta title, meta description, FAQ schema, and QA JSON).
 - Exactly ONE H1. Max 60 chars. Must contain the primary keyword.
 - Meta Title: 50–58 chars, DIFFERENT wording from the H1, brand at the end.
 - Meta Description: 150–160 chars, active voice, primary keyword in the first half.
@@ -68,6 +84,20 @@ BRAND CONTEXT:
 ${(client.internal_links || '').split('\n').filter(Boolean).map(l => '  - ' + l.trim()).join('\n')}
 `.trim() : '';
 
+  // Brand reference material — uploaded docs and/or a scan of the client's
+  // website (see ClientModal "Brand Documents & Reference"). This is the
+  // ground truth for how the brand actually sounds and what it actually
+  // sells, so the writer can stay genuinely on-brand instead of guessing.
+  // Capped so a large paste can't blow the context window.
+  const brandDocs = (client?.brand_docs || '').trim();
+  const brandDocsBlock = brandDocs ? `
+CLIENT BRAND REFERENCE MATERIAL (uploaded docs + website scan — write in line with this):
+"""
+${brandDocs.slice(0, 12000)}
+"""
+Use this material to match the brand's real voice, terminology, product/service names, positioning, and factual details. Prefer wording and framing consistent with it, and never contradict it. Only treat facts stated here (or in the research context) as true — do not invent details that aren't supported.
+`.trim() : '';
+
   // Content rules — always-enforced restrictions. These are hard constraints
   // the client has (e.g. gambling compliance, factual accuracy). They NEVER
   // get relaxed, even if the Manual Direction or research context conflicts.
@@ -117,7 +147,7 @@ RANKING-AWARE WRITING RULES:
 - Naturally weave in the related queries above throughout the body so the article captures long-tail variations the brand already has traction for.
 `.trim() : '';
 
-  return [CORE_RULES, brandBlock, rulesBlock, directionBlock, researchBlock, COMPLIANCE_RULES, QA_RULES, extra].filter(Boolean).join('\n\n');
+  return [CORE_RULES, brandBlock, brandDocsBlock, rulesBlock, directionBlock, researchBlock, COMPLIANCE_RULES, QA_RULES, extra].filter(Boolean).join('\n\n');
 }
 
 export const TAB_PROMPTS = {
@@ -126,7 +156,12 @@ Write a complete SEO + AEO optimised article.
 
 Primary keyword: ${keyword}
 Topic / angle: ${topic}
-Target length: ${length || 1500} words
+
+LENGTH — STRICT (this overrides any instinct to write more):
+- Target ~${clampLength(length)} words for the article body.
+- The body MUST stay between ${MIN_WORDS} and ${MAX_WORDS} words. Do NOT exceed ${MAX_WORDS} words under any circumstances.
+- If you find yourself running long, cut examples and tighten prose — do not add more sections.
+- Length is measured on the visible article body only (exclude meta title, meta description, FAQ schema, and QA JSON).
 
 MANDATORY OUTPUT CHECKLIST (do not skip any):
 1. Full HTML article with proper heading hierarchy
@@ -143,7 +178,9 @@ Return all items in this exact order.
 `.trim(),
 
   'Rewrite & Expand': (existing, keyword, length) => `
-Rewrite and expand the following article. Preserve factual claims, tighten the language, apply ALL core + compliance rules, and expand to ~${length || 1800} words.
+Rewrite the following article. Preserve factual claims, tighten the language, and apply ALL core + compliance rules.
+
+LENGTH — STRICT: the rewritten body must land between ${MIN_WORDS} and ${MAX_WORDS} words (target ~${clampLength(length)}). NEVER exceed ${MAX_WORDS} words — if the original is longer, cut and tighten rather than preserving bulk.
 
 Primary keyword: ${keyword}
 
