@@ -3,6 +3,7 @@ import { useClients } from '../../store/useClients.js';
 import AEOSnapshot from './AEOSnapshot.jsx';
 import MonthlyReport from './MonthlyReport.jsx';
 import ReportsHistory from './ReportsHistory.jsx';
+import DevExport from './DevExport.jsx';
 import { listSentReports } from '../../lib/supabase.js';
 
 const ACCENT = '#a78bfa';
@@ -41,6 +42,10 @@ export default function ReportsModule({ sub }) {
 
   if (sub === 'History') {
     return <div className="content-area"><ReportsHistory /></div>;
+  }
+
+  if (sub === 'Dev Export') {
+    return <DevExport />;
   }
 
   // Monthly Report — show all clients as cards, click to generate

@@ -15,7 +15,7 @@ const SUB_NAVS = {
   content:   ['Auto Write', 'Topic Research', 'New Article', 'Rewrite & Expand', 'Metadata & Schema', 'Editorial Feedback', 'Clients', 'History'],
   technical: ['Dashboard', 'Task Board', 'New Scan', 'Clients', 'Team', 'Settings'],
   aeo:       ['Run Optimizations', 'Latest Results', 'Clients', 'Settings', 'History'],
-  reports:   ['Monthly Report', 'AEO Snapshot', 'History'],
+  reports:   ['Monthly Report', 'AEO Snapshot', 'Dev Export', 'History'],
   cms:       ['Connector', 'Push History']
 };
 
