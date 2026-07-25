@@ -79,7 +79,7 @@ Keep each list tight (max ~8). Do not invent areas with no signal above.`;
     const text = await complete({
       system: ATTR_SYSTEM,
       messages: [{ role: 'user', content: prompt }],
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-sonnet-4-6',
       max_tokens: 900,
       temperature: 0.4
     });
