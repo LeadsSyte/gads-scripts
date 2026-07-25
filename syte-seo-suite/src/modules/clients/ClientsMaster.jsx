@@ -363,9 +363,10 @@ export default function ClientsMaster() {
         </div>
       )}
 
-      {/* Master table */}
-      <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
-        <table>
+      {/* Master table — overflow-x auto so the 9-column table scrolls inside
+          the card on narrow windows instead of widening the whole page. */}
+      <div className="card" style={{ padding: 0, overflowX: 'auto' }}>
+        <table style={{ minWidth: 860 }}>
           <thead>
             <tr>
               <th>Name</th>

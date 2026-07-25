@@ -124,7 +124,11 @@ th { color: var(--text-muted); font-weight: 500; font-size: 11px; text-transform
   flex-shrink: 0;
   overflow-y: auto;
 }
-.main { flex: 1; overflow-y: auto; display: flex; flex-direction: column; }
+/* min-width: 0 is load-bearing: a flex item's default min-width is
+   max-content, so one wide table would force .main past the viewport and
+   shove the sidebar off-screen. With 0 the main pane shrinks to fit and
+   wide content scrolls inside its own container instead. */
+.main { flex: 1; overflow-y: auto; display: flex; flex-direction: column; min-width: 0; }
 
 .topbar {
   border-bottom: 1px solid var(--border);
