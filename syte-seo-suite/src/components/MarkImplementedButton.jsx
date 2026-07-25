@@ -105,11 +105,15 @@ export default function MarkImplementedButton({
     }
   }
 
-  async function submitSentScreenshot() {
-    if (!result?.impl?.id || !sentFile) return;
+  // Runs automatically as soon as a file is picked (pass the file directly —
+  // React state isn't updated yet inside the same onChange tick). The
+  // explicit "Verify & Mark Sent" button remains as a retry fallback.
+  async function submitSentScreenshot(fileArg) {
+    const file = (fileArg instanceof File ? fileArg : null) || sentFile;
+    if (!result?.impl?.id || !file) return;
     setSentBusy(true); setSentMsg(''); setErr('');
     try {
-      const imageBase64 = await fileToJpegBase64(sentFile);
+      const imageBase64 = await fileToJpegBase64(file);
       const r = await verifySentToDeveloper(result.impl, { imageBase64, sentBy });
       if (r.status === 'sent_to_developer') {
         setResult({ ...result, status: r.status, detail: r.detail });
@@ -326,7 +330,7 @@ export default function MarkImplementedButton({
     '✗ Auto-verify failed';
 
   return (
-    <div style={{ display: 'inline-flex', flexDirection: 'column', gap: 6 }}>
+    <div style={{ display: 'inline-flex', flexDirection: 'column', gap: 6, maxWidth: '100%' }}>
       <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
         {phase === 'idle' && (
           <>
@@ -541,29 +545,37 @@ export default function MarkImplementedButton({
       )}
 
       {showSentPanel && result?.impl?.id && (
-        <div style={{ marginTop: 6, padding: 10, background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 6, maxWidth: 500 }}>
+        <div style={{ marginTop: 6, padding: 10, background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 6, width: '100%', maxWidth: 500, boxSizing: 'border-box' }}>
           <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 4 }}>📧 Upload a screenshot of the email</div>
           <div className="muted" style={{ fontSize: 10, marginBottom: 6, lineHeight: 1.4 }}>
             Screenshot the email you sent to the client's developer (Gmail/Outlook — the sent message or compose window is fine).
-            The AI just checks it's a real email about this work, then marks the change as <strong>Sent to Developer</strong>.
+            Checking starts as soon as you attach it, then the change is marked <strong>Sent to Developer</strong>.
           </div>
-          <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-            <input
-              type="file"
-              accept="image/*"
-              disabled={sentBusy}
-              onChange={e => { setSentFile(e.target.files?.[0] || null); setSentMsg(''); }}
-              style={{ fontSize: 10 }}
-            />
-            <input
-              type="text"
-              placeholder="Who sent it? (optional)"
-              value={sentBy}
-              onChange={e => setSentBy(e.target.value)}
-              disabled={sentBusy}
-              style={{ fontSize: 10, padding: '3px 8px', width: 150 }}
-            />
-          </div>
+          <input
+            type="text"
+            placeholder="Who sent it? (optional)"
+            value={sentBy}
+            onChange={e => setSentBy(e.target.value)}
+            disabled={sentBusy}
+            style={{ fontSize: 10, padding: '3px 8px', width: '100%', boxSizing: 'border-box', marginBottom: 6 }}
+          />
+          <input
+            type="file"
+            accept="image/*"
+            disabled={sentBusy}
+            onChange={e => {
+              const f = e.target.files?.[0] || null;
+              setSentFile(f); setSentMsg('');
+              if (f) submitSentScreenshot(f); // auto-verify on attach
+            }}
+            style={{ fontSize: 10, maxWidth: '100%' }}
+          />
+          {sentBusy && (
+            <div style={{ fontSize: 10, color: 'var(--blue)', marginTop: 6 }}>
+              <span className="spinner" style={{ width: 10, height: 10, borderWidth: 2, marginRight: 5 }} />
+              Checking screenshot…
+            </div>
+          )}
           {sentMsg && (
             <div style={{ fontSize: 10, color: 'var(--orange)', marginTop: 6, lineHeight: 1.4 }}>
               {sentMsg}
@@ -574,17 +586,17 @@ export default function MarkImplementedButton({
               </div>
             </div>
           )}
-          <div className="row" style={{ justifyContent: 'flex-end', gap: 6, marginTop: 8 }}>
-            <button onClick={() => { setShowSentPanel(false); setSentFile(null); setSentMsg(''); }} disabled={sentBusy} style={{ fontSize: 10, padding: '3px 10px' }}>
-              Cancel
-            </button>
+          <div className="row" style={{ gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
             <button
-              onClick={submitSentScreenshot}
+              onClick={() => submitSentScreenshot()}
               disabled={sentBusy || !sentFile}
               className="primary"
               style={{ fontSize: 10, padding: '3px 12px', background: 'var(--blue)', borderColor: 'var(--blue)', color: '#0a0a0c' }}
             >
               {sentBusy ? 'Checking screenshot…' : 'Verify & Mark Sent'}
+            </button>
+            <button onClick={() => { setShowSentPanel(false); setSentFile(null); setSentMsg(''); }} disabled={sentBusy} style={{ fontSize: 10, padding: '3px 10px' }}>
+              Cancel
             </button>
           </div>
         </div>
