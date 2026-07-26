@@ -2,6 +2,7 @@ import React, { useState, useMemo } from 'react';
 import { useClients } from '../../store/useClients.js';
 import AEOSnapshot from './AEOSnapshot.jsx';
 import MonthlyReport from './MonthlyReport.jsx';
+import Baseline from './Baseline.jsx';
 import ReportsHistory from './ReportsHistory.jsx';
 import DevExport from './DevExport.jsx';
 import { listSentReports, listGeneratedReports } from '../../lib/supabase.js';
@@ -51,6 +52,10 @@ export default function ReportsModule({ sub }) {
       } catch {}
     })();
   }, []);
+
+  if (sub === 'Baseline') {
+    return <Baseline />;
+  }
 
   if (sub === 'AEO Snapshot') {
     return <div className="content-area"><AEOSnapshot /></div>;

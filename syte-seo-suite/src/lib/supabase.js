@@ -1178,6 +1178,98 @@ export async function setCachedReportData(clientId, month, reportData) {
   } catch {}
 }
 
+// ---------------------------------------------------------------------------
+// Client baselines — a one-time snapshot of a client's rankings + organic
+// traffic captured at onboarding. Immutable reference data (one row per
+// client), separate from the recurring monthly report cache. Falls back to
+// localStorage so it works offline.
+// ---------------------------------------------------------------------------
+
+export async function saveBaseline(clientId, month, reportData, capturedBy) {
+  assertClientId(clientId, 'saveBaseline');
+  if (supabase) {
+    const { data: existing } = await supabase
+      .from('syte_suite_baselines')
+      .select('id')
+      .eq('client_id', clientId)
+      .limit(1);
+    if (existing?.length > 0) {
+      const { data, error } = await supabase
+        .from('syte_suite_baselines')
+        .update({ month, data: reportData, captured_by: capturedBy || null, captured_at: new Date().toISOString() })
+        .eq('id', existing[0].id)
+        .select()
+        .single();
+      if (error) throw error;
+      return data;
+    }
+    const { data, error } = await supabase
+      .from('syte_suite_baselines')
+      .insert({ client_id: clientId, month, data: reportData, captured_by: capturedBy || null })
+      .select()
+      .single();
+    if (error) throw error;
+    return data;
+  }
+  const map = JSON.parse(localStorage.getItem(LS_PREFIX + 'baselines') || '{}');
+  const row = {
+    id: map[clientId]?.id || crypto.randomUUID(),
+    client_id: clientId,
+    month,
+    data: reportData,
+    captured_by: capturedBy || null,
+    captured_at: new Date().toISOString(),
+    created_at: map[clientId]?.created_at || new Date().toISOString()
+  };
+  map[clientId] = row;
+  localStorage.setItem(LS_PREFIX + 'baselines', JSON.stringify(map));
+  return row;
+}
+
+export async function getBaseline(clientId) {
+  if (supabase) {
+    const { data } = await supabase
+      .from('syte_suite_baselines')
+      .select('*')
+      .eq('client_id', clientId)
+      .limit(1)
+      .single();
+    return data || null;
+  }
+  try {
+    const map = JSON.parse(localStorage.getItem(LS_PREFIX + 'baselines') || '{}');
+    return map[clientId] || null;
+  } catch { return null; }
+}
+
+export async function listBaselines() {
+  if (supabase) {
+    const { data, error } = await supabase
+      .from('syte_suite_baselines')
+      .select('*')
+      .order('captured_at', { ascending: false });
+    if (error) throw error;
+    return data || [];
+  }
+  try {
+    const map = JSON.parse(localStorage.getItem(LS_PREFIX + 'baselines') || '{}');
+    return Object.values(map);
+  } catch { return []; }
+}
+
+export async function deleteBaseline(clientId) {
+  if (supabase) {
+    const { error } = await supabase.from('syte_suite_baselines').delete().eq('client_id', clientId);
+    if (error) throw error;
+    return;
+  }
+  try {
+    const map = JSON.parse(localStorage.getItem(LS_PREFIX + 'baselines') || '{}');
+    delete map[clientId];
+    localStorage.setItem(LS_PREFIX + 'baselines', JSON.stringify(map));
+  } catch {}
+}
+
 export async function deleteBlogResult(id) {
   if (supabase) {
     await supabase.from('syte_suite_content_blogs').delete().eq('id', id);
