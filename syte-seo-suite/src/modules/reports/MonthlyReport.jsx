@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useClients } from '../../store/useClients.js';
 import { claudeComplete, extractJSON } from '../../lib/anthropic.js';
-import { listAeoSnapshots, logReportSent, getCachedReportData, setCachedReportData } from '../../lib/supabase.js';
+import { listAeoSnapshots, logReportSent, listSentReports, getCachedReportData, setCachedReportData } from '../../lib/supabase.js';
+import { fireSeoBaselineWebhook, reportUrlFor } from '../../lib/seoBaselineWebhook.js';
 import { ALICE_SYSTEM, MICROSITE_SYSTEM, QA_SYSTEM, buildAlicePayload, getWorkSummary } from './reportPrompts.js';
 import { buildMicrositeHtml, downloadMicrosite } from './microsite.js';
 import { runSnapshot, snapshotPreflight } from './aeoRunner.js';
@@ -52,6 +53,7 @@ export default function MonthlyReport() {
   const [microJson, setMicroJson] = useState(null);
   const [qa, setQa] = useState(null);
   const [sent, setSent] = useState(false);
+  const [baselineHook, setBaselineHook] = useState(null); // null | 'sending' | { ok, ... }
   const [showMicroFull, setShowMicroFull] = useState(false);
   const [reportData, setReportData] = useState(null);
   const [liveAeoProbe, setLiveAeoProbe] = useState(null);
@@ -59,7 +61,7 @@ export default function MonthlyReport() {
   // Auto-fetch GA4 + GSC data when client or month changes.
   useEffect(() => {
     setEmail({ subject: '', body: '' });
-    setMicroJson(null); setQa(null); setSent(false); setPhase('idle'); setErr('');
+    setMicroJson(null); setQa(null); setSent(false); setPhase('idle'); setErr(''); setBaselineHook(null);
     const hasSeo = client?.does_content !== false || client?.does_technical !== false;
     const hasAeo = client?.does_aeo !== false;
     setForm({ hasSeo, hasAeo, industry: client?.industry || '' });
@@ -366,6 +368,14 @@ Write an AEO performance email covering: what AI engines are saying about this b
   async function markSent() {
     if (!client) return;
     try {
+      // Detect the baseline (first ever) report for this client *before* logging
+      // this one — that's the moment the SuperAgent flips seo_aeo to live.
+      let isBaseline = false;
+      try {
+        const prior = await listSentReports(client.id);
+        isBaseline = !prior || prior.length === 0;
+      } catch { /* if we can't tell, err toward not firing again */ }
+
       await logReportSent({
         client_id: client.id,
         month,
@@ -375,6 +385,18 @@ Write an AEO performance email covering: what AI engines are saying about this b
         email_subject: email.subject || ''
       });
       setSent(true);
+
+      // Fire the baseline webhook (best-effort, non-blocking). Only on the very
+      // first report so the SuperAgent logs a single "baseline ready" event.
+      if (isBaseline) {
+        setBaselineHook('sending');
+        fireSeoBaselineWebhook({
+          clientId: client.id,
+          reportUrl: reportUrlFor(client),
+          clientName: client.name,
+          month
+        }).then(setBaselineHook).catch(() => setBaselineHook({ ok: false }));
+      }
     } catch (e) { setErr(e.message); }
   }
 
@@ -709,6 +731,16 @@ Write an AEO performance email covering: what AI engines are saying about this b
                 <div className="muted" style={{ fontSize: 12 }}>
                   Logs to the report history for {client.name} — {monthLabel(month)}.
                 </div>
+                {baselineHook === 'sending' && (
+                  <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>Activating AEO service (baseline webhook)…</div>
+                )}
+                {baselineHook && baselineHook !== 'sending' && (
+                  <div style={{ fontSize: 11, marginTop: 4, color: baselineHook.ok ? 'var(--green)' : 'var(--orange)' }}>
+                    {baselineHook.ok
+                      ? 'Baseline sent to SuperAgent — seo_aeo set live ✓'
+                      : 'Baseline webhook did not reach SuperAgent (report still logged).'}
+                  </div>
+                )}
               </div>
               <button
                 className="primary"
