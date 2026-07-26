@@ -7,7 +7,12 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node test/verification.test.mjs"
+    "test": "node test/run-all.mjs && vitest run",
+    "test:node": "node test/run-all.mjs",
+    "test:components": "vitest run",
+    "test:e2e": "playwright test",
+    "test:ai-qa": "node test/ai-qa/walkthrough.mjs",
+    "test:all": "npm test && npm run test:e2e"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.4",
@@ -19,7 +24,15 @@
     "zustand": "^4.5.5"
   },
   "devDependencies": {
+    "@playwright/test": "^1.59.1",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.1",
     "@vitejs/plugin-react": "^4.3.1",
-    "vite": "^5.4.8"
+    "@vitest/ui": "^4.1.5",
+    "jsdom": "^29.1.1",
+    "linkedom": "^0.18.12",
+    "vite": "^5.4.8",
+    "vitest": "^4.1.5"
   }
 }

@@ -7,3 +7,27 @@
   from = "/*"
   to = "/index.html"
   status = 200
+
+# Cache headers — fix the SPA "deploy went out but my browser still
+# shows old version" trap. The pattern:
+#   - index.html: never cache. Every request asks the server fresh,
+#     so right after a deploy the browser pulls the new HTML which
+#     references the new (hashed) JS/CSS bundle filenames.
+#   - Hashed assets under /assets/ (Vite outputs index-abcd1234.js):
+#     cache forever. Different builds → different hashes → different
+#     filenames, so a stale cache entry can never fight a new build.
+
+[[headers]]
+  for = "/index.html"
+  [headers.values]
+    Cache-Control = "no-cache, no-store, must-revalidate"
+
+[[headers]]
+  for = "/"
+  [headers.values]
+    Cache-Control = "no-cache, no-store, must-revalidate"
+
+[[headers]]
+  for = "/assets/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"

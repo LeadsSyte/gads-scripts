@@ -1,8 +1,13 @@
 import React, { useState, useMemo } from 'react';
 import { useClients } from '../store/useClients.js';
-import { claudeComplete, extractJSON } from '../lib/anthropic.js';
+import { scanBrandFromWebsite } from '../lib/brandScan.js';
 import { normalizeGa4Id, normalizeGscProperty } from '../lib/googleProperties.js';
 import GoogleConnectionsPicker from './GoogleConnectionsPicker.jsx';
+import {
+  generateCensus, inferLikelyTopics, topRankingSeeds, censusToProbeList,
+  parseCensus, intentCoverage, DEFAULT_CENSUS_TARGET
+} from '../modules/reports/aeoCensus.js';
+import { topQueriesByImpression } from '../modules/technical/gsc.js';
 
 // Brand voice presets — the dropdown contents. Picking Custom… reveals the
 // free text box so you can still type something bespoke.
@@ -115,6 +120,9 @@ export default function ClientModal({ initial, onClose }) {
   const [err, setErr] = useState('');
   const [genBusy, setGenBusy] = useState(false);
   const [genMsg, setGenMsg] = useState('');
+  // Website scan + brand-doc upload state.
+  const [scanBusy, setScanBusy] = useState(false);
+  const [scanMsg, setScanMsg] = useState('');
   // Brand voice: is the current value one of the presets, or custom?
   const [voiceMode, setVoiceMode] = useState(
     f.voice && !BRAND_VOICES.includes(f.voice) ? 'custom' : 'preset'
@@ -124,6 +132,12 @@ export default function ClientModal({ initial, onClose }) {
 
   function update(k, v) { setF(prev => ({ ...prev, [k]: v })); }
 
+  // Intent coverage of the currently-loaded census (if any) — drives the
+  // coverage chips under the prompt list so the user can see the census is
+  // representative across buyer intents, not a one-sided guess.
+  const census = useMemo(() => parseCensus(f), [f.aeo_census]);
+  const coverage = useMemo(() => census ? intentCoverage(census) : null, [census]);
+
   // Highlight any competitor entries that don't look like a domain.
   const competitorIssues = useMemo(() => {
     const list = parseCompetitorList(f.competitors);
@@ -132,55 +146,137 @@ export default function ClientModal({ initial, onClose }) {
       .filter(x => !x.ok);
   }, [f.competitors]);
 
+  // Generate the AEO prompt census — a grounded, intent-structured set of the
+  // prompts real buyers type into AI engines for this category. This replaces
+  // the old "guess ~40 probe queries" generator. It grounds generation in two
+  // real signals so the census centers on what the brand is credible for:
+  //   1. The brand's top NON-branded Google rankings (pulled from GSC if a
+  //      property is connected) — proof of category authority.
+  //   2. An LLM "direction" pass that names the topics the brand is most
+  //      likely to be recommended for, given those rankings.
+  // The structured census is stored on `aeo_census`; the flat newline list is
+  // kept in sync on `aeo_probe_queries` for the runner.
   async function generateQueries() {
     if (!f.industry && !f.context) {
-      setErr('Fill in Industry (or Brand Context) first so the generator has something to work with.');
+      setErr('Fill in Industry (or Brand Context) first so the census generator has direction.');
       return;
     }
     setGenBusy(true); setGenMsg(''); setErr('');
     try {
-      const prompt = `Client: ${f.name || '(unnamed)'}
-Industry: ${f.industry || ''}
-Location / service area: ${f.location || ''}
-Target audience: ${f.audience || ''}
-Brand context: ${f.context || ''}
-Website: ${f.url || ''}
-Competitors: ${f.competitors || ''}
-
-Generate 15 probe queries that a potential customer would ask an AI assistant (ChatGPT, Perplexity, Gemini, Claude). The goal is to test whether THIS SPECIFIC brand gets mentioned in AI recommendations.
-
-QUERY TYPES TO INCLUDE (mix of all):
-1. "Best [service/product] in [location]" — direct recommendation queries (3-4 of these)
-2. "Top [industry] companies/suppliers in [country]" — list queries where brands appear (2-3 of these)
-3. "[Brand name] vs [competitor]" — direct comparison queries (1-2 of these)
-4. "Is [brand name] good?" / "[brand name] reviews" — reputation queries (1 of these)
-5. Problem-first queries: "I need [specific service] for [use case]" — where AI might recommend providers (3-4 of these)
-6. Category-specific: "where to buy [specific product] in [location]" — purchase intent (2 of these)
-
-RULES:
-- Queries MUST be the kind where AI engines naturally recommend specific brands/companies
-- Include the location in at least 4 queries (AI engines use location to recommend local businesses)
-- Include at least 1 query with the brand name directly (to test if AI knows about them)
-- Short and natural (4-12 words each)
-- Lower-case, one per entry
-
-Return ONLY valid JSON: { "queries": ["...", "..."] }`;
-      const text = await claudeComplete({
-        system: 'You generate AEO probe queries. Output ONLY valid JSON — no code fences, no prose.',
-        messages: [{ role: 'user', content: prompt }],
-        max_tokens: 800,
-        temperature: 0.7
-      });
-      const parsed = extractJSON(text);
-      if (!parsed?.queries || !Array.isArray(parsed.queries)) {
-        throw new Error('Generator returned unexpected output. Try again.');
+      // 1. Ground on real rankings (best-effort — skip silently if no GSC).
+      let rankingSeeds = [];
+      if (f.gsc_property) {
+        try {
+          setGenMsg('Reading your top Google rankings…');
+          const gscKeywords = await topQueriesByImpression(f.gsc_property, 90);
+          // Pass the industry as the "category" so generic category words in
+          // the brand name (e.g. "Shelving" in "Krost Shelving") aren't treated
+          // as branded and don't drop legitimate category rankings.
+          rankingSeeds = topRankingSeeds(gscKeywords, f.name, { category: f.industry });
+        } catch (e) {
+          // GSC not connected / no permission — fall back to context-only.
+          rankingSeeds = [];
+        }
       }
-      update('aeo_probe_queries', parsed.queries.join('\n'));
-      setGenMsg(`Generated ${parsed.queries.length} queries ✓`);
+
+      // 2. Direction pass — what is this brand likely recommended for?
+      setGenMsg('Working out what AI engines would recommend you for…');
+      let likelyTopics = [];
+      try {
+        likelyTopics = await inferLikelyTopics({ client: f, rankingSeeds });
+      } catch { likelyTopics = []; }
+
+      // 3. Generate the intent-structured census.
+      setGenMsg(`Building a ${DEFAULT_CENSUS_TARGET}-prompt census across buyer intents…`);
+      const census = await generateCensus({ client: f, rankingSeeds, likelyTopics });
+
+      // Persist both the structured census and the flat run list.
+      setF(prev => ({
+        ...prev,
+        aeo_census: census,
+        aeo_probe_queries: censusToProbeList(census)
+      }));
+
+      const cov = intentCoverage(census);
+      const groundNote = rankingSeeds.length
+        ? `grounded on ${rankingSeeds.length} of your top Google rankings`
+        : 'grounded on your brand context (connect Search Console for ranking-grounded prompts)';
+      setGenMsg(`Census ready: ${cov.total} prompts across ${cov.buckets.filter(b => b.count > 0).length} intent buckets — ${groundNote} ✓`);
     } catch (e) {
-      setErr('Query generation failed: ' + e.message);
+      setErr('Census generation failed: ' + e.message);
     } finally {
       setGenBusy(false);
+    }
+  }
+
+  // Scan the client's website and append a brand brief to Brand Documents.
+  // Re-scanning replaces the previous scan block instead of stacking copies.
+  async function scanWebsite() {
+    if (!f.url) { setErr('Add the Website URL first, then scan.'); return; }
+    setScanBusy(true); setScanMsg('Starting…'); setErr('');
+    try {
+      const brief = await scanBrandFromWebsite({ ...f }, { onProgress: setScanMsg });
+      const dateLabel = new Date().toLocaleDateString('en-ZA');
+      const scanSection = [
+        `=== Website Brand Scan (${dateLabel}) ===`,
+        `Source: ${brief.sourceUrl}`,
+        brief.voice ? `Voice: ${brief.voice}` : '',
+        brief.audience ? `Audience: ${brief.audience}` : '',
+        '',
+        brief.brief
+      ].filter(Boolean).join('\n');
+      setF(prev => {
+        const existing = (prev.brand_docs || '').trim();
+        // Drop any earlier scan block so re-scanning doesn't duplicate it.
+        const withoutOld = existing
+          .replace(/=== Website Brand Scan[\s\S]*?(?=\n=== |$)/, '')
+          .trim();
+        const next = {
+          ...prev,
+          brand_docs: [withoutOld, scanSection].filter(Boolean).join('\n\n')
+        };
+        // Fill audience only if it's empty — don't clobber a human's wording.
+        if (!prev.audience && brief.audience) next.audience = brief.audience;
+        return next;
+      });
+      setScanMsg('Website scanned — brand brief added to Brand Documents ✓');
+    } catch (e) {
+      setErr('Website scan failed: ' + e.message);
+      setScanMsg('');
+    } finally {
+      setScanBusy(false);
+    }
+  }
+
+  // Read uploaded text docs (.txt/.md/.csv) and append them to Brand Documents.
+  async function handleDocUpload(e) {
+    const files = Array.from(e.target.files || []);
+    e.target.value = ''; // let the same file be re-selected later
+    if (!files.length) return;
+    setErr('');
+    const parts = [];
+    for (const file of files) {
+      if (file.size > 500 * 1024) {
+        setErr(`"${file.name}" is larger than 500KB — paste the relevant text instead.`);
+        continue;
+      }
+      const textLike = /\.(txt|md|markdown|csv)$/i.test(file.name) || /^text\//.test(file.type);
+      if (!textLike) {
+        setErr(`"${file.name}" isn't a text file. Upload .txt / .md, or paste the text (PDF/Word not supported).`);
+        continue;
+      }
+      try {
+        const content = (await file.text()).trim();
+        if (content) parts.push(`=== ${file.name} ===\n${content}`);
+      } catch (err) {
+        setErr(`Could not read "${file.name}": ` + (err?.message || err));
+      }
+    }
+    if (parts.length) {
+      setF(prev => ({
+        ...prev,
+        brand_docs: [(prev.brand_docs || '').trim(), ...parts].filter(Boolean).join('\n\n')
+      }));
     }
   }
 
@@ -269,6 +365,22 @@ Return ONLY valid JSON: { "queries": ["...", "..."] }`;
           ))}
         </div>
 
+        {/* Account manager / owner — who runs this client internally. */}
+        <div style={{ marginTop: 4 }}>
+          <label>
+            Account Manager{' '}
+            <span className="muted" style={{ textTransform: 'none', letterSpacing: 0, fontSize: 11 }}>
+              — the person responsible for this client
+            </span>
+          </label>
+          <input
+            type="text"
+            value={f.account_manager || ''}
+            onChange={e => update('account_manager', e.target.value)}
+            placeholder="e.g. Michael H"
+          />
+        </div>
+
         {/* Brand & Content */}
         <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '.08em', color: 'var(--text-dim)', margin: '16px 0 8px' }}>
           Brand & Content
@@ -346,12 +458,82 @@ Return ONLY valid JSON: { "queries": ["...", "..."] }`;
           />
         </div>
 
+        {/* Brand Documents & Reference — uploaded docs + a scan of the
+            client's website. Feeds directly into the article system prompt
+            so the writer stays genuinely on-brand. */}
+        <div style={{ marginTop: 14 }}>
+          <div className="row" style={{ justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 4, gap: 8, flexWrap: 'wrap' }}>
+            <label style={{ margin: 0 }}>
+              Brand Documents & Reference{' '}
+              <span className="muted" style={{ textTransform: 'none', letterSpacing: 0, fontSize: 11 }}>
+                — steers every article to be on-brand; never shown to client
+              </span>
+            </label>
+            <div className="row" style={{ gap: 6 }}>
+              <label
+                style={{
+                  margin: 0, padding: '4px 10px', fontSize: 11, cursor: 'pointer',
+                  border: '1px solid var(--border)', borderRadius: 'var(--radius)', color: 'var(--text)'
+                }}
+              >
+                + Upload .txt/.md
+                <input
+                  type="file"
+                  accept=".txt,.md,.markdown,.csv,text/*"
+                  multiple
+                  onChange={handleDocUpload}
+                  style={{ display: 'none' }}
+                />
+              </label>
+              <button
+                type="button"
+                onClick={scanWebsite}
+                disabled={scanBusy}
+                style={{ padding: '4px 10px', fontSize: 11, borderColor: 'var(--mod-content)', color: 'var(--mod-content)' }}
+              >
+                {scanBusy ? 'Scanning…' : '🔍 Scan website'}
+              </button>
+            </div>
+          </div>
+          <textarea
+            value={f.brand_docs || ''}
+            onChange={e => update('brand_docs', e.target.value)}
+            rows={6}
+            placeholder={`Paste brand guidelines, tone-of-voice notes, product one-pagers, or a past on-brand article.\n\nOr upload .txt / .md files, or click "Scan website" to auto-build a brand brief from ${f.url || "the client's site"}.`}
+          />
+          {scanMsg && <div style={{ color: 'var(--green)', fontSize: 11, marginTop: 4 }}>{scanMsg}</div>}
+        </div>
+
         {/* Google connections (GA4 + GSC) */}
         <GoogleConnectionsPicker
           ga4Value={f.ga4_property_id}
-          onChangeGa4={v => update('ga4_property_id', v)}
+          onChangeGa4={(v, acc) => {
+            update('ga4_property_id', v);
+            // Auto-bind the GA4 API to whichever Google account the
+            // operator was using when they picked. Only set when the
+            // value is non-empty — clearing the property shouldn't drop
+            // the account binding (the user may pick again immediately).
+            if (acc && v) update('ga4_account_email', acc);
+          }}
           gscValue={f.gsc_property}
-          onChangeGsc={v => update('gsc_property', v)}
+          onChangeGsc={(v, acc) => {
+            update('gsc_property', v);
+            if (acc && v) update('gsc_account_email', acc);
+          }}
+          savedEmail={f.google_account_email}
+          onChangeEmail={v => update('google_account_email', v)}
+          savedGa4Email={f.ga4_account_email}
+          savedGscEmail={f.gsc_account_email}
+          onBindAccount={email => {
+            // Server-auth: bind the whole client to one connected account.
+            // Set all three fields so the report's per-API lookup
+            // (ga4_account_email / gsc_account_email, falling back to
+            // google_account_email) resolves to this account, and any earlier
+            // wrong per-API binding is overwritten.
+            update('google_account_email', email);
+            update('ga4_account_email', email);
+            update('gsc_account_email', email);
+          }}
         />
 
         {/* Reporting & AEO */}
@@ -372,13 +554,13 @@ Return ONLY valid JSON: { "queries": ["...", "..."] }`;
           ))}
         </div>
 
-        {/* AEO probe queries with auto-generate */}
+        {/* AEO prompt census with grounded auto-generate */}
         <div style={{ marginTop: 12 }}>
           <div className="row" style={{ justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 4 }}>
             <label style={{ margin: 0 }}>
-              AEO Probe Queries{' '}
+              AEO Prompt Census{' '}
               <span className="muted" style={{ textTransform: 'none', letterSpacing: 0, fontSize: 11 }}>
-                (one per line — things a customer might ask an AI assistant)
+                (a representative set of how buyers ask AI about your category — we measure your share of voice across it)
               </span>
             </label>
             <button
@@ -386,20 +568,45 @@ Return ONLY valid JSON: { "queries": ["...", "..."] }`;
               onClick={generateQueries}
               disabled={genBusy}
               style={{ padding: '4px 10px', fontSize: 11, borderColor: 'var(--mod-reports)', color: 'var(--mod-reports)' }}
+              title="Grounds on your top non-branded Google rankings + an AI direction pass, then builds an intent-structured census."
             >
-              {genBusy ? 'Generating…' : '✨ Generate from brand context'}
+              {genBusy ? 'Generating…' : (census ? '✨ Regenerate census' : '✨ Generate census')}
             </button>
           </div>
+
+          {/* Intent coverage chips — proof the census spans buyer intents. */}
+          {coverage && coverage.total > 0 && (
+            <div className="row" style={{ gap: 6, flexWrap: 'wrap', margin: '2px 0 8px' }}>
+              <span className="muted" style={{ fontSize: 11 }}>{coverage.total} prompts ·</span>
+              {coverage.buckets.map(b => (
+                <span
+                  key={b.id}
+                  title={b.hint + (b.thin ? ' — thin coverage' : '')}
+                  style={{
+                    fontSize: 10, padding: '2px 7px', borderRadius: 10,
+                    border: '1px solid ' + (b.thin ? 'var(--orange)' : 'var(--border)'),
+                    color: b.thin ? 'var(--orange)' : 'var(--text-muted)'
+                  }}
+                >
+                  {b.label} {b.count}
+                </span>
+              ))}
+            </div>
+          )}
+
           <textarea
             value={f.aeo_probe_queries || ''}
             onChange={e => update('aeo_probe_queries', e.target.value)}
-            rows={5}
+            rows={6}
             placeholder={
               f.industry && f.location
-                ? `e.g. best ${f.industry.toLowerCase()} in ${f.location.toLowerCase()}`
-                : 'e.g. best digital marketing agency johannesburg'
+                ? `Click "Generate census", or type prompts like: what's the best ${f.industry.toLowerCase()} company in ${f.location.toLowerCase()}?`
+                : 'Click "Generate census", or type prompts one per line'
             }
           />
+          <div className="muted" style={{ fontSize: 10, marginTop: 3 }}>
+            Editing the list manually won't retag intents — regenerate to refresh the census structure.
+          </div>
           {genMsg && <div style={{ color: 'var(--green)', fontSize: 11, marginTop: 4 }}>{genMsg}</div>}
         </div>
 

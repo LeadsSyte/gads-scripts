@@ -34,16 +34,24 @@ export default async function handler() {
   // 1. Fetch all implementations from the last 7 days + all still pending/failed.
   const weekAgo = new Date(Date.now() - 7 * 86400000).toISOString();
 
+  // Explicit column list — NEVER select('*') here. verification_detail can
+  // hold a multi-hundred-KB base64 proof screenshot ([SCREENSHOT]…), and this
+  // email needs none of it (only status, title, who, when). Pulling it for
+  // every row — especially the unbounded pending/failed set below — bloated
+  // the payload until the query timed out (HTTP 500) and the Monday email
+  // stopped going out. The same select=* on this table broke the dashboard.
+  const IMPL_COLS = 'id, client_id, module, change_type, title, implemented_by, implemented_at, verification_status, created_at';
+
   const [recentRes, pendingRes, clientsRes] = await Promise.all([
     supabase
       .from('syte_suite_implementations')
-      .select('*')
+      .select(IMPL_COLS)
       .gte('created_at', weekAgo)
       .order('created_at', { ascending: false }),
     supabase
       .from('syte_suite_implementations')
-      .select('*')
-      .in('verification_status', ['pending', 'failed'])
+      .select(IMPL_COLS)
+      .in('verification_status', ['pending', 'failed', 'sent_to_developer'])
       .order('created_at', { ascending: false }),
     supabase
       .from('syte_suite_clients')
@@ -76,6 +84,7 @@ export default async function handler() {
   const totalVerified = all.filter(r => r.verification_status === 'verified').length;
   const totalFailed = all.filter(r => r.verification_status === 'failed').length;
   const totalPending = all.filter(r => r.verification_status === 'pending').length;
+  const totalSentToDev = all.filter(r => r.verification_status === 'sent_to_developer').length;
   const totalClients = Object.keys(grouped).length;
 
   const moduleBreakdown = {};
@@ -93,11 +102,14 @@ export default async function handler() {
       const v = g.items.filter(r => r.verification_status === 'verified').length;
       const f = g.items.filter(r => r.verification_status === 'failed').length;
       const p = g.items.filter(r => r.verification_status === 'pending').length;
+      const s = g.items.filter(r => r.verification_status === 'sent_to_developer').length;
       const itemRows = g.items.map(r => {
         const statusColor = r.verification_status === 'verified' ? '#34d399'
+                          : r.verification_status === 'sent_to_developer' ? '#4da3ff'
                           : r.verification_status === 'failed' ? '#ff4d4d'
                           : '#ff9f43';
         const statusLabel = r.verification_status === 'verified' ? '✓ Verified'
+                          : r.verification_status === 'sent_to_developer' ? '📧 Sent to Developer'
                           : r.verification_status === 'failed' ? '✗ Failed'
                           : '⏳ Pending';
         return `<tr>
@@ -113,7 +125,7 @@ export default async function handler() {
           <td colspan="5" style="padding:12px 10px;font-weight:700;font-size:14px;border-bottom:1px solid #2a2a32">
             ${esc(g.client.name || '?')}
             <span style="color:#8b8b96;font-weight:400;font-size:12px;margin-left:10px">
-              ${v} verified · ${f} failed · ${p} pending
+              ${v} verified${s > 0 ? ` · ${s} sent to dev` : ''} · ${f} failed · ${p} pending
             </span>
           </td>
         </tr>
@@ -137,6 +149,10 @@ export default async function handler() {
       <div style="background:#111316;border:1px solid #2a2a32;border-radius:10px;padding:16px;flex:1;text-align:center">
         <div style="font-size:36px;font-weight:700;color:#34d399">${totalVerified}</div>
         <div style="font-size:11px;color:#8b8b96;text-transform:uppercase">Verified</div>
+      </div>
+      <div style="background:#111316;border:1px solid #2a2a32;border-radius:10px;padding:16px;flex:1;text-align:center">
+        <div style="font-size:36px;font-weight:700;color:#4da3ff">${totalSentToDev}</div>
+        <div style="font-size:11px;color:#8b8b96;text-transform:uppercase">Sent to Dev</div>
       </div>
       <div style="background:#111316;border:1px solid #2a2a32;border-radius:10px;padding:16px;flex:1;text-align:center">
         <div style="font-size:36px;font-weight:700;color:#ff4d4d">${totalFailed}</div>
@@ -193,7 +209,7 @@ export default async function handler() {
       body: JSON.stringify({
         from: FROM,
         to: RECIPIENTS,
-        subject: `Syte SEO Progress — ${weekLabel} · ${totalVerified} verified, ${totalPending} pending`,
+        subject: `Syte SEO Progress — ${weekLabel} · ${totalVerified} verified, ${totalSentToDev} sent to dev, ${totalPending} pending`,
         html
       })
     });

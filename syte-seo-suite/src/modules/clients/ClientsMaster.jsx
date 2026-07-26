@@ -4,6 +4,7 @@ import { upsertClient, diagnoseSupabase } from '../../lib/supabase.js';
 import { syncWebceoClients } from '../technical/webceo.js';
 import ClientModal from '../../components/ClientModal.jsx';
 import ImportClientsModal from '../../components/ImportClientsModal.jsx';
+import { serverAuthEnabled, listConnectedAccounts } from '../../lib/googleServerAuth.js';
 
 // Master Clients view — the single source-of-truth UI for managing every
 // client across every module. Service flags are toggled inline; changes
@@ -40,12 +41,43 @@ function ServiceToggle({ on, color, onChange, disabled }) {
   );
 }
 
+// Inline, editable account-manager cell. Commits on blur / Enter only when
+// the value actually changed, so we don't spam Supabase on every focus.
+function AccountManagerCell({ client, disabled, onSave }) {
+  const [val, setVal] = useState(client.account_manager || '');
+  useEffect(() => { setVal(client.account_manager || ''); }, [client.account_manager]);
+
+  function commit() {
+    const trimmed = val.trim();
+    if (trimmed === (client.account_manager || '')) return;
+    onSave(trimmed);
+  }
+
+  return (
+    <input
+      list="am-suggestions"
+      value={val}
+      onChange={e => setVal(e.target.value)}
+      onBlur={commit}
+      onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+      disabled={disabled}
+      placeholder="—"
+      style={{
+        width: 130, padding: '5px 8px', fontSize: 12,
+        background: 'var(--surface)', border: '1px solid var(--border)',
+        borderRadius: 6, color: 'var(--text)'
+      }}
+    />
+  );
+}
+
 export default function ClientsMaster() {
   const clients = useClients(s => s.clients);
   const reload = useClients(s => s.load);
   const [editing, setEditing] = useState(null);     // client being opened in modal
   const [importing, setImporting] = useState(false);
   const [filter, setFilter] = useState('');
+  const [managerFilter, setManagerFilter] = useState(''); // '' = all, '__none__' = unassigned
   const [busy, setBusy] = useState(false);
   const [rowBusy, setRowBusy] = useState(null);     // id of row currently saving
   const [msg, setMsg] = useState('');
@@ -62,21 +94,66 @@ export default function ClientsMaster() {
     return () => { cancelled = true; };
   }, []);
 
+  // Server-auth: which Google accounts are connected, so we can flag clients
+  // that still need an account assigned (or are bound to one that isn't
+  // connected). Empty/no-op when server auth is off.
+  const serverAuth = serverAuthEnabled();
+  const [connectedAccounts, setConnectedAccounts] = useState([]);
+  useEffect(() => {
+    if (!serverAuth) return;
+    listConnectedAccounts()
+      .then(a => setConnectedAccounts((a || []).filter(x => !x.revoked).map(x => (x.email || '').toLowerCase())))
+      .catch(() => {});
+  }, [serverAuth]);
+
+  // Per-client Google-account binding status (server-auth only).
+  // Returns null when there's nothing to flag.
+  function accountStatus(c) {
+    if (!serverAuth) return null;
+    const needsGoogle = !!(c.ga4_property_id || c.gsc_property);
+    if (!needsGoogle) return null;
+    const bound = (c.ga4_account_email || c.gsc_account_email || c.google_account_email || '').toLowerCase();
+    if (!bound) return { text: 'No Google account', color: 'var(--orange)' };
+    if (connectedAccounts.length && !connectedAccounts.includes(bound)) {
+      return { text: 'Account not connected', color: 'var(--red)' };
+    }
+    return null;
+  }
+  const needsAccountCount = useMemo(
+    () => (serverAuth ? clients.filter(c => accountStatus(c)).length : 0),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [serverAuth, clients, connectedAccounts]
+  );
+
   async function recheckHealth() {
     setHealth(null);
     const r = await diagnoseSupabase();
     setHealth(r);
   }
 
+  // Unique, sorted list of account managers currently assigned.
+  const managers = useMemo(
+    () => [...new Set(clients.map(c => (c.account_manager || '').trim()).filter(Boolean))].sort(),
+    [clients]
+  );
+
   const filtered = useMemo(() => {
-    if (!filter.trim()) return clients;
-    const q = filter.toLowerCase();
-    return clients.filter(c =>
-      (c.name || '').toLowerCase().includes(q) ||
-      (c.url || '').toLowerCase().includes(q) ||
-      (c.industry || '').toLowerCase().includes(q)
-    );
-  }, [clients, filter]);
+    const q = filter.trim().toLowerCase();
+    return clients.filter(c => {
+      if (managerFilter === '__none__') {
+        if ((c.account_manager || '').trim()) return false;
+      } else if (managerFilter) {
+        if ((c.account_manager || '').trim() !== managerFilter) return false;
+      }
+      if (!q) return true;
+      return (
+        (c.name || '').toLowerCase().includes(q) ||
+        (c.url || '').toLowerCase().includes(q) ||
+        (c.industry || '').toLowerCase().includes(q) ||
+        (c.account_manager || '').toLowerCase().includes(q)
+      );
+    });
+  }, [clients, filter, managerFilter]);
 
   const stats = useMemo(() => ({
     total: clients.length,
@@ -90,6 +167,15 @@ export default function ClientsMaster() {
     setRowBusy(client.id); setErr('');
     try {
       await upsertClient({ ...client, [key]: value });
+      await reload();
+    } catch (e) { setErr(e.message); }
+    finally { setRowBusy(null); }
+  }
+
+  async function setManager(client, value) {
+    setRowBusy(client.id); setErr('');
+    try {
+      await upsertClient({ ...client, account_manager: value });
       await reload();
     } catch (e) { setErr(e.message); }
     finally { setRowBusy(null); }
@@ -245,25 +331,48 @@ export default function ClientsMaster() {
         </details>
       )}
 
-      {/* Search */}
-      <div className="row" style={{ marginBottom: 10 }}>
+      {/* Search + account-manager filter */}
+      <div className="row" style={{ marginBottom: 10, gap: 10, flexWrap: 'wrap' }}>
         <input
           value={filter}
           onChange={e => setFilter(e.target.value)}
-          placeholder="Search by name, URL, or industry…"
+          placeholder="Search by name, URL, industry, or manager…"
           style={{ maxWidth: 360 }}
         />
-        {filter && <span className="muted" style={{ fontSize: 12 }}>{filtered.length} / {clients.length}</span>}
+        <select
+          value={managerFilter}
+          onChange={e => setManagerFilter(e.target.value)}
+          style={{ width: 200 }}
+          title="Filter by account manager"
+        >
+          <option value="">All account managers</option>
+          <option value="__none__">Unassigned</option>
+          {managers.map(m => <option key={m} value={m}>{m}</option>)}
+        </select>
+        {(filter || managerFilter) && <span className="muted" style={{ fontSize: 12 }}>{filtered.length} / {clients.length}</span>}
       </div>
 
-      {/* Master table */}
-      <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
-        <table>
+      {/* Suggestions for inline account-manager inputs. */}
+      <datalist id="am-suggestions">
+        {managers.map(m => <option key={m} value={m} />)}
+      </datalist>
+
+      {serverAuth && needsAccountCount > 0 && (
+        <div style={{ marginBottom: 12, padding: '8px 12px', border: '1px solid var(--orange)', borderRadius: 8, color: 'var(--orange)', fontSize: 12 }}>
+          ⚠ {needsAccountCount} client{needsAccountCount === 1 ? '' : 's'} need a Google account assigned before reports can pull GA4/GSC. Open each flagged client → Google Connections → pick its connected account.
+        </div>
+      )}
+
+      {/* Master table — overflow-x auto so the 9-column table scrolls inside
+          the card on narrow windows instead of widening the whole page. */}
+      <div className="card" style={{ padding: 0, overflowX: 'auto' }}>
+        <table style={{ minWidth: 860 }}>
           <thead>
             <tr>
               <th>Name</th>
               <th>URL</th>
               <th>Industry</th>
+              <th>Account Manager</th>
               {SERVICES.map(s => (
                 <th key={s.key} style={{ textAlign: 'center', color: s.color }}>{s.label}</th>
               ))}
@@ -273,7 +382,7 @@ export default function ClientsMaster() {
           <tbody>
             {filtered.length === 0 && (
               <tr>
-                <td colSpan={4 + SERVICES.length} className="muted" style={{ textAlign: 'center', padding: 32 }}>
+                <td colSpan={5 + SERVICES.length} className="muted" style={{ textAlign: 'center', padding: 32 }}>
                   {clients.length === 0
                     ? 'No clients yet. Click Sync from WebCEO, Import from Old Tools, or + Add Client.'
                     : 'No clients match that search.'}
@@ -283,7 +392,20 @@ export default function ClientsMaster() {
             {filtered.map(c => (
               <tr key={c.id}>
                 <td>
-                  <div style={{ fontWeight: 600 }}>{c.name}</div>
+                  <div style={{ fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8 }}>
+                    {c.name}
+                    {(() => {
+                      const st = accountStatus(c);
+                      return st ? (
+                        <span
+                          title="Open this client and set its Google account under Google Connections"
+                          style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: st.color, border: '1px solid ' + st.color, borderRadius: 4, padding: '1px 6px' }}
+                        >
+                          ⚠ {st.text}
+                        </span>
+                      ) : null;
+                    })()}
+                  </div>
                   {c.wceo_project_id && (
                     <div className="muted" style={{ fontSize: 10 }}>WebCEO: {c.wceo_project_id}</div>
                   )}
@@ -292,6 +414,13 @@ export default function ClientsMaster() {
                   {c.url || '—'}
                 </td>
                 <td className="muted">{c.industry || '—'}</td>
+                <td>
+                  <AccountManagerCell
+                    client={c}
+                    disabled={rowBusy === c.id}
+                    onSave={v => setManager(c, v)}
+                  />
+                </td>
                 {SERVICES.map(s => (
                   <td key={s.key} style={{ textAlign: 'center' }}>
                     <ServiceToggle

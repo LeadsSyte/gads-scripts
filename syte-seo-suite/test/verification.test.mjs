@@ -117,9 +117,48 @@ function assertMatch(actual, regex, label) {
 
 // =================== ON-PAGE PATH (existing Claude HTML check) ===================
 
+await t('on-page: head-only HTML from page-proxy is rejected (Krost case)', async () => {
+  // Simulates Jina returning <head> + inline CSS only — what happens on
+  // some Elementor pages. Page-proxy used to accept this and feed it to
+  // Claude, producing the misleading "body content not included" error.
+  const headOnly = '<!DOCTYPE html><html><head><title>Krost</title>' +
+    '<style>body{margin:0}.elementor-1234{padding:20px}'.padEnd(900, ' /* css */') + '</style></head><body></body></html>';
+  let proxyCalls = 0, corsCalls = 0;
+  mockResponses = new Map([[/page-proxy/, () => { proxyCalls++; return jsonRes({ status: 200, html: headOnly, source: 'jina-reader' }); }]]);
+  globalThis.__mockCorsFetchText = async () => { corsCalls++; throw new Error('cors blocked'); };
+  const r = await verif.verifyImplementation(
+    { id: 'krost', module: 'aeo', change_type: 'aeo_optimization',
+      title: 'Add answer block', description: 'Krost Shelving is SA leading...',
+      page_url: 'https://krostshelving.com/' },
+    { url: 'https://krostshelving.com/' }
+  );
+  assertEq(r.status, 'failed');
+  assertMatch(r.detail, /Could not fetch/);
+  if (proxyCalls < 1) throw new Error('page-proxy should have been called');
+  if (corsCalls < 1) throw new Error('should have fallen through to cors after head-only response');
+});
+
+await t('on-page: full Elementor body passes the useful-body check', async () => {
+  const fullPage = '<!DOCTYPE html><html><head><title>Krost</title></head><body>' +
+    '<div class="elementor-widget"><p class="answer-block">For over 60 years, Krost Shelving & Racking has specialised in designing, manufacturing, and installing racking, shelving, mezzanine floors, and custom storage solutions. From retail stockrooms to large distribution centres, we deliver high-performance systems that maximise space and efficiency, serving more than 20 industries across Africa.</p></div>' +
+    '</body></html>';
+  mockResponses = new Map([[/page-proxy/, () => jsonRes({ status: 200, html: fullPage, source: 'direct' })]]);
+  globalThis.__mockClaude = async () => '{"implemented": true, "confidence": "high", "evidence": "Answer block paragraph found.", "suggestion": ""}';
+  const r = await verif.verifyImplementation(
+    { id: 'krost-ok', module: 'aeo', change_type: 'aeo_optimization',
+      title: 'Add answer block', description: 'For over 60 years',
+      page_url: 'https://krostshelving.com/' },
+    { url: 'https://krostshelving.com/' }
+  );
+  assertEq(r.status, 'verified');
+  assertMatch(r.detail, /Answer block paragraph found/);
+});
+
 await t('on-page: HTML verification — Claude says implemented', async () => {
-  mockResponses = new Map([[/page-proxy/, () =>
-    jsonRes({ status: 200, html: '<html><body><h1>Buy Widget</h1><meta name="description" content="The best widget."></body></html>'.padEnd(700, ' '), source: 'jina-reader' })]]);
+  const html = '<html><head><title>Buy Widget — ExampleCo</title>' +
+    '<meta name="description" content="The best widget for all your needs, hand-built and shipped same day from our local warehouse."></head>' +
+    '<body><h1>Buy Widget</h1><p>The best widget you can buy. Hand-built and shipped same day from our warehouse. Ships worldwide.</p></body></html>';
+  mockResponses = new Map([[/page-proxy/, () => jsonRes({ status: 200, html, source: 'jina-reader' })]]);
   globalThis.__mockClaude = async () => '{"implemented": true, "confidence": "high", "evidence": "Title and meta found.", "suggestion": ""}';
   const r = await verif.verifyImplementation(
     { id: '1', module: 'technical', change_type: 'meta_title', title: 'Update meta', page_url: 'https://example.com/widget', description: 'Buy Widget' },
@@ -130,8 +169,9 @@ await t('on-page: HTML verification — Claude says implemented', async () => {
 });
 
 await t('on-page: HTML verification — Claude says not implemented', async () => {
-  mockResponses = new Map([[/page-proxy/, () =>
-    jsonRes({ status: 200, html: '<html><body>Old page</body></html>'.padEnd(700, ' '), source: 'direct' })]]);
+  const html = '<html><head><title>Old page</title></head><body><h1>Welcome</h1>' +
+    '<p>This is the old version of the page that has not yet been updated. It contains the previous copy that was published last quarter.</p></body></html>';
+  mockResponses = new Map([[/page-proxy/, () => jsonRes({ status: 200, html, source: 'direct' })]]);
   globalThis.__mockClaude = async () => '{"implemented": false, "confidence": "high", "evidence": "Meta description not present.", "suggestion": "Add it"}';
   const r = await verif.verifyImplementation(
     { id: '2', change_type: 'meta_description', title: 'Add meta', page_url: 'https://example.com/p' },
@@ -153,7 +193,9 @@ await t('on-page: page fetch fails everywhere', async () => {
 });
 
 await t('on-page: Claude returns junk JSON', async () => {
-  mockResponses = new Map([[/page-proxy/, () => jsonRes({ status: 200, html: 'x'.repeat(800), source: 'direct' })]]);
+  const html = '<html><head><title>Page</title></head><body><h1>Heading One</h1>' +
+    '<p>Some real body content goes here so the useful-body check passes — at least sixty characters of visible text is required.</p></body></html>';
+  mockResponses = new Map([[/page-proxy/, () => jsonRes({ status: 200, html, source: 'direct' })]]);
   globalThis.__mockClaude = async () => 'not json at all';
   const r = await verif.verifyImplementation(
     { id: '4', change_type: 'h1', title: 'fix h1', page_url: 'https://example.com/' },
@@ -246,8 +288,13 @@ await t('off-page robots: live robots.txt without Sitemap directive', async () =
 
 await t('off-page robots: 404 / unreachable -> failed', async () => {
   globalThis.__mockCorsFetchText = async () => { throw new Error('not reachable'); };
+  // Use the unambiguous 'robots_txt' type. Bare 'robots' with empty
+  // title/description/url is now intentionally treated as ambiguous
+  // (could be a meta robots tag or robots.txt), so we route it to the
+  // on-page path. Real off-page tasks should emit 'robots_txt' or
+  // include "robots.txt" in the title/description/url.
   const r = await verif.verifyImplementation(
-    { id: 'r3', change_type: 'robots', title: '', description: '', page_url: '' },
+    { id: 'r3', change_type: 'robots_txt', title: '', description: '', page_url: '' },
     { url: 'https://example.com/' }
   );
   assertEq(r.status, 'failed');

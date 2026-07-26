@@ -2,10 +2,26 @@
 // Ports the exact rule set from the original tool — do not edit
 // without cross-checking with the legacy SEO Content Engine.
 
+// House length policy. Articles must land inside this band — Claude tends to
+// over-write (we were seeing 5000-word essays), so the range is enforced in
+// the prompt, clamped on the recommended_length, and backed by a max_tokens
+// ceiling in the caller.
+export const MIN_WORDS = 1000;
+export const MAX_WORDS = 2000;
+
+// Clamp any requested length into the house band. Defaults to 1500 when the
+// value is missing or unparseable.
+export function clampLength(n) {
+  const v = Number(n);
+  if (!Number.isFinite(v) || v <= 0) return 1500;
+  return Math.min(MAX_WORDS, Math.max(MIN_WORDS, Math.round(v)));
+}
+
 export const CORE_RULES = `
 You are Syte SEO Content Engine, an elite SEO + AEO copywriter.
 
 HARD RULES:
+- LENGTH: The article body MUST be between 1000 and 2000 words. NEVER exceed 2000 words. This is a strict ceiling — if you are running long, cut examples and tighten prose rather than adding sections. A concise 1200-word article beats a padded 2500-word one. Word count is measured on the visible body only (it excludes the meta title, meta description, FAQ schema, and QA JSON).
 - Exactly ONE H1. Max 60 chars. Must contain the primary keyword.
 - Meta Title: 50–58 chars, DIFFERENT wording from the H1, brand at the end.
 - Meta Description: 150–160 chars, active voice, primary keyword in the first half.
@@ -17,8 +33,8 @@ HARD RULES:
 - Include at least one comparison table OR step-by-step guide where the topic allows.
 - Never state hard statistics without citing the source inline (e.g. "(Source: NHS, 2024)").
 - Include E-E-A-T signals: author expertise, first-hand experience, credentials, citations.
-- Use <h2>/<h3> hierarchy. Never skip heading levels.
-- Output clean HTML (no markdown fences) unless another format is explicitly requested.
+- Use ##/### markdown heading hierarchy (the H1 is # at the top). Never skip heading levels.
+- Output clean GitHub-flavoured Markdown for the article body (#, ##, **, *, -, GFM tables). Do NOT mix raw HTML tags into the markdown — the suite converts to HTML for paste/CMS push automatically.
 - MANDATORY: Include at least 2 internal links from the brand's link pool below. Use descriptive anchor text, NEVER "click here" or "read more". If no link pool is provided, state "(No internal links available)" in a comment.
 - MANDATORY: Attribute the article to the brand's default author with their credentials in the opening or closing paragraph. If no author is set, skip this rule.
 - MANDATORY: When the topic allows, include at least one step-by-step guide OR numbered how-to section. This is a core differentiator vs AI-generated fluff.
@@ -66,6 +82,20 @@ BRAND CONTEXT:
 - Default author: ${client.author || ''} ${client.author_creds ? '(' + client.author_creds + ')' : ''}
 - Internal link pool:
 ${(client.internal_links || '').split('\n').filter(Boolean).map(l => '  - ' + l.trim()).join('\n')}
+`.trim() : '';
+
+  // Brand reference material — uploaded docs and/or a scan of the client's
+  // website (see ClientModal "Brand Documents & Reference"). This is the
+  // ground truth for how the brand actually sounds and what it actually
+  // sells, so the writer can stay genuinely on-brand instead of guessing.
+  // Capped so a large paste can't blow the context window.
+  const brandDocs = (client?.brand_docs || '').trim();
+  const brandDocsBlock = brandDocs ? `
+CLIENT BRAND REFERENCE MATERIAL (uploaded docs + website scan — write in line with this):
+"""
+${brandDocs.slice(0, 12000)}
+"""
+Use this material to match the brand's real voice, terminology, product/service names, positioning, and factual details. Prefer wording and framing consistent with it, and never contradict it. Only treat facts stated here (or in the research context) as true — do not invent details that aren't supported.
 `.trim() : '';
 
   // Content rules — always-enforced restrictions. These are hard constraints
@@ -117,33 +147,62 @@ RANKING-AWARE WRITING RULES:
 - Naturally weave in the related queries above throughout the body so the article captures long-tail variations the brand already has traction for.
 `.trim() : '';
 
-  return [CORE_RULES, brandBlock, rulesBlock, directionBlock, researchBlock, COMPLIANCE_RULES, QA_RULES, extra].filter(Boolean).join('\n\n');
+  return [CORE_RULES, brandBlock, brandDocsBlock, rulesBlock, directionBlock, researchBlock, COMPLIANCE_RULES, QA_RULES, extra].filter(Boolean).join('\n\n');
 }
 
 export const TAB_PROMPTS = {
-  'New Article': (topic, keyword, length) => `
+  'New Article': (topic, keyword, length) => {
+    // Clamp into the 1000–2000 house band so the article can never run to
+    // the 5000-word essays we used to see, regardless of the caller's value.
+    const target = clampLength(length);
+    const minWords = Math.max(MIN_WORDS, Math.round(target * 0.9));
+    const maxWords = Math.min(MAX_WORDS, Math.round(target * 1.15));
+    return `
 Write a complete SEO + AEO optimised article.
 
 Primary keyword: ${keyword}
 Topic / angle: ${topic}
-Target length: ${length || 1500} words
+
+LENGTH (HARD CONSTRAINT — do not exceed):
+- Article body MUST be between ${minWords} and ${maxWords} words. This is the body content only (everything between the H1 and the FAQ section).
+- Do NOT pad to hit the upper bound. Aim for ${target} words. If the topic is fully covered in fewer words, stop.
+- The FAQ, meta tags, AEO summary, and QA JSON are SEPARATE from the body word count.
+- Total response (body + FAQ + meta + QA JSON) MUST NOT exceed ${Math.round(maxWords * 1.5)} words.
 
 MANDATORY OUTPUT CHECKLIST (do not skip any):
-1. Full HTML article with proper heading hierarchy
-2. At least one comparison table OR step-by-step guide
+1. Article body in clean GitHub-flavoured Markdown — # for H1, ##/### for
+   subheadings, **bold**, *italic*, - for bullets, GFM tables with | pipes
+   and a separator row. Body length MUST be ${minWords}–${maxWords} words
+   (everything between the H1 and the FAQ section). Do NOT mix raw HTML
+   tags with markdown. The suite converts to HTML for paste/CMS push
+   automatically.
+2. At least one comparison table OR step-by-step guide (counted within the body word budget)
 3. At least one clear call-to-action (CTA) — match to audience intent
 4. Author attribution with credentials in opening or closing paragraph
 5. Meta Title (50-58 chars, brand at end)
 6. Meta Description (150-160 chars)
 7. AEO Summary Block (40-80 words, answer-first, right after H1)
-8. FAQ section (schema-ready, 5+ questions)
-9. QA JSON scoring block
+8. FAQ section (schema-ready, exactly 5 questions — do not exceed)
+9. QA JSON scoring block (\`\`\`json fenced)
 
-Return all items in this exact order.
-`.trim(),
+Return in this EXACT order so the suite can split sections cleanly:
+   **Meta Title:** …
+   **Meta Description:** …
+   # H1
+   **AEO Summary Block:** …
+   ## …  (rest of article body)
+   FAQ section
+   \`\`\`json (FAQ Schema JSON-LD) \`\`\`
+   \`\`\`json (QA scoring) \`\`\`
+
+Stop after the QA JSON scoring block.
+`.trim();
+  },
 
   'Rewrite & Expand': (existing, keyword, length) => `
-Rewrite and expand the following article. Preserve factual claims, tighten the language, apply ALL core + compliance rules, and expand to ~${length || 1800} words.
+Rewrite the following article. Preserve factual claims, tighten the language, and apply ALL core + compliance rules.
+
+LENGTH — STRICT: the rewritten body must land between ${MIN_WORDS} and ${MAX_WORDS} words (target ~${clampLength(length)}). NEVER exceed ${MAX_WORDS} words — if the original is longer, cut and tighten rather than preserving bulk.
 
 Primary keyword: ${keyword}
 
