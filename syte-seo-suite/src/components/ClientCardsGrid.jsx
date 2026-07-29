@@ -1,7 +1,25 @@
 import React, { useState } from 'react';
 import { sortByReadiness } from '../lib/clientReadiness.js';
 import { useClients } from '../store/useClients.js';
+import { upsertClient } from '../lib/supabase.js';
 import ClientModal from './ClientModal.jsx';
+
+// Maps the grid's `service` prop to the client flag that enables it and a
+// human label. Removing a client from a section just flips this flag to
+// false — the client stays in Clients → Master and every other service, and
+// the section can be re-enabled there at any time.
+const SERVICE_FLAG = {
+  content:   'does_content',
+  aeo:       'does_aeo',
+  reporting: 'does_reporting',
+  technical: 'does_technical'
+};
+const SERVICE_LABEL = {
+  content:   'Content Engine',
+  aeo:       'AEO',
+  reporting: 'Reports',
+  technical: 'Technical SEO'
+};
 
 // Grid of client readiness cards. Used in each module's Clients sub-tab.
 // Click a card → opens the full Edit modal so you can fill in the missing
@@ -22,7 +40,30 @@ const STATUS_STYLES = {
 
 export default function ClientCardsGrid({ service, accent, clients, onRun }) {
   const select = useClients(s => s.select);
+  const reload = useClients(s => s.load);
   const [editing, setEditing] = useState(null);
+  const [removingId, setRemovingId] = useState(null);
+
+  const serviceFlag = SERVICE_FLAG[service];
+  const serviceLabel = SERVICE_LABEL[service] || service;
+
+  async function handleRemove(client) {
+    if (!serviceFlag) return;
+    if (!confirm(
+      `Remove "${client.name}" from ${serviceLabel}?\n\n` +
+      `They'll stay in Clients → Master and every other service. ` +
+      `You can re-enable ${serviceLabel} for them there anytime.`
+    )) return;
+    setRemovingId(client.id);
+    try {
+      await upsertClient({ ...client, [serviceFlag]: false });
+      await reload();
+    } catch (e) {
+      alert('Could not remove client: ' + e.message);
+    } finally {
+      setRemovingId(null);
+    }
+  }
 
   const sorted = sortByReadiness(clients, service);
 
@@ -112,6 +153,25 @@ export default function ClientCardsGrid({ service, accent, clients, onRun }) {
                     }}
                   >
                     Run now
+                  </button>
+                </div>
+              )}
+
+              {serviceFlag && (
+                <div style={{ marginTop: 8 }}>
+                  <button
+                    onClick={e => { e.stopPropagation(); handleRemove(client); }}
+                    disabled={removingId === client.id}
+                    title={`Remove ${client.name} from ${serviceLabel}`}
+                    style={{
+                      padding: '5px 12px',
+                      fontSize: 11,
+                      borderColor: 'var(--border)',
+                      color: 'var(--red)',
+                      width: '100%'
+                    }}
+                  >
+                    {removingId === client.id ? 'Removing…' : `Remove from ${serviceLabel}`}
                   </button>
                 </div>
               )}
