@@ -8,6 +8,7 @@ import {
   loadContentHistory
 } from '../../lib/supabase.js';
 import { approvalsStatus, monthOptions } from '../../lib/pipelineStatus.js';
+import { allAssignees, clientAssignees, clientHasAssignee } from '../../lib/serviceAssignments.js';
 
 // Cross-module approvals matrix. Shows every client × every module for the
 // selected month. Refreshes monthly but keeps history via the month picker.
@@ -80,16 +81,13 @@ export default function Approvals() {
   const months = useMemo(() => monthOptions(), []);
   const monthLabel = months.find(m => m.value === month)?.label || month;
 
-  // Account managers present across all clients (for the filter dropdown).
-  const managers = useMemo(
-    () => [...new Set(clients.map(c => (c.account_manager || '').trim()).filter(Boolean))].sort(),
-    [clients]
-  );
+  // Everyone assigned across all clients / services (for the filter dropdown).
+  const managers = useMemo(() => allAssignees(clients), [clients]);
 
-  // Apply the account-manager filter before computing rows.
+  // Apply the person filter before computing rows.
   const scopedClients = useMemo(() => clients.filter(c => {
-    if (managerFilter === '__none__') return !(c.account_manager || '').trim();
-    if (managerFilter) return (c.account_manager || '').trim() === managerFilter;
+    if (managerFilter === '__none__') return clientAssignees(c).length === 0;
+    if (managerFilter) return clientHasAssignee(c, managerFilter);
     return true;
   }), [clients, managerFilter]);
 
@@ -128,8 +126,8 @@ export default function Approvals() {
           </div>
         </div>
         <div className="row" style={{ gap: 10, flexWrap: 'wrap' }}>
-          <select value={managerFilter} onChange={e => setManagerFilter(e.target.value)} style={{ width: 190 }} title="Filter by account manager">
-            <option value="">All account managers</option>
+          <select value={managerFilter} onChange={e => setManagerFilter(e.target.value)} style={{ width: 190 }} title="Filter by assigned person">
+            <option value="">All people</option>
             <option value="__none__">Unassigned</option>
             {managers.map(m => <option key={m} value={m}>{m}</option>)}
           </select>
@@ -178,9 +176,14 @@ export default function Approvals() {
                     <div className="muted" style={{ fontSize: 10 }}>
                       {client.url?.replace(/^https?:\/\//, '').slice(0, 30) || '—'}
                     </div>
-                    <div style={{ fontSize: 10, color: client.account_manager ? 'var(--text-muted)' : 'var(--text-dim)', marginTop: 1 }}>
-                      {client.account_manager ? '👤 ' + client.account_manager : 'Unassigned'}
-                    </div>
+                    {(() => {
+                      const people = clientAssignees(client);
+                      return (
+                        <div style={{ fontSize: 10, color: people.length ? 'var(--text-muted)' : 'var(--text-dim)', marginTop: 1 }}>
+                          {people.length ? '👤 ' + people.join(', ') : 'Unassigned'}
+                        </div>
+                      );
+                    })()}
                   </td>
                   {MODULES.map(m => (
                     <React.Fragment key={m.key}>

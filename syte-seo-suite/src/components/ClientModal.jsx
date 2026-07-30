@@ -8,6 +8,7 @@ import {
   parseCensus, intentCoverage, DEFAULT_CENSUS_TARGET
 } from '../modules/reports/aeoCensus.js';
 import { topQueriesByImpression } from '../modules/technical/gsc.js';
+import { SERVICE_META } from '../lib/serviceAssignments.js';
 
 // Brand voice presets — the dropdown contents. Picking Custom… reveals the
 // free text box so you can still type something bespoke.
@@ -365,12 +366,13 @@ export default function ClientModal({ initial, onClose }) {
           ))}
         </div>
 
-        {/* Account manager / owner — who runs this client internally. */}
+        {/* Default owner — the fallback person for any service without its own
+            assignee. Per-service assignees below override it. */}
         <div style={{ marginTop: 4 }}>
           <label>
-            Account Manager{' '}
+            Default Owner{' '}
             <span className="muted" style={{ textTransform: 'none', letterSpacing: 0, fontSize: 11 }}>
-              — the person responsible for this client
+              — fallback for any service without a specific person
             </span>
           </label>
           <input
@@ -379,6 +381,36 @@ export default function ClientModal({ initial, onClose }) {
             onChange={e => update('account_manager', e.target.value)}
             placeholder="e.g. Michael H"
           />
+        </div>
+
+        {/* Per-service assignees — several people often work the same client. */}
+        <div style={{ marginTop: 12 }}>
+          <div className="muted" style={{ fontSize: 11, marginBottom: 8 }}>
+            Assign a person per service. Leave blank to use the default owner.
+          </div>
+          <div className="grid-2">
+            {SERVICE_META.map(s => {
+              const off = f[s.flag] === false;
+              return (
+                <div key={s.mgr}>
+                  <label style={{ color: s.color }}>
+                    {s.label}
+                    {off && (
+                      <span className="muted" style={{ textTransform: 'none', letterSpacing: 0, fontSize: 10 }}>
+                        {' '}— not subscribed
+                      </span>
+                    )}
+                  </label>
+                  <input
+                    type="text"
+                    value={f[s.mgr] || ''}
+                    onChange={e => update(s.mgr, e.target.value)}
+                    placeholder={(f.account_manager || '').trim() || 'e.g. Michael H'}
+                  />
+                </div>
+              );
+            })}
+          </div>
         </div>
 
         {/* Brand & Content */}

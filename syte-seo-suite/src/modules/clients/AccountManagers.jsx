@@ -2,12 +2,19 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { useClients } from '../../store/useClients.js';
 import { listAllImplementations } from '../../lib/supabase.js';
 import { approvalsStatus } from '../../lib/pipelineStatus.js';
+import { SERVICE_META, serviceEnabled, serviceAssignee } from '../../lib/serviceAssignments.js';
 
-// Account Managers report — groups every client by its account manager and
-// shows, per person: how many clients they own, the service mix, and how many
-// are fully signed off this month. Mirrors the completion logic in Approvals.
+// Account Managers report — groups clients by the people assigned to them.
+// People are now assigned per service, so one client can appear under several
+// people, each responsible for a different service. Per person we show: how
+// many clients they touch, which services, and how many of *their* services
+// are signed off this month. Mirrors the completion logic in Approvals.
 
 const UNASSIGNED = 'Unassigned';
+
+// Modules that have a tracked completion status. 'reporting' has no status in
+// approvalsStatus, so it's shown as a service but doesn't gate completion.
+const TRACKED = ['content', 'technical', 'aeo'];
 
 function isModuleDone(client, status, mod) {
   const flagKey = 'does_' + mod;
@@ -53,25 +60,43 @@ export default function AccountManagers() {
     try { return JSON.parse(localStorage.getItem('syte-suite-aeo-results') || '{}'); } catch { return {}; }
   }, []);
 
-  // Build one group per account manager.
+  // Build one group per person. A client is added to a person's group once,
+  // carrying the set of services that person is responsible for on it.
   const groups = useMemo(() => {
-    const byManager = {};
+    const byPerson = {};
     for (const c of clients) {
-      const key = (c.account_manager || '').trim() || UNASSIGNED;
-      if (!byManager[key]) byManager[key] = { manager: key, clients: [] };
       const status = approvalsStatus(c, implementations, tasks, aeoResults, month);
-      const allDone = ['content', 'technical', 'aeo'].every(mod => isModuleDone(c, status, mod));
-      byManager[key].clients.push({ client: c, allDone });
+      // person -> Set(service) for this client
+      const perPerson = {};
+      for (const s of SERVICE_META) {
+        if (!serviceEnabled(c, s.flag)) continue;
+        const person = serviceAssignee(c, s.mgr) || UNASSIGNED;
+        (perPerson[person] ||= new Set()).add(s.service);
+      }
+      // Client with no enabled services still surfaces under its owner.
+      if (Object.keys(perPerson).length === 0) {
+        const owner = (c.account_manager || '').trim() || UNASSIGNED;
+        perPerson[owner] = new Set();
+      }
+      for (const [person, services] of Object.entries(perPerson)) {
+        const g = (byPerson[person] ||= { manager: person, clients: [] });
+        // Done = every tracked service this person owns here is verified.
+        const trackedOwned = [...services].filter(s => TRACKED.includes(s));
+        const allDone = trackedOwned.every(mod => isModuleDone(c, status, mod));
+        g.clients.push({ client: c, services, allDone });
+      }
     }
-    const list = Object.values(byManager).map(g => ({
+    const has = (g, svc) => g.clients.filter(x => x.services.has(svc)).length;
+    const list = Object.values(byPerson).map(g => ({
       ...g,
       total: g.clients.length,
       done: g.clients.filter(x => x.allDone).length,
-      tech:    g.clients.filter(x => x.client.does_technical !== false).length,
-      content: g.clients.filter(x => x.client.does_content !== false).length,
-      aeo:     g.clients.filter(x => x.client.does_aeo !== false).length
+      tech:    has(g, 'technical'),
+      content: has(g, 'content'),
+      aeo:     has(g, 'aeo'),
+      reports: has(g, 'reporting')
     }));
-    // Named managers first (alphabetical), Unassigned last.
+    // Named people first (alphabetical), Unassigned last.
     return list.sort((a, b) => {
       if (a.manager === UNASSIGNED) return 1;
       if (b.manager === UNASSIGNED) return -1;
@@ -90,7 +115,7 @@ export default function AccountManagers() {
         <div>
           <h2 style={{ margin: 0 }}>Account Managers</h2>
           <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
-            Clients grouped by owner · completion shown for {monthLabel}
+            Clients grouped by assigned person · a client can appear under several people · completion shown for {monthLabel}
           </div>
         </div>
         <select value={month} onChange={e => setMonth(e.target.value)} style={{ width: 200 }}>
@@ -133,7 +158,7 @@ export default function AccountManagers() {
               </div>
 
               <div className="muted" style={{ fontSize: 11, marginTop: 6 }}>
-                Tech {g.tech} · Content {g.content} · AEO {g.aeo}
+                Tech {g.tech} · Content {g.content} · AEO {g.aeo} · Reports {g.reports}
               </div>
 
               {/* Completion bar for the selected month */}
@@ -159,14 +184,26 @@ export default function AccountManagers() {
                   {g.clients
                     .slice()
                     .sort((a, b) => a.client.name.localeCompare(b.client.name))
-                    .map(({ client, allDone }) => (
-                      <div key={client.id} className="row" style={{ justifyContent: 'space-between', padding: '4px 0', fontSize: 12 }}>
-                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{client.name}</span>
-                        <span style={{ color: allDone ? 'var(--green)' : 'var(--text-dim)', flexShrink: 0, marginLeft: 8 }}>
-                          {allDone ? '✓ done' : '— pending'}
-                        </span>
-                      </div>
-                    ))}
+                    .map(({ client, services, allDone }) => {
+                      const svcLabels = SERVICE_META
+                        .filter(s => services.has(s.service))
+                        .map(s => s.label);
+                      return (
+                        <div key={client.id} className="row" style={{ justifyContent: 'space-between', padding: '4px 0', fontSize: 12 }}>
+                          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>
+                            {client.name}
+                            {svcLabels.length > 0 && (
+                              <span className="muted" style={{ fontSize: 10, marginLeft: 6 }}>
+                                {svcLabels.join(' · ')}
+                              </span>
+                            )}
+                          </span>
+                          <span style={{ color: allDone ? 'var(--green)' : 'var(--text-dim)', flexShrink: 0, marginLeft: 8 }}>
+                            {allDone ? '✓ done' : '— pending'}
+                          </span>
+                        </div>
+                      );
+                    })}
                 </div>
               )}
             </div>

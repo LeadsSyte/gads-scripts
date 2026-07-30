@@ -54,8 +54,16 @@ alter table syte_suite_clients add column if not exists looker_url text;
 alter table syte_suite_clients add column if not exists client_type text;  -- 'ecommerce' | 'lead_gen'
 -- Brand reference material for the Content Engine: uploaded docs + website scan.
 alter table syte_suite_clients add column if not exists brand_docs text;
--- Account manager / owner responsible for the client.
+-- Account manager / owner responsible for the client. Kept as the default
+-- owner: a fallback used for any service that has no specific person assigned.
 alter table syte_suite_clients add column if not exists account_manager text;
+-- Per-service assignees. Several people often work the same client (one on
+-- Technical, another on Content, etc.), so each service carries its own owner.
+-- When blank, that service falls back to account_manager above.
+alter table syte_suite_clients add column if not exists manager_technical text;
+alter table syte_suite_clients add column if not exists manager_content text;
+alter table syte_suite_clients add column if not exists manager_aeo text;
+alter table syte_suite_clients add column if not exists manager_reporting text;
 -- The Google account email that has access to this client's GA4 + GSC
 -- properties. Captured when the operator picks properties via the Google
 -- Connections picker. Used as login_hint on subsequent visits so the right
