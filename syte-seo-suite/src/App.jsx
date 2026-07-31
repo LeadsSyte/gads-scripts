@@ -16,6 +16,7 @@ import { useClients } from './store/useClients.js';
 import { getStoredApiKey } from './lib/auth.js';
 import { needsMigration, countLegacyClients, runMigration } from './lib/migration.js';
 import { hasSupabase } from './lib/supabase.js';
+import { hydrateSettingsFromRemote } from './lib/settings.js';
 import { backgroundSilentRefresh, getToken } from './modules/technical/googleAuth.js';
 
 const ACCENTS = {
@@ -86,6 +87,9 @@ export default function App() {
     if (!unlocked) return;
     (async () => {
       await load();
+      // Pull the shared engine API keys into this device's local cache so a
+      // fresh browser / cleared cache doesn't silently run AEO on Claude only.
+      hydrateSettingsFromRemote().catch(() => {});
       const needed = needsMigration();
       setMigration({ checked: true, needed, count: needed ? countLegacyClients() : 0 });
     })();

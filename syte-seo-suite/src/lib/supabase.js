@@ -1,7 +1,12 @@
 import { createClient } from '@supabase/supabase-js';
 
-const url = import.meta.env.VITE_SUPABASE_URL;
-const key = import.meta.env.VITE_SUPABASE_ANON_KEY;
+// `import.meta.env` is injected by Vite in the browser build but is undefined
+// under plain Node (the test runner), where this module is now reachable via
+// settings.js → supabase.js. Fall back to an empty object so importing the
+// module never throws outside Vite; hasSupabase is simply false there.
+const env = import.meta.env || {};
+const url = env.VITE_SUPABASE_URL;
+const key = env.VITE_SUPABASE_ANON_KEY;
 
 export const hasSupabase = !!(url && key && !url.includes('[project]'));
 
@@ -141,6 +146,54 @@ export async function logProgress(entry) {
   if (supabase) {
     await supabase.from('syte_suite_progress').insert(entry);
   }
+}
+
+// ── Suite-wide settings sync (syte_suite_settings) ─────────────────────────
+// One shared row (id='global') holding suite-wide settings — currently the
+// external AI-engine API keys. Lets the keys follow the operator to any
+// device instead of living only in per-device localStorage (which is why the
+// AEO probe silently dropped to Claude-only when a browser had no keys).
+const SETTINGS_ROW_ID = 'global';
+
+// Returns the stored settings object, or null when Supabase isn't configured
+// or the row doesn't exist yet. Never throws — a sync failure must not break
+// the local-first settings flow.
+export async function loadRemoteSettings() {
+  if (!supabase) return null;
+  try {
+    const { data, error } = await supabase
+      .from('syte_suite_settings')
+      .select('data')
+      .eq('id', SETTINGS_ROW_ID)
+      .maybeSingle();
+    if (error) return null;
+    return data?.data || null;
+  } catch { return null; }
+}
+
+// Merge `patch` into the shared settings row (read-modify-write so we never
+// clobber keys this device didn't touch). Fire-and-forget from the caller.
+export async function saveRemoteSettings(patch) {
+  if (!supabase || !patch || typeof patch !== 'object') return;
+  // Only push non-empty values. The settings modal saves all fields at once
+  // (including blanks a device hasn't filled in); without this filter a device
+  // that opens settings before remote hydration lands could overwrite a good
+  // remote key with an empty string. Biasing toward never losing a key means
+  // an intentional clear won't propagate — an acceptable trade for a
+  // don't-lose-my-keys sync.
+  const clean = {};
+  for (const [k, v] of Object.entries(patch)) {
+    if (typeof v === 'string' ? v.trim() : v) clean[k] = v;
+  }
+  if (!Object.keys(clean).length) return;
+  try {
+    const existing = (await loadRemoteSettings()) || {};
+    const merged = { ...existing, ...clean };
+    const { error } = await supabase
+      .from('syte_suite_settings')
+      .upsert({ id: SETTINGS_ROW_ID, data: merged, updated_at: new Date().toISOString() }, { onConflict: 'id' });
+    if (error) throw error;
+  } catch { /* best-effort — localStorage remains the source of truth locally */ }
 }
 
 // Connection diagnostic — pings the clients table with a HEAD count and
