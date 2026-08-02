@@ -371,85 +371,201 @@ export async function getRawResponse(hash) {
   } catch { return null; }
 }
 
+const SENT_LOG_KEY = LS_PREFIX + 'report_log';
+
+// Sent-reports list columns. The heavy `report_pdf` (a base64 proof PDF, only
+// present on manually-logged sends) is deliberately EXCLUDED — pulling it for
+// every row would bloat History. It's fetched on demand via getSentReportPdf.
+const SENT_LIST_COLS_FULL = 'id, client_id, month, sent_date, qa_score, aeo_snapshot_score, email_subject, created_at, manual, pdf_filename, notes';
+// Base columns for projects that haven't migrated the proof columns in yet.
+const SENT_LIST_COLS_BASE = 'id, client_id, month, sent_date, qa_score, aeo_snapshot_score, email_subject, created_at';
+
+// Append a sent-report row to the localStorage mirror. `report_pdf` is dropped
+// unless explicitly kept — a base64 PDF would quickly blow the localStorage
+// quota. Returns the stored (lightweight) row.
+function appendSentLocal(row, { keepPdf = false } = {}) {
+  const { report_pdf, ...rest } = row;
+  const saved = {
+    id: row.id || crypto.randomUUID(),
+    ...rest,
+    ...(keepPdf && report_pdf ? { report_pdf } : {}),
+    sent_date: row.sent_date || new Date().toISOString(),
+    created_at: row.created_at || new Date().toISOString()
+  };
+  try {
+    const list = JSON.parse(localStorage.getItem(SENT_LOG_KEY) || '[]');
+    list.push(saved);
+    localStorage.setItem(SENT_LOG_KEY, JSON.stringify(list));
+  } catch {
+    // Quota exceeded (usually a large PDF with no Supabase configured). Retry
+    // once without the PDF so at least the send is recorded locally.
+    if (keepPdf) return appendSentLocal(row, { keepPdf: false });
+  }
+  return saved;
+}
+
 export async function logReportSent(row) {
   assertClientId(row?.client_id, 'logReportSent');
   if (supabase) {
-    const { data, error } = await supabase
-      .from('syte_suite_report_log')
-      .insert(row)
-      .select()
-      .single();
-    if (error) throw error;
-    return data;
+    try {
+      const { data, error } = await supabase
+        .from('syte_suite_report_log')
+        .insert(row)
+        .select()
+        .single();
+      if (error) throw error;
+      // Mirror a lightweight copy locally (no PDF — the DB holds it) so the
+      // Sent bucket and History still resolve offline. Keyed by the DB id.
+      appendSentLocal({ ...row, id: data.id });
+      return data;
+    } catch (e) {
+      console.warn('[reports] logReportSent DB write failed, using localStorage:', e.message);
+    }
   }
-  const list = JSON.parse(localStorage.getItem(LS_PREFIX + 'report_log') || '[]');
-  row.id = crypto.randomUUID();
-  row.sent_date = row.sent_date || new Date().toISOString();
-  row.created_at = new Date().toISOString();
-  list.push(row);
-  localStorage.setItem(LS_PREFIX + 'report_log', JSON.stringify(list));
-  return row;
+  // No Supabase, or the DB write failed — keep the full record (incl. PDF)
+  // locally so the proof isn't lost.
+  return appendSentLocal(row, { keepPdf: true });
 }
 
 export async function listSentReports(clientId) {
+  let dbRows = [];
   if (supabase) {
-    let q = supabase
-      .from('syte_suite_report_log')
-      .select('*')
-      .order('sent_date', { ascending: false });
-    if (clientId) q = q.eq('client_id', clientId);
-    const { data, error } = await q;
-    if (error) throw error;
-    return data || [];
+    try {
+      const run = (cols) => {
+        let q = supabase
+          .from('syte_suite_report_log')
+          .select(cols)
+          .order('sent_date', { ascending: false });
+        if (clientId) q = q.eq('client_id', clientId);
+        return q;
+      };
+      let { data, error } = await run(SENT_LIST_COLS_FULL);
+      if (error) {
+        // Proof columns not migrated yet — retry with the base column set.
+        ({ data, error } = await run(SENT_LIST_COLS_BASE));
+        if (error) throw error;
+      }
+      dbRows = data || [];
+    } catch (e) {
+      console.warn('[reports] listSentReports DB read failed, using localStorage:', e.message);
+    }
   }
-  const list = JSON.parse(localStorage.getItem(LS_PREFIX + 'report_log') || '[]');
-  return clientId ? list.filter(r => r.client_id === clientId) : list;
+  // Merge the localStorage mirror (deduped by id, DB wins). Strip any PDF that
+  // lives in a local row so the list stays lean.
+  let localRows = [];
+  try { localRows = JSON.parse(localStorage.getItem(SENT_LOG_KEY) || '[]'); } catch {}
+  if (clientId) localRows = localRows.filter(r => r.client_id === clientId);
+  const dbIds = new Set(dbRows.map(r => r.id));
+  const merged = [
+    ...dbRows,
+    ...localRows.filter(r => !dbIds.has(r.id)).map(({ report_pdf, ...r }) => r)
+  ].sort((a, b) => (b.sent_date || '').localeCompare(a.sent_date || ''));
+  return merged;
+}
+
+// Fetch the uploaded proof PDF (base64 data URL) for a single sent report, on
+// demand. Kept out of listSentReports so the heavy blob never bloats History.
+export async function getSentReportPdf(id) {
+  if (!id) return null;
+  if (supabase) {
+    try {
+      const { data, error } = await supabase
+        .from('syte_suite_report_log')
+        .select('report_pdf, pdf_filename')
+        .eq('id', id)
+        .limit(1)
+        .maybeSingle();
+      if (error) throw error;
+      if (data?.report_pdf) return data;
+    } catch (e) {
+      console.warn('[reports] getSentReportPdf DB read failed, using localStorage:', e.message);
+    }
+  }
+  try {
+    const list = JSON.parse(localStorage.getItem(SENT_LOG_KEY) || '[]');
+    const found = list.find(r => r.id === id);
+    return found?.report_pdf ? { report_pdf: found.report_pdf, pdf_filename: found.pdf_filename } : null;
+  } catch { return null; }
 }
 
 // Generation tracking — records when a report microsite has been built
 // (regardless of whether it has been sent yet). Used by the Reports module
 // to surface "Generated" cards distinct from "Sent" cards.
+const GEN_LOG_KEY = LS_PREFIX + 'report_generated_log';
+
+// Status-only columns that exist on the base table even when the heavy
+// content columns (microsite_json, report_data, qa, …) haven't been migrated
+// in yet (supabase-schema-persistence.sql). Used as a fallback write so the
+// "Generated" flag still reaches the shared DB when the full payload write
+// fails on a project that only ran supabase-schema-reports.sql.
+const GEN_LOG_STATUS_COLS = ['client_id', 'month', 'generated_at', 'qa_score', 'email_subject', 'report_type'];
+
+function pickKeys(obj, keys) {
+  const out = {};
+  for (const k of keys) if (obj[k] !== undefined) out[k] = obj[k];
+  return out;
+}
+
+// Upsert the generated-log row into the localStorage mirror by (client, month).
+function upsertGeneratedLocal(payload) {
+  try {
+    const list = JSON.parse(localStorage.getItem(GEN_LOG_KEY) || '[]');
+    const idx = list.findIndex(r => r.client_id === payload.client_id && r.month === payload.month);
+    if (idx >= 0) list[idx] = { ...list[idx], ...payload };
+    else list.push({ id: crypto.randomUUID(), ...payload });
+    localStorage.setItem(GEN_LOG_KEY, JSON.stringify(list));
+  } catch {}
+  return payload;
+}
+
+async function dbUpsertGenerated(payload) {
+  const { data: existing } = await supabase
+    .from('syte_suite_report_generated_log')
+    .select('id')
+    .eq('client_id', payload.client_id)
+    .eq('month', payload.month)
+    .limit(1);
+  if (existing?.length > 0) {
+    const { data, error } = await supabase
+      .from('syte_suite_report_generated_log')
+      .update(payload).eq('id', existing[0].id).select().single();
+    if (error) throw error;
+    return data;
+  }
+  const { data, error } = await supabase
+    .from('syte_suite_report_generated_log')
+    .insert(payload).select().single();
+  if (error) throw error;
+  return data;
+}
+
 export async function logReportGenerated(row) {
   const payload = { ...row, generated_at: row.generated_at || new Date().toISOString() };
+  // Always mirror to localStorage FIRST so the just-generated status survives
+  // a refresh even if every DB write below fails — e.g. the content columns
+  // were never migrated in, so the full insert errors with "column … does not
+  // exist". listGeneratedReports / getGeneratedReport merge this back in.
+  upsertGeneratedLocal(payload);
   if (supabase) {
     try {
-      const { data: existing } = await supabase
-        .from('syte_suite_report_generated_log')
-        .select('id')
-        .eq('client_id', payload.client_id)
-        .eq('month', payload.month)
-        .limit(1);
-      if (existing?.length > 0) {
-        const { data, error } = await supabase
-          .from('syte_suite_report_generated_log')
-          .update(payload)
-          .eq('id', existing[0].id)
-          .select()
-          .single();
-        if (error) throw error;
-        return data;
-      }
-      const { data, error } = await supabase
-        .from('syte_suite_report_generated_log')
-        .insert(payload)
-        .select()
-        .single();
-      if (error) throw error;
-      return data;
+      return await dbUpsertGenerated(payload);
     } catch (e) {
-      // Fall through to localStorage if the table doesn't exist yet.
-      console.warn('[reports] logReportGenerated DB write failed, using localStorage:', e.message);
+      console.warn('[reports] logReportGenerated full write failed, retrying with status-only columns:', e.message);
+      // The heavy content columns may not exist on this project. Retry with
+      // just the status columns so the "Generated" card still shows on every
+      // device (the full content stays available from the local mirror).
+      try {
+        return await dbUpsertGenerated(pickKeys(payload, GEN_LOG_STATUS_COLS));
+      } catch (e2) {
+        console.warn('[reports] logReportGenerated status-only write also failed, using localStorage only:', e2.message);
+      }
     }
   }
-  const list = JSON.parse(localStorage.getItem(LS_PREFIX + 'report_generated_log') || '[]');
-  const idx = list.findIndex(r => r.client_id === payload.client_id && r.month === payload.month);
-  if (idx >= 0) list[idx] = { ...list[idx], ...payload };
-  else list.push({ id: crypto.randomUUID(), ...payload });
-  localStorage.setItem(LS_PREFIX + 'report_generated_log', JSON.stringify(list));
   return payload;
 }
 
 export async function listGeneratedReports(clientId) {
+  let dbRows = [];
   if (supabase) {
     try {
       let q = supabase
@@ -459,13 +575,20 @@ export async function listGeneratedReports(clientId) {
       if (clientId) q = q.eq('client_id', clientId);
       const { data, error } = await q;
       if (error) throw error;
-      return data || [];
+      dbRows = data || [];
     } catch {
-      // Table may not exist — fall back to localStorage.
+      // Table may not exist — merge falls back to localStorage only.
     }
   }
-  const list = JSON.parse(localStorage.getItem(LS_PREFIX + 'report_generated_log') || '[]');
-  return clientId ? list.filter(r => r.client_id === clientId) : list;
+  // Merge the localStorage mirror so a row that only made it to the local
+  // cache (DB write failed / offline) still surfaces. The DB wins on conflict,
+  // keyed by (client_id, month).
+  let localRows = [];
+  try { localRows = JSON.parse(localStorage.getItem(GEN_LOG_KEY) || '[]'); } catch {}
+  if (clientId) localRows = localRows.filter(r => r.client_id === clientId);
+  const key = r => (r.client_id || '') + '|' + (r.month || '');
+  const dbKeys = new Set(dbRows.map(key));
+  return [...dbRows, ...localRows.filter(r => !dbKeys.has(key(r)))];
 }
 
 // Fetch the full saved content (email body + microsite JSON + QA + probe +
@@ -483,12 +606,15 @@ export async function getGeneratedReport(clientId, month) {
         .limit(1)
         .maybeSingle();
       if (error) throw error;
-      return data || null;
+      // Only return the DB row when there IS one. A missing row (data null)
+      // falls through to the local mirror below, so a report whose full write
+      // failed and only landed in localStorage still rehydrates review mode.
+      if (data) return data;
     } catch (e) {
       console.warn('[reports] getGeneratedReport DB read failed, using localStorage:', e.message);
     }
   }
-  const list = JSON.parse(localStorage.getItem(LS_PREFIX + 'report_generated_log') || '[]');
+  const list = JSON.parse(localStorage.getItem(GEN_LOG_KEY) || '[]');
   return list.find(r => r.client_id === clientId && r.month === month) || null;
 }
 

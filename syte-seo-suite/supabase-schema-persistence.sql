@@ -171,6 +171,21 @@ alter table syte_suite_report_generated_log add column if not exists report_data
 -- in-place visual edits made before sending survive the round-trip.
 alter table syte_suite_report_generated_log add column if not exists microsite_html_override text;
 
+-- 7b. Sent-report proof of email. Lets an operator record that a client was
+-- emailed their report — even for a report that was never built in the tool —
+-- by attaching a PDF of what was sent. The PDF is stored as a base64 data URL
+-- so it's captured against the client's permanent record and viewable later.
+--   manual        — true when the send was logged via "Mark emailed" (upload),
+--                   as opposed to the in-tool Approve & Mark Sent flow.
+--   report_pdf    — base64 data URL of the uploaded proof PDF (fetched on
+--                   demand; never pulled in the sent-reports list query).
+--   pdf_filename  — original filename, shown in History / on the View button.
+--   notes         — optional free-text note about the send.
+alter table syte_suite_report_log add column if not exists manual       boolean default false;
+alter table syte_suite_report_log add column if not exists report_pdf   text;
+alter table syte_suite_report_log add column if not exists pdf_filename text;
+alter table syte_suite_report_log add column if not exists notes        text;
+
 -- 8. Rejected optimizations — operator-driven blocklist so a task or AEO
 -- snippet that's been explicitly rejected doesn't reappear next month
 -- when the audit / sitemap re-discovers the same underlying issue.
