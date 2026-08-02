@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useClients } from '../../store/useClients.js';
 import { claudeStream, extractJSON } from '../../lib/anthropic.js';
-import { buildSystemPrompt, TAB_PROMPTS } from './prompts.js';
+import { buildSystemPrompt, TAB_PROMPTS, clampLength, MIN_WORDS, MAX_WORDS } from './prompts.js';
 import PushToCmsButton from '../../components/PushToCmsButton.jsx';
 import ClientCardsGrid from '../../components/ClientCardsGrid.jsx';
 import TopicResearch from './TopicResearch.jsx';
@@ -184,7 +184,7 @@ function ParsedOutput({ output, topic, pushItem, exportTxt, exportDocx, systemPr
           { role: 'assistant', content: output },
           { role: 'user', content: `REVISION REQUEST: ${revision.trim()}\n\nApply this revision to the article above. Return the COMPLETE revised article (not just the changed section) with all metadata, schema, and QA JSON intact. Do not explain what you changed — just output the revised version.` }
         ],
-        max_tokens: 8000,
+        max_tokens: 5000, // caps output at the 1000–2000 word house band
         temperature: 0.5,
         onDelta: (t) => { buf += t; }
       });
@@ -399,7 +399,7 @@ export default function ContentEngine({ sub, setSub }) {
       await claudeStream({
         system,
         messages: [{ role: 'user', content: userPrompt }],
-        max_tokens: 8000,
+        max_tokens: 5000, // caps output at the 1000–2000 word house band
         temperature: 0.7,
         onDelta: (t) => {
           buf += t;
@@ -452,7 +452,7 @@ export default function ContentEngine({ sub, setSub }) {
     setQuickOutput(row.output || '');
     setQuickTopic(row.topic || '');
     setQuickKeyword(row.keyword || '');
-    setQuickLength(row.length || 1500);
+    setQuickLength(clampLength(row.length));
     setQuickClientId(row.client_id || '');
     setQuickErr('');
   }
@@ -529,7 +529,7 @@ export default function ContentEngine({ sub, setSub }) {
       await claudeStream({
         system,
         messages: [{ role: 'user', content: userPrompt }],
-        max_tokens: 8000,
+        max_tokens: 5000, // caps output at the 1000–2000 word house band
         temperature: 0.7,
         onDelta: (t) => { buf += t; setOutput(buf); }
       });
@@ -586,7 +586,7 @@ export default function ContentEngine({ sub, setSub }) {
             // reference it during generation.
             setTopic(opp.topic_title || '');
             setKeyword(opp.primary_keyword || '');
-            setLength(opp.recommended_length || 1500);
+            setLength(clampLength(opp.recommended_length));
             if (opp.target_page && opp.target_page !== 'NEW') {
               setUrl(opp.target_page);
             }
@@ -793,14 +793,14 @@ export default function ContentEngine({ sub, setSub }) {
                   />
                 </div>
                 <div style={{ width: 140 }}>
-                  <label>Length (words)</label>
+                  <label>Length (words, {MIN_WORDS}–{MAX_WORDS})</label>
                   <input
                     type="number"
-                    min={400}
-                    max={4000}
+                    min={MIN_WORDS}
+                    max={MAX_WORDS}
                     step={100}
                     value={quickLength}
-                    onChange={e => setQuickLength(parseInt(e.target.value) || 1500)}
+                    onChange={e => setQuickLength(clampLength(e.target.value))}
                     disabled={quickBusy}
                     style={{ width: '100%' }}
                   />
@@ -933,12 +933,12 @@ export default function ContentEngine({ sub, setSub }) {
             <div style={{ gridColumn: 'span 2' }}><label>Page URL</label><input value={url} onChange={e => setUrl(e.target.value)} /></div>
           )}
           {tab === 'New Article' && (
-            <div><label>Target length (words)</label><input type="number" value={length} onChange={e => setLength(parseInt(e.target.value) || 1500)} /></div>
+            <div><label>Target length (words, {MIN_WORDS}–{MAX_WORDS})</label><input type="number" min={MIN_WORDS} max={MAX_WORDS} value={length} onChange={e => setLength(clampLength(e.target.value))} /></div>
           )}
           {tab === 'Rewrite & Expand' && (
             <>
               <div><label>Primary Keyword</label><input value={keyword} onChange={e => setKeyword(e.target.value)} /></div>
-              <div><label>Target length (words)</label><input type="number" value={length} onChange={e => setLength(parseInt(e.target.value) || 1800)} /></div>
+              <div><label>Target length (words, {MIN_WORDS}–{MAX_WORDS})</label><input type="number" min={MIN_WORDS} max={MAX_WORDS} value={length} onChange={e => setLength(clampLength(e.target.value))} /></div>
               <div style={{ gridColumn: 'span 2' }}>
                 <label>Existing Article</label>
                 <textarea value={existing} onChange={e => setExisting(e.target.value)} rows={8} />

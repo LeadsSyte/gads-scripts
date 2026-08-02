@@ -5,6 +5,9 @@ import { syncWebceoClients } from '../technical/webceo.js';
 import ClientModal from '../../components/ClientModal.jsx';
 import ImportClientsModal from '../../components/ImportClientsModal.jsx';
 import { serverAuthEnabled, listConnectedAccounts } from '../../lib/googleServerAuth.js';
+import {
+  SERVICE_META, serviceAssignee, clientAssignees, clientHasAssignee, allAssignees
+} from '../../lib/serviceAssignments.js';
 
 // Master Clients view — the single source-of-truth UI for managing every
 // client across every module. Service flags are toggled inline; changes
@@ -12,13 +15,12 @@ import { serverAuthEnabled, listConnectedAccounts } from '../../lib/googleServer
 //
 // Other modules still have per-module Clients sub-tabs but those are
 // read-only filtered views. This one is editable.
+//
+// People are assigned per service (not per whole account) — each enabled
+// service cell carries its own assignee, which falls back to the row's
+// default owner (account_manager) when left blank.
 
-const SERVICES = [
-  { key: 'does_technical', label: 'Tech',    color: 'var(--mod-technical)' },
-  { key: 'does_content',   label: 'Content', color: 'var(--mod-content)' },
-  { key: 'does_aeo',       label: 'AEO',     color: 'var(--mod-aeo)' },
-  { key: 'does_reporting', label: 'Reports', color: 'var(--mod-reports)' }
-];
+const SERVICES = SERVICE_META;
 
 function ServiceToggle({ on, color, onChange, disabled }) {
   // Inline checkbox-style toggle. Compact so the table fits many columns.
@@ -41,12 +43,72 @@ function ServiceToggle({ on, color, onChange, disabled }) {
   );
 }
 
+// Inline, editable text cell for a person's name. Commits on blur / Enter
+// only when the value actually changed, so we don't spam Supabase on every
+// focus. Used both for the default owner and for per-service assignees.
+function PersonInput({ value, disabled, onSave, placeholder, width = 130, title, accent }) {
+  const [val, setVal] = useState(value || '');
+  useEffect(() => { setVal(value || ''); }, [value]);
+
+  function commit() {
+    const trimmed = val.trim();
+    if (trimmed === (value || '').trim()) return;
+    onSave(trimmed);
+  }
+
+  return (
+    <input
+      list="am-suggestions"
+      value={val}
+      onChange={e => setVal(e.target.value)}
+      onBlur={commit}
+      onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+      disabled={disabled}
+      placeholder={placeholder}
+      title={title}
+      style={{
+        width, padding: '4px 6px', fontSize: 11, textAlign: 'center',
+        background: 'var(--surface)',
+        border: '1px solid ' + (accent || 'var(--border)'),
+        borderRadius: 5, color: 'var(--text)'
+      }}
+    />
+  );
+}
+
+// One service column cell: the on/off toggle plus, when enabled, the person
+// assigned to that service on this client. Blank inherits the default owner
+// (shown as the input's placeholder).
+function ServiceCell({ client, meta, disabled, onToggle, onAssign }) {
+  const on = client[meta.flag] !== false;
+  const owner = (client.account_manager || '').trim();
+  return (
+    <td style={{ textAlign: 'center', verticalAlign: 'top', padding: '8px 6px' }}>
+      <ServiceToggle on={on} color={meta.color} disabled={disabled} onChange={onToggle} />
+      {on && (
+        <div style={{ marginTop: 6 }}>
+          <PersonInput
+            value={client[meta.mgr] || ''}
+            disabled={disabled}
+            onSave={onAssign}
+            placeholder={owner || '—'}
+            width={92}
+            accent={client[meta.mgr] ? meta.color : undefined}
+            title={`Person assigned to ${meta.label}${owner ? ` (blank = ${owner})` : ''}`}
+          />
+        </div>
+      )}
+    </td>
+  );
+}
+
 export default function ClientsMaster() {
   const clients = useClients(s => s.clients);
   const reload = useClients(s => s.load);
   const [editing, setEditing] = useState(null);     // client being opened in modal
   const [importing, setImporting] = useState(false);
   const [filter, setFilter] = useState('');
+  const [managerFilter, setManagerFilter] = useState(''); // '' = all, '__none__' = unassigned
   const [busy, setBusy] = useState(false);
   const [rowBusy, setRowBusy] = useState(null);     // id of row currently saving
   const [msg, setMsg] = useState('');
@@ -100,15 +162,26 @@ export default function ClientsMaster() {
     setHealth(r);
   }
 
+  // Unique, sorted list of everyone assigned across any service or as owner.
+  const managers = useMemo(() => allAssignees(clients), [clients]);
+
   const filtered = useMemo(() => {
-    if (!filter.trim()) return clients;
-    const q = filter.toLowerCase();
-    return clients.filter(c =>
-      (c.name || '').toLowerCase().includes(q) ||
-      (c.url || '').toLowerCase().includes(q) ||
-      (c.industry || '').toLowerCase().includes(q)
-    );
-  }, [clients, filter]);
+    const q = filter.trim().toLowerCase();
+    return clients.filter(c => {
+      if (managerFilter === '__none__') {
+        if (clientAssignees(c).length) return false;
+      } else if (managerFilter) {
+        if (!clientHasAssignee(c, managerFilter)) return false;
+      }
+      if (!q) return true;
+      return (
+        (c.name || '').toLowerCase().includes(q) ||
+        (c.url || '').toLowerCase().includes(q) ||
+        (c.industry || '').toLowerCase().includes(q) ||
+        clientAssignees(c).join(' ').toLowerCase().includes(q)
+      );
+    });
+  }, [clients, filter, managerFilter]);
 
   const stats = useMemo(() => ({
     total: clients.length,
@@ -122,6 +195,16 @@ export default function ClientsMaster() {
     setRowBusy(client.id); setErr('');
     try {
       await upsertClient({ ...client, [key]: value });
+      await reload();
+    } catch (e) { setErr(e.message); }
+    finally { setRowBusy(null); }
+  }
+
+  // Save any person field (default owner or a per-service assignee) on a client.
+  async function setPerson(client, field, value) {
+    setRowBusy(client.id); setErr('');
+    try {
+      await upsertClient({ ...client, [field]: value });
       await reload();
     } catch (e) { setErr(e.message); }
     finally { setRowBusy(null); }
@@ -163,7 +246,7 @@ export default function ClientsMaster() {
         <div>
           <h2 style={{ margin: 0 }}>All Clients</h2>
           <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
-            Master view — toggle service flags inline. Each module's client dropdown is filtered by these flags.
+            Master view — toggle service flags and assign a person per service inline. Each module's client dropdown is filtered by these flags.
           </div>
         </div>
         <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
@@ -277,16 +360,31 @@ export default function ClientsMaster() {
         </details>
       )}
 
-      {/* Search */}
-      <div className="row" style={{ marginBottom: 10 }}>
+      {/* Search + account-manager filter */}
+      <div className="row" style={{ marginBottom: 10, gap: 10, flexWrap: 'wrap' }}>
         <input
           value={filter}
           onChange={e => setFilter(e.target.value)}
-          placeholder="Search by name, URL, or industry…"
+          placeholder="Search by name, URL, industry, or person…"
           style={{ maxWidth: 360 }}
         />
-        {filter && <span className="muted" style={{ fontSize: 12 }}>{filtered.length} / {clients.length}</span>}
+        <select
+          value={managerFilter}
+          onChange={e => setManagerFilter(e.target.value)}
+          style={{ width: 200 }}
+          title="Filter by assigned person"
+        >
+          <option value="">All people</option>
+          <option value="__none__">Unassigned</option>
+          {managers.map(m => <option key={m} value={m}>{m}</option>)}
+        </select>
+        {(filter || managerFilter) && <span className="muted" style={{ fontSize: 12 }}>{filtered.length} / {clients.length}</span>}
       </div>
+
+      {/* Suggestions for inline account-manager inputs. */}
+      <datalist id="am-suggestions">
+        {managers.map(m => <option key={m} value={m} />)}
+      </datalist>
 
       {serverAuth && needsAccountCount > 0 && (
         <div style={{ marginBottom: 12, padding: '8px 12px', border: '1px solid var(--orange)', borderRadius: 8, color: 'var(--orange)', fontSize: 12 }}>
@@ -294,16 +392,18 @@ export default function ClientsMaster() {
         </div>
       )}
 
-      {/* Master table */}
-      <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
-        <table>
+      {/* Master table — overflow-x auto so the 9-column table scrolls inside
+          the card on narrow windows instead of widening the whole page. */}
+      <div className="card" style={{ padding: 0, overflowX: 'auto' }}>
+        <table style={{ minWidth: 860 }}>
           <thead>
             <tr>
               <th>Name</th>
               <th>URL</th>
               <th>Industry</th>
+              <th>Owner <span className="muted" style={{ fontWeight: 400, fontSize: 10 }}>(default)</span></th>
               {SERVICES.map(s => (
-                <th key={s.key} style={{ textAlign: 'center', color: s.color }}>{s.label}</th>
+                <th key={s.flag} style={{ textAlign: 'center', color: s.color }}>{s.label}</th>
               ))}
               <th></th>
             </tr>
@@ -311,7 +411,7 @@ export default function ClientsMaster() {
           <tbody>
             {filtered.length === 0 && (
               <tr>
-                <td colSpan={4 + SERVICES.length} className="muted" style={{ textAlign: 'center', padding: 32 }}>
+                <td colSpan={5 + SERVICES.length} className="muted" style={{ textAlign: 'center', padding: 32 }}>
                   {clients.length === 0
                     ? 'No clients yet. Click Sync from WebCEO, Import from Old Tools, or + Add Client.'
                     : 'No clients match that search.'}
@@ -343,15 +443,24 @@ export default function ClientsMaster() {
                   {c.url || '—'}
                 </td>
                 <td className="muted">{c.industry || '—'}</td>
+                <td style={{ verticalAlign: 'top' }}>
+                  <PersonInput
+                    value={c.account_manager || ''}
+                    disabled={rowBusy === c.id}
+                    onSave={v => setPerson(c, 'account_manager', v)}
+                    placeholder="—"
+                    title="Default owner — used for any service with no specific assignee"
+                  />
+                </td>
                 {SERVICES.map(s => (
-                  <td key={s.key} style={{ textAlign: 'center' }}>
-                    <ServiceToggle
-                      on={c[s.key] !== false}
-                      color={s.color}
-                      disabled={rowBusy === c.id}
-                      onChange={v => toggleService(c, s.key, v)}
-                    />
-                  </td>
+                  <ServiceCell
+                    key={s.flag}
+                    client={c}
+                    meta={s}
+                    disabled={rowBusy === c.id}
+                    onToggle={v => toggleService(c, s.flag, v)}
+                    onAssign={v => setPerson(c, s.mgr, v)}
+                  />
                 ))}
                 <td>
                   <div className="row" style={{ gap: 6, justifyContent: 'flex-end' }}>

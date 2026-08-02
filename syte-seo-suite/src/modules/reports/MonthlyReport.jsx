@@ -36,7 +36,8 @@ async function groundClientGold(c, reportData) {
   return res.client;
 }
 import { runSnapshot, snapshotPreflight } from './aeoRunner.js';
-import { CORE_ENGINE_IDS } from './aeoEngines.js';
+import { CORE_ENGINE_IDS, ALL_ENGINES } from './aeoEngines.js';
+import { SETTINGS_EVENT } from '../../lib/settings.js';
 import { compareSnapshots, rankBrandWithCompetitors, normalizeSnapshot } from './aeoCompare.js';
 import { ensureToken, SCOPES, getToken, switchAccount, silentRefresh, getCurrentEmail, getTokenForEmail, TOKEN_EVENT } from '../technical/googleAuth.js';
 import { serverAuthEnabled } from '../../lib/googleServerAuth.js';
@@ -163,6 +164,15 @@ export default function MonthlyReport() {
   const [previousAeoSnap, setPreviousAeoSnap] = useState(null);
   const [aeoOnly, setAeoOnly] = useState(false);
   const [probeWarnings, setProbeWarnings] = useState([]);
+  // Bumped when suite settings change (e.g. remote key hydration lands after
+  // this view is already open) so the pre-run engine-coverage notice, which
+  // reads engine isConfigured() inline, re-evaluates.
+  const [, setSettingsTick] = useState(0);
+  useEffect(() => {
+    const onSettings = () => setSettingsTick(t => t + 1);
+    window.addEventListener(SETTINGS_EVENT, onSettings);
+    return () => window.removeEventListener(SETTINGS_EVENT, onSettings);
+  }, []);
   // In-place visual editing state. When set, renders verbatim instead of
   // rebuilding from microJson — that's how operator edits to copy/figures
   // survive download / PDF / saved-report reload.
@@ -1204,6 +1214,28 @@ export default function MonthlyReport() {
             ))}
           </div>
         </div>
+
+        {/* Pre-run engine coverage — the AEO probe only queries engines that
+            have an API key. Claude ships with a built-in key so it always
+            runs; ChatGPT / Perplexity / Gemini need keys entered in Suite
+            Settings. With key sync those keys now follow the operator across
+            devices, but surface any gap BEFORE a run so a missing key is fixed
+            up front instead of discovered after a Claude-only report. */}
+        {form.hasAeo && (() => {
+          const missing = ALL_ENGINES.filter(e => !e.isConfigured());
+          if (!missing.length) return null;
+          const running = ALL_ENGINES.filter(e => e.isConfigured()).map(e => e.label);
+          return (
+            <div style={{
+              marginTop: 10, padding: '8px 14px', borderRadius: 10,
+              background: 'rgba(255,159,67,.08)', border: '1px solid rgba(255,159,67,.3)',
+              fontSize: 12, color: 'var(--text-muted)'
+            }}>
+              <strong style={{ color: 'var(--orange)' }}>AEO will query {running.length} of {ALL_ENGINES.length} engines.</strong>{' '}
+              {missing.map(e => e.label).join(', ')} {missing.length > 1 ? 'have' : 'has'} no API key — add {missing.length > 1 ? 'them' : 'it'} in Suite Settings (gear icon) to include {missing.length > 1 ? 'them' : 'it'}. Running: {running.join(', ') || 'none'}.
+            </div>
+          );
+        })()}
         {/* Live progress while the AEO probe sweeps the engines — the long
             phase. Shows it's working, not frozen. */}
         {phase === 'aeo-probe' && aeoProgress && aeoProgress.total > 0 && (

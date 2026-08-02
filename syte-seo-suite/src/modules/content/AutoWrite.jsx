@@ -6,7 +6,7 @@ import {
   generateTopicRecommendations,
   buildArticleResearchContext
 } from './topicResearch.js';
-import { buildSystemPrompt, TAB_PROMPTS } from './prompts.js';
+import { buildSystemPrompt, TAB_PROMPTS, clampLength } from './prompts.js';
 import GenerateImageButton from '../../components/GenerateImageButton.jsx';
 import PushToCmsButton from '../../components/PushToCmsButton.jsx';
 import MarkImplementedButton from '../../components/MarkImplementedButton.jsx';
@@ -275,12 +275,16 @@ export default function AutoWrite() {
     setWritingIdx(idx);
     updateArticle(idx, { status: 'writing', output: '', error: null, words: 0 });
 
+    // Enforce the house length band (1000–2000 words) regardless of what the
+    // research step suggested.
+    const targetLength = clampLength(opp.recommended_length);
+
     const ctx = buildArticleResearchContext(opp, research);
     const system = buildSystemPrompt(activeClient, '', ctx);
     const userPrompt = TAB_PROMPTS['New Article'](
       opp.topic_title,
       opp.primary_keyword,
-      opp.recommended_length || 1500
+      targetLength
     );
 
     let buf = '';
@@ -288,7 +292,9 @@ export default function AutoWrite() {
       await claudeStream({
         system,
         messages: [{ role: 'user', content: userPrompt }],
-        max_tokens: 8000,
+        // ~2000 words of HTML + meta + FAQ + QA JSON fits comfortably under
+        // 5000 tokens; this ceiling also physically prevents 5000-word essays.
+        max_tokens: 5000,
         temperature: 0.7,
         onDelta: (t) => {
           buf += t;
@@ -311,7 +317,7 @@ export default function AutoWrite() {
           tab: 'Auto Write',
           topic: opp.topic_title,
           keyword: opp.primary_keyword,
-          length: opp.recommended_length || 1500,
+          length: targetLength,
           output: buf,
           opportunity_type: opp.opportunity_type,
           generated_at: new Date().toISOString()

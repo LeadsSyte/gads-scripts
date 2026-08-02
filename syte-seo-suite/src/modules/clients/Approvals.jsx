@@ -8,6 +8,7 @@ import {
   loadContentHistory
 } from '../../lib/supabase.js';
 import { approvalsStatus, monthOptions } from '../../lib/pipelineStatus.js';
+import { allAssignees, clientAssignees, clientHasAssignee } from '../../lib/serviceAssignments.js';
 
 // Cross-module approvals matrix. Shows every client × every module for the
 // selected month. Refreshes monthly but keeps history via the month picker.
@@ -50,6 +51,7 @@ export default function Approvals() {
   const [deepResults, setDeepResults] = useState([]);
   const [contentHistory, setContentHistory] = useState([]);
   const [month, setMonth] = useState(new Date().toISOString().slice(0, 7));
+  const [managerFilter, setManagerFilter] = useState(''); // '' = all, '__none__' = unassigned
   const [loading, setLoading] = useState(true);
 
   // Load every input the matrix needs from Supabase — the same source of
@@ -79,9 +81,19 @@ export default function Approvals() {
   const months = useMemo(() => monthOptions(), []);
   const monthLabel = months.find(m => m.value === month)?.label || month;
 
+  // Everyone assigned across all clients / services (for the filter dropdown).
+  const managers = useMemo(() => allAssignees(clients), [clients]);
+
+  // Apply the person filter before computing rows.
+  const scopedClients = useMemo(() => clients.filter(c => {
+    if (managerFilter === '__none__') return clientAssignees(c).length === 0;
+    if (managerFilter) return clientHasAssignee(c, managerFilter);
+    return true;
+  }), [clients, managerFilter]);
+
   // Compute status per client per module.
   const rows = useMemo(() => {
-    return clients.map(c => {
+    return scopedClients.map(c => {
       const status = approvalsStatus(c, implementations, tasks, aeoResults, month, contentHistory, deepResults);
       // Overall: all three modules verified?
       const allDone = ['content', 'technical', 'aeo'].every(
@@ -90,7 +102,7 @@ export default function Approvals() {
       );
       return { client: c, status, allDone };
     });
-  }, [clients, implementations, tasks, aeoResults, deepResults, contentHistory, month]);
+  }, [scopedClients, implementations, tasks, aeoResults, deepResults, contentHistory, month]);
 
   // Sort: incomplete first, then by name.
   const sorted = useMemo(() => {
@@ -113,7 +125,12 @@ export default function Approvals() {
             All clients × all modules. Shows which monthly tasks are done for {monthLabel}.
           </div>
         </div>
-        <div className="row" style={{ gap: 10 }}>
+        <div className="row" style={{ gap: 10, flexWrap: 'wrap' }}>
+          <select value={managerFilter} onChange={e => setManagerFilter(e.target.value)} style={{ width: 190 }} title="Filter by assigned person">
+            <option value="">All people</option>
+            <option value="__none__">Unassigned</option>
+            {managers.map(m => <option key={m} value={m}>{m}</option>)}
+          </select>
           <select value={month} onChange={e => setMonth(e.target.value)} style={{ width: 200 }}>
             {months.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
           </select>
@@ -159,6 +176,14 @@ export default function Approvals() {
                     <div className="muted" style={{ fontSize: 10 }}>
                       {client.url?.replace(/^https?:\/\//, '').slice(0, 30) || '—'}
                     </div>
+                    {(() => {
+                      const people = clientAssignees(client);
+                      return (
+                        <div style={{ fontSize: 10, color: people.length ? 'var(--text-muted)' : 'var(--text-dim)', marginTop: 1 }}>
+                          {people.length ? '👤 ' + people.join(', ') : 'Unassigned'}
+                        </div>
+                      );
+                    })()}
                   </td>
                   {MODULES.map(m => (
                     <React.Fragment key={m.key}>

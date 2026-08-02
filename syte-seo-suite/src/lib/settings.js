@@ -1,8 +1,18 @@
-// Suite-wide settings (per-device). Holds user-provided external API keys
-// that aren't shipped with the suite encrypted blob. Kept in localStorage
-// so they persist across sessions but stay on the device they were entered.
+// Suite-wide settings. Holds user-provided external API keys that aren't
+// shipped with the suite's encrypted blob. localStorage is the local source
+// of truth (so isConfigured() / loadSettings() stay synchronous), but the
+// keys are ALSO synced to a shared Supabase row so they follow the operator
+// to any device. Previously localStorage-only, which meant a fresh browser or
+// cleared cache silently lost the keys and the AEO probe dropped to
+// Claude-only (Claude has a built-in key; the others don't).
+
+import { loadRemoteSettings, saveRemoteSettings } from './supabase.js';
 
 const KEY = 'syte-suite-settings';
+
+// Dispatched after a remote hydrate changes the local cache, so open UI
+// (engine status dots, the report's pre-run engine notice) can refresh.
+export const SETTINGS_EVENT = 'syte-suite-settings-changed';
 
 const DEFAULTS = {
   openaiKey: '',
@@ -21,7 +31,31 @@ export function loadSettings() {
 export function saveSettings(patch) {
   const merged = { ...loadSettings(), ...patch };
   localStorage.setItem(KEY, JSON.stringify(merged));
+  // Write-through to the shared Supabase row so the keys are available on
+  // every device. Best-effort: localStorage already holds them locally.
+  saveRemoteSettings(patch).catch(() => {});
   return merged;
+}
+
+// Pull the shared settings row into the local cache. Called once at app
+// start. A non-empty remote value wins (that's how a device that never had
+// keys entered locally picks them up); a blank remote value never wipes a
+// good local key. Returns true if the local cache changed.
+export async function hydrateSettingsFromRemote() {
+  let remote;
+  try { remote = await loadRemoteSettings(); } catch { remote = null; }
+  if (!remote || typeof remote !== 'object') return false;
+  const local = loadSettings();
+  const merged = { ...local };
+  let changed = false;
+  for (const k of Object.keys(DEFAULTS)) {
+    if (remote[k] && remote[k] !== local[k]) { merged[k] = remote[k]; changed = true; }
+  }
+  if (changed) {
+    localStorage.setItem(KEY, JSON.stringify(merged));
+    try { window.dispatchEvent(new Event(SETTINGS_EVENT)); } catch {}
+  }
+  return changed;
 }
 
 export function engineStatus() {
