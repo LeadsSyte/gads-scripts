@@ -4,6 +4,7 @@ import AEOSnapshot from './AEOSnapshot.jsx';
 import MonthlyReport from './MonthlyReport.jsx';
 import Baseline from './Baseline.jsx';
 import ReportsHistory from './ReportsHistory.jsx';
+import MarkEmailedModal from './MarkEmailedModal.jsx';
 import DevExport from './DevExport.jsx';
 import { listSentReports, listGeneratedReports } from '../../lib/supabase.js';
 
@@ -30,28 +31,39 @@ export default function ReportsModule({ sub }) {
   const [showReport, setShowReport] = useState(false);
   const [sentReports, setSentReports] = useState({});
   const [generatedReports, setGeneratedReports] = useState({});
+  const [emailModal, setEmailModal] = useState(null); // { client } | null
 
-  // Load sent + generated report status for all clients on mount.
-  React.useEffect(() => {
-    (async () => {
-      try {
-        const [sent, generated] = await Promise.all([
-          listSentReports(),
-          listGeneratedReports()
-        ]);
-        const sentByClient = {};
-        for (const r of sent) {
-          if (!sentByClient[r.client_id]) sentByClient[r.client_id] = r;
-        }
-        const genByClient = {};
-        for (const r of generated) {
-          if (!genByClient[r.client_id]) genByClient[r.client_id] = r;
-        }
-        setSentReports(sentByClient);
-        setGeneratedReports(genByClient);
-      } catch {}
-    })();
+  // Load sent + generated report status for all clients. Extracted so it can
+  // be re-run after marking a client emailed, and whenever the operator
+  // returns from the report generator (so a just-generated report shows).
+  const loadStatus = React.useCallback(async () => {
+    try {
+      const [sent, generated] = await Promise.all([
+        listSentReports(),
+        listGeneratedReports()
+      ]);
+      // Both lists come back newest-first, so the first row per client is the
+      // latest one for that client.
+      const sentByClient = {};
+      for (const r of sent) {
+        if (!sentByClient[r.client_id]) sentByClient[r.client_id] = r;
+      }
+      const genByClient = {};
+      for (const r of generated) {
+        if (!genByClient[r.client_id]) genByClient[r.client_id] = r;
+      }
+      setSentReports(sentByClient);
+      setGeneratedReports(genByClient);
+    } catch {}
   }, []);
+
+  React.useEffect(() => { loadStatus(); }, [loadStatus]);
+
+  // Refresh status when returning to the client list from the generator, so a
+  // report generated inside MonthlyReport reflects without a full page reload.
+  React.useEffect(() => {
+    if (!showReport) loadStatus();
+  }, [showReport, loadStatus]);
 
   if (sub === 'Baseline') {
     return <Baseline />;
@@ -131,7 +143,14 @@ export default function ReportsModule({ sub }) {
           <strong style={{ fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '70%' }}>
             {c.name}
           </strong>
-          {status === 'sent' && <span className="badge green" style={{ fontSize: 9 }}>Sent</span>}
+          {status === 'sent' && (
+            <span className="row" style={{ gap: 4 }}>
+              {(sent?.pdf_filename || sent?.manual) && (
+                <span className="badge blue" style={{ fontSize: 9 }} title="Proof PDF on file">PDF</span>
+              )}
+              <span className="badge green" style={{ fontSize: 9 }}>{sent?.manual ? 'Emailed' : 'Sent'}</span>
+            </span>
+          )}
           {status === 'generated' && (
             <span className="badge" style={{ fontSize: 9, borderColor: ORANGE, color: ORANGE }}>Generated</span>
           )}
@@ -155,21 +174,32 @@ export default function ReportsModule({ sub }) {
             {gen.qa_score ? ' · QA ' + gen.qa_score + '/10' : ''}
           </div>
         )}
-        <button
-          style={{
-            marginTop: 8, fontSize: 10, padding: '4px 10px',
-            borderColor: accentColor, color: accentColor
-          }}
-          onClick={(e) => {
-            e.stopPropagation();
-            select(c.id);
-            setShowReport(true);
-          }}
-        >
-          {status === 'sent' ? 'Regenerate Report'
-            : status === 'generated' ? 'Review & Send'
-            : 'Generate Report'}
-        </button>
+        <div className="row" style={{ gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
+          <button
+            style={{
+              fontSize: 10, padding: '4px 10px',
+              borderColor: accentColor, color: accentColor
+            }}
+            onClick={(e) => {
+              e.stopPropagation();
+              select(c.id);
+              setShowReport(true);
+            }}
+          >
+            {status === 'sent' ? 'Regenerate Report'
+              : status === 'generated' ? 'Review & Send'
+              : 'Generate Report'}
+          </button>
+          {/* Log that the client was emailed their report — works for any
+              client regardless of whether a report was generated here. */}
+          <button
+            style={{ fontSize: 10, padding: '4px 10px', borderColor: GREEN, color: GREEN }}
+            onClick={(e) => { e.stopPropagation(); setEmailModal({ client: c }); }}
+            title="Log that you emailed this client their report (upload PDF proof)"
+          >
+            ✉ Mark emailed
+          </button>
+        </div>
       </div>
     );
   }
@@ -212,6 +242,15 @@ export default function ReportsModule({ sub }) {
 
       {allClients.length === 0 && (
         <div className="muted" style={{ fontSize: 13 }}>No clients yet — add clients first.</div>
+      )}
+
+      {emailModal && (
+        <MarkEmailedModal
+          client={emailModal.client}
+          defaultMonth={monthKey}
+          onClose={() => setEmailModal(null)}
+          onDone={loadStatus}
+        />
       )}
     </div>
   );

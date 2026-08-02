@@ -10,9 +10,11 @@ import { describe, test, expect, vi, beforeEach } from 'vitest';
 // Mock Supabase access functions.
 const mockListSent = vi.fn();
 const mockListGenerated = vi.fn();
+const mockLogSent = vi.fn();
 vi.mock('../../src/lib/supabase.js', () => ({
   listSentReports: (...a) => mockListSent(...a),
-  listGeneratedReports: (...a) => mockListGenerated(...a)
+  listGeneratedReports: (...a) => mockListGenerated(...a),
+  logReportSent: (...a) => mockLogSent(...a)
 }));
 
 // Mock the heavy children — they have their own tests; here we just
@@ -113,6 +115,28 @@ describe('ReportsModule', () => {
     // when the only client is in the Sent bucket. (The Sent card badge
     // says 'Sent', not 'Generated'.)
     expect(screen.queryByText(/Generated — awaiting send/)).not.toBeInTheDocument();
+  });
+
+  test('every client card offers a "Mark emailed" action, even a pending one', async () => {
+    mockClients = [{ id: 'c1', name: 'Acme' }];
+    mockListSent.mockResolvedValue([]);
+    mockListGenerated.mockResolvedValue([]);
+    render(<ReportsModule sub="Monthly Report" />);
+    expect(screen.getByRole('button', { name: /Mark emailed/i })).toBeInTheDocument();
+  });
+
+  test('a manually-emailed report with proof shows Emailed + PDF badges', async () => {
+    const month = previousMonthKey();
+    mockClients = [{ id: 'c1', name: 'Acme' }];
+    mockListSent.mockResolvedValue([
+      { client_id: 'c1', month, sent_date: new Date().toISOString(), manual: true, pdf_filename: 'acme-report.pdf' }
+    ]);
+    mockListGenerated.mockResolvedValue([]);
+    render(<ReportsModule sub="Monthly Report" />);
+    await waitFor(() => expect(screen.getAllByText('Emailed').length).toBeGreaterThan(0));
+    expect(screen.getByText('PDF')).toBeInTheDocument();
+    // A manual send still counts as sent → regenerate is offered.
+    expect(screen.getByRole('button', { name: /Regenerate Report/i })).toBeInTheDocument();
   });
 
   test('clicking a pending client card calls select(client.id) and shows Monthly Report', async () => {

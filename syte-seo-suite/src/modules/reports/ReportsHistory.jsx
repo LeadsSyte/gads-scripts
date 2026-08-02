@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useClients } from '../../store/useClients.js';
-import { listAeoSnapshots, listSentReports, deleteAeoSnapshot } from '../../lib/supabase.js';
+import { listAeoSnapshots, listSentReports, deleteAeoSnapshot, getSentReportPdf } from '../../lib/supabase.js';
 import { normalizeSnapshot } from './aeoCompare.js';
 
 const ACCENT = '#a78bfa';
@@ -38,6 +38,27 @@ export default function ReportsHistory() {
     if (!confirm('Delete this snapshot? This cannot be undone.')) return;
     try { await deleteAeoSnapshot(id); await reload(); }
     catch (e) { setErr(e.message); }
+  }
+
+  const [pdfBusy, setPdfBusy] = useState(null); // id currently loading
+
+  // Fetch the stored proof PDF on demand and open it in a viewer tab. The PDF
+  // is a base64 data URL; convert it to a Blob so the browser opens a normal
+  // object URL rather than choking on a multi-MB data: URI.
+  async function viewPdf(id) {
+    setErr(''); setPdfBusy(id);
+    try {
+      const rec = await getSentReportPdf(id);
+      if (!rec?.report_pdf) { setErr('No PDF stored for this report.'); return; }
+      const blob = await (await fetch(rec.report_pdf)).blob();
+      const url = URL.createObjectURL(blob);
+      window.open(url, '_blank', 'noopener');
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    } catch (e) {
+      setErr('Could not open PDF: ' + (e.message || String(e)));
+    } finally {
+      setPdfBusy(null);
+    }
   }
 
   if (!client) return <div className="muted">Select a client first.</div>;
@@ -140,16 +161,31 @@ export default function ReportsHistory() {
         {reports.length > 0 && (
           <table style={{ marginTop: 10 }}>
             <thead>
-              <tr><th>Sent</th><th>Month</th><th>Subject</th><th>QA</th><th>AEO</th></tr>
+              <tr><th>Sent</th><th>Month</th><th>Subject</th><th>QA</th><th>AEO</th><th>Proof</th></tr>
             </thead>
             <tbody>
               {reports.map(r => (
                 <tr key={r.id}>
-                  <td className="muted" style={{ fontSize: 12 }}>{new Date(r.sent_date).toLocaleDateString()}</td>
+                  <td className="muted" style={{ fontSize: 12 }}>
+                    {new Date(r.sent_date).toLocaleDateString()}
+                    {r.manual && <span className="badge blue" style={{ fontSize: 8, marginLeft: 6 }}>Manual</span>}
+                  </td>
                   <td>{r.month}</td>
                   <td style={{ maxWidth: 320, overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.email_subject || '—'}</td>
                   <td>{r.qa_score ? r.qa_score + '/10' : '—'}</td>
                   <td>{r.aeo_snapshot_score != null ? r.aeo_snapshot_score + '/100' : '—'}</td>
+                  <td>
+                    {r.pdf_filename ? (
+                      <button
+                        onClick={() => viewPdf(r.id)}
+                        disabled={pdfBusy === r.id}
+                        style={{ fontSize: 11, padding: '4px 10px', borderColor: ACCENT, color: ACCENT }}
+                        title={r.pdf_filename}
+                      >
+                        {pdfBusy === r.id ? 'Opening…' : '📄 View PDF'}
+                      </button>
+                    ) : <span className="muted">—</span>}
+                  </td>
                 </tr>
               ))}
             </tbody>
