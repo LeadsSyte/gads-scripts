@@ -157,9 +157,13 @@ test('regression: History tab preview renders as formatted HTML', async ({ page 
   await expect(clientCard).toBeVisible({ timeout: 10000 });
   await clientCard.click();
 
-  // Open the article preview details.
-  await expect(page.getByText('Preview').first()).toBeVisible({ timeout: 5000 });
-  await page.getByText('Preview').first().click();
+  // Open the article preview details. Match the History <summary>Preview</summary>
+  // by EXACT text: a plain getByText('Preview') also matches AutoWrite's hidden
+  // "Rendered preview" div (substring), and .first() picks whichever renders
+  // first in the DOM — a hidden element on some runs, which flaked toBeVisible.
+  const previewToggle = page.getByText('Preview', { exact: true }).first();
+  await expect(previewToggle).toBeVisible({ timeout: 5000 });
+  await previewToggle.click();
 
   // Strongest signal: the rendered preview contains a real <h1> with the
   // article title. We don't assert the table here because the markdown
