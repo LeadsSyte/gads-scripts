@@ -31,6 +31,14 @@ export function loadSettings() {
 export function saveSettings(patch) {
   const merged = { ...loadSettings(), ...patch };
   localStorage.setItem(KEY, JSON.stringify(merged));
+  // Notify any open view (report pre-run engine notice, engine status dots)
+  // that reads isConfigured() inline so it re-evaluates immediately. Without
+  // this, an operator who pastes an OpenAI/Gemini key and hits Save sees the
+  // Reports banner stay stuck on "AEO will query 1 of 4 engines — Running:
+  // Claude" until an unrelated re-render happens, and reasonably concludes the
+  // key "didn't load". Remote hydration already fires this event; a local save
+  // must too. Best-effort so non-browser callers (tests) don't throw.
+  try { window.dispatchEvent(new Event(SETTINGS_EVENT)); } catch {}
   // Write-through to the shared Supabase row so the keys are available on
   // every device. Best-effort: localStorage already holds them locally.
   saveRemoteSettings(patch).catch(() => {});

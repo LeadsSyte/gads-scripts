@@ -7,6 +7,14 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 globalThis.localStorage = { store: {}, getItem(k){return this.store[k] ?? null;}, setItem(k,v){this.store[k]=String(v);}, removeItem(k){delete this.store[k];} };
 
+// Minimal window so saveSettings can broadcast SETTINGS_EVENT. Open views
+// (the report's pre-run engine notice) listen for it to re-check isConfigured()
+// the instant a key is saved — otherwise the "1 of 4 engines" banner stays
+// stale after the operator pastes a key and the run looks broken.
+const dispatched = [];
+globalThis.window = { dispatchEvent(e){ dispatched.push(e.type); return true; } };
+globalThis.Event = class { constructor(type){ this.type = type; } };
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const s = await import(pathToFileURL(path.join(__dirname, '../src/lib/settings.js')).href);
 
@@ -38,6 +46,13 @@ t('saveSettings merges, does not clobber other keys', () => {
   s.saveSettings({ googleAiKey: 'AIzab' });
   eq(s.loadSettings().openaiKey, 'sk-a', 'openai preserved across saves');
   eq(s.loadSettings().googleAiKey, 'AIzab', 'gemini added');
+});
+
+t('saveSettings broadcasts SETTINGS_EVENT so open views refresh at once', () => {
+  globalThis.localStorage.store = {};
+  dispatched.length = 0;
+  s.saveSettings({ openaiKey: 'sk-live' });
+  ok(dispatched.includes(s.SETTINGS_EVENT), 'SETTINGS_EVENT dispatched on save');
 });
 
 console.log(`\n${pass} passed, ${fail} failed`);
