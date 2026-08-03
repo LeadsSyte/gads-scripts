@@ -4,6 +4,7 @@ import { snapshotPreflight, runSnapshot, estimateRunCost } from './aeoRunner.js'
 import { normalizeSnapshot } from './aeoCompare.js';
 import { saveAeoSnapshot, listAeoSnapshots, getCachedReportData, persistAeoRuns } from '../../lib/supabase.js';
 import { ALL_ENGINES, CORE_ENGINE_IDS } from './aeoEngines.js';
+import { SETTINGS_EVENT } from '../../lib/settings.js';
 import { readinessFor } from '../../lib/clientReadiness.js';
 import { probeCandidatesFromGSC, groundedProbeSet } from './keywordBuckets.js';
 import { buildDiscoveryQueries, runDiscoverySweep, extractSitePhrases } from './aeoDiscovery.js';
@@ -90,6 +91,22 @@ export default function AEOSnapshot() {
       setPendingMonthly(pending);
     })();
   }, [allClients]);
+
+  // Remote engine-key hydration (or a Suite Settings save) can land AFTER this
+  // view has already mounted. The preflight below is computed once per client,
+  // and the engine dots read isConfigured() inline — neither re-evaluates on
+  // its own when localStorage changes underneath. Without this listener the
+  // page stays frozen on the pre-hydration reading ("no key on this device for
+  // ChatGPT, Gemini") while Suite Settings — a fresh mount reading the very
+  // same localStorage — shows those keys as present and green. Recompute on the
+  // settings-changed broadcast so the two agree. The setPreflight also forces a
+  // re-render, refreshing the inline isConfigured() engine dots.
+  useEffect(() => {
+    if (!client) return;
+    const onSettings = () => setPreflight(snapshotPreflight(client));
+    window.addEventListener(SETTINGS_EVENT, onSettings);
+    return () => window.removeEventListener(SETTINGS_EVENT, onSettings);
+  }, [client]);
 
   useEffect(() => {
     if (!client) { setPreflight(null); setSnapshot(null); setLastSnapshot(null); setGscCandidates([]); return; }
