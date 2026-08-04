@@ -110,30 +110,41 @@ export const chatgpt = {
   async ask(query, { search = true } = {}) {
     const { openaiKey } = loadSettings();
     const searchMode = search ? 'search_on' : 'search_off';
+    // A 401/403 is a bad / expired / forbidden key (or a project without
+    // access to gpt-4o or the web_search tool). Retrying or falling back to a
+    // no-search call is futile — the key is the problem — so flag it as a
+    // configError. The runner then benches ChatGPT for good AND the coverage
+    // warning says "check the key" instead of the engine silently cooldown-
+    // looping a doomed call across every prompt (a "Claude-only" report with
+    // no obvious reason). Mirrors Gemini's existing configError handling.
+    const isAuth = (x) => x.error && (x.status === 401 || x.status === 403);
     try {
       if (!search) {
         // Parametric: no web search, straight to the model.
         const r = await this._searchAt(query, null, openaiKey);
-        if (r.error) return { ...r, searchMode };
+        if (r.error) return { ...r, configError: isAuth(r) || undefined, searchMode };
         return { text: r.text, raw: r.raw, model: 'gpt-4o', searchMode };
       }
       // Retrieval: reliability first. A 'low' web search finishes inside
       // Netlify's 10s function limit far more often than 'medium' — and a
       // 'medium' 504 storm was benching ChatGPT out of the whole report (the
       // "only Claude showed up" symptom). So try 'low' web search first; if it
-      // still times out, fall back to a parametric (no-search) call, which is
-      // fast and can't 504, so ChatGPT returns SOMETHING instead of nothing.
-      const isTimeout = (x) => x.error && !x.rateLimited && (x.status === 504 || x.status === 502 || /timeout|timed out/i.test(x.error));
+      // fails for ANY reason other than a bad key or a sustained rate-limit,
+      // fall back to a parametric (no-search) call — that covers Netlify 504
+      // timeouts AND non-timeout failures (e.g. the web_search tool being
+      // rejected for the model/project), so ChatGPT returns SOMETHING instead
+      // of erroring to zero across the whole run.
       let usedMode = searchMode;
       let r = await this._searchAt(query, 'low', openaiKey);
-      if (isTimeout(r)) {
+      if (r.error && !r.rateLimited && !isAuth(r)) {
         const p = await this._searchAt(query, null, openaiKey);
         if (!p.error) { r = p; usedMode = 'search_off'; }   // parametric fallback succeeded
       }
       if (r.error) {
         // A 429 that survived retries is a sustained rate-limit — flag it so
-        // the runner cools ChatGPT down (not permanently benched).
-        return { error: r.error, rateLimited: r.rateLimited, searchMode };
+        // the runner cools ChatGPT down (not permanently benched). A 401/403
+        // is a bad key — flag it as configError so it's benched + surfaced.
+        return { error: r.error, rateLimited: r.rateLimited, configError: isAuth(r) || undefined, searchMode };
       }
       return { text: r.text, raw: r.raw, model: 'gpt-4o', searchMode: usedMode };
     } catch (e) { return { error: e.message, searchMode }; }
