@@ -12,6 +12,7 @@
 // already owns saveAeoSnapshot.
 
 import { ALL_ENGINES, activeEngines, resolveRunModes } from './aeoEngines.js';
+import { hydrateSettingsFromRemote } from '../../lib/settings.js';
 import { extractRun, extractCitedUrls, hashResponse } from './aeoExtract.js';
 import { detectBrand, countCitations } from './brandDetection.js';
 import {
@@ -191,6 +192,16 @@ export async function runSnapshot(client, opts = {}) {
     expandSegments             // buyer segments/industries to qualify by (defaults inside winnerExpansion)
   } = opts;
 
+  // Recover keys from the durable Supabase copy before choosing engines. A
+  // locally-lost key — a corrupted settings blob (loadSettings then silently
+  // returns empty defaults), a blank-field settings save, or localStorage
+  // eviction — otherwise drops the run to Claude-only even though the shared
+  // settings row still has the ChatGPT/Gemini keys. That's the "generated for
+  // all 3, then reverted to only Claude" symptom. Re-hydrating first restores
+  // a recoverable key so engine selection sees it. Best-effort and safe: it
+  // only ADDS non-empty remote keys, never removes; a caller-supplied
+  // engineOverride skips it.
+  if (!engineOverride) { try { await hydrateSettingsFromRemote(); } catch { /* offline — localStorage stands */ } }
   const engines = engineOverride || activeEngines();
   if (!engines.length) throw new Error('No AI engines configured. Open Suite Settings.');
 

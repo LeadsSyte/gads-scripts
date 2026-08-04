@@ -49,9 +49,12 @@ export default function SuiteSettingsModal({ onClose }) {
       perplexityKey:(form.perplexityKey || '').trim(),
       googleAiKey:  (form.googleAiKey || '').trim(),
     };
-    saveSettings(cleaned);
-    setForm(cleaned);
-    setPersisted(cleaned);   // dots now reflect what runs will actually use
+    // saveSettings drops blank fields (never blanks a stored key), so use its
+    // MERGED return — not `cleaned` — for the dots, or an untouched-but-empty
+    // box would wrongly show a stored key as cleared.
+    const merged = saveSettings(cleaned);
+    setForm(merged);
+    setPersisted(merged);   // dots now reflect what runs will actually use
     setSaved(true);
     setTimeout(() => setSaved(false), 1500);
   }

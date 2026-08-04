@@ -29,7 +29,19 @@ export function loadSettings() {
 }
 
 export function saveSettings(patch) {
-  const merged = { ...loadSettings(), ...patch };
+  // Never let a blank field overwrite a stored key. The settings modal saves
+  // ALL fields at once (openaiKey / perplexityKey / googleAiKey), sending ''
+  // for any box that looks empty — e.g. it was opened before remote hydration
+  // landed, or the value is masked. Without this filter one such save wipes
+  // good keys out of localStorage, and the next AEO run drops to Claude-only
+  // until a re-hydrate. saveRemoteSettings already guards the shared row this
+  // way; this mirrors it locally so the two never disagree. The accepted
+  // trade-off (same as remote): an intentional clear won't propagate.
+  const clean = {};
+  for (const [k, v] of Object.entries(patch || {})) {
+    if (typeof v === 'string' ? v.trim() : v) clean[k] = v;
+  }
+  const merged = { ...loadSettings(), ...clean };
   localStorage.setItem(KEY, JSON.stringify(merged));
   // Notify any open view (report pre-run engine notice, engine status dots)
   // that reads isConfigured() inline so it re-evaluates immediately. Without
@@ -41,7 +53,7 @@ export function saveSettings(patch) {
   try { window.dispatchEvent(new Event(SETTINGS_EVENT)); } catch {}
   // Write-through to the shared Supabase row so the keys are available on
   // every device. Best-effort: localStorage already holds them locally.
-  saveRemoteSettings(patch).catch(() => {});
+  saveRemoteSettings(clean).catch(() => {});
   return merged;
 }
 
