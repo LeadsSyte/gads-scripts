@@ -97,6 +97,24 @@ export default function CMSPush({ sub }) {
     finally { setBusy(false); }
   }
 
+  // After a changes_requested draft has been fixed: put it back in review
+  // and re-send the notification/approval email (fresh token; the old
+  // client link stops working).
+  async function resendForApproval(item) {
+    setBusy(true); setErr('');
+    try {
+      await updateCmsQueueItem(item.id, { status: 'pushed' });
+      await fetch('/.netlify/functions/notify-draft', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ queueId: item.id })
+      });
+      await refreshHistory();
+      setMsg('Sent back for approval.');
+    } catch (e) { setErr(e.message); }
+    finally { setBusy(false); }
+  }
+
   // -------- Subviews --------
   if (sub === 'Connector') {
     return (
@@ -214,6 +232,11 @@ export default function CMSPush({ sub }) {
                           <input type="email" placeholder="client@company.com"
                             value={profile.client_approval_email ?? ''}
                             onChange={e => setP('client_approval_email', e.target.value.trim() || null)} />
+                          {!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(profile.client_approval_email || '') && (
+                            <div style={{ color: 'var(--red)', fontSize: 11, marginTop: 4 }}>
+                              No valid email — approval emails can't be sent, drafts will wait forever.
+                            </div>
+                          )}
                         </div>
                       ) : (
                         <div>
@@ -304,6 +327,19 @@ export default function CMSPush({ sub }) {
                     )}
                     {item.status === 'published' && item.payload?.live_url && (
                       <a href={item.payload.live_url} target="_blank" rel="noreferrer" style={{ color: 'var(--green)' }}>Live →</a>
+                    )}
+                    {item.status === 'changes_requested' && (
+                      <div style={{ marginTop: 4 }}>
+                        {item.payload?.change_comment && (
+                          <div className="muted" style={{ fontSize: 11, fontStyle: 'italic', maxWidth: 220 }}>
+                            "{item.payload.change_comment}"
+                          </div>
+                        )}
+                        <button disabled={busy} onClick={() => resendForApproval(item)} style={{ marginTop: 4 }}
+                          title="Puts the draft back in review and sends a fresh approval email">
+                          Re-send for approval
+                        </button>
+                      </div>
                     )}
                     {(item.status === 'failed' || item.status === 'publish_failed') && item.error_msg && (
                       <span className="muted" style={{ fontSize: 11 }}>{item.error_msg}</span>
