@@ -53,9 +53,25 @@ export async function pushItemInline(client, item) {
       // Store BOTH the admin edit URL and the actual public permalink so
       // downstream verification uses the real WordPress URL, not a re-derived slug.
       page_url: result.link || row.page_url,
-      payload: { ...(row.payload || {}), admin_url: result.admin_url || '', live_url: result.link || '' }
+      payload: {
+        ...(row.payload || {}),
+        admin_url: result.admin_url || '',
+        live_url: result.link || '',
+        // The publish-approved scheduled function needs these to flip the
+        // draft live after approval — without a wp_id it can't publish.
+        wp_id: result.wp_id || null,
+        rest_base: result.rest_base || 'posts',
+        meta_status: result.meta_status || '',
+        warnings: result.warnings || []
+      }
     });
-    return { ok: true, admin_url: result.admin_url || '', live_url: result.link || '', id: row.id };
+    return {
+      ok: true,
+      admin_url: result.admin_url || '',
+      live_url: result.link || '',
+      id: row.id,
+      warnings: result.warnings || []
+    };
   } catch (e) {
     await updateCmsQueueItem(row.id, { status: 'failed', error_msg: e.message });
     throw e;

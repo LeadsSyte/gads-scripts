@@ -1,13 +1,24 @@
 import React, { useState, useEffect } from 'react';
 import { useClients } from '../../store/useClients.js';
-import { listCmsQueue, upsertClient } from '../../lib/supabase.js';
+import { listCmsQueue, updateCmsQueueItem, upsertClient } from '../../lib/supabase.js';
 import { detectCms, testWordPress, testShopify } from './cmsDetect.js';
+import { getPublishingProfile } from './publishingProfile.js';
 
 const ACCENT = '#4dabff';
 
 function statusBadge(s) {
-  const map = { pending: 'orange', pushed: 'green', failed: 'red', skipped: '' };
-  return <span className={'badge ' + (map[s] || '')}>{s}</span>;
+  const map = {
+    pending: 'orange',
+    pushed: 'blue',            // draft created, awaiting review
+    approved: 'orange',        // green-lit, publisher picks it up within 15 min
+    published: 'green',
+    publish_failed: 'red',
+    changes_requested: 'orange',
+    failed: 'red',
+    skipped: ''
+  };
+  const label = s === 'pushed' ? 'awaiting review' : s;
+  return <span className={'badge ' + (map[s] || '')}>{label}</span>;
 }
 
 // CMS module, post-refactor: this is now just the connector config + a
@@ -71,6 +82,17 @@ export default function CMSPush({ sub }) {
       const name = await testShopify(form.shopify_store, form.shopify_token);
       setMsg('Shopify connected to: ' + name);
       await saveConnector();
+    } catch (e) { setErr(e.message); }
+    finally { setBusy(false); }
+  }
+
+  // Review actions: 'pushed' (awaiting review) → approved | changes_requested.
+  // The publish-approved scheduled function flips approved rows live.
+  async function setReviewStatus(item, status) {
+    setBusy(true); setErr('');
+    try {
+      await updateCmsQueueItem(item.id, { status });
+      await refreshHistory();
     } catch (e) { setErr(e.message); }
     finally { setBusy(false); }
   }
@@ -141,6 +163,58 @@ export default function CMSPush({ sub }) {
               </div>
             </div>
 
+            <div className="card" style={{ marginBottom: 14 }}>
+              <strong>Publishing Profile</strong>
+              <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+                How this client's blog expects content to arrive. Defaults work for most sites —
+                only change what the pilot review shows is off.
+              </div>
+              {(() => {
+                const profile = getPublishingProfile(form);
+                const setP = (k, v) => setForm(f => ({ ...f, publishing_profile: { ...getPublishingProfile(f), [k]: v } }));
+                return (
+                  <>
+                    <div className="grid-2" style={{ marginTop: 10 }}>
+                      <div>
+                        <label>Hero image placement</label>
+                        <select value={profile.hero_mode} onChange={e => setP('hero_mode', e.target.value)}>
+                          <option value="featured-only">Featured image only (default)</option>
+                          <option value="inline-only">Inline at top of body</option>
+                          <option value="both">Featured + inline</option>
+                          <option value="none">No image for this client</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label>Post type (REST base)</label>
+                        <input placeholder="posts" value={profile.post_type_rest_base}
+                          onChange={e => setP('post_type_rest_base', e.target.value.trim() || 'posts')} />
+                      </div>
+                      <div>
+                        <label>Default category ID (WP)</label>
+                        <input placeholder="— WP default —" value={profile.default_category_id ?? ''}
+                          onChange={e => setP('default_category_id', e.target.value ? Number(e.target.value) : null)} />
+                      </div>
+                      <div>
+                        <label>Default author ID (WP)</label>
+                        <input placeholder="— API user —" value={profile.default_author_id ?? ''}
+                          onChange={e => setP('default_author_id', e.target.value ? Number(e.target.value) : null)} />
+                      </div>
+                    </div>
+                    <div className="row" style={{ marginTop: 10, alignItems: 'center' }}>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: 6, margin: 0 }}>
+                        <input type="checkbox" checked={profile.strip_leading_h1}
+                          onChange={e => setP('strip_leading_h1', e.target.checked)} />
+                        Strip article H1 into the post title (prevents double titles — leave on unless this theme needs it)
+                      </label>
+                    </div>
+                    <div className="row" style={{ marginTop: 10 }}>
+                      <button onClick={() => saveConnector()} disabled={busy}>Save Profile</button>
+                    </div>
+                  </>
+                );
+              })()}
+            </div>
+
             <div className="card">
               <strong>Custom Site</strong>
               <div className="muted" style={{ fontSize: 13, marginTop: 6 }}>
@@ -185,7 +259,29 @@ export default function CMSPush({ sub }) {
                     {item.payload?.admin_url && (
                       <a href={item.payload.admin_url} target="_blank" rel="noreferrer" style={{ color: ACCENT }}>Admin →</a>
                     )}
-                    {item.status === 'failed' && item.error_msg && (
+                    {Array.isArray(item.payload?.warnings) && item.payload.warnings.length > 0 && (
+                      <div style={{ color: 'var(--orange, #e8a33d)', fontSize: 11 }} title={item.payload.warnings.join('\n')}>
+                        ⚠ {item.payload.warnings.length} warning{item.payload.warnings.length > 1 ? 's' : ''}
+                      </div>
+                    )}
+                    {item.status === 'pushed' && (
+                      <div className="row" style={{ gap: 6, marginTop: 4 }}>
+                        <button disabled={busy} onClick={() => setReviewStatus(item, 'approved')}
+                          title="Green-light: the auto-publisher takes it live within 15 minutes">
+                          Approve
+                        </button>
+                        <button className="ghost" disabled={busy} onClick={() => setReviewStatus(item, 'changes_requested')}>
+                          Request changes
+                        </button>
+                      </div>
+                    )}
+                    {item.status === 'approved' && (
+                      <div className="muted" style={{ fontSize: 11 }}>publishing within 15 min…</div>
+                    )}
+                    {item.status === 'published' && item.payload?.live_url && (
+                      <a href={item.payload.live_url} target="_blank" rel="noreferrer" style={{ color: 'var(--green)' }}>Live →</a>
+                    )}
+                    {(item.status === 'failed' || item.status === 'publish_failed') && item.error_msg && (
                       <span className="muted" style={{ fontSize: 11 }}>{item.error_msg}</span>
                     )}
                   </td>
