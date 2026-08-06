@@ -5,7 +5,7 @@
 // push clean article HTML to the CMS, not the meta/schema/QA blocks.
 // Also extracts the leading H1: WordPress/Shopify themes render the post
 // title themselves, so leaving the H1 in the body shows a double title.
-export function parseArticleBody(raw) {
+export function parseArticleBody(raw, { stripH1 = true } = {}) {
   if (!raw) return { body: '', metaTitle: '', metaDesc: '', articleTitle: '' };
 
   let text = raw;
@@ -38,10 +38,10 @@ export function parseArticleBody(raw) {
   // its kind (i.e. it's the first heading in the document).
   if (mdH1 && body.trimStart().startsWith('#')) {
     articleTitle = mdH1[1].replace(/\*+/g, '').trim();
-    body = body.replace(mdH1[0], '').trim();
+    if (stripH1) body = body.replace(mdH1[0], '').trim();
   } else if (htmlH1 && /^\s*<h1/i.test(body)) {
     articleTitle = htmlH1[1].replace(/<[^>]+>/g, '').trim();
-    body = body.replace(htmlH1[0], '').trim();
+    if (stripH1) body = body.replace(htmlH1[0], '').trim();
   }
 
   return {

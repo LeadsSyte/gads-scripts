@@ -76,20 +76,22 @@ export async function findBySlug(client, slug) {
 // Find a post the API user can edit (any status — drafts included) whose
 // slug matches. Used for duplicate-push protection. `status=any` needs the
 // edit context, which our Application Password gives us.
-export async function findEditablePostBySlug(client, slug) {
+export async function findEditablePostBySlug(client, slug, restBase = 'posts') {
   if (!slug) return null;
   const results = await wpRequest(client, {
-    path: 'wp/v2/posts?slug=' + encodeURIComponent(slug) + '&status=draft,pending,future,publish&context=edit'
+    path: 'wp/v2/' + restBase + '?slug=' + encodeURIComponent(slug) + '&status=draft,pending,future,publish&context=edit'
   });
   return Array.isArray(results) && results.length > 0 ? results[0] : null;
 }
 
-export async function updateDraftPost(client, postId, { title, content, status = 'draft', featured_media }) {
+export async function updateDraftPost(client, postId, { title, content, status = 'draft', featured_media, categories, author }, restBase = 'posts') {
   const body = { title, content, status };
   if (featured_media) body.featured_media = featured_media;
+  if (categories) body.categories = categories;
+  if (author) body.author = author;
   return wpRequest(client, {
     method: 'POST',
-    path: 'wp/v2/posts/' + postId,
+    path: 'wp/v2/' + restBase + '/' + postId,
     body
   });
 }
@@ -102,13 +104,15 @@ export async function updatePostMeta(client, type, postId, meta) {
   });
 }
 
-export async function createDraftPost(client, { title, content, status = 'draft', meta, featured_media }) {
+export async function createDraftPost(client, { title, content, status = 'draft', meta, featured_media, categories, author }, restBase = 'posts') {
   const body = { title, content, status };
   if (meta) body.meta = meta;
   if (featured_media) body.featured_media = featured_media;
+  if (categories) body.categories = categories;
+  if (author) body.author = author;
   return wpRequest(client, {
     method: 'POST',
-    path: 'wp/v2/posts',
+    path: 'wp/v2/' + restBase,
     body
   });
 }

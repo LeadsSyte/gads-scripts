@@ -7,6 +7,7 @@ import { generateHeroImage } from '../content/imageGen.js';
 import { loadSettings } from '../../lib/settings.js';
 import { markdownToHtml } from '../content/articleParser.js';
 import { parseArticleBody, slugifyTitle } from './parseArticle.js';
+import { getPublishingProfile } from './publishingProfile.js';
 
 function slugFromUrl(pageUrl) {
   try {
@@ -52,12 +53,13 @@ export async function pushMetaToWordPress(client, item) {
 
 export async function pushContentToWordPress(client, item) {
   const p = item.payload || {};
+  const profile = getPublishingProfile(client);
 
   // Parse the raw output to extract just the article body (no meta/schema/QA)
   // and convert from markdown to clean HTML.
   const rawContent = p.html || p.code || p.fix || '';
-  const parsed = parseArticleBody(rawContent);
-  const cleanHtml = markdownToHtml(parsed.body);
+  const parsed = parseArticleBody(rawContent, { stripH1: profile.strip_leading_h1 });
+  let cleanHtml = markdownToHtml(parsed.body);
 
   // Post title: the article's own H1 (now stripped from the body so themes
   // don't render a double title). Meta title is the SEO <title>, which is
@@ -69,8 +71,10 @@ export async function pushContentToWordPress(client, item) {
 
   // Auto-generate and upload a featured image if an image API key is set.
   let featuredMediaId = null;
+  let inlineHeroHtml = '';
   const settings = loadSettings();
-  const hasImageApi = !!(settings.openaiKey || settings.googleAiKey);
+  const heroWanted = profile.hero_mode !== 'none';
+  const hasImageApi = heroWanted && !!(settings.openaiKey || settings.googleAiKey);
   if (hasImageApi) {
     try {
       // Auto flow on CMS push — try whichever provider works, since the
@@ -79,17 +83,27 @@ export async function pushContentToWordPress(client, item) {
       const base64 = img.dataUrl.replace(/^data:image\/\w+;base64,/, '');
       const safeName = (title || 'hero').replace(/[^a-z0-9]+/gi, '-').slice(0, 50) + '.png';
       const attachment = await uploadMedia(client, base64, safeName);
-      featuredMediaId = attachment.id;
+      // hero_mode decides placement: featured image, inline at the top of
+      // the body (for themes that don't render featured images), or both.
+      if (profile.hero_mode === 'featured-only' || profile.hero_mode === 'both') {
+        featuredMediaId = attachment.id;
+      }
+      if (profile.hero_mode === 'inline-only' || profile.hero_mode === 'both') {
+        const src = attachment.source_url || '';
+        if (src) inlineHeroHtml = '<img src="' + src + '" alt="' + (title || '').replace(/"/g, '&quot;') + '" />\n';
+      }
     } catch (e) {
       console.warn('Featured image generation/upload failed (post still created):', e.message);
     }
   }
+  if (inlineHeroHtml) cleanHtml = inlineHeroHtml + cleanHtml;
 
   // Re-push protection: if a draft with this title's slug already exists,
   // update it in place instead of creating a duplicate.
+  const restBase = profile.post_type_rest_base || 'posts';
   const expectedSlug = slugifyTitle(title);
   let existing = null;
-  try { existing = await findEditablePostBySlug(client, expectedSlug); } catch { /* lookup is best-effort */ }
+  try { existing = await findEditablePostBySlug(client, expectedSlug, restBase); } catch { /* lookup is best-effort */ }
 
   // Create (or update) the draft post with clean HTML content. Meta fields
   // are set in a SEPARATE follow-up call because WordPress 403s if the meta
@@ -98,11 +112,13 @@ export async function pushContentToWordPress(client, item) {
     title,
     content: cleanHtml,
     status: 'draft', // HARD CONSTRAINT — never publish
-    featured_media: featuredMediaId || undefined
+    featured_media: featuredMediaId || undefined,
+    categories: profile.default_category_id ? [profile.default_category_id] : undefined,
+    author: profile.default_author_id || undefined
   };
   const created = existing
-    ? await updateDraftPost(client, existing.id, postFields)
-    : await createDraftPost(client, postFields);
+    ? await updateDraftPost(client, existing.id, postFields, restBase)
+    : await createDraftPost(client, postFields, restBase);
 
   // Follow-up: set Yoast + RankMath fields. If this fails (meta keys
   // not registered), we log a warning but the draft is already created.
@@ -116,12 +132,12 @@ export async function pushContentToWordPress(client, item) {
   };
   let metaStatus = 'skipped';
   try {
-    await updatePostMeta(client, 'posts', created.id, { meta: metaFields });
+    await updatePostMeta(client, restBase, created.id, { meta: metaFields });
     metaStatus = 'set';
   } catch (e) {
     // Try without the wrapper — some WP versions want flat meta, some want nested.
     try {
-      await updatePostMeta(client, 'posts', created.id, metaFields);
+      await updatePostMeta(client, restBase, created.id, metaFields);
       metaStatus = 'set';
     } catch (e2) {
       console.warn('RankMath/Yoast meta update failed (post still created):', e2.message);
