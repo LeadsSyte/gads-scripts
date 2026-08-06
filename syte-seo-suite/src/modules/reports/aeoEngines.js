@@ -6,7 +6,7 @@
 // Built-in Claude uses the suite's sessionStorage key. The three others use
 // user-provided keys from localStorage (lib/settings.js).
 
-import { loadSettings } from '../../lib/settings.js';
+import { loadSettings, hasBuiltinEngine } from '../../lib/settings.js';
 import { getStoredApiKey } from '../../lib/auth.js';
 import { fetchWithTimeout } from '../../lib/http.js';
 
@@ -73,7 +73,9 @@ export const chatgpt = {
   // (retrieval visibility); search_off omits it (parametric visibility).
   retrievalNative: false,
   supportsSearchOff: true,
-  isConfigured: () => !!loadSettings().openaiKey,
+  // A personal OpenAI key OR the deployment's built-in key (served by the
+  // openai-proxy from OPENAI_API_KEY) makes ChatGPT available to everyone.
+  isConfigured: () => !!loadSettings().openaiKey || hasBuiltinEngine('chatgpt'),
   // One web-search attempt at a given retrieval depth. Deeper context =
   // ChatGPT reads more pages = it names more brands (closer to what you see
   // manually on chatgpt.com), but takes longer. Returns a normalised
@@ -151,43 +153,6 @@ export const chatgpt = {
   }
 };
 
-// ------- Perplexity --------------------------------------------------------
-export const perplexity = {
-  id: 'perplexity',
-  label: 'Perplexity',
-  model: 'sonar',
-  retrievalNative: true,      // always search_on (retrieval-native)
-  supportsSearchOff: false,
-  isConfigured: () => !!loadSettings().perplexityKey,
-  async ask(query) {
-    const { perplexityKey } = loadSettings();
-    try {
-      const res = await fetchJsonWithRetry('https://api.perplexity.ai/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: 'Bearer ' + perplexityKey
-        },
-        body: JSON.stringify({
-          model: 'sonar',
-          max_tokens: MAX_TOKENS,
-          messages: [
-            { role: 'system', content: 'Be precise and concise.' },
-            { role: 'user', content: query }
-          ]
-        })
-      });
-      if (!res.ok) {
-        const txt = await res.text().catch(() => '');
-        return { error: 'Perplexity ' + res.status + ' ' + txt.slice(0, 200), rateLimited: res.status === 429 };
-      }
-      const data = await res.json();
-      const text = data.choices?.[0]?.message?.content || '';
-      return { text, raw: data, model: 'sonar', searchMode: 'search_on' };
-    } catch (e) { return { error: e.message }; }
-  }
-};
-
 // ------- Gemini ------------------------------------------------------------
 // History: gemini-1.5-flash was retired mid-2025 (404 for new calls),
 // gemini-2.5-flash is current but its shared / free tier 503s under
@@ -213,15 +178,17 @@ const RETRYABLE_GEMINI_STATUS = new Set([500, 502, 503, 504]);
 const GEMINI_RETRY_DELAYS_MS = [1000, 2000, 4000];
 
 async function geminiCall(model, body, apiKey) {
-  const url = 'https://generativelanguage.googleapis.com/v1beta/models/'
-    + model + ':generateContent?key=' + encodeURIComponent(apiKey);
+  // Route through the gemini-proxy Netlify function so the API key stays
+  // server-side. A personal key (apiKey) is forwarded as an override; when it's
+  // blank the proxy uses the built-in GOOGLE_AI_KEY env var. `body` is the
+  // generateContent payload (JSON string); the proxy forwards it to Google.
   let lastErr = null;
   for (let attempt = 0; attempt <= GEMINI_RETRY_DELAYS_MS.length; attempt++) {
     try {
-      const res = await fetchWithTimeout(url, {
+      const res = await fetchWithTimeout('/.netlify/functions/gemini-proxy', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body
+        body: JSON.stringify({ apiKey, model, payload: body })
       }, ENGINE_TIMEOUT_MS);
       if (res.ok) {
         const data = await res.json();
@@ -258,7 +225,9 @@ export const gemini = {
   model: GEMINI_PRIMARY,
   retrievalNative: true,      // always search_on (retrieval-native)
   supportsSearchOff: false,
-  isConfigured: () => !!loadSettings().googleAiKey,
+  // A personal Google AI key OR the deployment's built-in key (served by the
+  // gemini-proxy from GOOGLE_AI_KEY) makes Gemini available to everyone.
+  isConfigured: () => !!loadSettings().googleAiKey || hasBuiltinEngine('gemini'),
   async ask(query) {
     const { googleAiKey } = loadSettings();
     const body = JSON.stringify({ contents: [{ parts: [{ text: query }] }] });
@@ -329,7 +298,7 @@ export const claude = {
   }
 };
 
-export const ALL_ENGINES = [chatgpt, perplexity, gemini, claude];
+export const ALL_ENGINES = [chatgpt, gemini, claude];
 
 export function activeEngines() {
   return ALL_ENGINES.filter(e => e.isConfigured());
@@ -343,9 +312,8 @@ export function engineReadiness() {
   return ALL_ENGINES.map(e => ({ id: e.id, label: e.label, ready: !!e.isConfigured() }));
 }
 
-// The engines a full cross-engine snapshot is expected to cover. Perplexity is
-// optional (rarely keyed), so it's not part of the "did the run cover the core
-// three?" check the report uses.
+// The engines a full cross-engine snapshot is expected to cover — the complete
+// set now that Perplexity has been retired from the probe.
 export const CORE_ENGINE_IDS = ['claude', 'chatgpt', 'gemini'];
 
 // Resolve which run modes a probe runs on an engine (Requirement 5).

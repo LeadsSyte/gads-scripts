@@ -221,10 +221,9 @@ export function buildMicrositeHtml({ micro, client, monthLabel, previousMonthLab
   const queryRows = showAeo ? (aeo.topQueries || []).map(q => `
     <tr>
       <td>${esc(q.query)}</td>
-      <td>${q.chatgpt    ? '✓' : '—'}</td>
-      <td>${q.perplexity ? '✓' : '—'}</td>
-      <td>${q.gemini     ? '✓' : '—'}</td>
-      <td>${q.claude     ? '✓' : '—'}</td>
+      <td>${q.chatgpt ? '✓' : '—'}</td>
+      <td>${q.gemini  ? '✓' : '—'}</td>
+      <td>${q.claude  ? '✓' : '—'}</td>
     </tr>
   `).join('') : '';
 
@@ -445,13 +444,13 @@ export function buildMicrositeHtml({ micro, client, monthLabel, previousMonthLab
       ${engineTiles ? `<div class="engines">${engineTiles}</div>` : ''}
       ${queryRows ? `
       <table>
-        <thead><tr><th>Query</th><th>ChatGPT</th><th>Perplexity</th><th>Gemini</th><th>Claude</th></tr></thead>
+        <thead><tr><th>Query</th><th>ChatGPT</th><th>Gemini</th><th>Claude</th></tr></thead>
         <tbody>${queryRows}</tbody>
       </table>` : ''}
       ${competitors ? `<div style="margin-top:16px">${competitors}</div>` : ''}
       ${aeo.sentiment ? `<span class="sentiment-badge">${esc(aeo.sentiment)} of AI mentions are positive</span>` : ''}
       ${aeo.narrative ? `<p class="narrative" style="margin-top:16px">${esc(aeo.narrative)}</p>` : ''}
-      <p class="aeo-footer">Tracked across ChatGPT, Gemini, Perplexity &amp; Claude using Syte's proprietary AEO Snapshot methodology.</p>
+      <p class="aeo-footer">Tracked across ChatGPT, Gemini &amp; Claude using Syte's proprietary AEO Snapshot methodology.</p>
       ${rankscaleBtn}
     </section>` : ''}
 
