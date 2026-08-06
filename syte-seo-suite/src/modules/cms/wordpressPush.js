@@ -2,10 +2,11 @@
 // so Wordfence, Cloudflare, and CORS never block them.
 // CRITICAL: every created post uses status=draft. NEVER publish.
 
-import { wpRequest, findBySlug, updatePostMeta, createDraftPost, uploadMedia } from './wpApi.js';
+import { wpRequest, findBySlug, findEditablePostBySlug, updatePostMeta, createDraftPost, updateDraftPost, uploadMedia } from './wpApi.js';
 import { generateHeroImage } from '../content/imageGen.js';
 import { loadSettings } from '../../lib/settings.js';
 import { markdownToHtml } from '../content/articleParser.js';
+import { parseArticleBody, slugifyTitle } from './parseArticle.js';
 
 function slugFromUrl(pageUrl) {
   try {
@@ -13,39 +14,6 @@ function slugFromUrl(pageUrl) {
     const parts = u.pathname.split('/').filter(Boolean);
     return parts[parts.length - 1] || '';
   } catch { return ''; }
-}
-
-// Parse the raw Claude output into body vs metadata sections so we only
-// push clean article HTML to WordPress, not the meta/schema/QA blocks.
-function parseArticleBody(raw) {
-  if (!raw) return { body: '', metaTitle: '', metaDesc: '' };
-
-  let text = raw;
-
-  // Strip code fences: ```html ... ``` or ``` ... ```
-  text = text.replace(/^```(?:html)?\s*\n?/i, '').replace(/\n?```\s*$/i, '');
-  // If the whole thing is wrapped in a single code fence, strip it.
-  if (/^```/.test(text)) {
-    text = text.replace(/^```(?:html)?\s*\n/i, '');
-    const lastFence = text.lastIndexOf('```');
-    if (lastFence > 0) text = text.slice(0, lastFence);
-  }
-
-  const metaTitleMatch = text.match(/\*?\*?Meta Title\*?\*?:?\s*(.+)/i);
-  const metaDescMatch  = text.match(/\*?\*?Meta Description\*?\*?:?\s*(.+)/i);
-
-  // The article body is everything before the first **Meta Title or ```json.
-  const bodyEnd = text.search(/\*?\*?Meta Title\*?\*?:|```json/i);
-  let body = bodyEnd > 0 ? text.slice(0, bodyEnd).trim() : text.trim();
-
-  // Strip any remaining code fences inside the body.
-  body = body.replace(/```(?:html)?\s*\n?/gi, '').replace(/\n?```/g, '');
-
-  return {
-    body,
-    metaTitle: metaTitleMatch ? metaTitleMatch[1].trim().replace(/\*+/g, '') : '',
-    metaDesc:  metaDescMatch  ? metaDescMatch[1].trim().replace(/\*+/g, '') : '',
-  };
 }
 
 // markdownToHtml lives in ../content/articleParser.js so the CMS push,
@@ -91,8 +59,10 @@ export async function pushContentToWordPress(client, item) {
   const parsed = parseArticleBody(rawContent);
   const cleanHtml = markdownToHtml(parsed.body);
 
-  // Use parsed meta title if available, fall back to item title.
-  const title = parsed.metaTitle || item.page_title || 'Syte SEO draft';
+  // Post title: the article's own H1 (now stripped from the body so themes
+  // don't render a double title). Meta title is the SEO <title>, which is
+  // usually different (has the brand suffix) — don't conflate them.
+  const title = parsed.articleTitle || parsed.metaTitle || item.page_title || 'Syte SEO draft';
   const metaTitle = parsed.metaTitle || p.meta_title || title;
   const metaDesc = parsed.metaDesc || p.meta_description || '';
   const keyword = p.primary_keyword || '';
@@ -115,15 +85,24 @@ export async function pushContentToWordPress(client, item) {
     }
   }
 
-  // Create the draft post with clean HTML content. Meta fields are set
-  // in a SEPARATE follow-up call because WordPress 403s if the meta keys
-  // aren't registered for REST yet (requires the PHP snippet on the WP side).
-  const created = await createDraftPost(client, {
+  // Re-push protection: if a draft with this title's slug already exists,
+  // update it in place instead of creating a duplicate.
+  const expectedSlug = slugifyTitle(title);
+  let existing = null;
+  try { existing = await findEditablePostBySlug(client, expectedSlug); } catch { /* lookup is best-effort */ }
+
+  // Create (or update) the draft post with clean HTML content. Meta fields
+  // are set in a SEPARATE follow-up call because WordPress 403s if the meta
+  // keys aren't registered for REST yet (requires the PHP snippet on the WP side).
+  const postFields = {
     title,
     content: cleanHtml,
     status: 'draft', // HARD CONSTRAINT — never publish
     featured_media: featuredMediaId || undefined
-  });
+  };
+  const created = existing
+    ? await updateDraftPost(client, existing.id, postFields)
+    : await createDraftPost(client, postFields);
 
   // Follow-up: set Yoast + RankMath fields. If this fails (meta keys
   // not registered), we log a warning but the draft is already created.
@@ -160,7 +139,22 @@ export async function pushContentToWordPress(client, item) {
     ? baseUrl + '/' + created.slug + '/'
     : created.link || '';
 
-  return { ok: true, admin_url: adminUrl, link: realLink, wp_id: created.id, wp_slug: created.slug };
+  // Surface degradations instead of swallowing them — an unattended batch
+  // run must never look "green" when SEO meta or the hero image failed.
+  const warnings = [];
+  if (metaStatus !== 'set') warnings.push('SEO meta not set: ' + metaStatus);
+  if (hasImageApi && !featuredMediaId) warnings.push('featured image failed — draft has no hero image');
+
+  return {
+    ok: true,
+    admin_url: adminUrl,
+    link: realLink,
+    wp_id: created.id,
+    wp_slug: created.slug,
+    updated_existing: !!existing,
+    meta_status: metaStatus,
+    warnings
+  };
 }
 
 export async function pushToWordPress(client, item) {

@@ -5,12 +5,31 @@
 
 const PROXY_URL = '/.netlify/functions/wp-proxy';
 
+// Proxy auth: prove to the Netlify function that the request comes from an
+// unlocked suite session, without shipping a secret in the JS bundle. We
+// send SHA-256(stored suite key); the function compares it against the
+// WP_PROXY_AUTH env var. The hash is useless as an API key by itself.
+let _authHashPromise = null;
+async function proxyAuthHash() {
+  if (_authHashPromise) return _authHashPromise;
+  _authHashPromise = (async () => {
+    try {
+      const { getStoredApiKey } = await import('../../lib/auth.js');
+      const key = getStoredApiKey();
+      if (!key || !globalThis.crypto?.subtle) return '';
+      const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(key));
+      return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
+    } catch { return ''; }
+  })();
+  return _authHashPromise;
+}
+
 export async function wpRequest(client, { method = 'GET', path, body } = {}) {
   if (!client.wp_url) throw new Error('Client has no WP Site URL set.');
 
   const res = await fetch(PROXY_URL, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'X-Suite-Auth': await proxyAuthHash() },
     body: JSON.stringify({
       wpUrl: client.wp_url,
       username: client.wp_username || '',
@@ -54,6 +73,27 @@ export async function findBySlug(client, slug) {
   return null;
 }
 
+// Find a post the API user can edit (any status — drafts included) whose
+// slug matches. Used for duplicate-push protection. `status=any` needs the
+// edit context, which our Application Password gives us.
+export async function findEditablePostBySlug(client, slug) {
+  if (!slug) return null;
+  const results = await wpRequest(client, {
+    path: 'wp/v2/posts?slug=' + encodeURIComponent(slug) + '&status=draft,pending,future,publish&context=edit'
+  });
+  return Array.isArray(results) && results.length > 0 ? results[0] : null;
+}
+
+export async function updateDraftPost(client, postId, { title, content, status = 'draft', featured_media }) {
+  const body = { title, content, status };
+  if (featured_media) body.featured_media = featured_media;
+  return wpRequest(client, {
+    method: 'POST',
+    path: 'wp/v2/posts/' + postId,
+    body
+  });
+}
+
 export async function updatePostMeta(client, type, postId, meta) {
   return wpRequest(client, {
     method: 'POST',
@@ -83,9 +123,9 @@ export async function uploadMedia(client, imageData, filename) {
   // We need to send the image as binary through our proxy.
   // The proxy handles JSON, so we send the base64 data and let
   // the proxy decode and forward it.
-  const res = await fetch('/.netlify/functions/wp-proxy', {
+  const res = await fetch(PROXY_URL, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'X-Suite-Auth': await proxyAuthHash() },
     body: JSON.stringify({
       wpUrl: client.wp_url,
       username: client.wp_username || '',
