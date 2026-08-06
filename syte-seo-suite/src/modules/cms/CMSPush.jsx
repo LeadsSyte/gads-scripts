@@ -200,6 +200,30 @@ export default function CMSPush({ sub }) {
                           onChange={e => setP('default_author_id', e.target.value ? Number(e.target.value) : null)} />
                       </div>
                     </div>
+                    <div className="grid-2" style={{ marginTop: 10 }}>
+                      <div>
+                        <label>Who approves drafts?</label>
+                        <select value={profile.approval_mode} onChange={e => setP('approval_mode', e.target.value)}>
+                          <option value="internal">Team approves in the suite (default)</option>
+                          <option value="client">Client approves by email</option>
+                        </select>
+                      </div>
+                      {profile.approval_mode === 'client' ? (
+                        <div>
+                          <label>Client approval email</label>
+                          <input type="email" placeholder="client@company.com"
+                            value={profile.client_approval_email ?? ''}
+                            onChange={e => setP('client_approval_email', e.target.value.trim() || null)} />
+                        </div>
+                      ) : (
+                        <div>
+                          <label>Notify on new draft (optional)</label>
+                          <input type="email" placeholder="— suite default —"
+                            value={profile.notify_email ?? ''}
+                            onChange={e => setP('notify_email', e.target.value.trim() || null)} />
+                        </div>
+                      )}
+                    </div>
                     <div className="row" style={{ marginTop: 10, alignItems: 'center' }}>
                       <label style={{ display: 'flex', alignItems: 'center', gap: 6, margin: 0 }}>
                         <input type="checkbox" checked={profile.strip_leading_h1}

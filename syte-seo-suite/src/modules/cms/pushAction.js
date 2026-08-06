@@ -65,6 +65,17 @@ export async function pushItemInline(client, item) {
         warnings: result.warnings || []
       }
     });
+    // Fire-and-forget draft-ready notification (internal email, or the
+    // client approval email when the profile says approval_mode 'client').
+    // A notification failure must never fail the push itself.
+    try {
+      fetch('/.netlify/functions/notify-draft', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ queueId: row.id })
+      }).catch(() => {});
+    } catch { /* ignore */ }
+
     return {
       ok: true,
       admin_url: result.admin_url || '',

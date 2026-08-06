@@ -36,6 +36,22 @@ export const PROFILE_DEFAULTS = {
 
   // Shopify: which blog articles go to. null = first blog on the store.
   shopify_blog_id: null,
+
+  // Who signs off on drafts before they go live:
+  //   'internal' — the team reviews in the suite (Chris clicks Approve)
+  //   'client'   — the client gets an approval email with one-click
+  //                Approve / Request changes links; no login needed
+  //   'auto'     — no review: pushes are marked approved immediately and
+  //                the publisher takes them live (for clients who've said
+  //                they don't need to see drafts)
+  approval_mode: 'internal',
+
+  // Where the client approval email goes (approval_mode 'client' only).
+  client_approval_email: null,
+
+  // Per-client override for the internal "draft ready" notification.
+  // null = the suite-wide default recipient (NOTIFY_EMAIL env).
+  notify_email: null,
 };
 
 export function getPublishingProfile(client) {
