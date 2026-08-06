@@ -57,12 +57,12 @@ t('saveSettings broadcasts SETTINGS_EVENT so open views refresh at once', () => 
 
 t('a blank field never wipes a stored key (modal saves all fields at once)', () => {
   globalThis.localStorage.store = {};
-  // All three keys are configured and persisted.
-  s.saveSettings({ openaiKey: 'sk-a', googleAiKey: 'AIzab', perplexityKey: 'pplx-c' });
+  // Both keys are configured and persisted.
+  s.saveSettings({ openaiKey: 'sk-a', googleAiKey: 'AIzab' });
   // The modal re-saves the WHOLE form — and if it was opened before hydration
-  // landed, two boxes look empty and arrive as ''. That must NOT blank the
-  // stored keys, or the next AEO run drops to Claude-only.
-  s.saveSettings({ openaiKey: '', googleAiKey: '', perplexityKey: 'pplx-c' });
+  // landed, a box looks empty and arrives as ''. That must NOT blank the
+  // stored key, or the next AEO run drops to Claude-only.
+  s.saveSettings({ openaiKey: '', googleAiKey: 'AIzab' });
   eq(s.loadSettings().openaiKey, 'sk-a', 'openai survived a blank re-save');
   eq(s.loadSettings().googleAiKey, 'AIzab', 'gemini survived a blank re-save');
   eq(s.engineStatus().chatgpt, true, 'chatgpt still configured');

@@ -16,9 +16,23 @@ export const SETTINGS_EVENT = 'syte-suite-settings-changed';
 
 const DEFAULTS = {
   openaiKey: '',
-  perplexityKey: '',
   googleAiKey: ''
 };
+
+// Engines whose API keys are BUILT IN to this deployment (held server-side in
+// Netlify env vars, used by the openai-proxy / gemini-proxy functions). The
+// browser can't see the secret keys, so this public build-time flag tells the
+// UI which engines are available to everyone without a personal key. Set
+// `VITE_BUILTIN_ENGINES=chatgpt,gemini` in Netlify alongside OPENAI_API_KEY /
+// GOOGLE_AI_KEY. A user-entered key still overrides the built-in one.
+export function builtinEngines() {
+  let raw = '';
+  try { raw = (import.meta.env && import.meta.env.VITE_BUILTIN_ENGINES) || ''; } catch { raw = ''; }
+  return new Set(String(raw).toLowerCase().split(',').map(s => s.trim()).filter(Boolean));
+}
+export function hasBuiltinEngine(id) {
+  return builtinEngines().has(String(id).toLowerCase());
+}
 
 export function loadSettings() {
   try {
@@ -30,7 +44,7 @@ export function loadSettings() {
 
 export function saveSettings(patch) {
   // Never let a blank field overwrite a stored key. The settings modal saves
-  // ALL fields at once (openaiKey / perplexityKey / googleAiKey), sending ''
+  // ALL fields at once (openaiKey / googleAiKey), sending ''
   // for any box that looks empty — e.g. it was opened before remote hydration
   // landed, or the value is masked. Without this filter one such save wipes
   // good keys out of localStorage, and the next AEO run drops to Claude-only
@@ -81,10 +95,11 @@ export async function hydrateSettingsFromRemote() {
 export function engineStatus() {
   const s = loadSettings();
   return {
-    chatgpt:    !!s.openaiKey,
-    perplexity: !!s.perplexityKey,
-    gemini:     !!s.googleAiKey,
-    claude:     true // always available via the suite's built-in Anthropic key
+    // A personal key OR the deployment's built-in (env-var) key makes an
+    // engine available. Claude is always built in via the suite's Anthropic key.
+    chatgpt: !!s.openaiKey || hasBuiltinEngine('chatgpt'),
+    gemini:  !!s.googleAiKey || hasBuiltinEngine('gemini'),
+    claude:  true
   };
 }
 
@@ -92,8 +107,8 @@ export function engineStatus() {
 // Assumption: each engine costs ~$0.005 per probe-query response, plus one
 // Claude-Haiku sentiment call per mention detected (~$0.001).
 export function estimateSweepCost(clientCount, avgQueriesPerClient = 6) {
-  const { chatgpt, perplexity, gemini, claude } = engineStatus();
-  const activeEngines = [chatgpt, perplexity, gemini, claude].filter(Boolean).length;
+  const { chatgpt, gemini, claude } = engineStatus();
+  const activeEngines = [chatgpt, gemini, claude].filter(Boolean).length;
   const responses = clientCount * avgQueriesPerClient * activeEngines;
   const cost = responses * 0.005 + responses * 0.0005; // sentiment
   return { responses, activeEngines, cost };

@@ -24,11 +24,18 @@ export async function handler(event) {
   catch { return { statusCode: 400, headers: corsHeaders(), body: 'Invalid JSON' }; }
 
   const { apiKey, endpoint, body } = payload;
-  if (!apiKey) {
-    return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'Missing apiKey' }) };
-  }
   if (!endpoint) {
     return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'Missing endpoint' }) };
+  }
+
+  // Key resolution: a browser-supplied key (a user's personal override) wins;
+  // otherwise fall back to the deployment's built-in OPENAI_API_KEY env var so
+  // ChatGPT works for every operator without anyone pasting a key. The raw key
+  // never reaches the browser — it stays server-side in this function.
+  const browserKey = String(apiKey || '').trim();
+  const cleanKey = browserKey || String(process.env.OPENAI_API_KEY || '').trim();
+  if (!cleanKey) {
+    return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'No OpenAI key: neither a personal key nor the built-in OPENAI_API_KEY env var is set.' }) };
   }
 
   // HTTP header values are ByteStrings — every character must be 0-255.
@@ -38,7 +45,6 @@ export async function handler(event) {
   // and return a precise, actionable error so the operator knows the
   // key needs re-pasting from the original source rather than chasing
   // a phantom 502.
-  const cleanKey = String(apiKey).trim();
   const badIdx = [...cleanKey].findIndex(ch => ch.charCodeAt(0) > 255);
   if (badIdx !== -1) {
     return {

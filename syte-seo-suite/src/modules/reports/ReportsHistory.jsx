@@ -120,7 +120,6 @@ export default function ReportsHistory() {
                   <th>Coverage</th>
                   <th>AEO Index</th>
                   <th>ChatGPT</th>
-                  <th>Perplexity</th>
                   <th>Gemini</th>
                   <th>Claude</th>
                   <th>Sentiment</th>
@@ -134,7 +133,6 @@ export default function ReportsHistory() {
                     <td style={{ fontWeight: 600 }}>{coveragePct(s)}%</td>
                     <td style={{ color: scoreColor(composite(s)), fontWeight: 600 }}>{composite(s)}</td>
                     <td>{s.engine_scores?.chatgpt ?? '—'}</td>
-                    <td>{s.engine_scores?.perplexity ?? '—'}</td>
                     <td>{s.engine_scores?.gemini ?? '—'}</td>
                     <td>{s.engine_scores?.claude ?? '—'}</td>
                     <td className="muted">{s.sentiment || '—'}</td>
