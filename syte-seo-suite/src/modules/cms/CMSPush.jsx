@@ -87,6 +87,25 @@ export default function CMSPush({ sub }) {
   }
 
   const [blogs, setBlogs] = useState([]);
+  const [health, setHealth] = useState(null);
+
+  // Full readiness test: auth, post-type, create+delete a test draft, SEO
+  // meta writability. Result is stored on the profile so batch selection
+  // can filter to ready clients.
+  async function handleHealthCheck() {
+    setBusy(true); setErr(''); setMsg(''); setHealth(null);
+    try {
+      const { runHealthCheck } = await import('./healthCheck.js');
+      const result = await runHealthCheck({ ...client, ...form });
+      setHealth(result);
+      const profile = getPublishingProfile(form);
+      const stamped = { ...profile, publish_readiness: { ready: result.ready, checked_at: new Date().toISOString(), summary: result.checks.map(c => (c.ok ? 'ok' : 'FAIL') + ' ' + c.name) } };
+      setForm(f => ({ ...f, publishing_profile: stamped }));
+      await saveConnector({ publishing_profile: stamped });
+      setMsg(result.ready ? 'Client is READY for automated publishing.' : 'Not ready yet — see the failed checks below.');
+    } catch (e) { setErr(e.message); }
+    finally { setBusy(false); }
+  }
   async function handleLoadBlogs() {
     setBusy(true); setErr(''); setMsg('');
     try {
@@ -285,6 +304,37 @@ export default function CMSPush({ sub }) {
                   </>
                 );
               })()}
+            </div>
+
+            <div className="card" style={{ marginBottom: 14 }}>
+              <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+                <div>
+                  <strong>Publishing Health Check</strong>
+                  <div className="muted" style={{ fontSize: 12 }}>
+                    Full readiness test: auth, post access, create/delete a test draft, SEO fields.
+                    Run after entering credentials — a client only joins a batch once this passes.
+                  </div>
+                </div>
+                <button onClick={handleHealthCheck} disabled={busy || !form.cms_type || form.cms_type === 'Custom Site'}>
+                  Run Health Check
+                </button>
+              </div>
+              {health && (
+                <div style={{ marginTop: 10 }}>
+                  {health.checks.map((c, i) => (
+                    <div key={i} style={{ fontSize: 12, marginBottom: 4 }}>
+                      <span style={{ color: c.ok ? 'var(--green)' : 'var(--red)', fontWeight: 600 }}>{c.ok ? '✓' : '✗'} {c.name}</span>
+                      <span className="muted" style={{ marginLeft: 8 }}>{c.detail}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {!health && getPublishingProfile(form).publish_readiness && (
+                <div className="muted" style={{ fontSize: 12, marginTop: 8 }}>
+                  Last check: {getPublishingProfile(form).publish_readiness.ready ? '✓ ready' : '✗ not ready'}
+                  {' · '}{new Date(getPublishingProfile(form).publish_readiness.checked_at).toLocaleString()}
+                </div>
+              )}
             </div>
 
             <div className="card">
