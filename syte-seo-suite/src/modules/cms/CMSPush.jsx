@@ -86,6 +86,18 @@ export default function CMSPush({ sub }) {
     finally { setBusy(false); }
   }
 
+  const [blogs, setBlogs] = useState([]);
+  async function handleLoadBlogs() {
+    setBusy(true); setErr(''); setMsg('');
+    try {
+      const { listBlogs } = await import('./shopifyApi.js');
+      const list = await listBlogs({ shopify_store: form.shopify_store, shopify_token: form.shopify_token });
+      setBlogs(list);
+      setMsg(list.length + ' blog(s) found — pick where articles should go.');
+    } catch (e) { setErr(e.message); }
+    finally { setBusy(false); }
+  }
+
   // Review actions: 'pushed' (awaiting review) → approved | changes_requested.
   // The publish-approved scheduled function flips approved rows live.
   async function setReviewStatus(item, status) {
@@ -177,8 +189,21 @@ export default function CMSPush({ sub }) {
               </div>
               <div className="row" style={{ marginTop: 10 }}>
                 <button onClick={handleTestShopify} disabled={busy}>Test Connection</button>
+                <button onClick={handleLoadBlogs} disabled={busy || !form.shopify_store || !form.shopify_token}>Load Blogs</button>
                 <button onClick={() => saveConnector()} disabled={busy}>Save</button>
               </div>
+              {blogs.length > 0 && (
+                <div style={{ marginTop: 10 }}>
+                  <label>Publish articles to blog</label>
+                  <select
+                    value={getPublishingProfile(form).shopify_blog_id ?? ''}
+                    onChange={e => setForm(f => ({ ...f, publishing_profile: { ...getPublishingProfile(f), shopify_blog_id: e.target.value ? Number(e.target.value) : null } }))}
+                  >
+                    <option value="">First blog on the store (default)</option>
+                    {blogs.map(b => <option key={b.id} value={b.id}>{b.title}</option>)}
+                  </select>
+                </div>
+              )}
             </div>
 
             <div className="card" style={{ marginBottom: 14 }}>

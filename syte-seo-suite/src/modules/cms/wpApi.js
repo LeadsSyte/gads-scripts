@@ -3,26 +3,9 @@
 // to the WordPress site happens server-side, bypassing Wordfence, Cloudflare,
 // CORS, and hosting-level Authorization header stripping.
 
-const PROXY_URL = '/.netlify/functions/wp-proxy';
+import { proxyAuthHash } from './proxyAuth.js';
 
-// Proxy auth: prove to the Netlify function that the request comes from an
-// unlocked suite session, without shipping a secret in the JS bundle. We
-// send SHA-256(stored suite key); the function compares it against the
-// WP_PROXY_AUTH env var. The hash is useless as an API key by itself.
-let _authHashPromise = null;
-async function proxyAuthHash() {
-  if (_authHashPromise) return _authHashPromise;
-  _authHashPromise = (async () => {
-    try {
-      const { getStoredApiKey } = await import('../../lib/auth.js');
-      const key = getStoredApiKey();
-      if (!key || !globalThis.crypto?.subtle) return '';
-      const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(key));
-      return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
-    } catch { return ''; }
-  })();
-  return _authHashPromise;
-}
+const PROXY_URL = '/.netlify/functions/wp-proxy';
 
 export async function wpRequest(client, { method = 'GET', path, body } = {}) {
   if (!client.wp_url) throw new Error('Client has no WP Site URL set.');

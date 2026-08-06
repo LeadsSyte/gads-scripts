@@ -392,6 +392,8 @@ export default function AutoWrite() {
             return <div className="muted" style={{ padding: 12, fontSize: 12 }}>No articles found for this month.</div>;
           }
           const hasWp = client.cms_type === 'WordPress' && client.wp_url && client.wp_username && client.wp_app_password;
+          const hasShopify = client.cms_type === 'Shopify' && client.shopify_store && client.shopify_token;
+          const hasCms = hasWp || hasShopify;
           // Stub rows = saved blog records with no actual content. Usually
           // legacy duplicates from before saveBlogResult became upsert-by-
           // (client_id, topic, month), or interrupted streams. Surface a
@@ -460,7 +462,7 @@ export default function AutoWrite() {
                       </div>
                     </div>
                     <div className="row" style={{ gap: 6, flexShrink: 0, flexWrap: 'wrap' }}>
-                      {hasWp && (
+                      {hasCms && (
                         <PushToCmsButton
                           item={{
                             module: 'content',
@@ -469,7 +471,7 @@ export default function AutoWrite() {
                             change_type: 'article',
                             payload: { html: a.output, meta_title: a.topic, primary_keyword: a.keyword }
                           }}
-                          label="Push to WP"
+                          label={hasShopify ? 'Push to Shopify' : 'Push to WP'}
                           onSuccess={r => { if (r?.live_url) setPushedUrls(prev => ({ ...prev, [a.id || i]: r.live_url })); }}
                         />
                       )}

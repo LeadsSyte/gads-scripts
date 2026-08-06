@@ -58,9 +58,11 @@ export async function pushItemInline(client, item) {
         admin_url: result.admin_url || '',
         live_url: result.link || '',
         // The publish-approved scheduled function needs these to flip the
-        // draft live after approval — without a wp_id it can't publish.
+        // draft live after approval — without an id it can't publish.
         wp_id: result.wp_id || null,
         rest_base: result.rest_base || 'posts',
+        shopify_article_id: result.shopify_article_id || null,
+        shopify_blog_id: result.shopify_blog_id || null,
         meta_status: result.meta_status || '',
         warnings: result.warnings || []
       }

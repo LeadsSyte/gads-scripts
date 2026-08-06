@@ -108,9 +108,23 @@ async function publishOne(client, row) {
   }
 
   if (client.cms_type === 'Shopify') {
-    // Shopify publish lands with the Shopify push build-out (needs the
-    // article id recorded at push time + the shopify-proxy work).
-    throw new Error('Shopify auto-publish not built yet — publish manually in the store admin');
+    if (!p.shopify_article_id || !p.shopify_blog_id) {
+      throw new Error('No Shopify article/blog id on queue row — re-push the article and approve again.');
+    }
+    if (!client.shopify_store || !client.shopify_token) throw new Error('Shopify credentials missing on client');
+
+    const store = client.shopify_store.replace(/^https?:\/\//, '').replace(/\/+$/, '');
+    const res = await fetch('https://' + store + '/admin/api/2024-01/blogs/' + p.shopify_blog_id + '/articles/' + p.shopify_article_id + '.json', {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Shopify-Access-Token': client.shopify_token
+      },
+      body: JSON.stringify({ article: { id: p.shopify_article_id, published: true } })
+    });
+    const text = await res.text();
+    if (!res.ok) throw new Error('Shopify publish ' + res.status + ': ' + text.slice(0, 300));
+    return p.live_url || '';
   }
 
   throw new Error('Auto-publish not supported for cms_type: ' + (client.cms_type || 'none'));
