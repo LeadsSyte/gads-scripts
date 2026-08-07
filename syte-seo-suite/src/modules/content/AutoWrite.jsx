@@ -13,7 +13,8 @@ import MarkImplementedButton from '../../components/MarkImplementedButton.jsx';
 import PipelineView from '../../components/PipelineView.jsx';
 import LogExternalWork from '../../components/LogExternalWork.jsx';
 import { contentPipelineStatus, monthOptions } from '../../lib/pipelineStatus.js';
-import { listAllImplementations, saveBlogResult, loadContentHistory, deleteBlogResult } from '../../lib/supabase.js';
+import { listAllImplementations, saveBlogResult, loadContentHistory, deleteBlogResult, listCmsQueue } from '../../lib/supabase.js';
+import { pushItemInline } from '../cms/pushAction.js';
 import { parseOutputSections, markdownToHtml } from './articleParser.js';
 
 // Copy markdown to the clipboard as both rich HTML and plain text so a
@@ -220,6 +221,53 @@ export default function AutoWrite() {
   // verifies the correct URL instead of re-deriving a mismatched slug.
   const [pushedUrls, setPushedUrls] = useState({});
 
+  // Month-batch push: send every written-but-not-yet-pushed article for
+  // one client to their CMS in a single click. Sequential (one site, be
+  // gentle), never aborts the batch on a single failure, ends with a
+  // summary. Already-pushed titles (any non-failed queue row) are skipped.
+  const [batchState, setBatchState] = useState({}); // clientId -> {busy, progress, summary}
+  async function pushMonthBatch(client, articles) {
+    const withContent = articles.filter(a => a.output);
+    let existingTitles = new Set();
+    try {
+      const rows = await listCmsQueue(client.id);
+      existingTitles = new Set(rows.filter(r => r.status !== 'failed').map(r => (r.page_title || '').toLowerCase()));
+    } catch { /* if history is unreadable, push everything and rely on duplicate protection */ }
+    const todo = withContent.filter(a => !existingTitles.has((a.topic || a.keyword || 'Article').toLowerCase()));
+
+    if (todo.length === 0) {
+      setBatchState(s => ({ ...s, [client.id]: { busy: false, summary: 'Nothing to push — all articles are already in the CMS.' } }));
+      return;
+    }
+    if (!confirm('Push ' + todo.length + ' article(s) to ' + client.name + "'s CMS as drafts? Notifications will go out per your approval settings.")) return;
+
+    let ok = 0, warned = 0, failed = 0;
+    for (let i = 0; i < todo.length; i++) {
+      const a = todo[i];
+      setBatchState(s => ({ ...s, [client.id]: { busy: true, progress: (i + 1) + '/' + todo.length + ': ' + (a.topic || a.keyword) } }));
+      try {
+        const r = await pushItemInline(client, {
+          module: 'content',
+          page_url: client.url || '',
+          page_title: a.topic || a.keyword || 'Article',
+          change_type: 'article',
+          payload: { html: a.output, meta_title: a.topic, primary_keyword: a.keyword }
+        });
+        if (r.warnings && r.warnings.length > 0) warned++; else ok++;
+        if (r.live_url) setPushedUrls(prev => ({ ...prev, [a.id]: r.live_url }));
+      } catch (e) {
+        failed++;
+      }
+    }
+    setBatchState(s => ({
+      ...s,
+      [client.id]: {
+        busy: false,
+        summary: 'Done: ' + ok + ' pushed' + (warned ? ', ' + warned + ' with warnings' : '') + (failed ? ', ' + failed + ' FAILED (see CMS → Push History)' : '') + '.'
+      }
+    }));
+  }
+
   // Get articles for a specific client from shared content history.
   function getClientArticles(clientId) {
     return sharedHistory.filter(h => h.client_id === clientId && ((h.generated_at || h.created_at || '').slice(0, 7) === currentMonth));
@@ -394,6 +442,8 @@ export default function AutoWrite() {
           const hasWp = client.cms_type === 'WordPress' && client.wp_url && client.wp_username && client.wp_app_password;
           const hasShopify = client.cms_type === 'Shopify' && client.shopify_store && client.shopify_token;
           const hasCms = hasWp || hasShopify;
+          const batch = batchState[client.id] || {};
+          const writtenCount = articles.filter(a => a.output).length;
           // Stub rows = saved blog records with no actual content. Usually
           // legacy duplicates from before saveBlogResult became upsert-by-
           // (client_id, topic, month), or interrupted streams. Surface a
@@ -401,6 +451,24 @@ export default function AutoWrite() {
           const stubArticles = articles.filter(a => !a.output && a.tab !== 'Manual' && a.id);
           return (
             <div>
+              {hasCms && writtenCount > 0 && (
+                <div style={{
+                  padding: '10px 14px', background: 'var(--surface-2)',
+                  borderBottom: '1px solid var(--border)',
+                  display: 'flex', justifyContent: 'space-between',
+                  alignItems: 'center', gap: 10, flexWrap: 'wrap'
+                }}>
+                  <span className="muted" style={{ fontSize: 12 }}>
+                    {batch.busy
+                      ? 'Pushing ' + batch.progress
+                      : (batch.summary || writtenCount + ' written article(s) this month')}
+                  </span>
+                  <button disabled={batch.busy} onClick={() => pushMonthBatch(client, articles)}
+                    title="Sends every written article that isn't already in the CMS as a draft, in one go">
+                    Push month to CMS
+                  </button>
+                </div>
+              )}
               {stubArticles.length > 0 && (
                 <div style={{
                   padding: '10px 14px', background: 'var(--surface-2)',
