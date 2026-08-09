@@ -1,0 +1,21 @@
+{
+  "name": "syte-content-machine",
+  "version": "1.0.0",
+  "description": "Syte Content Machine — Full-stack SEO/AEO/GEO content generation tool",
+  "type": "module",
+  "scripts": {
+    "dev": "netlify dev",
+    "build": "echo 'Static site, no build step needed'"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "@supabase/supabase-js": "^2.49.1",
+    "archiver": "^7.0.1",
+    "docx": "^9.2.0",
+    "jsonwebtoken": "^9.0.2",
+    "resend": "^4.1.2"
+  },
+  "devDependencies": {
+    "netlify-cli": "^18.0.0"
+  }
+}
