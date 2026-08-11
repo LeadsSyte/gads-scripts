@@ -79,6 +79,36 @@ export async function upsertClient(client) {
   return client;
 }
 
+// Partial update: writes ONLY the given fields on a client row and leaves
+// every other column untouched. Use this for inline / single-field edits
+// (assigning a person, toggling a service, refreshing a WebCEO mapping) so a
+// save built from a stale in-memory copy can't silently revert unrelated
+// fields. That full-row overwrite is exactly what reset the per-service
+// account-manager assignments: an action that meant to change one field
+// rewrote the whole record from a snapshot taken before the reassignment.
+// The full-object upsertClient stays for the client editor form, which
+// intentionally rewrites a freshly-loaded record (and can clear fields).
+export async function updateClientFields(id, fields) {
+  assertClientId(id, 'updateClientFields');
+  if (supabase) {
+    const payload = { ...fields, updated_at: new Date().toISOString() };
+    const { data, error } = await supabase
+      .from('syte_suite_clients')
+      .update(payload)
+      .eq('id', id)
+      .select()
+      .single();
+    if (error) throw error;
+    return data;
+  }
+  const list = JSON.parse(localStorage.getItem(LS_PREFIX + 'clients') || '[]');
+  const idx = list.findIndex(c => c.id === id);
+  if (idx < 0) return null;
+  list[idx] = { ...list[idx], ...fields };
+  localStorage.setItem(LS_PREFIX + 'clients', JSON.stringify(list));
+  return list[idx];
+}
+
 export async function deleteClient(id) {
   if (supabase) {
     const { error } = await supabase.from('syte_suite_clients').delete().eq('id', id);

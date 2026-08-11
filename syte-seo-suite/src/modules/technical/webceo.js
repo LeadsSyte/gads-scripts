@@ -321,24 +321,38 @@ export async function syncWebceoClients(upsertClient, existingClients, customEnd
 
     const normUrl = rawUrl.toLowerCase().replace(/^https?:\/\//, '').replace(/\/$/, '');
     const match = (pid && byProjectId.get(pid)) || (normUrl && byUrl.get(normUrl));
-
-    const payload = {
-      ...(match || {}),
-      name,
-      url: rawUrl ? (rawUrl.startsWith('http') ? rawUrl : 'https://' + rawUrl) : match?.url || '',
-      wceo_project_id: pid || match?.wceo_project_id || '',
-      ...(match ? {} : {
-        does_technical: true,
-        does_content: true,
-        does_aeo: true,
-        does_reporting: true
-      })
-    };
+    const resolvedUrl = rawUrl
+      ? (rawUrl.startsWith('http') ? rawUrl : 'https://' + rawUrl)
+      : match?.url || '';
 
     try {
-      await upsertClient(payload);
-      if (match) updated++;
-      else inserted++;
+      if (match) {
+        // Existing client: refresh ONLY the WebCEO-owned fields. Never write
+        // the whole row from our in-memory snapshot — that snapshot can be
+        // stale (another operator or tab reassigned people since we loaded),
+        // and a full-row write would revert manager_*/does_* and every other
+        // human-edited field. This bulk overwrite is what reset the account
+        // manager assignments.
+        await upsertClient({
+          id: match.id,
+          name,
+          url: resolvedUrl,
+          wceo_project_id: pid || match.wceo_project_id || ''
+        });
+        updated++;
+      } else {
+        // Brand-new client: safe to write the full default record.
+        await upsertClient({
+          name,
+          url: resolvedUrl,
+          wceo_project_id: pid || '',
+          does_technical: true,
+          does_content: true,
+          does_aeo: true,
+          does_reporting: true
+        });
+        inserted++;
+      }
     } catch (e) {
       skipped++;
       skippedReasons.push((name || pid) + ': ' + e.message);
