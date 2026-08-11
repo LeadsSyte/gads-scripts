@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useClients } from '../../store/useClients.js';
-import { listCmsQueue, upsertClient } from '../../lib/supabase.js';
+import { listCmsQueue, updateClientFields } from '../../lib/supabase.js';
 import { detectCms, testWordPress, testShopify } from './cmsDetect.js';
 
 const ACCENT = '#4dabff';
@@ -36,8 +36,20 @@ export default function CMSPush({ sub }) {
     if (!client) return;
     setBusy(true); setErr(''); setMsg('');
     try {
-      const merged = { ...client, ...form, ...patch };
-      await upsertClient(merged);
+      // Persist ONLY the CMS connector fields. `form` mirrors the whole
+      // client, so writing it back would revert unrelated fields (e.g. the
+      // account-manager assignments) from a stale snapshot.
+      const connector = {
+        cms_type:        form.cms_type ?? '',
+        cms_detected:    form.cms_detected ?? false,
+        wp_url:          form.wp_url ?? '',
+        wp_username:     form.wp_username ?? '',
+        wp_app_password: form.wp_app_password ?? '',
+        shopify_store:   form.shopify_store ?? '',
+        shopify_token:   form.shopify_token ?? '',
+        ...patch
+      };
+      await updateClientFields(client.id, connector);
       await load();
       setMsg('Saved.');
     } catch (e) { setErr(e.message); }
