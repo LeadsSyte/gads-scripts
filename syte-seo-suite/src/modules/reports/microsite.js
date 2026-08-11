@@ -462,13 +462,13 @@ export function buildMicrositeHtml({ micro, client, monthLabel, previousMonthLab
         (${(probe.engines_used || []).join(', ')}) across ${probe.scorable_probes || probe.queries_count || new Set(probe.per_query.map(r => r.query)).size} buyer prompts × ${probe.iterations || 1} iterations = ${probe.total_runs || probe.per_query.length} total responses.
       </p>
       ${(probe.mentions || 0) === 0 && (probe.citations || 0) === 0 && !cmp?.has_previous ? `
-      <!-- No signal yet → reframe as "Establishing baseline" rather than blasting six big "0%" panels at the client (which reads as a doom report even though it's a brand-new measurement). The detail table below still shows every query that was probed. -->
+      <!-- No signal yet → reframe as "Establishing the starting point" rather than blasting six big "0%" panels at the client (which reads as a doom report even though it's a brand-new measurement). The detail table below still shows every query that was probed. -->
       <div style="padding:24px;background:var(--surface);border:1px solid var(--border);border-radius:12px;margin-bottom:20px;border-left:4px solid var(--accent);">
         <div style="font-family:'DM Serif Display',serif;font-size:24px;line-height:1.2;color:var(--text);margin-bottom:8px;">
-          Establishing the AI-visibility baseline
+          Establishing your AI-visibility starting point
         </div>
         <p style="color:var(--muted);font-size:13px;margin:0;line-height:1.55;">
-          This is the first month of AEO measurement. We probed ${probe.queries_count || new Set(probe.per_query.map(r => r.query)).size} category-demand queries across ${probe.engines_used?.length || 0} engines and the brand isn't yet surfacing in answers — that's normal at month one and tells us exactly which queries are open opportunities. Next month's report will compare against this baseline so you can see momentum.
+          This is the first month of AEO measurement. We probed ${probe.queries_count || new Set(probe.per_query.map(r => r.query)).size} category-demand queries across ${probe.engines_used?.length || 0} engines and the brand isn't yet surfacing in answers — that's normal at month one and tells us exactly which queries are open opportunities. Next month's report will compare against this first snapshot so you can see momentum.
         </p>
       </div>` : `
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-bottom:20px;">
@@ -487,7 +487,7 @@ export function buildMicrositeHtml({ micro, client, monthLabel, previousMonthLab
           </div>
         `).join('')}
       </div>
-      ${cmp?.has_previous ? `<p style="color:var(--muted);font-size:12px;font-style:italic;">Deltas vs ${esc(previousMonthLabel || cmp.previous_month || 'last month')}</p>` : '<p style="color:var(--muted);font-size:12px;font-style:italic;">First snapshot — this is the baseline. MoM deltas appear from next month.</p>'}`}
+      ${cmp?.has_previous ? `<p style="color:var(--muted);font-size:12px;font-style:italic;">Deltas vs ${esc(previousMonthLabel || cmp.previous_month || 'last month')}</p>` : '<p style="color:var(--muted);font-size:12px;font-style:italic;">First snapshot: this is our starting point. MoM deltas appear from next month.</p>'}`}
       ${micro?.aeoMomNarrative ? `<p class="narrative" style="margin-top:14px;">${esc(micro.aeoMomNarrative)}</p>` : ''}
       ${(() => {
         // Surface per-engine health when any engine errored across runs —
