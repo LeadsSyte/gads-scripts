@@ -320,13 +320,14 @@ export default function MarkImplementedButton({
   const statusColor =
     result?.status === 'verified' ? 'var(--green)' :
     result?.status === 'sent_to_developer' ? 'var(--blue)' :
-    result?.status === 'manual_required' || result?.status === 'pending' ? 'var(--orange)' :
+    (result?.status === 'manual_required' || result?.status === 'pending' || result?.status === 'inconclusive') ? 'var(--orange)' :
     'var(--red)';
   const statusLabel =
     result?.status === 'verified' ? '✓ Verified' :
     result?.status === 'sent_to_developer' ? '📧 Sent to Developer' :
     result?.status === 'manual_required' ? '⚑ Manual verification required' :
     result?.status === 'pending' ? '⏳ Pending' :
+    result?.status === 'inconclusive' ? '⚠ Couldn’t reach the page — verify manually' :
     '✗ Auto-verify failed';
 
   return (

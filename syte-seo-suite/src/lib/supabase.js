@@ -854,38 +854,50 @@ export async function deleteExternalWork(id) {
 
 const TSEO_KEY = LS_PREFIX + 'tseo_tasks';
 
+// Build the Supabase row shape from a task object.
+function tseoTaskRow(t) {
+  return {
+    id: t.id,
+    client_id: t.client_id,
+    client_name: t.client_name,
+    title: t.title,
+    description: t.description,
+    priority: t.priority,
+    page_url: t.page_url,
+    fix_type: t.fix_type,
+    copy_paste_fix: t.copy_paste_fix,
+    impact: t.impact,
+    effort: t.effort,
+    status: t.status || 'open',
+    assignee: t.assignee,
+    data_source: t.data_source,
+    impl_id: t.impl_id || null,
+    created_at: t.created_at || new Date().toISOString()
+  };
+}
+
+// Non-destructive upsert of task rows, keyed on id. Never deletes anything —
+// updates rows that exist, inserts the rest.
+async function upsertTseoRows(tasks) {
+  if (!supabase || !tasks || tasks.length === 0) return;
+  const { error } = await supabase
+    .from('syte_suite_tseo_tasks')
+    .upsert(tasks.map(tseoTaskRow), { onConflict: 'id' });
+  if (error) console.error('saveTseoTasks error:', error);
+}
+
 export async function saveTseoTasks(tasks) {
-  // Bulk upsert: clear old tasks for clients in this batch, insert new ones.
-  if (supabase && tasks.length > 0) {
-    // Get unique client IDs in this batch
-    const clientIds = [...new Set(tasks.map(t => t.client_id).filter(Boolean))];
-    for (const cid of clientIds) {
-      const clientTasks = tasks.filter(t => t.client_id === cid);
-      // Delete existing tasks for this client, then insert fresh
-      await supabase.from('syte_suite_tseo_tasks').delete().eq('client_id', cid);
-      const { error } = await supabase.from('syte_suite_tseo_tasks').insert(
-        clientTasks.map(t => ({
-          id: t.id,
-          client_id: t.client_id,
-          client_name: t.client_name,
-          title: t.title,
-          description: t.description,
-          priority: t.priority,
-          page_url: t.page_url,
-          fix_type: t.fix_type,
-          copy_paste_fix: t.copy_paste_fix,
-          impact: t.impact,
-          effort: t.effort,
-          status: t.status || 'open',
-          assignee: t.assignee,
-          data_source: t.data_source,
-          impl_id: t.impl_id || null,
-          created_at: t.created_at || new Date().toISOString()
-        }))
-      );
-      if (error) console.error('saveTseoTasks error:', error);
-    }
-  }
+  // Non-destructive upsert keyed on the task id. Each task row carries a
+  // stable uuid, so this updates rows that already exist and inserts new
+  // ones WITHOUT deleting anything.
+  //
+  // The previous implementation deleted every row for a client and
+  // re-inserted from the caller's in-memory snapshot. Because this ran on
+  // every task change and the app is multi-user, one browser's stale snapshot
+  // could wipe assignees/statuses that teammates had set — the "all assigned
+  // tasks were reset" bug. Upsert never removes rows another user added, and
+  // callers now pass only the rows they actually changed (see TechnicalSEO).
+  await upsertTseoRows(tasks);
   // Always keep localStorage in sync as fallback. The cache can blow past
   // the per-origin quota when tasks carry large copy_paste_fix payloads
   // (full JSON-LD, meta descriptions, etc.); drop the cache rather than
@@ -897,6 +909,20 @@ export async function saveTseoTasks(tasks) {
     try { localStorage.removeItem(TSEO_KEY); } catch {}
     try { localStorage.setItem(TSEO_KEY, json); } catch {}
   }
+}
+
+// Re-scan replace: swap ONE client's OPEN tasks for a fresh set, leaving
+// done/verified history and every OTHER client's tasks untouched. This is the
+// only destructive task write, and it is scoped + deliberate (a user-triggered
+// scan) — unlike the old blanket delete+insert that ran on every state change
+// and reset the whole team's assignments. localStorage is refreshed by the
+// caller's full-state persist effect, so we don't rewrite it here.
+export async function replaceClientOpenTasks(clientId, newTasks) {
+  if (supabase && clientId) {
+    await supabase.from('syte_suite_tseo_tasks')
+      .delete().eq('client_id', clientId).eq('status', 'open');
+  }
+  await upsertTseoRows(newTasks);
 }
 
 export async function loadTseoTasks() {
