@@ -478,18 +478,41 @@ export async function markSentToDeveloper(impl, sentBy = '', { imageBase64, medi
   return { status: 'sent_to_developer', detail: stored };
 }
 
+// A verification attempt is INCONCLUSIVE — not evidence the work is absent —
+// when the page can't be fetched (CORS proxy down, "Failed to fetch"), the
+// screenshot service errors, or the verifier API / JSON parse fails. These
+// outcomes must NEVER downgrade a record that was already verified or manually
+// confirmed: a transient network blip must not knock a client out of "Fixes
+// Verified on Site" and back into "Fixes Generated". For records that were not
+// yet verified we record 'inconclusive' so the UI prompts for a manual re-check
+// instead of showing a misleading red "failed".
+async function persistInconclusive(impl, detail) {
+  const prior = impl?.verification_status;
+  if (prior === 'verified' || prior === 'manual_required' || prior === 'sent_to_developer') {
+    // Keep the prior good status — only note that the latest auto-check
+    // couldn't reach the page. Do NOT touch verification_status.
+    await updateImplementation(impl.id, {
+      verification_detail: detail + ' · Kept the previous "' + prior +
+        '" result (this auto re-check was inconclusive, not a failure).'
+    });
+    return { status: prior, detail, inconclusive: true };
+  }
+  await updateImplementation(impl.id, {
+    verification_status: 'inconclusive',
+    verification_detail: detail,
+    verified_at: new Date().toISOString()
+  });
+  return { status: 'inconclusive', detail, inconclusive: true };
+}
+
 // Verify using pasted HTML — used when automated fetching fails (Shopify
 // bot blocks, Cloudflare challenges, login walls, etc.). The user pastes
 // the live page HTML (view source → copy/paste) and Claude verifies.
 export async function verifyImplementationFromHtml(impl, pastedHtml) {
   if (!pastedHtml || pastedHtml.length < 100) {
-    const detail = 'Pasted HTML is too short or empty.';
-    await updateImplementation(impl.id, {
-      verification_status: 'failed',
-      verification_detail: detail,
-      verified_at: new Date().toISOString()
-    });
-    return { status: 'failed', detail };
+    // Empty/short paste is inconclusive input, not proof of absence — never
+    // let it demote an already-verified record.
+    return persistInconclusive(impl, 'Pasted HTML is too short or empty.');
   }
   const pageData = { html: pastedHtml.slice(0, 40000), source: 'pasted-html' };
   return runVerifyWithHtml(impl, pageData);
@@ -544,9 +567,8 @@ Return ONLY valid JSON:
       parsed = jsonMatch ? JSON.parse(jsonMatch[0]) : null;
     } catch { parsed = null; }
     if (!parsed) {
-      const detail = 'Could not parse verification response.';
-      await updateImplementation(impl.id, { verification_status: 'failed', verification_detail: detail, verified_at: new Date().toISOString() });
-      return { status: 'failed', detail };
+      // Verifier returned unparseable output — inconclusive, not a failure.
+      return persistInconclusive(impl, 'Could not parse verification response.');
     }
     const status = parsed.implemented ? 'verified' : 'failed';
     const detail = [
@@ -558,9 +580,8 @@ Return ONLY valid JSON:
     await updateImplementation(impl.id, { verification_status: status, verification_detail: detail, verified_at: new Date().toISOString() });
     return { status, detail };
   } catch (e) {
-    const detail = 'Verification API error: ' + e.message;
-    await updateImplementation(impl.id, { verification_status: 'failed', verification_detail: detail, verified_at: new Date().toISOString() });
-    return { status: 'failed', detail };
+    // Verifier API threw (rate limit, network) — inconclusive, not a failure.
+    return persistInconclusive(impl, 'Verification API error: ' + e.message);
   }
 }
 
@@ -589,9 +610,8 @@ export async function verifyImplementationVisually(impl) {
     imageBase64 = btoa(binary);
     if (!imageBase64 || imageBase64.length < 100) throw new Error('Screenshot is empty or too small');
   } catch (e) {
-    const detail = 'Could not capture page screenshot: ' + e.message;
-    await updateImplementation(impl.id, { verification_status: 'failed', verification_detail: detail, verified_at: new Date().toISOString() });
-    return { status: 'failed', detail };
+    // Screenshot service unreachable (thum.io down / 403) — inconclusive.
+    return persistInconclusive(impl, 'Could not capture page screenshot: ' + e.message);
   }
 
   // Ask Claude Vision to check if the content is visible.
@@ -644,8 +664,7 @@ Return ONLY JSON:
     } catch { parsed = null; }
 
     if (!parsed) {
-      await updateImplementation(impl.id, { verification_status: 'failed', verification_detail: 'Could not parse visual verification.', verified_at: new Date().toISOString() });
-      return { status: 'failed', detail: 'Could not parse visual verification response.' };
+      return persistInconclusive(impl, 'Could not parse visual verification response.');
     }
 
     const status = parsed.visible ? 'verified' : 'failed';
@@ -653,9 +672,8 @@ Return ONLY JSON:
     await updateImplementation(impl.id, { verification_status: status, verification_detail: detail, verified_at: new Date().toISOString() });
     return { status, detail };
   } catch (e) {
-    const detail = 'Visual verification error: ' + e.message;
-    await updateImplementation(impl.id, { verification_status: 'failed', verification_detail: detail, verified_at: new Date().toISOString() });
-    return { status: 'failed', detail };
+    // Vision API threw — inconclusive, not proof the change is absent.
+    return persistInconclusive(impl, 'Visual verification error: ' + e.message);
   }
 }
 
@@ -668,26 +686,18 @@ export async function verifyImplementation(impl, client) {
   }
 
   if (!impl?.page_url) {
-    const detail = 'No page URL to scan.';
-    await updateImplementation(impl.id, {
-      verification_status: 'failed',
-      verification_detail: detail,
-      verified_at: new Date().toISOString()
-    });
-    return { status: 'failed', detail };
+    // No URL to scan — a config gap, not proof of absence. Don't demote.
+    return persistInconclusive(impl, 'No page URL to scan.');
   }
 
   let pageData;
   try {
     pageData = await fetchPageContent(impl, client);
   } catch (e) {
-    const detail = 'Could not fetch the page: ' + e.message;
-    await updateImplementation(impl.id, {
-      verification_status: 'failed',
-      verification_detail: detail,
-      verified_at: new Date().toISOString()
-    });
-    return { status: 'failed', detail };
+    // Page unreachable by every method ("Failed to fetch"). This is the
+    // classic transient proxy/network failure — it is NOT evidence the change
+    // was removed, so it must not demote an already-verified record.
+    return persistInconclusive(impl, 'Could not fetch the page: ' + e.message);
   }
 
   // If the post is a WordPress draft, note that in the verification
@@ -750,13 +760,8 @@ Return ONLY valid JSON (no prose, no code fences):
     } catch { parsed = null; }
 
     if (!parsed) {
-      const detail = 'Could not parse verification response.';
-      await updateImplementation(impl.id, {
-        verification_status: 'failed',
-        verification_detail: detail,
-        verified_at: new Date().toISOString()
-      });
-      return { status: 'failed', detail };
+      // Verifier returned unparseable output — inconclusive, not a failure.
+      return persistInconclusive(impl, 'Could not parse verification response.');
     }
 
     const status = parsed.implemented ? 'verified' : 'failed';
@@ -774,12 +779,7 @@ Return ONLY valid JSON (no prose, no code fences):
     });
     return { status, detail };
   } catch (e) {
-    const detail = 'Verification API error: ' + e.message;
-    await updateImplementation(impl.id, {
-      verification_status: 'failed',
-      verification_detail: detail,
-      verified_at: new Date().toISOString()
-    });
-    return { status: 'failed', detail };
+    // Verifier API threw (rate limit, network) — inconclusive, not a failure.
+    return persistInconclusive(impl, 'Verification API error: ' + e.message);
   }
 }

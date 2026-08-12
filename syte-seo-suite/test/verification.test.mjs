@@ -121,6 +121,10 @@ await t('on-page: head-only HTML from page-proxy is rejected (Krost case)', asyn
   // Simulates Jina returning <head> + inline CSS only — what happens on
   // some Elementor pages. Page-proxy used to accept this and feed it to
   // Claude, producing the misleading "body content not included" error.
+  // hasUsefulBody now rejects it, so every fetch method fails. That is an
+  // upstream-proxy problem, NOT evidence the change is absent — so it must
+  // resolve to 'inconclusive' (which never demotes a verified record),
+  // never 'failed'.
   const headOnly = '<!DOCTYPE html><html><head><title>Krost</title>' +
     '<style>body{margin:0}.elementor-1234{padding:20px}'.padEnd(900, ' /* css */') + '</style></head><body></body></html>';
   let proxyCalls = 0, corsCalls = 0;
@@ -132,7 +136,7 @@ await t('on-page: head-only HTML from page-proxy is rejected (Krost case)', asyn
       page_url: 'https://krostshelving.com/' },
     { url: 'https://krostshelving.com/' }
   );
-  assertEq(r.status, 'failed');
+  assertEq(r.status, 'inconclusive');
   assertMatch(r.detail, /Could not fetch/);
   if (proxyCalls < 1) throw new Error('page-proxy should have been called');
   if (corsCalls < 1) throw new Error('should have fallen through to cors after head-only response');
@@ -181,18 +185,37 @@ await t('on-page: HTML verification — Claude says not implemented', async () =
   assertMatch(r.detail, /Meta description not present/);
 });
 
-await t('on-page: page fetch fails everywhere', async () => {
+await t('on-page: page fetch fails everywhere -> inconclusive (not failed)', async () => {
   mockResponses = new Map([[/page-proxy/, () => jsonRes({ error: 'fail' }, 502)]]);
   globalThis.__mockCorsFetchText = async () => { throw new Error('cors blocked'); };
   const r = await verif.verifyImplementation(
     { id: '3', change_type: 'article', title: 'Article', page_url: 'https://example.com/blog/x' },
     { url: 'https://example.com' }
   );
-  assertEq(r.status, 'failed');
+  // A "Failed to fetch" is inconclusive — it must NOT be recorded as failed.
+  assertEq(r.status, 'inconclusive');
   assertMatch(r.detail, /Could not fetch/);
+  assertEq(globalThis.__updates[0].patch.verification_status, 'inconclusive');
 });
 
-await t('on-page: Claude returns junk JSON', async () => {
+await t('on-page: fetch fails on ALREADY-VERIFIED record -> stays verified', async () => {
+  // This is the core regression: a transient fetch failure during a re-verify
+  // must never knock a verified fix back out of "Fixes Verified on Site".
+  mockResponses = new Map([[/page-proxy/, () => jsonRes({ error: 'fail' }, 502)]]);
+  globalThis.__mockCorsFetchText = async () => { throw new Error('cors blocked'); };
+  const r = await verif.verifyImplementation(
+    { id: '3v', change_type: 'article', title: 'Article', page_url: 'https://example.com/blog/x',
+      verification_status: 'verified' },
+    { url: 'https://example.com' }
+  );
+  assertEq(r.status, 'verified');
+  // The verification_status must NOT be overwritten — only the detail note.
+  assertEq(globalThis.__updates.length, 1);
+  assertEq(globalThis.__updates[0].patch.verification_status, undefined);
+  assertMatch(globalThis.__updates[0].patch.verification_detail, /Kept the previous/);
+});
+
+await t('on-page: Claude returns junk JSON -> inconclusive (not failed)', async () => {
   const html = '<html><head><title>Page</title></head><body><h1>Heading One</h1>' +
     '<p>Some real body content goes here so the useful-body check passes — at least sixty characters of visible text is required.</p></body></html>';
   mockResponses = new Map([[/page-proxy/, () => jsonRes({ status: 200, html, source: 'direct' })]]);
@@ -201,7 +224,8 @@ await t('on-page: Claude returns junk JSON', async () => {
     { id: '4', change_type: 'h1', title: 'fix h1', page_url: 'https://example.com/' },
     { url: 'https://example.com' }
   );
-  assertEq(r.status, 'failed');
+  // Verifier malfunction is inconclusive, not proof the work is absent.
+  assertEq(r.status, 'inconclusive');
   assertMatch(r.detail, /Could not parse/);
 });
 

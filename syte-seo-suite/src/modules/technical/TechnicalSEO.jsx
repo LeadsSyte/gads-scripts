@@ -9,7 +9,7 @@ import ExternalWork from '../../components/ExternalWork.jsx';
 import { technicalPipelineStatus, monthOptions } from '../../lib/pipelineStatus.js';
 import { getAudit, syncWebceoClients, webceoDiagnose } from './webceo.js';
 import { crawlSiteForIssues, summarizeCrawlForAI } from './crawler.js';
-import { upsertClient, listAllImplementations, saveTseoTasks, loadTseoTasks, updateTseoTask, logImplementation, updateImplementation, listTseoRejections, saveTseoRejection } from '../../lib/supabase.js';
+import { upsertClient, listAllImplementations, replaceClientOpenTasks, loadTseoTasks, updateTseoTask, logImplementation, updateImplementation, listTseoRejections, saveTseoRejection } from '../../lib/supabase.js';
 import { checkOffPageTask, isOffPageTask } from '../../lib/verification.js';
 import { querySearchAnalytics } from './gsc.js';
 import { ensureToken, SCOPES, getToken, clearToken } from './googleAuth.js';
@@ -204,7 +204,9 @@ async function verifyFix(task, client) {
     try { html = await corsFetchText(task.page_url); } catch {}
   }
   if (!html || html.length < 200) {
-    return { status: 'failed', detail: 'Could not fetch the page to verify.' };
+    // Page unreachable (proxy/network). Inconclusive — do NOT mark the task
+    // failed, which would knock a verified fix back into the pipeline.
+    return { status: 'inconclusive', detail: 'Could not fetch the page to verify (network/proxy issue). Task status left unchanged — try again or verify manually.' };
   }
 
   const verdict = await claudeComplete({
@@ -413,10 +415,14 @@ export default function TechnicalSEO({ sub }) {
     }
   }
 
-  // Persist tasks to both Supabase + localStorage on every change.
+  // Persist tasks to localStorage on every change (immediate, always works).
+  // NOTE: We deliberately do NOT bulk-write the whole task list to Supabase
+  // here. Doing so on every change let a stale in-memory snapshot overwrite
+  // teammates' assignee/status edits. Instead, each mutation persists only
+  // what it changed: status/assignee edits via updateTseoTask(), and new scan
+  // tasks via an explicit replaceClientOpenTasks() (scoped delete + upsert).
   useEffect(() => {
-    saveTasks(tasks); // localStorage (immediate, always works)
-    if (tasks.length > 0) saveTseoTasks(tasks).catch(() => {}); // Supabase (async, best-effort)
+    saveTasks(tasks); // localStorage cache
   }, [tasks]);
   useEffect(() => { saveTeam(team); }, [team]);
 
@@ -515,6 +521,10 @@ export default function TechnicalSEO({ sub }) {
         );
         return [...cappedNew, ...kept];
       });
+      // Persist the replacement: scoped delete of THIS client's open tasks +
+      // upsert of the fresh set. Non-destructive to other clients and to
+      // done/verified history; no blanket table rewrite (see supabase.js).
+      replaceClientOpenTasks(c.id, cappedNew).catch(() => {});
 
       const critical = cappedNew.filter(t => t.priority === 'critical').length;
       const high = cappedNew.filter(t => t.priority === 'high').length;
@@ -568,7 +578,8 @@ export default function TechnicalSEO({ sub }) {
         return [...cappedNew, ...kept];
       })();
       setTasks(nextTasks);
-      saveTseoTasks(nextTasks).catch(() => {});
+      // Scoped, non-destructive persist (see live-scan path + supabase.js).
+      replaceClientOpenTasks(c.id, cappedNew).catch(() => {});
 
       const critical = cappedNew.filter(t => t.priority === 'critical').length;
       const high = cappedNew.filter(t => t.priority === 'high').length;
@@ -633,11 +644,12 @@ export default function TechnicalSEO({ sub }) {
       // only if we can't find the task's client in the list.
       const taskClient = clients.find(c => c.id === task.client_id) || client;
       const r = await verifyFix(task, taskClient);
-      // 'manual_required' = off-page check couldn't be automated. Don't
-      // overwrite the task status as failed — surface a message instead so
-      // the user knows to confirm manually.
-      if (r.status === 'manual_required') {
-        setMsg('Manual verification required: ' + (r.detail || 'this task happens off-page.'));
+      // 'manual_required' = off-page check couldn't be automated.
+      // 'inconclusive' = the page couldn't be fetched (transient network).
+      // In both cases, don't overwrite the task status (which would demote a
+      // verified fix) — surface a message so the user can confirm manually.
+      if (r.status === 'manual_required' || r.status === 'inconclusive') {
+        setMsg((r.status === 'inconclusive' ? '' : 'Manual verification required: ') + (r.detail || 'this task happens off-page.'));
       } else {
         updateTask(task.id, { status: r.status });
         if (r.detail) setMsg(r.detail);

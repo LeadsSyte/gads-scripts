@@ -12,7 +12,10 @@ const STATUS_STYLES = {
   failed:          { color: 'var(--red)',    label: '✗ Failed',           badge: 'red' },
   pending:         { color: 'var(--orange)', label: '⏳ Pending',          badge: 'orange' },
   manual_required: { color: 'var(--orange)', label: '⚑ Manual required',  badge: 'orange' },
-  sent_to_developer: { color: 'var(--blue)', label: '📧 Sent to Developer', badge: 'blue' }
+  sent_to_developer: { color: 'var(--blue)', label: '📧 Sent to Developer', badge: 'blue' },
+  // Verifier couldn't reach the page (transient network/proxy). NOT a
+  // failure — the prior result, if any, was preserved.
+  inconclusive:    { color: 'var(--orange)', label: '⚠ Inconclusive',     badge: 'orange' }
 };
 
 export default function ImplementationProgress() {
@@ -85,7 +88,8 @@ export default function ImplementationProgress() {
     failed:          items.filter(r => r.verification_status === 'failed').length,
     pending:         items.filter(r => r.verification_status === 'pending').length,
     manual_required: items.filter(r => r.verification_status === 'manual_required').length,
-    sent_to_developer: items.filter(r => r.verification_status === 'sent_to_developer').length
+    sent_to_developer: items.filter(r => r.verification_status === 'sent_to_developer').length,
+    inconclusive:    items.filter(r => r.verification_status === 'inconclusive').length
   }), [items]);
 
   const modules = useMemo(() => {
@@ -159,7 +163,7 @@ export default function ImplementationProgress() {
 
       {/* Filters */}
       <div className="row" style={{ gap: 8, marginBottom: 14, flexWrap: 'wrap' }}>
-        {['all', 'verified', 'sent_to_developer', 'failed', 'manual_required', 'pending'].map(f => (
+        {['all', 'verified', 'sent_to_developer', 'failed', 'manual_required', 'inconclusive', 'pending'].map(f => (
           <button
             key={f}
             onClick={() => setFilter(f)}
