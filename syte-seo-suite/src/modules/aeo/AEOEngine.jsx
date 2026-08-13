@@ -11,7 +11,7 @@ import LogExternalWork from '../../components/LogExternalWork.jsx';
 import { aeoPipelineStatus } from '../../lib/pipelineStatus.js';
 import { listAllImplementations, saveAeoResult, loadAeoResults as loadAeoResultsFromDb, deleteAeoResult, saveDeepResult, listDeepResults, deleteDeepResult } from '../../lib/supabase.js';
 import { AEO_SYSTEM, AEO_TYPES, AEO_DEEP_SYSTEM } from './aeoTypes.js';
-import { fetchSitemapUrls } from './sitemap.js';
+import { fetchSitemapUrls, discoverSitemapUrls } from './sitemap.js';
 import { listAccountSummaries, runReport } from './ga4.js';
 import { ensureToken, SCOPES, getToken, clearToken } from '../technical/googleAuth.js';
 
@@ -421,6 +421,10 @@ export default function AEOEngine({ sub }) {
   const [progress, setProgress] = useState('');
   const [err, setErr] = useState('');
 
+  // Bulk run — optimize every AEO-enabled client in one click.
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkProgress, setBulkProgress] = useState('');
+
   // Deep optimization state — single page, full rewrite + FAQ + changes log.
   const [deepUrl, setDeepUrl] = useState('');
   const [deepClientId, setDeepClientId] = useState('');
@@ -575,6 +579,22 @@ export default function AEOEngine({ sub }) {
         console.warn('[AEO] Sitemap fetch error:', e.message);
       }
 
+      // No sitemap configured (or it returned nothing) — auto-discover the
+      // real sitemap from robots.txt / common paths before giving up and
+      // falling back to homepage-only. This is what lets the engine optimize
+      // the WHOLE site instead of just the homepage when sitemap_url is blank.
+      if (sitemapUrls.length === 0 && c.url) {
+        setProgress('Step 1/4 — No sitemap set, auto-discovering from ' + c.url + '…');
+        try {
+          sitemapUrls = await discoverSitemapUrls(c.url);
+        } catch (e) {
+          console.warn('[AEO] Sitemap auto-discovery error:', e.message);
+        }
+        if (sitemapUrls.length > 0) {
+          setProgress(`Step 1/4 — Auto-discovered ${sitemapUrls.length} pages from sitemap ✓`);
+        }
+      }
+
       if (sitemapUrls.length > 0) {
         setProgress(`Step 1/4 — ${sitemapUrls.length} pages from sitemap ✓`);
       } else if (c.url) {
@@ -674,40 +694,73 @@ export default function AEOEngine({ sub }) {
       setProgress(`Step 3/4 — ${targets.length} pages selected (${prioritized.length} total) ✓`);
 
       // STEP 4: Generate AEO optimizations in batches
-      const newResults = { ...results };
+      let totalOpts = 0;
       for (let i = 0; i < targets.length; i += BATCH_SIZE) {
         const batch = targets.slice(i, i + BATCH_SIZE);
         setProgress(`Step 4/4 — ${c.name}: Optimizing pages ${i + 1}–${Math.min(i + BATCH_SIZE, targets.length)} of ${targets.length}…`);
         const batchResults = await Promise.all(
           batch.map(t => generateForPage(t.url, c).catch(e => ({ error: e.message })))
         );
-        batch.forEach((t, j) => {
-          const key = c.id + '::' + t.url;
-          const row = {
-            url: t.url, path: t.path, client_id: c.id,
-            sessions: t.sessions, priority: t.priority,
-            generated_at: new Date().toISOString(),
-            optimizations: Array.isArray(batchResults[j]) ? batchResults[j] : [],
-            error: batchResults[j]?.error || null
+        const rows = batch.map((t, j) => {
+          const opts = Array.isArray(batchResults[j]) ? batchResults[j] : [];
+          totalOpts += opts.length;
+          return {
+            key: c.id + '::' + t.url,
+            row: {
+              url: t.url, path: t.path, client_id: c.id,
+              sessions: t.sessions, priority: t.priority,
+              generated_at: new Date().toISOString(),
+              optimizations: opts,
+              error: batchResults[j]?.error || null
+            }
           };
-          newResults[key] = row;
-          // Persist each result to Supabase immediately
-          saveAeoResult(row).catch(() => {});
         });
-        setResults({ ...newResults });
+        // Persist each result to Supabase immediately.
+        rows.forEach(({ row }) => saveAeoResult(row).catch(() => {}));
+        // Functional update so sequential runs (e.g. the bulk "run all
+        // clients" loop) accumulate instead of overwriting each other from
+        // a stale closure snapshot of `results`.
+        setResults(prev => {
+          const next = { ...prev };
+          for (const { key, row } of rows) next[key] = row;
+          return next;
+        });
       }
       setHistory(prev => [
         { id: crypto.randomUUID(), client_id: c.id, client_name: c.name,
           count: targets.length, created_at: new Date().toISOString() },
         ...prev
       ]);
-      const totalOpts = targets.reduce((a, t) => {
-        const r = newResults[c.id + '::' + t.url];
-        return a + (r?.optimizations?.length || 0);
-      }, 0);
       setProgress(`Done. ${totalOpts} optimizations across ${targets.length} pages for ${c.name}.`);
     } catch (e) { setErr(e.message); }
     finally { setBusy(false); }
+  }
+
+  // Bulk run — sequentially optimize every AEO-enabled client for the month.
+  // Runs one client at a time (Claude rate limits + shared GA4 auth), so the
+  // Google sign-in popup only appears once and its token is reused for the
+  // rest of the batch. Each client's results persist to Supabase as they
+  // complete, so a mid-batch failure never loses earlier work.
+  async function runAllClients() {
+    const targets = clients.filter(c => c.does_aeo !== false);
+    if (!targets.length) { setErr('No AEO-enabled clients to run.'); return; }
+    if (!confirm(`Run AEO optimizations for all ${targets.length} enabled clients? This can take a while and will use Claude credits for each page.`)) return;
+
+    setBulkBusy(true); setErr('');
+    let done = 0, failed = 0;
+    for (const c of targets) {
+      setBulkProgress(`Client ${done + failed + 1} of ${targets.length} — ${c.name}…`);
+      try {
+        await runForClient(c);
+        done++;
+      } catch (e) {
+        failed++;
+        console.warn('[AEO bulk] failed for', c?.name, e);
+      }
+    }
+    setBulkProgress(`Batch complete — ${done} client${done === 1 ? '' : 's'} optimized${failed ? `, ${failed} failed` : ''}.`);
+    setBulkBusy(false);
+    refreshImplementations();
   }
 
   async function pullFromSitemap() {
@@ -881,6 +934,32 @@ export default function AEOEngine({ sub }) {
             </div>
           </div>
         )}
+
+        {/* Run-all header — optimize every AEO client for the month at once */}
+        <div className="card" style={{ marginBottom: 12, padding: '12px 16px' }}>
+          <div className="row" style={{ justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
+            <div>
+              <div style={{ fontWeight: 600, fontSize: 14 }}>Monthly AEO run — {monthLabel}</div>
+              <div className="muted" style={{ fontSize: 12, marginTop: 2 }}>
+                Run optimizations for all {aeoClients.length} AEO-enabled client{aeoClients.length === 1 ? '' : 's'} in one pass. Runs one at a time; sign in to Google once and it's reused for the batch.
+              </div>
+            </div>
+            <button
+              className="primary"
+              style={{ background: ACCENT, borderColor: ACCENT, color: '#000', whiteSpace: 'nowrap' }}
+              onClick={runAllClients}
+              disabled={bulkBusy || busy || aeoClients.length === 0}
+            >
+              {bulkBusy ? 'Running all clients…' : `Run All ${aeoClients.length} Clients`}
+            </button>
+          </div>
+          {(bulkBusy || bulkProgress) && (
+            <div className="row" style={{ gap: 10, marginTop: 10 }}>
+              {bulkBusy && <span className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} />}
+              <span style={{ fontSize: 13, color: bulkBusy ? 'var(--text)' : 'var(--green)' }}>{bulkProgress}</span>
+            </div>
+          )}
+        </div>
 
         {/* Pipeline overview */}
         <PipelineView

@@ -88,3 +88,47 @@ export async function fetchSitemapUrls(sitemapUrl, sitemapRaw, depth = 0) {
 
   return locs.filter(isContentUrl);
 }
+
+// Common sitemap locations to probe when a client has no explicit sitemap URL.
+const COMMON_SITEMAP_PATHS = [
+  '/sitemap.xml', '/sitemap_index.xml', '/sitemap-index.xml',
+  '/wp-sitemap.xml', '/sitemap/sitemap.xml', '/sitemap1.xml',
+  '/sitemap-index.xml', '/sitemap.xml.gz'
+];
+
+// Given a site's base URL, find and read its sitemap(s) even when no explicit
+// sitemap URL is configured on the client. Order of attempts:
+//   1. robots.txt "Sitemap:" directives (the canonical, self-declared location)
+//   2. a handful of common sitemap paths at the site origin
+// Returns the flattened list of content page URLs (recursing through sitemap
+// indexes). Returns [] if nothing usable is found.
+export async function discoverSitemapUrls(baseUrl) {
+  if (!baseUrl) return [];
+  let origin;
+  try { origin = new URL(baseUrl).origin; } catch { return []; }
+
+  // 1. robots.txt usually points straight at the real sitemap(s).
+  const fromRobots = [];
+  try {
+    const robots = await fetchWithProxies(origin + '/robots.txt');
+    if (robots) {
+      for (const line of robots.split('\n')) {
+        const m = line.match(/^\s*sitemap:\s*(\S+)/i);
+        if (m && m[1]) fromRobots.push(m[1].trim());
+      }
+    }
+  } catch {}
+
+  // De-dupe candidate sitemap URLs, robots-declared ones first.
+  const seen = new Set();
+  const candidates = [...fromRobots, ...COMMON_SITEMAP_PATHS.map(p => origin + p)]
+    .filter(u => { if (seen.has(u)) return false; seen.add(u); return true; });
+
+  for (const url of candidates) {
+    try {
+      const urls = await fetchSitemapUrls(url, null);
+      if (urls.length > 0) return urls;
+    } catch {}
+  }
+  return [];
+}
