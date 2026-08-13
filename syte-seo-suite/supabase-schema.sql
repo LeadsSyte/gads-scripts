@@ -27,6 +27,15 @@ create table if not exists syte_suite_clients (
   wp_username text,
   shopify_store text,
   shopify_token text,
+  -- Ownership / people. `owner` is the default person for the client;
+  -- each manager_* column optionally overrides that person for one service
+  -- (matching the does_technical / does_content / does_aeo / does_reporting
+  -- service flags). Existing databases: run supabase-schema-people.sql.
+  owner text,
+  manager_technical text,
+  manager_content text,
+  manager_aeo text,
+  manager_reporting text,
   created_at timestamptz default now(),
   updated_at timestamptz default now()
 );

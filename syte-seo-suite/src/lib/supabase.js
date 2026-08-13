@@ -155,7 +155,7 @@ export async function diagnoseSupabase() {
       return {
         ok: false,
         reason: 'table-error',
-        detail: 'Supabase table query failed: ' + error.message + '. Did you run both supabase-schema.sql and supabase-schema-reports.sql?',
+        detail: 'Supabase table query failed: ' + error.message + '. Did you run supabase-schema.sql, supabase-schema-reports.sql and supabase-schema-people.sql?',
         url,
         keyPreview: key.slice(0, 12) + '…'
       };
