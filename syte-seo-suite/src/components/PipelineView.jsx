@@ -128,7 +128,7 @@ function PipelineSection({ section, onAction, actions, onExpandClient, expandedI
   );
 }
 
-export default function PipelineView({ title, month, sections, onAction, actions, onExpandClient, expandedId, renderExpanded }) {
+export default function PipelineView({ title, month, monthSelector, sections, onAction, actions, onExpandClient, expandedId, renderExpanded }) {
   const total = sections.reduce((a, s) => a + s.clients.length, 0);
 
   return (
@@ -140,7 +140,8 @@ export default function PipelineView({ title, month, sections, onAction, actions
             {total} clients · {month}
           </div>
         </div>
-        <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+        <div className="row" style={{ gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+          {monthSelector}
           {sections.map(s => (
             <span key={s.key} style={{ fontSize: 11, padding: '4px 10px', borderRadius: 999, border: '1px solid var(--border)', background: 'var(--surface-2)' }}>
               <span style={{ color: s.color, fontWeight: 700 }}>{s.clients.length}</span>

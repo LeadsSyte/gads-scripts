@@ -26,6 +26,10 @@ create index if not exists syte_suite_tseo_tasks_client_idx
 
 alter table syte_suite_tseo_tasks disable row level security;
 
+-- Link a task to the permanent implementation record it was logged as when
+-- marked Done/Verified, so re-scans can't erase the completed-work history.
+alter table syte_suite_tseo_tasks add column if not exists impl_id uuid;
+
 -- 2. AEO optimization results — generated optimizations per page per client.
 create table if not exists syte_suite_aeo_results (
   id uuid primary key default gen_random_uuid(),
@@ -48,6 +52,31 @@ alter table syte_suite_aeo_results disable row level security;
 -- 3. Add columns to clients (safe to re-run).
 alter table syte_suite_clients add column if not exists looker_url text;
 alter table syte_suite_clients add column if not exists client_type text;  -- 'ecommerce' | 'lead_gen'
+-- Brand reference material for the Content Engine: uploaded docs + website scan.
+alter table syte_suite_clients add column if not exists brand_docs text;
+-- Account manager / owner responsible for the client. Kept as the default
+-- owner: a fallback used for any service that has no specific person assigned.
+alter table syte_suite_clients add column if not exists account_manager text;
+-- Per-service assignees. Several people often work the same client (one on
+-- Technical, another on Content, etc.), so each service carries its own owner.
+-- When blank, that service falls back to account_manager above.
+alter table syte_suite_clients add column if not exists manager_technical text;
+alter table syte_suite_clients add column if not exists manager_content text;
+alter table syte_suite_clients add column if not exists manager_aeo text;
+alter table syte_suite_clients add column if not exists manager_reporting text;
+-- The Google account email that has access to this client's GA4 + GSC
+-- properties. Captured when the operator picks properties via the Google
+-- Connections picker. Used as login_hint on subsequent visits so the right
+-- account is selected automatically (and to warn if the wrong one is in use).
+alter table syte_suite_clients add column if not exists google_account_email text;
+-- Per-API bindings — for the (common) case where a single client has GA4
+-- under one Google account and Search Console under a different one (e.g.
+-- the brand owns GSC but the agency hosts GA4). When set, these win over
+-- google_account_email for their respective API; when unset they fall
+-- back to it. Captured automatically when the operator picks a property
+-- in the picker — whichever account was active gets bound to that API.
+alter table syte_suite_clients add column if not exists ga4_account_email text;
+alter table syte_suite_clients add column if not exists gsc_account_email text;
 
 -- 4. AEO Deep Optimizations — full-page rewrites with FAQ + changes log.
 -- Distinct from syte_suite_aeo_results (which holds the 5-snippet quick-wins).
@@ -117,3 +146,113 @@ create unique index if not exists syte_suite_report_cache_uniq
   on syte_suite_report_cache(client_id, month);
 
 alter table syte_suite_report_cache disable row level security;
+
+-- 7. Generated report content — the actual artefacts produced by a
+-- generation run (Alice email, microsite JSON, QA, AEO probe, frozen
+-- reportData snapshot). Persisted so reopening the tool can re-render
+-- the report without re-running Claude / re-querying GA4+GSC.
+-- One row per client per month; updated on regeneration.
+--
+-- The base table normally lives in supabase-schema-reports.sql, but we
+-- recreate it here with `if not exists` so this file works as a single
+-- self-contained patch even if reports.sql hasn't been run.
+create table if not exists syte_suite_report_generated_log (
+  id uuid primary key default gen_random_uuid(),
+  client_id uuid references syte_suite_clients(id) on delete cascade,
+  month text not null,
+  generated_at timestamptz default now(),
+  qa_score int,
+  email_subject text,
+  report_type text,                     -- 'full' | 'aeo'
+  created_at timestamptz default now(),
+  unique (client_id, month)
+);
+
+create index if not exists syte_suite_report_generated_log_client_month_idx
+  on syte_suite_report_generated_log(client_id, month desc);
+
+alter table syte_suite_report_generated_log disable row level security;
+
+alter table syte_suite_report_generated_log add column if not exists email_body text;
+alter table syte_suite_report_generated_log add column if not exists microsite_json jsonb;
+alter table syte_suite_report_generated_log add column if not exists qa jsonb;
+alter table syte_suite_report_generated_log add column if not exists aeo_probe jsonb;
+alter table syte_suite_report_generated_log add column if not exists report_data jsonb;
+-- Operator-edited microsite HTML. When set, the report viewer renders this
+-- verbatim instead of re-building from microsite_json + report_data — so
+-- in-place visual edits made before sending survive the round-trip.
+alter table syte_suite_report_generated_log add column if not exists microsite_html_override text;
+
+-- 7b. Sent-report proof of email. Lets an operator record that a client was
+-- emailed their report — even for a report that was never built in the tool —
+-- by attaching a PDF of what was sent. The PDF is stored as a base64 data URL
+-- so it's captured against the client's permanent record and viewable later.
+--   manual        — true when the send was logged via "Mark emailed" (upload),
+--                   as opposed to the in-tool Approve & Mark Sent flow.
+--   report_pdf    — base64 data URL of the uploaded proof PDF (fetched on
+--                   demand; never pulled in the sent-reports list query).
+--   pdf_filename  — original filename, shown in History / on the View button.
+--   notes         — optional free-text note about the send.
+alter table syte_suite_report_log add column if not exists manual       boolean default false;
+alter table syte_suite_report_log add column if not exists report_pdf   text;
+alter table syte_suite_report_log add column if not exists pdf_filename text;
+alter table syte_suite_report_log add column if not exists notes        text;
+
+-- 8. Rejected optimizations — operator-driven blocklist so a task or AEO
+-- snippet that's been explicitly rejected doesn't reappear next month
+-- when the audit / sitemap re-discovers the same underlying issue.
+--
+-- Technical SEO rejections are keyed by a stable dedup key
+-- (client_id|page_url|title) so a freshly-triaged task with a new UUID
+-- but the same logical issue is filtered out automatically.
+create table if not exists syte_suite_tseo_rejections (
+  client_id uuid references syte_suite_clients(id) on delete cascade,
+  dedup_key text not null,
+  reason text,
+  rejected_at timestamptz default now(),
+  primary key (client_id, dedup_key)
+);
+
+create index if not exists syte_suite_tseo_rejections_client_idx
+  on syte_suite_tseo_rejections(client_id);
+
+alter table syte_suite_tseo_rejections disable row level security;
+
+-- AEO rejections are keyed per (client, page_url, opt_key) where opt_key
+-- combines the optimization's type + name. A re-run that produces an
+-- optimization with the same type+name on the same page is filtered out.
+create table if not exists syte_suite_aeo_rejections (
+  client_id uuid references syte_suite_clients(id) on delete cascade,
+  page_url text not null,
+  opt_key text not null,
+  reason text,
+  rejected_at timestamptz default now(),
+  primary key (client_id, page_url, opt_key)
+);
+
+create index if not exists syte_suite_aeo_rejections_client_idx
+  on syte_suite_aeo_rejections(client_id);
+
+alter table syte_suite_aeo_rejections disable row level security;
+
+-- 9. External work log — work done OUTSIDE the suite (WebCEO, Google Search
+-- Console, Screaming Frog, Ahrefs, etc.). Manually logged with an optional
+-- screenshot (stored as a data URL) as proof of work.
+create table if not exists syte_suite_external_work (
+  id uuid primary key default gen_random_uuid(),
+  client_id uuid references syte_suite_clients(id) on delete cascade,
+  client_name text,
+  tool text not null,                    -- WebCEO | Google Search Console | Screaming Frog | Ahrefs | etc.
+  category text,                         -- Audit | Fix | Submission | Research | Monitoring | Other
+  description text not null,             -- what was done
+  work_url text,                         -- optional related page/report URL
+  screenshot text,                       -- optional proof — data URL or pasted image URL
+  work_date date default now(),
+  done_by text,
+  created_at timestamptz default now()
+);
+
+create index if not exists syte_suite_external_work_client_idx
+  on syte_suite_external_work(client_id, work_date desc);
+
+alter table syte_suite_external_work disable row level security;

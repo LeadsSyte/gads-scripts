@@ -77,25 +77,29 @@ export async function generateWithDalle(prompt) {
   const { openaiKey } = loadSettings();
   if (!openaiKey) throw new Error('OpenAI API key not set. Open Suite Settings.');
 
-  const res = await fetch('https://api.openai.com/v1/images/generations', {
+  // OpenAI doesn't allow browser-direct CORS, so route through our
+  // Netlify proxy. The proxy adds the Authorization header server-side
+  // and returns the upstream response verbatim.
+  const res = await fetch('/.netlify/functions/openai-proxy', {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: 'Bearer ' + openaiKey
-    },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      model: 'dall-e-3',
-      prompt,
-      n: 1,
-      size: '1792x1024', // closest to 16:9
-      quality: 'standard',
-      response_format: 'b64_json'
+      apiKey: openaiKey,
+      endpoint: 'images/generations',
+      body: {
+        model: 'dall-e-3',
+        prompt,
+        n: 1,
+        size: '1792x1024', // closest to 16:9
+        quality: 'standard',
+        response_format: 'b64_json'
+      }
     })
   });
 
   if (!res.ok) {
     const txt = await res.text().catch(() => '');
-    throw new Error('DALL-E error ' + res.status + ': ' + txt.slice(0, 200));
+    throw new Error('DALL-E error ' + res.status + ': ' + txt.slice(0, 300));
   }
 
   const data = await res.json();
@@ -114,36 +118,36 @@ export async function generateWithDalle(prompt) {
 // Unified caller — tries the preferred provider, falls back to the other.
 // ---------------------------------------------------------------------------
 
-export async function generateHeroImage(articleTitle, keyword, client, { preferredProvider = 'dalle' } = {}) {
+// allowFallback: when the caller picked a provider explicitly via the UI,
+// we want a useful error from THAT provider — not a misleading message
+// from the other one tried as a silent fallback. Auto-selected callers
+// (e.g. CMS auto-generate-on-push) can opt back into fallback.
+export async function generateHeroImage(articleTitle, keyword, client, { preferredProvider = 'dalle', allowFallback = false } = {}) {
   const prompt = buildImagePrompt(articleTitle, keyword, client);
-  const { openaiKey } = loadSettings();
-  const { googleAiKey } = loadSettings();
+  const { openaiKey, googleAiKey } = loadSettings();
 
-  const providers = preferredProvider === 'imagen'
-    ? [
-        { name: 'imagen', fn: () => generateWithImagen(prompt), available: !!googleAiKey },
-        { name: 'dalle',  fn: () => generateWithDalle(prompt),  available: !!openaiKey }
-      ]
-    : [
-        { name: 'dalle',  fn: () => generateWithDalle(prompt),  available: !!openaiKey },
-        { name: 'imagen', fn: () => generateWithImagen(prompt), available: !!googleAiKey }
-      ];
+  const dalle  = { name: 'dalle',  fn: () => generateWithDalle(prompt),  available: !!openaiKey };
+  const imagen = { name: 'imagen', fn: () => generateWithImagen(prompt), available: !!googleAiKey };
+  const chosen = preferredProvider === 'imagen' ? imagen : dalle;
+  const other  = preferredProvider === 'imagen' ? dalle  : imagen;
 
-  const available = providers.filter(p => p.available);
-  if (available.length === 0) {
+  if (!chosen.available && !other.available) {
     throw new Error('No image generation API key configured. Set OpenAI or Google AI key in Suite Settings.');
   }
-
-  let lastErr;
-  for (const p of available) {
-    try {
-      return await p.fn();
-    } catch (e) {
-      lastErr = e;
-      console.warn(`[ImageGen] ${p.name} failed:`, e.message);
-    }
+  if (!chosen.available) {
+    throw new Error(
+      (preferredProvider === 'imagen' ? 'Imagen 3' : 'DALL-E 3') +
+      ' selected but no API key is set for it. Add the key in Suite Settings, or pick the other provider.'
+    );
   }
-  throw lastErr;
+
+  try {
+    return await chosen.fn();
+  } catch (e) {
+    if (!allowFallback || !other.available) throw e;
+    console.warn(`[ImageGen] ${chosen.name} failed, falling back to ${other.name}:`, e.message);
+    return await other.fn();
+  }
 }
 
 // Download a data URL as a file.

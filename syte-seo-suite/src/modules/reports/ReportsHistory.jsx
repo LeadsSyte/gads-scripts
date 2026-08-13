@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useClients } from '../../store/useClients.js';
-import { listAeoSnapshots, listSentReports, deleteAeoSnapshot } from '../../lib/supabase.js';
+import { listAeoSnapshots, listSentReports, deleteAeoSnapshot, getSentReportPdf } from '../../lib/supabase.js';
+import { normalizeSnapshot } from './aeoCompare.js';
 
 const ACCENT = '#a78bfa';
 
@@ -39,10 +40,35 @@ export default function ReportsHistory() {
     catch (e) { setErr(e.message); }
   }
 
+  const [pdfBusy, setPdfBusy] = useState(null); // id currently loading
+
+  // Fetch the stored proof PDF on demand and open it in a viewer tab. The PDF
+  // is a base64 data URL; convert it to a Blob so the browser opens a normal
+  // object URL rather than choking on a multi-MB data: URI.
+  async function viewPdf(id) {
+    setErr(''); setPdfBusy(id);
+    try {
+      const rec = await getSentReportPdf(id);
+      if (!rec?.report_pdf) { setErr('No PDF stored for this report.'); return; }
+      const blob = await (await fetch(rec.report_pdf)).blob();
+      const url = URL.createObjectURL(blob);
+      window.open(url, '_blank', 'noopener');
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    } catch (e) {
+      setErr('Could not open PDF: ' + (e.message || String(e)));
+    } finally {
+      setPdfBusy(null);
+    }
+  }
+
   if (!client) return <div className="muted">Select a client first.</div>;
 
-  // Max score for the little sparkline bars.
-  const maxScore = Math.max(100, ...snapshots.map(s => s.overall_score || 0));
+  // Normalize so pre-v2 single-shot snapshots gain coverage_rate +
+  // composite_index and plot on the same axes as v2 snapshots.
+  const norm = snapshots.map(s => normalizeSnapshot(s));
+  const coveragePct = s => Math.round((s.coverage_rate ?? 0) * 100);
+  const composite = s => s.composite_index ?? s.overall_score ?? 0;
+  const BLUE = 'var(--blue, #4F8EF7)';
 
   return (
     <div>
@@ -58,40 +84,42 @@ export default function ReportsHistory() {
         )}
         {snapshots.length > 0 && (
           <>
-            {/* Simple SVG line chart — no external libs. */}
-            <svg width="100%" height="120" viewBox={`0 0 ${Math.max(200, snapshots.length * 60)} 120`} style={{ marginTop: 14 }}>
+            {/* Coverage rate + composite index over time. Old snapshots plot
+                via the normalize shim. Both metrics share a 0-100 axis. */}
+            <div className="row" style={{ gap: 16, marginTop: 12, fontSize: 11 }}>
+              <span><span style={{ display: 'inline-block', width: 10, height: 3, background: ACCENT, marginRight: 5, verticalAlign: 'middle' }} />AEO Index</span>
+              <span><span style={{ display: 'inline-block', width: 10, height: 3, background: BLUE, marginRight: 5, verticalAlign: 'middle' }} />Coverage rate %</span>
+            </div>
+            <svg width="100%" height="130" viewBox={`0 0 ${Math.max(200, norm.length * 60)} 130`} style={{ marginTop: 8 }}>
               <line x1="0" y1="20" x2="100%" y2="20" stroke="var(--border)" strokeDasharray="2,4" />
-              <line x1="0" y1="60" x2="100%" y2="60" stroke="var(--border)" strokeDasharray="2,4" />
-              <line x1="0" y1="100" x2="100%" y2="100" stroke="var(--border)" strokeDasharray="2,4" />
-              <polyline
-                fill="none"
-                stroke={ACCENT}
-                strokeWidth="2"
-                points={snapshots.map((s, i) => {
-                  const x = 30 + i * 60;
-                  const y = 110 - (s.overall_score / maxScore) * 90;
-                  return `${x},${y}`;
-                }).join(' ')}
-              />
-              {snapshots.map((s, i) => {
+              <line x1="0" y1="65" x2="100%" y2="65" stroke="var(--border)" strokeDasharray="2,4" />
+              <line x1="0" y1="110" x2="100%" y2="110" stroke="var(--border)" strokeDasharray="2,4" />
+              {[[composite, ACCENT], [s => coveragePct(s), BLUE]].map(([fn, color], li) => (
+                <polyline key={li} fill="none" stroke={color} strokeWidth="2"
+                  points={norm.map((s, i) => `${30 + i * 60},${110 - (fn(s) / 100) * 90}`).join(' ')} />
+              ))}
+              {norm.map((s, i) => {
                 const x = 30 + i * 60;
-                const y = 110 - (s.overall_score / maxScore) * 90;
+                const yC = 110 - (composite(s) / 100) * 90;
+                const yCov = 110 - (coveragePct(s) / 100) * 90;
                 return (
                   <g key={s.id}>
-                    <circle cx={x} cy={y} r="4" fill={ACCENT} />
-                    <text x={x} y={y - 10} textAnchor="middle" fontSize="11" fill="var(--text)">{s.overall_score}</text>
-                    <text x={x} y="118" textAnchor="middle" fontSize="10" fill="var(--text-muted)">{s.month.slice(5)}</text>
+                    <circle cx={x} cy={yC} r="3.5" fill={ACCENT} />
+                    <circle cx={x} cy={yCov} r="3.5" fill={BLUE} />
+                    <text x={x} y={yC - 8} textAnchor="middle" fontSize="10" fill="var(--text)">{composite(s)}</text>
+                    <text x={x} y="126" textAnchor="middle" fontSize="10" fill="var(--text-muted)">{s.month.slice(5)}</text>
                   </g>
                 );
               })}
             </svg>
+            <div style={{ overflowX: 'auto' }}>
             <table style={{ marginTop: 14 }}>
               <thead>
                 <tr>
                   <th>Month</th>
-                  <th>Overall</th>
+                  <th>Coverage</th>
+                  <th>AEO Index</th>
                   <th>ChatGPT</th>
-                  <th>Perplexity</th>
                   <th>Gemini</th>
                   <th>Claude</th>
                   <th>Sentiment</th>
@@ -99,12 +127,12 @@ export default function ReportsHistory() {
                 </tr>
               </thead>
               <tbody>
-                {snapshots.slice().reverse().map(s => (
+                {norm.slice().reverse().map(s => (
                   <tr key={s.id}>
                     <td>{s.month}</td>
-                    <td style={{ color: scoreColor(s.overall_score), fontWeight: 600 }}>{s.overall_score}</td>
+                    <td style={{ fontWeight: 600 }}>{coveragePct(s)}%</td>
+                    <td style={{ color: scoreColor(composite(s)), fontWeight: 600 }}>{composite(s)}</td>
                     <td>{s.engine_scores?.chatgpt ?? '—'}</td>
-                    <td>{s.engine_scores?.perplexity ?? '—'}</td>
                     <td>{s.engine_scores?.gemini ?? '—'}</td>
                     <td>{s.engine_scores?.claude ?? '—'}</td>
                     <td className="muted">{s.sentiment || '—'}</td>
@@ -115,6 +143,7 @@ export default function ReportsHistory() {
                 ))}
               </tbody>
             </table>
+            </div>
           </>
         )}
       </div>
@@ -130,16 +159,31 @@ export default function ReportsHistory() {
         {reports.length > 0 && (
           <table style={{ marginTop: 10 }}>
             <thead>
-              <tr><th>Sent</th><th>Month</th><th>Subject</th><th>QA</th><th>AEO</th></tr>
+              <tr><th>Sent</th><th>Month</th><th>Subject</th><th>QA</th><th>AEO</th><th>Proof</th></tr>
             </thead>
             <tbody>
               {reports.map(r => (
                 <tr key={r.id}>
-                  <td className="muted" style={{ fontSize: 12 }}>{new Date(r.sent_date).toLocaleDateString()}</td>
+                  <td className="muted" style={{ fontSize: 12 }}>
+                    {new Date(r.sent_date).toLocaleDateString()}
+                    {r.manual && <span className="badge blue" style={{ fontSize: 8, marginLeft: 6 }}>Manual</span>}
+                  </td>
                   <td>{r.month}</td>
                   <td style={{ maxWidth: 320, overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.email_subject || '—'}</td>
                   <td>{r.qa_score ? r.qa_score + '/10' : '—'}</td>
                   <td>{r.aeo_snapshot_score != null ? r.aeo_snapshot_score + '/100' : '—'}</td>
+                  <td>
+                    {r.pdf_filename ? (
+                      <button
+                        onClick={() => viewPdf(r.id)}
+                        disabled={pdfBusy === r.id}
+                        style={{ fontSize: 11, padding: '4px 10px', borderColor: ACCENT, color: ACCENT }}
+                        title={r.pdf_filename}
+                      >
+                        {pdfBusy === r.id ? 'Opening…' : '📄 View PDF'}
+                      </button>
+                    ) : <span className="muted">—</span>}
+                  </td>
                 </tr>
               ))}
             </tbody>

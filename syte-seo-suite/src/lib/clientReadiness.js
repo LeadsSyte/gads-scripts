@@ -50,15 +50,13 @@ export function readinessFor(client, service) {
     if (!hasValue(client[r.key])) missing.push(r);
   }
 
-  // Technical SEO special case: needs EITHER wceo_project_id OR gsc_property.
-  if (service === 'technical') {
-    if (!hasValue(client.wceo_project_id) && !hasValue(client.gsc_property)) {
-      missing.push({ key: 'wceo_or_gsc', label: 'WebCEO Project ID or GSC Property' });
-    }
-  }
+  // Technical SEO requires a crawl target. WebCEO is deprecated; the
+  // in-house crawler reads sitemap_url first, then falls back to discovering
+  // pages from the homepage (client.url, already required above), so a URL
+  // is enough. GSC is optional traffic-context enrichment, not a hard need.
 
-  const filled = reqs.length + (service === 'technical' ? 1 : 0) - missing.length;
-  const total = reqs.length + (service === 'technical' ? 1 : 0);
+  const filled = reqs.length - missing.length;
+  const total = reqs.length;
   const percent = total > 0 ? Math.round((filled / total) * 100) : 100;
 
   let status;

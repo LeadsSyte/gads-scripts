@@ -1,0 +1,58 @@
+# krost-chatgpt-discovery — example config
+# Copy to config.yaml and edit before running.
+
+target_brand: "Krost Shelving"
+target_domain: "krostshelving.com"
+target_aliases:
+  - "Krost"
+  - "Krost Shelving"
+  - "krostshelving.com"
+
+competitors:
+  - "Universal Storage Systems"
+  - "Palian"
+  - "Storequip"
+  - "Barpro Storage"
+  - "Acrow"
+  - "Dexion SA"
+  - "Dreymar Industrial"
+  - "Mr Shelf"
+
+market: "South Africa"
+
+categories:
+  - "pallet racking"
+  - "warehouse shelving"
+  - "mezzanine flooring"
+  - "industrial racking"
+  - "gondola shelving"
+  - "shuttle racking"
+  - "racking installation"
+  - "storage solutions"
+
+personas:
+  - "warehouse manager"
+  - "logistics director"
+  - "retail store owner"
+  - "ecommerce founder fitting out a warehouse"
+  - "construction contractor"
+  - "procurement manager at a 3PL"
+
+# Cities used for geo modifiers in templates that need a city.
+cities:
+  - "Johannesburg"
+  - "Cape Town"
+  - "Durban"
+  - "Pretoria"
+  - "Port Elizabeth"
+
+# Run config — overridable from CLI flags.
+run:
+  model_primary: "gpt-5"           # gpt-5 if available on the account
+  model_fallback: "gpt-4o"         # fallback when primary returns 404
+  sentiment_model: "gpt-4o-mini"
+  iterations: 3                     # runs per prompt to smooth response variance
+  concurrency: 10
+  cache_ttl_days: 7
+  max_prompts: 0                    # 0 = no cap, otherwise sample
+  cost_confirm_threshold_usd: 5.00

@@ -148,3 +148,44 @@ export function scoreMention({ mentioned, position, sentiment }) {
   if (position === 2) return 50;
   return 25;
 }
+
+// Count URL/domain citations of a brand in a response. AI engines that
+// surface sources (Perplexity, Gemini with grounding, Google AI Mode)
+// tend to include the brand's domain in markdown links or as raw URLs.
+// We treat each appearance as one citation — this is the metric that
+// competitive AEO tools highlight as the "gold standard" of trust.
+export function countCitations(text, url, name) {
+  if (!text) return 0;
+  const lower = text.toLowerCase();
+  const needles = new Set();
+
+  if (url) {
+    const cleaned = url.toLowerCase()
+      .replace(/^https?:\/\//, '')
+      .replace(/^www\./, '')
+      .replace(/\/.*$/, '');
+    if (cleaned.length >= 4) needles.add(cleaned);
+    // Also match the bare domain word (e.g. "krost" from "krost.co.za").
+    const root = cleaned.split('.')[0];
+    if (root && root.length >= 4) needles.add(root + '.');
+  }
+  if (name) {
+    // Match domain-style "brandname.com|.co.za|.io|..." patterns inside text.
+    const slug = name.toLowerCase().replace(/\s+/g, '');
+    if (slug.length >= 4) {
+      const re = new RegExp('\\b' + slug.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\.[a-z]{2,}', 'g');
+      const matches = lower.match(re) || [];
+      if (matches.length) return matches.length;
+    }
+  }
+
+  let count = 0;
+  for (const needle of needles) {
+    let idx = 0;
+    while ((idx = lower.indexOf(needle, idx)) !== -1) {
+      count++;
+      idx += needle.length;
+    }
+  }
+  return count;
+}

@@ -224,10 +224,15 @@ async function analyzeUrl(url) {
     let html = '';
     let httpStatus = 200;
     try {
+      // Pass raw: true so the proxy skips Jina Reader. Jina rewrites
+      // <head> markup and was producing false "noindex" detections on
+      // pages that are actually indexed (because Jina either drops or
+      // normalises the meta robots tag). Tech SEO needs the real
+      // server HTML.
       const res = await fetch('/.netlify/functions/page-proxy', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url })
+        body: JSON.stringify({ url, raw: true })
       });
       if (res.ok) {
         const data = await res.json();
