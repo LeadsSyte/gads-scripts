@@ -11,7 +11,7 @@ import LogExternalWork from '../../components/LogExternalWork.jsx';
 import { aeoPipelineStatus, monthOptions } from '../../lib/pipelineStatus.js';
 import { listAllImplementations, saveAeoResult, loadAeoResults as loadAeoResultsFromDb, deleteAeoResult, saveDeepResult, listDeepResults, deleteDeepResult, listAeoRejections, saveAeoRejection } from '../../lib/supabase.js';
 import { AEO_SYSTEM, AEO_TYPES, AEO_DEEP_SYSTEM } from './aeoTypes.js';
-import { fetchSitemapUrls } from './sitemap.js';
+import { fetchSitemapUrls, discoverSitemapUrls } from './sitemap.js';
 import QueryDiscovery from './QueryDiscovery.jsx';
 import { listAccountSummaries, runReport } from './ga4.js';
 import { ensureToken, SCOPES, getToken, clearToken } from '../technical/googleAuth.js';
@@ -843,6 +843,22 @@ export default function AEOEngine({ sub }) {
         sitemapUrls = await fetchSitemapUrls(c.sitemap_url, c.sitemap_raw);
       } catch (e) {
         console.warn('[AEO] Sitemap fetch error:', e.message);
+      }
+
+      // No sitemap configured (or it returned nothing) — auto-discover the
+      // real sitemap from robots.txt / common paths before giving up and
+      // falling back to homepage-only. This is what lets the engine optimize
+      // the WHOLE site instead of just the homepage when sitemap_url is blank.
+      if (sitemapUrls.length === 0 && c.url) {
+        setProgress('Step 1/4 — No sitemap set, auto-discovering from ' + c.url + '…');
+        try {
+          sitemapUrls = await discoverSitemapUrls(c.url);
+        } catch (e) {
+          console.warn('[AEO] Sitemap auto-discovery error:', e.message);
+        }
+        if (sitemapUrls.length > 0) {
+          setProgress(`Step 1/4 — Auto-discovered ${sitemapUrls.length} pages from sitemap ✓`);
+        }
       }
 
       if (sitemapUrls.length > 0) {
