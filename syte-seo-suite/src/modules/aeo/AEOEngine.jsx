@@ -421,6 +421,10 @@ export default function AEOEngine({ sub }) {
   const [progress, setProgress] = useState('');
   const [err, setErr] = useState('');
 
+  // Batch state — "generate all AEO clients' items for the month".
+  const [batchBusy, setBatchBusy] = useState(false);
+  const [batchProgress, setBatchProgress] = useState('');
+
   // Deep optimization state — single page, full rewrite + FAQ + changes log.
   const [deepUrl, setDeepUrl] = useState('');
   const [deepClientId, setDeepClientId] = useState('');
@@ -673,8 +677,12 @@ export default function AEOEngine({ sub }) {
       setUrls(targets.map(t => t.url).join('\n'));
       setProgress(`Step 3/4 — ${targets.length} pages selected (${prioritized.length} total) ✓`);
 
-      // STEP 4: Generate AEO optimizations in batches
-      const newResults = { ...results };
+      // STEP 4: Generate AEO optimizations in batches.
+      // Accumulate only THIS client's new rows and merge them into state with a
+      // functional update. A plain `{ ...results }` snapshot would be stale when
+      // this runs inside the "generate all clients" batch loop and would clobber
+      // the results generated for earlier clients in the same run.
+      const additions = {};
       for (let i = 0; i < targets.length; i += BATCH_SIZE) {
         const batch = targets.slice(i, i + BATCH_SIZE);
         setProgress(`Step 4/4 — ${c.name}: Optimizing pages ${i + 1}–${Math.min(i + BATCH_SIZE, targets.length)} of ${targets.length}…`);
@@ -690,11 +698,11 @@ export default function AEOEngine({ sub }) {
             optimizations: Array.isArray(batchResults[j]) ? batchResults[j] : [],
             error: batchResults[j]?.error || null
           };
-          newResults[key] = row;
+          additions[key] = row;
           // Persist each result to Supabase immediately
           saveAeoResult(row).catch(() => {});
         });
-        setResults({ ...newResults });
+        setResults(prev => ({ ...prev, ...additions }));
       }
       setHistory(prev => [
         { id: crypto.randomUUID(), client_id: c.id, client_name: c.name,
@@ -702,12 +710,64 @@ export default function AEOEngine({ sub }) {
         ...prev
       ]);
       const totalOpts = targets.reduce((a, t) => {
-        const r = newResults[c.id + '::' + t.url];
+        const r = additions[c.id + '::' + t.url];
         return a + (r?.optimizations?.length || 0);
       }, 0);
       setProgress(`Done. ${totalOpts} optimizations across ${targets.length} pages for ${c.name}.`);
     } catch (e) { setErr(e.message); }
     finally { setBusy(false); }
+  }
+
+  // Generate the month's AEO items for every AEO client in one go.
+  // Runs the full per-client pipeline sequentially so batches stay inside
+  // rate limits and the Google OAuth popup (if needed) appears only once —
+  // the token is cached after the first client, so later clients reuse it.
+  // By default skips clients that already have items generated this month;
+  // pass { includeExisting: true } to force a re-run for everyone.
+  async function runForAllClients({ includeExisting = false } = {}) {
+    if (busy || batchBusy) return;
+
+    // Clients already generated this month (any page result dated this month).
+    const generatedThisMonth = new Set(
+      Object.values(results)
+        .filter(r => (r.generated_at || '').slice(0, 7) === currentMonth)
+        .map(r => r.client_id)
+    );
+
+    const queue = aeoClients.filter(c => {
+      const hasSource = !!(c.sitemap_url || c.sitemap_raw || c.ga4_property_id || c.url);
+      if (!hasSource) return false; // credentials missing — nothing to optimize
+      return includeExisting || !generatedThisMonth.has(c.id);
+    });
+
+    if (!queue.length) {
+      setErr('');
+      setBatchProgress(
+        includeExisting
+          ? 'No AEO clients have a sitemap, GA4 property, or website URL to optimize.'
+          : `All AEO clients already have items for ${monthLabel}. Use "Re-run All" to regenerate.`
+      );
+      return;
+    }
+
+    setBatchBusy(true); setErr('');
+    let completed = 0;
+    for (let i = 0; i < queue.length; i++) {
+      const c = queue[i];
+      setBatchProgress(`Generating ${monthLabel} items — client ${i + 1}/${queue.length}: ${c.name}…`);
+      useClients.getState().select(c.id);
+      try {
+        // runForClient swallows its own errors into `err`, so one bad client
+        // never halts the batch.
+        await runForClient(c);
+        completed++;
+      } catch {
+        // Unexpected throw — keep going with the rest of the queue.
+      }
+    }
+    setBatchProgress(`Done — generated ${monthLabel} items for ${completed} of ${queue.length} client${queue.length === 1 ? '' : 's'}.`);
+    setBatchBusy(false);
+    refreshImplementations();
   }
 
   async function pullFromSitemap() {
@@ -868,19 +928,70 @@ export default function AEOEngine({ sub }) {
 
   // -------- Subviews --------
   if (sub === 'Run Optimizations') {
+    // How many AEO clients still need their items generated this month.
+    const runnableAeoClients = aeoClients.filter(
+      c => c.sitemap_url || c.sitemap_raw || c.ga4_property_id || c.url
+    );
+    const generatedThisMonthIds = new Set(
+      Object.values(results)
+        .filter(r => (r.generated_at || '').slice(0, 7) === currentMonth)
+        .map(r => r.client_id)
+    );
+    const pendingCount = runnableAeoClients.filter(c => !generatedThisMonthIds.has(c.id)).length;
+
     return (
       <div className="content-area">
-        {/* Status bar — shows progress when running from a pipeline card */}
-        {(busy || progress || err) && (
-          <div className="card" style={{ marginBottom: 12, padding: '10px 16px', borderColor: busy ? ACCENT : err ? 'var(--red)' : 'var(--green)' }}>
-            <div className="row" style={{ gap: 10 }}>
-              {busy && <span className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} />}
-              <span style={{ fontSize: 13, color: err ? 'var(--red)' : busy ? 'var(--text)' : 'var(--green)' }}>
-                {err || progress || 'Running…'}
-              </span>
-            </div>
+        {/* Status bar — shows progress when running from a pipeline card or batch */}
+        {(busy || batchBusy || progress || batchProgress || err) && (
+          <div className="card" style={{ marginBottom: 12, padding: '10px 16px', borderColor: (busy || batchBusy) ? ACCENT : err ? 'var(--red)' : 'var(--green)' }}>
+            {batchProgress && (
+              <div className="row" style={{ gap: 10, marginBottom: (busy || progress || err) ? 6 : 0 }}>
+                {batchBusy && <span className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} />}
+                <span style={{ fontSize: 13, fontWeight: 600, color: batchBusy ? 'var(--text)' : 'var(--green)' }}>
+                  {batchProgress}
+                </span>
+              </div>
+            )}
+            {(busy || progress || err) && (
+              <div className="row" style={{ gap: 10 }}>
+                {busy && <span className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} />}
+                <span style={{ fontSize: 13, color: err ? 'var(--red)' : busy ? 'var(--text)' : 'var(--green)' }}>
+                  {err || progress || 'Running…'}
+                </span>
+              </div>
+            )}
           </div>
         )}
+
+        {/* Generate all clients' items for the month */}
+        <div className="card" style={{ marginBottom: 14, padding: 14, borderColor: ACCENT }}>
+          <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+            <div style={{ minWidth: 220, flex: 1 }}>
+              <strong style={{ fontSize: 14 }}>Generate all AEO items — {monthLabel}</strong>
+              <div className="muted" style={{ fontSize: 12, marginTop: 2 }}>
+                Runs the full pipeline for every AEO client, sequentially. {pendingCount > 0
+                  ? `${pendingCount} client${pendingCount === 1 ? '' : 's'} not yet generated this month.`
+                  : 'All clients already have items this month.'}
+              </div>
+            </div>
+            <div className="row" style={{ gap: 8, flexShrink: 0 }}>
+              <button
+                className="primary"
+                style={{ background: ACCENT, borderColor: ACCENT, color: '#000' }}
+                onClick={() => runForAllClients({ includeExisting: false })}
+                disabled={busy || batchBusy || pendingCount === 0}
+              >
+                {batchBusy ? 'Generating…' : `Generate Pending${pendingCount > 0 ? ` (${pendingCount})` : ''}`}
+              </button>
+              <button
+                onClick={() => { if (confirm(`Re-run the AEO pipeline for all ${runnableAeoClients.length} AEO clients? This regenerates items even where already done this month.`)) runForAllClients({ includeExisting: true }); }}
+                disabled={busy || batchBusy || runnableAeoClients.length === 0}
+              >
+                Re-run All
+              </button>
+            </div>
+          </div>
+        </div>
 
         {/* Pipeline overview */}
         <PipelineView
