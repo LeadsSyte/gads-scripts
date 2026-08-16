@@ -140,38 +140,30 @@ describe('MonthlyReport — Search Console gate', () => {
   test('blocks the SEO report when the Google account is not connected', async () => {
     mockToken = null;
     render(<MonthlyReport />);
-    await waitFor(() => {
-      expect(screen.getByRole('button', { name: /Blocked — fix Search Console first/i })).toBeDisabled();
-    });
+    await waitFor(() => expect(screen.getByText(/Search Console is not connected/)).toBeInTheDocument());
+    expect(screen.getByRole('button', { name: /Blocked — fix Search Console first/i })).toBeDisabled();
     expect(screen.queryByRole('button', { name: /Generate SEO Report/i })).not.toBeInTheDocument();
-    expect(screen.getByText(/Search Console is not connected/)).toBeInTheDocument();
   });
 
   test('blocks the SEO report when no GSC property is configured', async () => {
     mockClient = { ...mockClient, gsc_property: '' };
     render(<MonthlyReport />);
-    await waitFor(() => {
-      expect(screen.getByRole('button', { name: /Blocked — fix Search Console first/i })).toBeDisabled();
-    });
-    expect(screen.getByText(/No Search Console property is set/)).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText(/No Search Console property is set/)).toBeInTheDocument());
+    expect(screen.getByRole('button', { name: /Blocked — fix Search Console first/i })).toBeDisabled();
   });
 
   test('blocks the SEO report when GSC errors out', async () => {
     mockFetchedData = { ...goodData(), errors: ['GSC: 403 does not have sufficient permission'] };
     render(<MonthlyReport />);
-    await waitFor(() => {
-      expect(screen.getByRole('button', { name: /Blocked — fix Search Console first/i })).toBeDisabled();
-    });
-    expect(screen.getByText(/cannot be trusted/)).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText(/cannot be trusted/)).toBeInTheDocument());
+    expect(screen.getByRole('button', { name: /Blocked — fix Search Console first/i })).toBeDisabled();
   });
 
   test('blocks the SEO report when GSC returns no rows for the month', async () => {
     mockFetchedData = { ...goodData(), keywords: [], topPages: [] };
     render(<MonthlyReport />);
-    await waitFor(() => {
-      expect(screen.getByRole('button', { name: /Blocked — fix Search Console first/i })).toBeDisabled();
-    });
-    expect(screen.getByText(/returned no clicks or impressions/)).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText(/returned no clicks or impressions/)).toBeInTheDocument());
+    expect(screen.getByRole('button', { name: /Blocked — fix Search Console first/i })).toBeDisabled();
   });
 
   test('a blocked SEO report never calls the model', async () => {
