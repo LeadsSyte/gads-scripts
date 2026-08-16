@@ -31,6 +31,10 @@ export default function ReportsModule({ sub }) {
   const [showReport, setShowReport] = useState(false);
   const [sentReports, setSentReports] = useState({});
   const [generatedReports, setGeneratedReports] = useState({});
+  // Full lists as well as the newest-per-client maps: SEO and AEO are
+  // separate deliverables, so each card shows both statuses.
+  const [allSent, setAllSent] = useState([]);
+  const [allGenerated, setAllGenerated] = useState([]);
   const [emailModal, setEmailModal] = useState(null); // { client } | null
 
   // Load sent + generated report status for all clients. Extracted so it can
@@ -54,6 +58,8 @@ export default function ReportsModule({ sub }) {
       }
       setSentReports(sentByClient);
       setGeneratedReports(genByClient);
+      setAllSent(sent);
+      setAllGenerated(generated);
     } catch {}
   }, []);
 
@@ -109,12 +115,31 @@ export default function ReportsModule({ sub }) {
     else buckets.pending.push({ client: c, sent, gen });
   }
 
+  // A client on both services needs both reports produced, so each card
+  // tracks them independently. Rows logged before the split carry
+  // report_type 'full'; treat those as the SEO report, which is what they
+  // led with.
+  function typeStatus(clientId, type) {
+    const matches = r =>
+      r.client_id === clientId &&
+      r.month === monthKey &&
+      ((r.report_type || 'full') === type || (type === 'seo' && (r.report_type || 'full') === 'full'));
+    if (allSent.some(matches)) return 'Sent';
+    if (allGenerated.some(matches)) return 'Generated';
+    return 'Pending';
+  }
+
   function renderCard({ client: c, sent, gen }, status) {
     const services = [
       c.does_content !== false && 'Content',
       c.does_technical !== false && 'Technical',
       c.does_aeo !== false && 'AEO'
     ].filter(Boolean);
+    const perType = [
+      (c.does_content !== false || c.does_technical !== false) && ['SEO', typeStatus(c.id, 'seo')],
+      c.does_aeo !== false && ['AEO', typeStatus(c.id, 'aeo')]
+    ].filter(Boolean);
+    const typeColor = st => st === 'Sent' ? GREEN : st === 'Generated' ? ORANGE : 'var(--text-muted)';
     const borderColor =
       status === 'sent' ? 'rgba(52,211,153,.4)' :
       status === 'generated' ? 'rgba(255,159,67,.4)' :
@@ -161,6 +186,18 @@ export default function ReportsModule({ sub }) {
         <div className="muted" style={{ fontSize: 11 }}>
           {services.join(' · ') || 'No services'}
         </div>
+        {perType.length > 0 && (
+          <div className="row" style={{ gap: 6, marginTop: 6, flexWrap: 'wrap' }}>
+            {perType.map(([label, st]) => (
+              <span key={label} style={{
+                fontSize: 10, padding: '2px 8px', borderRadius: 999,
+                border: '1px solid var(--border)', color: typeColor(st)
+              }}>
+                {label}: {st}
+              </span>
+            ))}
+          </div>
+        )}
         {status === 'sent' && (
           <div className="muted" style={{ fontSize: 10, marginTop: 4 }}>
             Sent: {new Date(sent.sent_date).toLocaleDateString('en-ZA')}

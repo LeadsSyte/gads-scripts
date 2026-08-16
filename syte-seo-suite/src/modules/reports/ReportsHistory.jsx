@@ -159,7 +159,7 @@ export default function ReportsHistory() {
         {reports.length > 0 && (
           <table style={{ marginTop: 10 }}>
             <thead>
-              <tr><th>Sent</th><th>Month</th><th>Subject</th><th>QA</th><th>AEO</th><th>Proof</th></tr>
+              <tr><th>Sent</th><th>Month</th><th>Type</th><th>Subject</th><th>QA</th><th>AEO</th><th>Proof</th></tr>
             </thead>
             <tbody>
               {reports.map(r => (
@@ -169,6 +169,8 @@ export default function ReportsHistory() {
                     {r.manual && <span className="badge blue" style={{ fontSize: 8, marginLeft: 6 }}>Manual</span>}
                   </td>
                   <td>{r.month}</td>
+                  {/* Rows logged before SEO and AEO were split carry no type. */}
+                  <td style={{ textTransform: 'uppercase', fontSize: 11 }}>{r.report_type || '—'}</td>
                   <td style={{ maxWidth: 320, overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.email_subject || '—'}</td>
                   <td>{r.qa_score ? r.qa_score + '/10' : '—'}</td>
                   <td>{r.aeo_snapshot_score != null ? r.aeo_snapshot_score + '/100' : '—'}</td>
