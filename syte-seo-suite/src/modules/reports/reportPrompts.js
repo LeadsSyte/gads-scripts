@@ -139,6 +139,32 @@ Score 1-10. readyToSend = true only if score >= 7.
 CRITICAL: fail "Positive-first framing" if the email leads with bad news or reads like a doom report.`;
 
 // ===========================================================================
+// SEO-ONLY MODE - used by the "Generate SEO Report" button.
+// SEO and AEO are separate products with separate deliverables: a client on
+// both gets two reports, never one blended document. These derive from the
+// prompts above rather than restating them, so any later change to the base
+// tone/format rules flows into the SEO report automatically.
+// ===========================================================================
+
+const SEO_SCOPE_RULE = `
+
+HARD SCOPE RULE - SEO ONLY:
+- This output covers organic search only. Do NOT mention AI search, answer engines, AEO, AI visibility, ChatGPT, Perplexity, Gemini, Claude, AI Overviews, citations in AI answers, or share of AI voice. All of that ships in the client's separate AEO report.
+- The metrics you may cite are: organic users, sessions, conversions/leads, revenue, Search Console clicks, impressions, CTR, average position, keyword rankings and movements, top landing pages, technical fixes, content published, and PPC equivalent value.`;
+
+export const ALICE_SEO_SYSTEM = ALICE_SYSTEM + SEO_SCOPE_RULE;
+
+export const MICROSITE_SEO_SYSTEM = MICROSITE_SYSTEM + SEO_SCOPE_RULE + `
+- Never emit aeoSection, aeoMomNarrative, aeoCompetitiveNarrative, aeoStrategy or citationGapsNarrative. Those keys belong to the AEO report and are ignored here.`;
+
+export const QA_SEO_SYSTEM = QA_SYSTEM + `
+
+This email is the SEO report, which is a separate deliverable from the client's AEO report.
+Add one more entry to the checks array, before "suggestion":
+    { "label": "Contains zero AEO / AI-search talk (SEO scope only)", "pass": true, "note": "" }
+CRITICAL: fail that check, and drop readyToSend to false, if any AEO, AI-visibility, answer-engine or LLM-citation reference appears.`;
+
+// ===========================================================================
 // AEO-ONLY MODE — used by the "Generate AEO Report" button.
 // Strictly forbids any SEO talk and rewrites the tone rules to kill the
 // "AI visibility crisis" framings that were making first-month reports
@@ -383,7 +409,14 @@ export function buildAlicePayload(form, aeo, workSummary) {
   const aliceEng = engagementLine({ start_date: form.startDate }, form.month);
   if (aliceEng) lines.push(aliceEng);
   lines.push('');
-  lines.push('TONE INSTRUCTION: Always lead with the biggest positive. If traffic is down MoM, check if YoY is up. If everything is down, lead with work done (articles, fixes, AEO improvements). NEVER make this read like bad news.');
+  lines.push('TONE INSTRUCTION: Always lead with the biggest positive. If traffic is down MoM, check if YoY is up. If everything is down, lead with work done (articles, fixes, ranking gains). NEVER make this read like bad news.');
+
+  // The SEO report is a separate deliverable from the AEO report. Say so
+  // in the payload as well as the system prompt: the model reaches for
+  // AI-visibility framing when the client is known to buy both.
+  if (form.seoOnly) {
+    lines.push('SCOPE: This is the SEO report ONLY. The client receives a separate AEO report, so do not mention AI search, answer engines, AEO, or AI visibility anywhere in this output.');
+  }
 
   if (form.algorithmContext) {
     lines.push(`\nAlgorithm / market context: ${form.algorithmContext}`);
@@ -399,7 +432,9 @@ export function buildAlicePayload(form, aeo, workSummary) {
     if (workSummary.content.summary)         workLines.push('Content: ' + workSummary.content.summary);
     if (workSummary.content.topics?.length)   workLines.push('  Topics: ' + workSummary.content.topics.join(', '));
     if (workSummary.technical.summary)        workLines.push('Technical: ' + workSummary.technical.summary);
-    if (workSummary.aeo.summary)             workLines.push('AEO: ' + workSummary.aeo.summary);
+    // AEO work is reported in the separate AEO report, so it only
+    // appears here when this payload is in AEO scope.
+    if (form.hasAeo && workSummary.aeo.summary) workLines.push('AEO: ' + workSummary.aeo.summary);
     if (workSummary.implementations.summary) workLines.push('Verified: ' + workSummary.implementations.summary);
   }
   if (form.additionalWork) workLines.push('Other work: ' + form.additionalWork);

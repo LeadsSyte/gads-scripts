@@ -1,0 +1,134 @@
+// Tests for the Search Console readiness gate. This is what stands between
+// a client and a monthly SEO report full of blank or wrong numbers, so each
+// failure mode gets its own case.
+//
+// Run: npm test  (from syte-seo-suite/)
+
+import { evaluateGscReadiness } from '../src/modules/reports/gscGuard.js';
+import { SCOPES } from '../src/modules/technical/googleAuth.js';
+
+let pass = 0, fail = 0;
+function t(name, fn) {
+  try { fn(); console.log('PASS', name); pass++; }
+  catch (e) { console.log('FAIL', name, '->', e.message); fail++; }
+}
+function assert(cond, msg) { if (!cond) throw new Error(msg || 'assertion failed'); }
+function assertEq(actual, expected, label) {
+  if (actual !== expected) throw new Error((label || '') + ' expected ' + expected + ', got ' + actual);
+}
+
+const CLIENT = { name: 'Acme', gsc_property: 'sc-domain:acme.co.za' };
+const TOKEN = { access_token: 'x', scope: SCOPES.gsc + ' ' + SCOPES.ga4 };
+const MONTH = '2026-04';
+const GOOD_DATA = {
+  period: { current: { startDate: '2026-04-01', endDate: '2026-04-30' } },
+  keywords: [{ query: 'shelving', position: 3, clicks: 40, impressions: 900 }],
+  topPages: [{ page: 'https://acme.co.za/shelving', clicks: 40, impressions: 900, position: 3 }],
+  errors: []
+};
+
+t('passes when property, token, data and rows are all present', () => {
+  const r = evaluateGscReadiness({ client: CLIENT, reportData: GOOD_DATA, month: MONTH, token: TOKEN });
+  assert(r.ok, 'should be ok: ' + JSON.stringify(r.blocker));
+  assertEq(r.blocker, null, 'blocker');
+  assert(r.checks.every(c => c.pass), 'every check passes');
+});
+
+t('blocks when the client has no GSC property configured', () => {
+  const r = evaluateGscReadiness({ client: { name: 'Acme' }, reportData: GOOD_DATA, month: MONTH, token: TOKEN });
+  assert(!r.ok, 'should block');
+  assertEq(r.blocker.code, 'no-property', 'code');
+  assertEq(r.blocker.action, 'configure', 'action');
+});
+
+t('blocks when there is no Google token at all', () => {
+  const r = evaluateGscReadiness({ client: CLIENT, reportData: GOOD_DATA, month: MONTH, token: null });
+  assert(!r.ok, 'should block');
+  assertEq(r.blocker.code, 'not-connected', 'code');
+  assertEq(r.blocker.action, 'connect', 'action');
+});
+
+t('blocks when the token lacks the Search Console scope', () => {
+  const r = evaluateGscReadiness({
+    client: CLIENT, reportData: GOOD_DATA, month: MONTH,
+    token: { access_token: 'x', scope: SCOPES.ga4 }
+  });
+  assert(!r.ok, 'GA4-only token must not unlock an SEO report');
+  assertEq(r.blocker.code, 'not-connected', 'code');
+});
+
+t('blocks when no report data has been pulled yet', () => {
+  const r = evaluateGscReadiness({ client: CLIENT, reportData: null, month: MONTH, token: TOKEN });
+  assert(!r.ok, 'should block');
+  assertEq(r.blocker.code, 'no-data', 'code');
+});
+
+t('blocks when GSC returned an error, and surfaces it', () => {
+  const r = evaluateGscReadiness({
+    client: CLIENT, month: MONTH, token: TOKEN,
+    reportData: { ...GOOD_DATA, errors: ['GSC: 403 does not have sufficient permission'] }
+  });
+  assert(!r.ok, 'should block');
+  assertEq(r.blocker.code, 'fetch-error', 'code');
+  assert(/sufficient permission/.test(r.blocker.message), 'error text surfaced');
+});
+
+t('ignores GA4 errors — they do not block the Search Console gate', () => {
+  const r = evaluateGscReadiness({
+    client: CLIENT, month: MONTH, token: TOKEN,
+    reportData: { ...GOOD_DATA, errors: ['GA4: No property ID configured'] }
+  });
+  assert(r.ok, 'GA4 problems are reported elsewhere, not by this gate');
+});
+
+t('blocks when the loaded data is for a different month', () => {
+  const r = evaluateGscReadiness({
+    client: CLIENT, month: '2026-05', token: TOKEN, reportData: GOOD_DATA
+  });
+  assert(!r.ok, 'stale cache must not be reported as this month');
+  assertEq(r.blocker.code, 'month-mismatch', 'code');
+});
+
+t('blocks when GSC is connected but returns nothing for the month', () => {
+  const r = evaluateGscReadiness({
+    client: CLIENT, month: MONTH, token: TOKEN,
+    reportData: { ...GOOD_DATA, keywords: [], topPages: [] }
+  });
+  assert(!r.ok, 'should block');
+  assertEq(r.blocker.code, 'no-rows', 'code');
+});
+
+t('blocks when rows exist but every row is zero clicks and zero impressions', () => {
+  const r = evaluateGscReadiness({
+    client: CLIENT, month: MONTH, token: TOKEN,
+    reportData: {
+      ...GOOD_DATA,
+      keywords: [{ query: 'shelving', position: 0, clicks: 0, impressions: 0 }],
+      topPages: []
+    }
+  });
+  assert(!r.ok, 'connected but reading nothing is still not accurate');
+  assertEq(r.blocker.code, 'no-rows', 'code');
+});
+
+t('passes on page data alone when the query dimension is empty', () => {
+  const r = evaluateGscReadiness({
+    client: CLIENT, month: MONTH, token: TOKEN,
+    reportData: { ...GOOD_DATA, keywords: [] }
+  });
+  assert(r.ok, 'top pages with impressions is real GSC data');
+});
+
+t('reports the first failing check as the blocker (fix order)', () => {
+  const r = evaluateGscReadiness({ client: {}, reportData: null, month: MONTH, token: null });
+  assertEq(r.blocker.code, 'no-property', 'property comes first');
+});
+
+t('does not crash on an empty call', () => {
+  const r = evaluateGscReadiness();
+  assert(!r.ok, 'nothing configured = blocked');
+  assert(Array.isArray(r.checks), 'checks array present');
+});
+
+console.log('\n' + pass + ' passed, ' + fail + ' failed');
+if (fail > 0) process.exit(1);

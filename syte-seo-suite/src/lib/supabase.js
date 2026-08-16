@@ -589,11 +589,18 @@ function pickKeys(obj, keys) {
   return out;
 }
 
-// Upsert the generated-log row into the localStorage mirror by (client, month).
+// Upsert the generated-log row into the localStorage mirror by
+// (client, month, report_type). The SEO and AEO reports are separate
+// deliverables, so generating one must never overwrite the record of the
+// other. Rows logged before the split carry report_type 'full'.
 function upsertGeneratedLocal(payload) {
   try {
     const list = JSON.parse(localStorage.getItem(GEN_LOG_KEY) || '[]');
-    const idx = list.findIndex(r => r.client_id === payload.client_id && r.month === payload.month);
+    const idx = list.findIndex(r =>
+      r.client_id === payload.client_id &&
+      r.month === payload.month &&
+      (r.report_type || 'full') === (payload.report_type || 'full')
+    );
     if (idx >= 0) list[idx] = { ...list[idx], ...payload };
     else list.push({ id: crypto.randomUUID(), ...payload });
     localStorage.setItem(GEN_LOG_KEY, JSON.stringify(list));
@@ -602,11 +609,13 @@ function upsertGeneratedLocal(payload) {
 }
 
 async function dbUpsertGenerated(payload) {
+  // Keyed by report_type too: the SEO and AEO reports coexist for a month.
   const { data: existing } = await supabase
     .from('syte_suite_report_generated_log')
     .select('id')
     .eq('client_id', payload.client_id)
     .eq('month', payload.month)
+    .eq('report_type', payload.report_type || 'full')
     .limit(1);
   if (existing?.length > 0) {
     const { data, error } = await supabase
@@ -623,7 +632,12 @@ async function dbUpsertGenerated(payload) {
 }
 
 export async function logReportGenerated(row) {
-  const payload = { ...row, generated_at: row.generated_at || new Date().toISOString() };
+  const payload = {
+    ...row,
+    // Rows are keyed by report type; default keeps pre-split callers working.
+    report_type: row.report_type || 'full',
+    generated_at: row.generated_at || new Date().toISOString()
+  };
   // Always mirror to localStorage FIRST so the just-generated status survives
   // a refresh even if every DB write below fails — e.g. the content columns
   // were never migrated in, so the full insert errors with "column … does not
@@ -677,15 +691,22 @@ export async function listGeneratedReports(clientId) {
 // Fetch the full saved content (email body + microsite JSON + QA + probe +
 // reportData snapshot) for a single client/month so the report can be
 // re-rendered without regenerating it. Returns null when nothing is saved.
-export async function getGeneratedReport(clientId, month) {
+//
+// A month can now hold both an SEO and an AEO report. Pass reportType to
+// pick one; without it the most recently generated of the two is returned,
+// which is the one the operator was last working on.
+export async function getGeneratedReport(clientId, month, reportType) {
   assertClientId(clientId, 'getGeneratedReport');
   if (supabase) {
     try {
-      const { data, error } = await supabase
+      let q = supabase
         .from('syte_suite_report_generated_log')
         .select('*')
         .eq('client_id', clientId)
-        .eq('month', month)
+        .eq('month', month);
+      if (reportType) q = q.eq('report_type', reportType);
+      const { data, error } = await q
+        .order('generated_at', { ascending: false })
         .limit(1)
         .maybeSingle();
       if (error) throw error;
@@ -698,7 +719,11 @@ export async function getGeneratedReport(clientId, month) {
     }
   }
   const list = JSON.parse(localStorage.getItem(GEN_LOG_KEY) || '[]');
-  return list.find(r => r.client_id === clientId && r.month === month) || null;
+  const matches = list
+    .filter(r => r.client_id === clientId && r.month === month)
+    .filter(r => !reportType || (r.report_type || 'full') === reportType)
+    .sort((a, b) => String(b.generated_at || '').localeCompare(String(a.generated_at || '')));
+  return matches[0] || null;
 }
 
 // ---------------------------------------------------------------------------

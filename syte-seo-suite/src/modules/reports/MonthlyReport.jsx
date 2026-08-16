@@ -3,7 +3,7 @@ import { useClients } from '../../store/useClients.js';
 import { claudeComplete, extractJSON } from '../../lib/anthropic.js';
 import { listAeoSnapshots, logReportSent, logReportGenerated, getGeneratedReport, getCachedReportData, setCachedReportData, persistAeoRuns, saveAeoSnapshot } from '../../lib/supabase.js';
 import {
-  ALICE_SYSTEM, MICROSITE_SYSTEM, QA_SYSTEM,
+  ALICE_SEO_SYSTEM, MICROSITE_SEO_SYSTEM, QA_SEO_SYSTEM,
   ALICE_AEO_SYSTEM, MICROSITE_AEO_SYSTEM, QA_AEO_SYSTEM,
   buildAlicePayload, getWorkSummary, buildAeoPayload
 } from './reportPrompts.js';
@@ -42,6 +42,7 @@ import { compareSnapshots, rankBrandWithCompetitors, normalizeSnapshot } from '.
 import { ensureToken, SCOPES, getToken, switchAccount, silentRefresh, getCurrentEmail, getTokenForEmail, TOKEN_EVENT } from '../technical/googleAuth.js';
 import { serverAuthEnabled } from '../../lib/googleServerAuth.js';
 import { fetchReportData } from './reportData.js';
+import { evaluateGscReadiness } from './gscGuard.js';
 import ReportDashboard from './ReportDashboard.jsx';
 
 const ACCENT = '#a78bfa';
@@ -163,6 +164,9 @@ export default function MonthlyReport() {
   const [liveAeoProbe, setLiveAeoProbe] = useState(null);
   const [previousAeoSnap, setPreviousAeoSnap] = useState(null);
   const [aeoOnly, setAeoOnly] = useState(false);
+  // Bumped on every saved-token change so the Search Console readiness gate
+  // re-evaluates after a silent refresh or an explicit sign-in.
+  const [tokenVersion, setTokenVersion] = useState(0);
   const [probeWarnings, setProbeWarnings] = useState([]);
   // Bumped when suite settings change (e.g. remote key hydration lands after
   // this view is already open) so the pre-run engine-coverage notice, which
@@ -216,7 +220,9 @@ export default function MonthlyReport() {
         setEmail({ subject: saved.email_subject || '', body: saved.email_body || '' });
         if (saved.qa) setQa(saved.qa);
         if (saved.aeo_probe) setLiveAeoProbe(saved.aeo_probe);
-        if (saved.report_type === 'aeo') setAeoOnly(true);
+        // 'full' is the pre-split type; those were SEO-led, so they load
+        // into the SEO view.
+        setAeoOnly(saved.report_type === 'aeo');
         if (saved.microsite_html_override) setHtmlOverride(saved.microsite_html_override);
         // Saved snapshot of report_data wins over a live fetch — the
         // generated copy was written against this data and the numbers
@@ -276,8 +282,13 @@ export default function MonthlyReport() {
         autoFetchMetrics(client, month, true);
       }
     };
+    const bumpTokenVersion = () => setTokenVersion(v => v + 1);
     window.addEventListener(TOKEN_EVENT, onTokenChange);
-    return () => window.removeEventListener(TOKEN_EVENT, onTokenChange);
+    window.addEventListener(TOKEN_EVENT, bumpTokenVersion);
+    return () => {
+      window.removeEventListener(TOKEN_EVENT, onTokenChange);
+      window.removeEventListener(TOKEN_EVENT, bumpTokenVersion);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [client?.id, month, fetchStatus]);
 
@@ -464,8 +475,16 @@ export default function MonthlyReport() {
         }));
       }
       if (data.keywords?.length > 0) {
+        // Search Console totals, derived from the same query rows the report
+        // tables render. Alice needs these for the click narrative and the
+        // PPC equivalent estimate, which otherwise both read as "—".
+        const gscClicks = data.keywords.reduce((a, k) => a + (Number(k.clicks) || 0), 0);
+        const gscImpr = data.keywords.reduce((a, k) => a + (Number(k.impressions) || 0), 0);
         setForm(prev => ({
           ...prev,
+          gscClicksThis: String(gscClicks),
+          gscImpressionsThis: String(gscImpr),
+          gscCtrThis: gscImpr > 0 ? ((gscClicks / gscImpr) * 100).toFixed(1) + '%' : '',
           topQueries: data.keywords.slice(0, 10).map(k =>
             k.query + ' — pos ' + k.position + (k.change != null ? ' (' + (k.change > 0 ? '+' : '') + k.change + ')' : '') + ', ' + k.clicks + ' clicks'
           ).join('\n')
@@ -494,6 +513,15 @@ export default function MonthlyReport() {
 
   const update = (k, v) => setForm(prev => ({ ...prev, [k]: v }));
 
+  // Search Console gate. The SEO report is blocked unless GSC is connected
+  // AND returning real data for the selected month: every keyword table,
+  // position and click figure in it comes from Search Console, so a report
+  // built on a broken feed is worse than no report at all.
+  const gscReady = useMemo(
+    () => evaluateGscReadiness({ client, reportData, month, token: getToken() }),
+    [client, reportData, month, tokenVersion]
+  );
+
   const micrositeHtml = useMemo(() => {
     if (!microJson || !client) return '';
     // Only weave AEO into the report when the client is actually on AEO
@@ -502,7 +530,9 @@ export default function MonthlyReport() {
     // snapshot on file would still get the full "AI Visibility" sections
     // in its Full Report. `does_aeo !== false` matches the tick convention
     // used across the suite (undefined/true = on, explicit false = off).
-    const includeAeo = aeoOnly || client.does_aeo !== false;
+    // The SEO report carries no AEO data at all: SEO and AEO are separate
+    // deliverables, so AI-visibility sections only render in the AEO report.
+    const includeAeo = aeoOnly;
     // Use the live probe if we just ran one; otherwise fall back to the
     // saved snapshot for this month so the report renders even without
     // a fresh probe in the same session. Normalize either way so legacy
@@ -524,7 +554,8 @@ export default function MonthlyReport() {
       aeoProbe,
       aeoCompare,
       aeoRanking,
-      aeoOnly
+      aeoOnly,
+      seoOnly: !aeoOnly
     });
   }, [microJson, client, month, reportData, liveAeoProbe, aeoSnap, previousAeoSnap, aeoOnly]);
 
@@ -662,25 +693,23 @@ export default function MonthlyReport() {
     }
   }
 
+  // Generate the SEO report: organic performance only. No AEO probe, no
+  // AI-visibility data, no AEO sections. A client on both services gets
+  // this AND a separate AEO report, never one merged document.
   async function generate() {
     if (!client) return;
+
+    // Hard gate: never build an SEO report on a Search Console feed that
+    // isn't connected or isn't reading. Every keyword table, position and
+    // click figure in the report comes from GSC.
+    if (!gscReady.ok) {
+      setErr('Search Console check failed: ' + gscReady.blocker.message);
+      setPhase('idle');
+      return;
+    }
+
     setErr(''); setEmail({ subject: '', body: '' }); setMicroJson(null); setQa(null); setSent(false);
-    setAeoOnly(false); setProbeWarnings([]);
-
-    // Only include AEO in a Full Report when the client is ticked as an
-    // AEO client (`does_aeo !== false`). Without this gate, any client with
-    // an old snapshot on file — or one for which the live probe below ran —
-    // would get AEO momentum metrics and the full AI Visibility microsite
-    // sections even though they aren't doing AEO.
-    const clientDoesAeo = client.does_aeo !== false;
-
-    // Compute MoM comparison and ranking from saved snapshot if we have one,
-    // so Alice can lead with momentum metrics ("+68% citations MoM") even
-    // when not running a fresh probe.
-    const aeoForCompare = clientDoesAeo ? (aeoSnap || liveAeoProbe) : null;
-    const aeoCompare = aeoForCompare ? compareSnapshots(aeoForCompare, previousAeoSnap) : null;
-    const aeoRanking = aeoForCompare ? rankBrandWithCompetitors(aeoForCompare, client.name) : null;
-    const brandRank = aeoRanking ? aeoRanking.findIndex(r => r.isBrand) + 1 : null;
+    setAeoOnly(false); setProbeWarnings([]); setLiveAeoProbe(null);
 
     const payload = buildAlicePayload({
       clientName: client.name,
@@ -688,65 +717,20 @@ export default function MonthlyReport() {
       goals: client.context,
       startDate: client.start_date,
       month: monthLabel(month),
-      previousMonthLabel: previousAeoSnap ? monthLabel(previousAeoSnap.month) : null,
       algorithmContext: algContext,
-      aeoCompare,
-      aeoRanking,
-      brandRank,
-      ...form
-    }, clientDoesAeo ? aeoSnap : null, workSummary);
+      ...form,
+      // Scope is fixed here regardless of what else the client buys: this
+      // button produces the SEO deliverable, nothing else.
+      hasSeo: true,
+      hasAeo: false,
+      seoOnly: true
+    }, null, workSummary);
 
     try {
-      // 0. Live AEO probe — only for AEO-ticked clients, and only when
-      // there's no saved AEO snapshot for this month.
-      //   - clientDoesAeo: a Full Report must never run (or surface) AEO for
-      //     a client that isn't ticked as an AEO client.
-      //   - !aeoSnap: a live probe is (probe queries × engines × iterations)
-      //     live LLM calls; for a client with a large probe-query list that's
-      //     many minutes of sequential work, which made "Generate Full Report"
-      //     look frozen. When a snapshot already exists the report renders
-      //     every AEO section from it (micrositeHtml prefers liveAeoProbe, then
-      //     falls back to aeoSnap; the Alice payload uses aeoSnap directly), so
-      //     re-probing live on each generate is pure waste — skip it. Use the
-      //     dedicated AEO Snapshot tool, or the "Generate AEO Report" button,
-      //     to pull fresh probe data on demand.
-      const preflight = snapshotPreflight(client);
-      if (clientDoesAeo && !aeoSnap && preflight.canRun) {
-        setPhase('aeo-probe');
-        try {
-          // Cap the in-report fallback probe so a client with a large
-          // probe-query list can't turn Generate into a many-minute sweep.
-          // The full set is available via the AEO Snapshot tool / Generate
-          // AEO Report.
-          const groundedClient = await groundClientGold(client, reportData);
-          if (groundedClient !== client && groundedClient.aeo_probes) saveClient(groundedClient).catch(() => {});
-          const probeResult = await runSnapshot(groundedClient, {
-            maxQueries: LIVE_PROBE_MAX_QUERIES,
-            retrievalOnly: true, // headline is retrieval-first; skip the parametric pass to halve engine calls
-            expandWinners: true, winnerTarget: 30, maxExpansionQueries: 40, // spider-web long-tail off every winner
-            onRuns: (records, raws) => persistAeoRuns(records, raws).catch(() => {}),
-            onProgress: (p) => { if (!p.index) probeStartRef.current = Date.now(); setPhase('aeo-probe'); setAeoProgress(p); }
-          });
-          setLiveAeoProbe(probeResult);
-          setProbeWarnings(summarizeProbeIssues(probeResult));
-          autoSaveSnapshot(probeResult);
-          // Feed probe results into form for Alice email
-          setForm(prev => ({
-            ...prev,
-            aeoScore: probeResult.overall_score,
-            aeoSentiment: probeResult.sentiment,
-            aeoEngines: probeResult.engines_used?.join(', '),
-            aeoCitations: probeResult.per_query?.filter(r => r.mentioned).length + ' of ' + probeResult.per_query?.length
-          }));
-        } catch (e) {
-          console.warn('[Report] AEO probe failed:', e.message);
-        }
-      }
-
       // 1. Alice email
       setPhase('alice');
       const aliceText = await claudeComplete({
-        system: ALICE_SYSTEM,
+        system: ALICE_SEO_SYSTEM,
         messages: [{ role: 'user', content: payload }],
         model: 'claude-sonnet-4-6',
         max_tokens: 1000,
@@ -758,7 +742,7 @@ export default function MonthlyReport() {
       // 2. Microsite JSON
       setPhase('micro');
       const micrositeText = await claudeComplete({
-        system: MICROSITE_SYSTEM,
+        system: MICROSITE_SEO_SYSTEM,
         messages: [{ role: 'user', content: payload }],
         model: 'claude-sonnet-4-6',
         // Was 1000 — same truncation issue as the AEO path. Bumped to 4000.
@@ -776,7 +760,7 @@ export default function MonthlyReport() {
       // 3. QA
       setPhase('qa');
       const qaText = await claudeComplete({
-        system: QA_SYSTEM,
+        system: QA_SEO_SYSTEM,
         messages: [{ role: 'user', content: 'Alice email to review:\n\n' + aliceText }],
         model: 'claude-sonnet-4-6',
         max_tokens: 500,
@@ -788,7 +772,7 @@ export default function MonthlyReport() {
       logReportGenerated({
         client_id: client.id,
         month,
-        report_type: 'full',
+        report_type: 'seo',
         qa_score: qaObj?.overallScore || null,
         email_subject: parsed.subject || '',
         // Full content snapshot so the report can be re-rendered on a
@@ -796,7 +780,6 @@ export default function MonthlyReport() {
         email_body: parsed.body || aliceText,
         microsite_json: microObj,
         qa: qaObj || null,
-        aeo_probe: liveAeoProbe,
         report_data: reportData
       }).catch(() => {});
 
@@ -830,7 +813,9 @@ export default function MonthlyReport() {
   function downloadHtml() {
     if (!displayHtml) return;
     const safeName = (client.name || 'client').replace(/[^a-z0-9]+/gi, '-');
-    downloadMicrosite(displayHtml, `${safeName}-${month}-Report.html`);
+    // The two reports are separate files: keep the type in the filename
+    // so they never overwrite each other in the downloads folder.
+    downloadMicrosite(displayHtml, `${safeName}-${month}-${aeoOnly ? 'AEO' : 'SEO'}-Report.html`);
   }
 
   // Print to PDF — opens the microsite in a new window with print-
@@ -840,7 +825,7 @@ export default function MonthlyReport() {
   function downloadPdf() {
     if (!displayHtml) return;
     const safeName = (client.name || 'client').replace(/[^a-z0-9]+/gi, '-');
-    downloadMicrositePdf(displayHtml, `${safeName}-${month}-Report.pdf`);
+    downloadMicrositePdf(displayHtml, `${safeName}-${month}-${aeoOnly ? 'AEO' : 'SEO'}-Report.pdf`);
   }
 
   // Toggle in-place visual editing on the microsite preview iframe. Sets
@@ -880,7 +865,7 @@ export default function MonthlyReport() {
       await logReportGenerated({
         client_id: client.id,
         month,
-        report_type: aeoOnly ? 'aeo' : 'full',
+        report_type: aeoOnly ? 'aeo' : 'seo',
         qa_score: qa?.overallScore || null,
         email_subject: email.subject || '',
         email_body: email.body || '',
@@ -907,6 +892,8 @@ export default function MonthlyReport() {
   if (!client) return <div className="muted">Select a client first.</div>;
 
   const hasSnapshot = !!aeoSnap;
+  const doesSeo = client.does_content !== false || client.does_technical !== false;
+  const doesAeo = client.does_aeo !== false;
 
   // Drop the AEO Probe step from the pipeline display for clients that
   // aren't ticked as AEO clients — a Full Report for them never probes,
@@ -914,7 +901,8 @@ export default function MonthlyReport() {
   // which is not on AEO, still "show AEO probe"). form.hasAeo mirrors the
   // does_aeo !== false tick convention.
   const PHASES = [
-    ...(form.hasAeo ? [{ key: 'aeo-probe', label: 'AEO Probe' }] : []),
+    // The SEO run has no probe step; only the AEO run sweeps engines.
+    ...(aeoOnly ? [{ key: 'aeo-probe', label: 'AEO Probe' }] : []),
     { key: 'alice', label: 'Alice email' },
     { key: 'micro', label: 'Microsite JSON' },
     { key: 'qa',    label: 'QA check' }
@@ -938,13 +926,17 @@ export default function MonthlyReport() {
             <input type="month" value={month} onChange={e => setMonth(e.target.value)} />
           </div>
         </div>
+        {/* Two separate deliverables, two separate readiness states. */}
         <div className="row" style={{ marginTop: 10, gap: 10, flexWrap: 'wrap' }}>
-          {hasSnapshot ? (
-            <span className="badge green">AEO snapshot: {aeoSnap.overall_score}/100</span>
-          ) : (
-            form.hasAeo && (
-              <span className="badge orange">No AEO snapshot for {month} — run one first for richer insights</span>
-            )
+          {doesSeo && (
+            gscReady.ok
+              ? <span className="badge green">SEO report: Search Console ready</span>
+              : <span className="badge red">SEO report: blocked — {gscReady.blocker.code.replace(/-/g, ' ')}</span>
+          )}
+          {doesAeo && (
+            hasSnapshot
+              ? <span className="badge green">AEO report: snapshot {aeoSnap.overall_score}/100</span>
+              : <span className="badge orange">AEO report: no snapshot for {month} yet</span>
           )}
         </div>
       </div>
@@ -1152,51 +1144,106 @@ export default function MonthlyReport() {
           <textarea value={algContext} onChange={e => setAlgContext(e.target.value)} rows={2} placeholder="e.g. Google March 2025 core update rolled out mid-month…" />
         </div>
 
-        {/* Generate CTAs — pulled into their own row above the phase
-            pills so they're obvious. Big targets, accent-coloured. */}
-        <div style={{
-          marginTop: 18, padding: 18,
-          background: 'linear-gradient(135deg, rgba(167,139,250,.08), rgba(167,139,250,.02))',
-          border: '1px solid rgba(167,139,250,.25)',
-          borderRadius: 12
-        }}>
-          <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 14 }}>
-            <div>
-              <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>
-                Ready to generate the report
+        {/* Generate CTAs — two independent deliverables. A client on both
+            services gets two separate reports, produced one at a time. */}
+        <div style={{ marginTop: 18, display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))' }}>
+          {doesSeo && (
+            <div style={{
+              padding: 18,
+              background: 'linear-gradient(135deg, rgba(167,139,250,.08), rgba(167,139,250,.02))',
+              border: '1px solid rgba(167,139,250,.25)',
+              borderRadius: 12
+            }}>
+              <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>SEO Report</div>
+              <div className="muted" style={{ fontSize: 12, marginBottom: 12 }}>
+                Organic traffic, keyword rankings, top pages and technical work. Contains no AEO data.
               </div>
-              <div className="muted" style={{ fontSize: 12 }}>
-                Pulls the latest data, runs Alice + microsite + QA, then opens for review.
+
+              {/* Search Console gate */}
+              <div style={{
+                padding: 12, borderRadius: 10, marginBottom: 12,
+                background: gscReady.ok ? 'rgba(52,211,153,.06)' : 'rgba(255,77,77,.06)',
+                border: '1px solid ' + (gscReady.ok ? 'rgba(52,211,153,.3)' : 'rgba(255,77,77,.3)')
+              }}>
+                <div className="row" style={{ gap: 8, alignItems: 'center', marginBottom: gscReady.ok ? 0 : 8 }}>
+                  <span style={{ color: gscReady.ok ? 'var(--green)' : 'var(--red)', fontWeight: 600, fontSize: 12 }}>
+                    {gscReady.ok ? '✓ Search Console connected & reading' : '✗ Search Console not ready'}
+                  </span>
+                </div>
+                {!gscReady.ok && (
+                  <>
+                    <div style={{ fontSize: 12, marginBottom: 8 }}>{gscReady.blocker.message}</div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 3, marginBottom: 10 }}>
+                      {gscReady.checks.map(c => (
+                        <div key={c.key} className="row" style={{ gap: 6, fontSize: 11 }}>
+                          <span style={{ color: c.pass ? 'var(--green)' : 'var(--red)' }}>{c.pass ? '✓' : '✗'}</span>
+                          <span style={{ color: c.pass ? 'var(--text-muted)' : 'var(--text)' }}>{c.label}</span>
+                          {c.note && <span className="muted" style={{ fontSize: 10 }}>— {c.note}</span>}
+                        </div>
+                      ))}
+                    </div>
+                    {(gscReady.blocker.action === 'connect' || gscReady.blocker.action === 'refresh') && (
+                      <button
+                        onClick={() => autoFetchMetrics(client, month, true)}
+                        style={{ fontSize: 11, padding: '5px 12px', borderColor: 'var(--green)', color: 'var(--green)' }}
+                      >
+                        {gscReady.blocker.action === 'connect' ? 'Connect Google' : 'Refresh Search Console Data'}
+                      </button>
+                    )}
+                  </>
+                )}
               </div>
+
+              <button
+                className="primary"
+                onClick={generate}
+                disabled={!gscReady.ok || (phase !== 'idle' && phase !== 'review')}
+                title={gscReady.ok ? '' : gscReady.blocker.message}
+                style={{
+                  background: gscReady.ok ? ACCENT : 'transparent',
+                  borderColor: gscReady.ok ? ACCENT : 'var(--border)',
+                  color: gscReady.ok ? '#0a0a0c' : 'var(--text-muted)',
+                  cursor: gscReady.ok ? 'pointer' : 'not-allowed',
+                  padding: '12px 22px', fontSize: 14, fontWeight: 600, width: '100%'
+                }}
+              >
+                {phase !== 'idle' && phase !== 'review' ? 'Working…'
+                  : gscReady.ok ? '▶ Generate SEO Report'
+                  : 'Blocked — fix Search Console first'}
+              </button>
             </div>
-            <div className="row" style={{ gap: 10, flexWrap: 'wrap' }}>
-              {(client.does_content !== false || client.does_technical !== false) && (
-                <button
-                  className="primary"
-                  onClick={generate}
-                  disabled={phase !== 'idle' && phase !== 'review'}
-                  style={{
-                    background: ACCENT, borderColor: ACCENT, color: '#0a0a0c',
-                    padding: '12px 22px', fontSize: 14, fontWeight: 600
-                  }}
-                >
-                  {phase === 'idle' || phase === 'review' ? '▶ Generate Full Report' : 'Working…'}
-                </button>
-              )}
-              {client.does_aeo !== false && (
-                <button
-                  onClick={generateAeoOnly}
-                  disabled={phase !== 'idle' && phase !== 'review'}
-                  style={{
-                    borderColor: 'var(--mod-aeo)', color: 'var(--mod-aeo)',
-                    padding: '12px 22px', fontSize: 14, fontWeight: 600
-                  }}
-                >
-                  {phase === 'idle' || phase === 'review' ? '▶ Generate AEO Report' : 'Working…'}
-                </button>
-              )}
+          )}
+
+          {doesAeo && (
+            <div style={{
+              padding: 18,
+              background: 'linear-gradient(135deg, rgba(167,139,250,.08), rgba(167,139,250,.02))',
+              border: '1px solid rgba(167,139,250,.25)',
+              borderRadius: 12
+            }}>
+              <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>AEO Report</div>
+              <div className="muted" style={{ fontSize: 12, marginBottom: 12 }}>
+                AI search visibility across the configured answer engines. Contains no SEO data.
+              </div>
+              <div style={{
+                padding: 12, borderRadius: 10, marginBottom: 12,
+                background: 'rgba(167,139,250,.06)', border: '1px solid rgba(167,139,250,.25)',
+                fontSize: 12, color: 'var(--text-muted)'
+              }}>
+                Runs a live probe against the client's AEO queries — independent of Google Search Console.
+              </div>
+              <button
+                onClick={generateAeoOnly}
+                disabled={phase !== 'idle' && phase !== 'review'}
+                style={{
+                  borderColor: 'var(--mod-aeo)', color: 'var(--mod-aeo)',
+                  padding: '12px 22px', fontSize: 14, fontWeight: 600, width: '100%'
+                }}
+              >
+                {phase === 'idle' || phase === 'review' ? '▶ Generate AEO Report' : 'Working…'}
+              </button>
             </div>
-          </div>
+          )}
         </div>
 
         {/* Phase indicators — moved below the CTA so the buttons lead. */}
@@ -1284,6 +1331,15 @@ export default function MonthlyReport() {
       {/* Review section */}
       {phase === 'review' && (
         <>
+          <div className="card" style={{ marginBottom: 14, borderColor: aeoOnly ? 'var(--mod-aeo)' : ACCENT }}>
+            <strong>Reviewing: {aeoOnly ? 'AEO Report' : 'SEO Report'} — {monthLabel(month)}</strong>
+            <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+              {aeoOnly
+                ? 'AI visibility only. Generate the SEO report separately for organic performance.'
+                : 'Organic performance only. Generate the AEO report separately for AI visibility.'}
+            </div>
+          </div>
+
           {savedReportLoaded && (
             <div className="card" style={{ marginBottom: 14, padding: '10px 16px', borderColor: 'rgba(167,139,250,.4)', background: 'rgba(167,139,250,.06)' }}>
               <div className="row" style={{ gap: 10, alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap' }}>
@@ -1343,7 +1399,8 @@ export default function MonthlyReport() {
                 <div style={{ marginTop: 10, padding: 10, background: 'var(--surface-2)', borderRadius: 8, fontSize: 13 }}>
                   <strong>Suggestion:</strong> {qa.suggestion}
                   <div style={{ marginTop: 8 }}>
-                    <button onClick={generate}>Regenerate</button>
+                    {/* Regenerate the report you're actually looking at. */}
+                    <button onClick={aeoOnly ? generateAeoOnly : generate}>Regenerate</button>
                   </div>
                 </div>
               )}
@@ -1365,7 +1422,7 @@ export default function MonthlyReport() {
             <div className="card" style={{ marginBottom: 14 }}>
               <div className="row" style={{ justifyContent: 'space-between', marginBottom: 10, flexWrap: 'wrap', gap: 8 }}>
                 <div className="row" style={{ gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-                  <strong>Microsite Preview</strong>
+                  <strong>{aeoOnly ? 'AEO' : 'SEO'} Microsite Preview</strong>
                   {htmlOverride && !editingMicro && (
                     <span className="badge" style={{ fontSize: 9, background: 'rgba(167,139,250,.15)', color: ACCENT, borderColor: ACCENT }}>EDITED</span>
                   )}
@@ -1430,7 +1487,7 @@ export default function MonthlyReport() {
               <div>
                 <strong>{sent ? 'Sent ✓' : 'Approve & Mark Sent'}</strong>
                 <div className="muted" style={{ fontSize: 12 }}>
-                  Logs to the report history for {client.name} — {monthLabel(month)}.
+                  Logs the {aeoOnly ? 'AEO' : 'SEO'} report to history for {client.name} — {monthLabel(month)}.
                 </div>
               </div>
               <button
