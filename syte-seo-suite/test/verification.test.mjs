@@ -480,5 +480,85 @@ await t('checkOffPageTask DOES NOT call updateImplementation', async () => {
   if (globalThis.__updates.length !== 0) throw new Error('checkOffPageTask should not persist');
 });
 
+// =================== SENT TO DEVELOPER ===================
+// Handing a change to the client's developer and attaching the email is a
+// completed, evidenced deliverable — it must land as 'verified', with the
+// screenshot kept as proof and a marker so a later re-check can tell it
+// apart from work verified as live on the page.
+
+const HANDOVER_IMPL = { id: 'h1', change_type: 'meta', title: 'Meta description', page_url: 'https://x.com/about' };
+const FAKE_IMAGE = 'a'.repeat(400);
+
+await t('verifySentToDeveloper: confirmed email screenshot marks the record VERIFIED', async () => {
+  globalThis.__mockClaude = async () =>
+    '{"is_email": true, "recipient": "dev@client.com", "subject": "SEO changes", "relates": true, "evidence": "Gmail sent message."}';
+  const r = await verif.verifySentToDeveloper(HANDOVER_IMPL, { imageBase64: FAKE_IMAGE, sentBy: 'Mike' });
+  assertEq(r.status, 'verified', 'returned status');
+  assertEq(globalThis.__updates.length, 1, 'one persist');
+  assertEq(globalThis.__updates[0].patch.verification_status, 'verified', 'persisted status');
+  if (!verif.isDeveloperHandover(globalThis.__updates[0].patch.verification_detail)) {
+    throw new Error('handover marker missing from stored detail');
+  }
+  if (!globalThis.__updates[0].patch.verification_detail.includes('[SCREENSHOT]')) {
+    throw new Error('email screenshot not kept as proof');
+  }
+});
+
+await t('verifySentToDeveloper: a rejected screenshot persists NOTHING', async () => {
+  globalThis.__mockClaude = async () =>
+    '{"is_email": false, "recipient": "", "subject": "", "relates": false, "evidence": "This is a photo of a cat."}';
+  const r = await verif.verifySentToDeveloper(HANDOVER_IMPL, { imageBase64: FAKE_IMAGE });
+  assertEq(r.status, 'rejected', 'returned status');
+  assertEq(globalThis.__updates.length, 0, 'nothing persisted');
+});
+
+await t('verifySentToDeveloper: an empty screenshot is rejected before any API call', async () => {
+  const r = await verif.verifySentToDeveloper(HANDOVER_IMPL, { imageBase64: '' });
+  assertEq(r.status, 'rejected', 'returned status');
+  assertEq(globalThis.__updates.length, 0, 'nothing persisted');
+});
+
+await t('markSentToDeveloper: manual override WITH a screenshot verifies', async () => {
+  const r = await verif.markSentToDeveloper(HANDOVER_IMPL, 'Mike', { imageBase64: FAKE_IMAGE });
+  assertEq(r.status, 'verified', 'returned status');
+  assertEq(globalThis.__updates[0].patch.verification_status, 'verified', 'persisted status');
+  if (!verif.isDeveloperHandover(globalThis.__updates[0].patch.verification_detail)) {
+    throw new Error('handover marker missing');
+  }
+});
+
+await t('markSentToDeveloper: no screenshot means no proof, so it stays sent_to_developer', async () => {
+  const r = await verif.markSentToDeveloper(HANDOVER_IMPL, 'Mike');
+  assertEq(r.status, 'sent_to_developer', 'returned status');
+  assertEq(globalThis.__updates[0].patch.verification_status, 'sent_to_developer', 'persisted status');
+  if (verif.isDeveloperHandover(globalThis.__updates[0].patch.verification_detail)) {
+    throw new Error('unproven handover should not carry the verified-handover marker');
+  }
+});
+
+await t('displayVerificationDetail: the internal marker never reaches the UI', async () => {
+  globalThis.__mockClaude = async () =>
+    '{"is_email": true, "recipient": "dev@client.com", "subject": "SEO changes", "relates": true, "evidence": "Sent message."}';
+  const r = await verif.verifySentToDeveloper(HANDOVER_IMPL, { imageBase64: FAKE_IMAGE });
+  const shown = verif.displayVerificationDetail(r.detail);
+  if (shown.includes('[HANDOVER]')) throw new Error('marker leaked into displayed text');
+  if (!shown.includes('Sent to developer')) throw new Error('human-readable detail lost');
+});
+
+await t('an already-verified handover is never demoted by an inconclusive re-check', async () => {
+  globalThis.__mockCorsFetchText = async () => { throw new Error('cors blocked'); };
+  globalThis.__mockClaude = async () => { throw new Error('api down'); };
+  const r = await verif.verifyImplementation(
+    { id: 'h2', change_type: 'meta', title: 'Meta', page_url: 'https://x.com/about', verification_status: 'verified' },
+    { url: 'https://x.com/' }
+  );
+  assertEq(r.status, 'verified', 'kept prior status');
+  for (const u of globalThis.__updates) {
+    if (u.patch.verification_status && u.patch.verification_status !== 'verified') {
+      throw new Error('inconclusive re-check downgraded a verified record to ' + u.patch.verification_status);
+    }
+  }
+});
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);
