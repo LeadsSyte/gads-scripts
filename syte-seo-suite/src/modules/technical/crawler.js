@@ -6,7 +6,7 @@
 // Output shape per page: { url, title, issues: [{ type, severity, detail, fix }] }
 
 import { corsFetchText } from '../../lib/corsProxy.js';
-import { fetchSitemapUrls } from '../aeo/sitemap.js';
+import { discoverSiteUrls } from '../aeo/sitemap.js';
 
 const CRAWL_BATCH = 5;
 
@@ -263,64 +263,14 @@ async function analyzeUrl(url) {
   }
 }
 
-// Discover real pages by crawling the homepage and extracting internal links.
-async function discoverLinksFromHomepage(baseUrl) {
-  const links = new Set();
-  links.add(baseUrl.replace(/\/$/, '') + '/');
-  let html = '';
-
-  // Try page-proxy first (Jina renders JS, bypasses WAFs).
-  try {
-    const res = await fetch('/.netlify/functions/page-proxy', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url: baseUrl })
-    });
-    if (res.ok) {
-      const data = await res.json();
-      if (data.html && data.html.length > 500) html = data.html;
-    }
-  } catch {}
-
-  // Fallback to CORS proxy.
-  if (!html) {
-    try { html = await corsFetchText(baseUrl); } catch {}
-  }
-
-  if (html) {
-    const doc = new DOMParser().parseFromString(html, 'text/html');
-    const origin = new URL(baseUrl).origin;
-    for (const a of doc.querySelectorAll('a[href]')) {
-      let href = a.getAttribute('href') || '';
-      if (href.startsWith('#') || href.startsWith('mailto:') || href.startsWith('tel:') || href.startsWith('javascript:')) continue;
-      try {
-        const full = new URL(href, baseUrl).href;
-        if (full.startsWith(origin) && !full.includes('#')) {
-          links.add(full.split('?')[0]);
-        }
-      } catch {}
-    }
-  }
-  return Array.from(links);
-}
-
 // Main crawler entry point.
-export async function crawlSiteForIssues(client, { maxPages = 50, onProgress } = {}) {
-  // 1. Get URL list from sitemap, with homepage fallback.
-  let urls = [];
-  try {
-    urls = await fetchSitemapUrls(client.sitemap_url, client.sitemap_raw);
-  } catch {}
-  if (!urls.length && client.url) {
-    // No sitemap — discover real pages from the homepage links instead of
-    // guessing generic paths that may not exist (e.g. Shopify uses /pages/).
-    try {
-      urls = await discoverLinksFromHomepage(client.url);
-    } catch {}
-    if (!urls.length) {
-      urls = [client.url.replace(/\/$/, '') + '/'];
-    }
-  }
+export async function crawlSiteForIssues(client, { maxPages = 50, onProgress, onDiscovery } = {}) {
+  // 1. Get the URL list. discoverSiteUrls walks the full ladder — configured
+  //    sitemap, then auto-discovered sitemaps (robots.txt + common paths,
+  //    all of them merged), then an internal-link crawl — so a client
+  //    without a configured sitemap still gets audited site-wide instead of
+  //    falling straight through to a homepage-only scan.
+  const { urls, source, total } = await discoverSiteUrls(client, { maxPages, onProgress: onDiscovery });
   if (!urls.length) {
     throw new Error('No URLs to crawl — client needs a sitemap URL or website URL');
   }
@@ -341,31 +291,90 @@ export async function crawlSiteForIssues(client, { maxPages = 50, onProgress } =
     withIssues: findings.filter(f => f.issueCount > 0).length,
     withErrors: findings.filter(f => f.error).length,
     pages: findings,
-    urlsAttempted: targets.length
+    urlsAttempted: targets.length,
+    urlsDiscovered: total ?? urls.length,
+    discoverySource: source
   };
 }
 
+const SEVERITY_RANK = { critical: 0, high: 1, medium: 2, low: 3 };
+
 // Build a compact summary for Claude — one line per issue per page,
 // so Claude can easily see "URL X has issue Y with fix Z".
-export function summarizeCrawlForAI(crawlResult) {
-  const lines = [];
-  lines.push(`Crawled ${crawlResult.totalCrawled} pages · ${crawlResult.withIssues} with issues · ${crawlResult.withErrors} unreachable`);
-  lines.push('');
-  for (const page of crawlResult.pages) {
-    if (page.error || page.skipped) {
-      // Don't include 404/error pages — Claude should NOT create tasks for them.
-      continue;
+//
+// The prompt has a hard character budget. A straight page-by-page dump blew
+// through it on a site-wide crawl, and because pages are emitted in crawl
+// order the truncation always fell on the deepest pages — so Claude only
+// ever saw the homepage and its neighbours. Issues are therefore selected in
+// rounds: every page contributes its worst issue before any page contributes
+// its second, so the budget buys breadth across the site rather than depth on
+// the first few pages.
+export function summarizeCrawlForAI(crawlResult, { maxChars = 70000, maxIssuesPerPage = 8 } = {}) {
+  // Don't include 404/error pages — Claude should NOT create tasks for them.
+  const pages = (crawlResult.pages || []).filter(p => !p.error && !p.skipped && p.issueCount > 0);
+
+  const ranked = pages.map(page => ({
+    page,
+    issues: [...page.issues]
+      .sort((a, b) => (SEVERITY_RANK[a.severity] ?? 9) - (SEVERITY_RANK[b.severity] ?? 9))
+      .slice(0, maxIssuesPerPage),
+    chosen: []
+  }));
+
+  const header = [
+    `Crawled ${crawlResult.totalCrawled} pages across the site · ${crawlResult.withIssues} with issues · ${crawlResult.withErrors} unreachable`,
+    crawlResult.discoverySource ? `Pages discovered via: ${crawlResult.discoverySource}` : null,
+    ''
+  ].filter(v => v !== null);
+
+  const renderIssue = (issue) => {
+    const out = [`  [${(issue.severity || 'medium').toUpperCase()}] ${issue.type}: ${issue.detail}`];
+    if (issue.fix) {
+      out.push(`    Suggested fix: ${issue.fix.slice(0, 300)}${issue.fix.length > 300 ? '…' : ''}`);
     }
-    if (page.issueCount === 0) continue;
-    lines.push(`PAGE: ${page.url}`);
-    if (page.title) lines.push(`  Title: "${page.title}"`);
-    for (const issue of page.issues) {
-      lines.push(`  [${issue.severity.toUpperCase()}] ${issue.type}: ${issue.detail}`);
-      if (issue.fix) {
-        lines.push(`    Suggested fix: ${issue.fix.slice(0, 300)}${issue.fix.length > 300 ? '…' : ''}`);
-      }
+    return out.join('\n');
+  };
+
+  // Fixed cost of every page block we've opened so far (the PAGE/Title lines
+  // plus the blank separator), tracked so the budget stays honest.
+  let used = header.join('\n').length;
+  const blockOverhead = (entry) =>
+    `PAGE: ${entry.page.url}`.length + 1 +
+    (entry.page.title ? `  Title: "${entry.page.title}"`.length + 1 : 0) + 1;
+
+  const opened = new Set();
+  const maxRounds = maxIssuesPerPage;
+  for (let round = 0; round < maxRounds; round++) {
+    let addedThisRound = false;
+    for (const entry of ranked) {
+      const issue = entry.issues[round];
+      if (!issue) continue;
+      const cost = renderIssue(issue).length + 1 + (opened.has(entry) ? 0 : blockOverhead(entry));
+      if (used + cost > maxChars) continue;
+      used += cost;
+      opened.add(entry);
+      entry.chosen.push(issue);
+      addedThisRound = true;
     }
+    if (!addedThisRound) break;
+  }
+
+  const lines = [...header];
+  let omittedPages = 0;
+  let omittedIssues = 0;
+  for (const entry of ranked) {
+    if (!entry.chosen.length) { omittedPages++; continue; }
+    omittedIssues += entry.page.issues.length - entry.chosen.length;
+    lines.push(`PAGE: ${entry.page.url}`);
+    if (entry.page.title) lines.push(`  Title: "${entry.page.title}"`);
+    for (const issue of entry.chosen) lines.push(renderIssue(issue));
     lines.push('');
   }
+
+  // Never let a cap look like a clean bill of health.
+  if (omittedPages || omittedIssues) {
+    lines.push(`(Trimmed to fit: ${omittedIssues} further issues${omittedPages ? ` and ${omittedPages} additional pages with issues` : ''} were not listed.)`);
+  }
+
   return lines.join('\n');
 }

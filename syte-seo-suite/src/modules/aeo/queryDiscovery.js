@@ -12,7 +12,7 @@
 
 import { claudeComplete, extractJSON } from '../../lib/anthropic.js';
 import { corsFetchText } from '../../lib/corsProxy.js';
-import { fetchSitemapUrls } from './sitemap.js';
+import { discoverSiteUrls } from './sitemap.js';
 
 const MAX_PAGES_TO_READ = 8;
 const MAX_HTML_PER_PAGE = 12000;
@@ -81,33 +81,14 @@ async function crawlSite(client, onProgress) {
   const base = (client.url || '').replace(/\/$/, '');
   if (!base) throw new Error('Client has no website URL.');
 
-  onProgress?.({ phase: 'sitemap', message: 'Reading sitemap…' });
-  let sitemapUrls = [];
-  try {
-    sitemapUrls = await fetchSitemapUrls(client.sitemap_url, client.sitemap_raw);
-  } catch {}
-
-  // If no sitemap, discover from homepage links.
-  if (!sitemapUrls.length) {
-    onProgress?.({ phase: 'sitemap', message: 'No sitemap — discovering from homepage links…' });
-    try {
-      const homeHtml = await corsFetchText(base + '/');
-      const doc = new DOMParser().parseFromString(homeHtml, 'text/html');
-      const origin = new URL(base).origin;
-      const found = new Set([base + '/']);
-      for (const a of doc.querySelectorAll('a[href]')) {
-        let href = a.getAttribute('href') || '';
-        if (!href || href.startsWith('#') || href.startsWith('mailto:') || href.startsWith('tel:') || href.startsWith('javascript:')) continue;
-        try {
-          const full = new URL(href, base).href.split('#')[0].split('?')[0];
-          if (full.startsWith(origin)) found.add(full);
-        } catch {}
-      }
-      sitemapUrls = Array.from(found);
-    } catch {
-      sitemapUrls = [base + '/'];
-    }
-  }
+  // Shared discovery ladder: configured sitemap → auto-discovered sitemaps →
+  // internal-link crawl → homepage. Query discovery reads a handful of
+  // representative pages, and those are only representative if the pool
+  // covers the site rather than the homepage's outbound links.
+  const { urls: sitemapUrls } = await discoverSiteUrls(client, {
+    maxPages: 300,
+    onProgress: (message) => onProgress?.({ phase: 'sitemap', message })
+  });
 
   const targets = pickRepresentativePages(sitemapUrls, base);
   onProgress?.({ phase: 'fetching', message: `Fetching ${targets.length} pages…`, total: targets.length });

@@ -379,14 +379,40 @@ function hasUsefulBody(html) {
   return text.length >= 60;
 }
 
+// Marker kept inside verification_detail so a developer handover stays
+// recognisable after the fact. The record's status is 'verified' (attaching
+// the email is what verifies it), so the status column alone can no longer
+// tell a handover from an on-page verification — this marker can. It lives in
+// the detail rather than in its own column because the bulk list query omits
+// verification_detail; anything that needs to know fetches the detail for the
+// one row it cares about.
+export const HANDOVER_MARKER = '[HANDOVER]';
+
+export function isDeveloperHandover(detail) {
+  return typeof detail === 'string' && detail.includes(HANDOVER_MARKER);
+}
+
+// Strip internal markers before showing a detail string to a user.
+export function displayVerificationDetail(detail) {
+  return String(detail || '').split(HANDOVER_MARKER).join('').trim();
+}
+
 // "Sent to Developer" verification — used when we hand technical
 // optimizations or content changes to the client's developer instead of
 // implementing them ourselves. The team member uploads a screenshot of the
 // email they sent; Claude Vision confirms it actually shows a sent email
-// that relates to this change, then the record is marked
-// 'sent_to_developer'. If the screenshot can't be confirmed, NOTHING is
-// persisted — the caller can retry with a better screenshot or use
-// markSentToDeveloper() to override manually.
+// that relates to this change, and the record is then marked 'verified' with
+// the screenshot kept as the proof.
+//
+// The attached email IS the verification for this flow: the deliverable we
+// committed to was handing the change over, and the screenshot evidences it.
+// Records keep the HANDOVER_MARKER so "verified because we emailed the dev"
+// stays distinguishable from "verified because it's live on the page" — see
+// the re-check guard in ImplementationProgress, which must not demote a
+// handover to 'failed' just because the developer hasn't shipped it yet.
+//
+// If the screenshot can't be confirmed, NOTHING is persisted — the caller can
+// retry with a better screenshot or use markSentToDeveloper() to override.
 export async function verifySentToDeveloper(impl, { imageBase64, mediaType = 'image/jpeg', sentBy = '' } = {}) {
   if (!imageBase64 || imageBase64.length < 100) {
     return { status: 'rejected', detail: 'Screenshot is empty or too small — upload a screenshot of the email you sent.' };
@@ -439,22 +465,23 @@ Return ONLY JSON:
       return { status: 'rejected', detail: 'The screenshot does not look like an email: ' + (parsed.evidence || 'no email visible.') + ' Upload a screenshot of the sent email, or mark as sent manually.' };
     }
     const detail = [
-      'Email screenshot confirmed' + (parsed.recipient ? ' — sent to ' + parsed.recipient : ''),
+      HANDOVER_MARKER,
+      '✓ Sent to developer — email screenshot confirmed' + (parsed.recipient ? ', sent to ' + parsed.recipient : ''),
       parsed.subject ? 'Subject: "' + parsed.subject + '"' : '',
       parsed.evidence || '',
       sentBy ? 'Sent by ' + sentBy : '',
-      '(Sent to developer — awaiting implementation on site)'
+      '(Verified as handed over — awaiting implementation on site)'
     ].filter(Boolean).join(' · ');
     // Keep the email screenshot as proof, using the same [SCREENSHOT]
     // marker the history view already renders (fetched on demand via
     // getImplementationDetail — never in bulk list queries).
     const stored = detail + '\n[SCREENSHOT]data:' + mediaType + ';base64,' + imageBase64 + '[/SCREENSHOT]';
     await updateImplementation(impl.id, {
-      verification_status: 'sent_to_developer',
+      verification_status: 'verified',
       verification_detail: stored,
       verified_at: new Date().toISOString()
     });
-    return { status: 'sent_to_developer', detail: stored };
+    return { status: 'verified', detail: stored, handover: true };
   } catch (e) {
     return { status: 'rejected', detail: 'Could not check the screenshot (' + (e.message || 'API error') + '). Try again or mark as sent manually.' };
   }
@@ -462,20 +489,31 @@ Return ONLY JSON:
 
 // Manual override for the sent-to-developer flow — used when the AI check
 // on the screenshot fails but the team member confirms the email was sent.
-// If a screenshot was uploaded, keep it as proof even though the AI
-// couldn't confirm it.
+//
+// An attached screenshot is proof whether or not the AI could read it, so an
+// override WITH a screenshot verifies the record exactly like the AI path
+// does. An override with no screenshot has no evidence behind it, so it stays
+// in 'sent_to_developer' until someone attaches the email.
 export async function markSentToDeveloper(impl, sentBy = '', { imageBase64, mediaType = 'image/jpeg' } = {}) {
-  const detail = 'Marked as sent to developer' + (sentBy ? ' by ' + sentBy : '') +
-    ' (manual confirmation, screenshot check skipped) · (Awaiting implementation on site)';
+  const verified = !!imageBase64;
+  const detail = [
+    verified ? HANDOVER_MARKER : '',
+    (verified ? '✓ Sent to developer — email screenshot attached' : 'Marked as sent to developer') +
+      (sentBy ? ' by ' + sentBy : ''),
+    '(manual confirmation, automatic screenshot check skipped)',
+    verified
+      ? '(Verified as handed over — awaiting implementation on site)'
+      : '(Awaiting implementation on site)'
+  ].filter(Boolean).join(' · ');
   const stored = imageBase64
     ? detail + '\n[SCREENSHOT]data:' + mediaType + ';base64,' + imageBase64 + '[/SCREENSHOT]'
     : detail;
   await updateImplementation(impl.id, {
-    verification_status: 'sent_to_developer',
+    verification_status: verified ? 'verified' : 'sent_to_developer',
     verification_detail: stored,
     verified_at: new Date().toISOString()
   });
-  return { status: 'sent_to_developer', detail: stored };
+  return { status: verified ? 'verified' : 'sent_to_developer', detail: stored, handover: verified };
 }
 
 // A verification attempt is INCONCLUSIVE — not evidence the work is absent —

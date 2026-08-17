@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useClients } from '../store/useClients.js';
 import { logImplementation, updateImplementation } from '../lib/supabase.js';
-import { verifyImplementation, verifyImplementationFromHtml, verifyImplementationVisually, isOffPageTask, verifySentToDeveloper, markSentToDeveloper } from '../lib/verification.js';
+import { verifyImplementation, verifyImplementationFromHtml, verifyImplementationVisually, isOffPageTask, verifySentToDeveloper, markSentToDeveloper, displayVerificationDetail } from '../lib/verification.js';
 
 // Downscale an image file to a JPEG base64 string (no data: prefix).
 // Email screenshots straight off a retina display can be several MB —
@@ -115,10 +115,18 @@ export default function MarkImplementedButton({
     try {
       const imageBase64 = await fileToJpegBase64(file);
       const r = await verifySentToDeveloper(result.impl, { imageBase64, sentBy });
-      if (r.status === 'sent_to_developer') {
+      // Anything other than an outright rejection is an accepted handover.
+      if (r.status !== 'rejected') {
         setResult({ ...result, status: r.status, detail: r.detail });
         setShowSentPanel(false);
         setSentFile(null);
+        // Tell the parent to reload. Without this the row stayed put in
+        // whatever list it came from — the record WAS updated in Supabase,
+        // but nothing on screen moved, so attaching the email looked like it
+        // had done nothing at all. Gated on 'verified' like every other
+        // caller: onVerified also flips a Technical SEO task's own status,
+        // which must not happen for a non-verified outcome.
+        if (r.status === 'verified') onVerified?.();
       } else {
         setSentMsg(r.detail); // rejected — keep the panel open for retry / manual override
       }
@@ -140,6 +148,9 @@ export default function MarkImplementedButton({
       setShowSentPanel(false);
       setSentFile(null);
       setSentMsg('');
+      // Only an override that carried a screenshot verifies the record; a
+      // bare confirmation stays 'sent to developer' and must not flip a task.
+      if (r.status === 'verified') onVerified?.();
     } catch (e) {
       setSentMsg(e.message);
     } finally {
@@ -478,7 +489,7 @@ export default function MarkImplementedButton({
         // path) so we can render the image inline. Marker convention:
         //   …prose…[SCREENSHOT]data:image/jpeg;base64,XXX[/SCREENSHOT]
         const m = String(result.detail).match(/\[SCREENSHOT\]([\s\S]+?)\[\/SCREENSHOT\]/);
-        const text = m ? result.detail.replace(m[0], '').trim() : result.detail;
+        const text = displayVerificationDetail(m ? result.detail.replace(m[0], '') : result.detail);
         const screenshot = m ? m[1] : '';
         return (
           <div style={{
@@ -550,7 +561,8 @@ export default function MarkImplementedButton({
           <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 4 }}>📧 Upload a screenshot of the email</div>
           <div className="muted" style={{ fontSize: 10, marginBottom: 6, lineHeight: 1.4 }}>
             Screenshot the email you sent to the client's developer (Gmail/Outlook — the sent message or compose window is fine).
-            Checking starts as soon as you attach it, then the change is marked <strong>Sent to Developer</strong>.
+            Checking starts as soon as you attach it, then the change is marked <strong>✓ Verified</strong> with the
+            email kept as proof of the handover.
           </div>
           <input
             type="text"
