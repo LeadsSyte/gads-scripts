@@ -121,6 +121,7 @@ RULES:
 - Every page_url must be a real, complete URL found in the audit data. NEVER use wildcards (*), generic paths, or invented URLs.
 - Every copy_paste_fix must be FINISHED — ready to paste. No [PLACEHOLDER] values. Use the actual page title, product name, or content from the audit data. For alt text, describe what the image shows based on the filename/context.
 - If the audit shows the same issue on many pages, pick the MOST IMPORTANT pages (homepage, high-traffic pages, key service/product pages) and create individual tasks for each.
+- COVER THE WHOLE SITE. The audit data spans every page we could crawl, not just the homepage. Spread the task list across as many DISTINCT page URLs as the findings support — never hand back a list where most tasks point at the same URL. Cap any single page at 2 tasks while other pages still have unaddressed issues; only stack more on one page when the rest of the site is genuinely clean.
 - For image alt text issues: include the specific image URL and the specific page where it's found, with a real descriptive alt text based on the image filename and page context.
 - For missing meta titles/descriptions: write the actual title/description for that specific page.
 - For missing schema: write the complete JSON-LD for that specific page using real data from the audit.
@@ -158,7 +159,7 @@ async function triageAudit(auditData, clientUrl, taskLimit = DEFAULT_SUGGESTIONS
 Crawler findings (each PAGE block lists specific issues found on that URL with suggested fixes):
 ${dataText.slice(0, 80000)}
 
-Create one task per MEANINGFUL issue on a SPECIFIC page, up to ${taskLimit} tasks. Use the exact URLs shown. When the crawler suggests a fix, use it as the copy_paste_fix (refine if needed). Prioritize critical issues (noindex, missing titles) first.`
+Create one task per MEANINGFUL issue on a SPECIFIC page, up to ${taskLimit} tasks. Use the exact URLs shown. When the crawler suggests a fix, use it as the copy_paste_fix (refine if needed). Prioritize critical issues (noindex, missing titles) first, and spread the list across the different page URLs above rather than stacking it on the homepage.`
     }],
     max_tokens: 16000,
     temperature: 0.3
@@ -460,11 +461,15 @@ export default function TechnicalSEO({ sub }) {
       try {
         const crawl = await crawlSiteForIssues(c, {
           maxPages: crawlDepth,
+          onDiscovery: (stage) => setMsg(`Step 1/3 — ${c.name}: ${stage}`),
           onProgress: (done, total) => setMsg(`Step 1/3 — Crawling ${c.name}: ${done}/${total} pages`)
         });
         auditData = summarizeCrawlForAI(crawl);
         dataSource = 'In-house Crawler';
-        setMsg(`Step 1/3 — Crawled ${crawl.totalCrawled} pages, ${crawl.withIssues} have issues ✓`);
+        const scope = crawl.urlsDiscovered > crawl.urlsAttempted
+          ? ` (${crawl.urlsDiscovered} found via ${crawl.discoverySource}, capped at ${crawl.urlsAttempted})`
+          : crawl.discoverySource ? ` via ${crawl.discoverySource}` : '';
+        setMsg(`Step 1/3 — Crawled ${crawl.totalCrawled} pages${scope}, ${crawl.withIssues} have issues ✓`);
       } catch (e) {
         setMsg(`Step 1/3 — Crawler failed (${e.message.slice(0, 60)}), trying GSC…`);
       }

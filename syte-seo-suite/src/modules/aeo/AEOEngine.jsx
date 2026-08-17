@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useClients } from '../../store/useClients.js';
 import { claudeComplete, extractJSON } from '../../lib/anthropic.js';
 import { corsFetchText } from '../../lib/corsProxy.js';
@@ -11,7 +11,7 @@ import LogExternalWork from '../../components/LogExternalWork.jsx';
 import { aeoPipelineStatus, monthOptions } from '../../lib/pipelineStatus.js';
 import { listAllImplementations, saveAeoResult, loadAeoResults as loadAeoResultsFromDb, deleteAeoResult, saveDeepResult, listDeepResults, deleteDeepResult, listAeoRejections, saveAeoRejection } from '../../lib/supabase.js';
 import { AEO_SYSTEM, AEO_TYPES, AEO_DEEP_SYSTEM } from './aeoTypes.js';
-import { fetchSitemapUrls, discoverSitemapUrls } from './sitemap.js';
+import { discoverSiteUrls } from './sitemap.js';
 import QueryDiscovery from './QueryDiscovery.jsx';
 import { listAccountSummaries, runReport } from './ga4.js';
 import { ensureToken, SCOPES, getToken, clearToken } from '../technical/googleAuth.js';
@@ -20,6 +20,11 @@ const ACCENT = '#00d4aa';
 const RESULTS_KEY = 'syte-suite-aeo-results';
 const HISTORY_KEY = 'syte-suite-aeo-history';
 const BATCH_SIZE = 3;
+// How many of the site's pages we pull into the prioritization step. Only
+// `pages_per_month` of these get optimized in a given run, but the pool has
+// to be the whole site so the ranking picks this month's best pages from
+// everything rather than from a homepage-shaped shortlist.
+const SITE_DISCOVERY_CAP = 500;
 
 function loadResults() { try { return JSON.parse(localStorage.getItem(RESULTS_KEY) || '{}'); } catch { return {}; } }
 // Supabase is the source of truth for AEO results — localStorage is only a
@@ -37,6 +42,19 @@ function saveResults(r) {
     }
   }
 }
+// Identity of a page for coverage tracking — ignores the trailing-slash and
+// www differences that would otherwise make the same page look never-visited.
+function pageKey(url) {
+  try {
+    const u = new URL(url);
+    let path = u.pathname;
+    if (path.length > 1 && path.endsWith('/')) path = path.slice(0, -1);
+    return u.hostname.replace(/^www\./, '') + path.toLowerCase();
+  } catch {
+    return String(url || '').toLowerCase();
+  }
+}
+
 function loadHistory() { try { return JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]'); } catch { return []; } }
 function saveHistory(h) {
   try { localStorage.setItem(HISTORY_KEY, JSON.stringify(h.slice(0, 100))); }
@@ -638,6 +656,12 @@ export default function AEOEngine({ sub }) {
   const client = useClients(s => s.current());
   const [urls, setUrls] = useState('');
   const [results, setResults] = useState(loadResults());
+  // Mirror of `results` that the pipeline can read synchronously. runForClient
+  // runs sequentially inside the all-clients batch, so a captured `results`
+  // snapshot goes stale after the first client — the ref always has the
+  // pages we've already covered, which is what page rotation depends on.
+  const resultsRef = useRef(results);
+  useEffect(() => { resultsRef.current = results; }, [results]);
   const [history, setHistory] = useState(loadHistory());
   const [properties, setProperties] = useState([]);
   const [busy, setBusy] = useState(false);
@@ -804,8 +828,24 @@ export default function AEOEngine({ sub }) {
     } catch (e) { setErr(e.message); }
   }
 
+  // Pages this client already has optimizations for → the newest date we
+  // generated them. A row that only carries an error doesn't count as
+  // covered, so failed pages get another go on the next run.
+  function coveredPagesFor(clientId) {
+    const map = new Map();
+    for (const row of Object.values(resultsRef.current || {})) {
+      if (!row || row.client_id !== clientId || !row.url) continue;
+      if (!Array.isArray(row.optimizations) || row.optimizations.length === 0) continue;
+      const key = pageKey(row.url);
+      const at = row.generated_at || '';
+      if (!map.has(key) || at > map.get(key)) map.set(key, at);
+    }
+    return map;
+  }
+
   // Full AEO pipeline — ported from old Syte AEO Engine v2.
-  // Steps: 0) Pre-check auth  1) Fetch sitemap  2) Pull GA4 data  3) Prioritize  4) Batch optimize
+  // Steps: 0) Pre-check auth  1) Discover the site's pages  2) Pull GA4 data
+  //        3) Prioritize + rotate  4) Batch optimize
   async function runForClient(c) {
     if (!c) return;
     setBusy(true); setErr(''); setProgress('');
@@ -836,64 +876,27 @@ export default function AEOEngine({ sub }) {
         }
       }
 
-      // STEP 1: Fetch sitemap (with pasted XML fallback)
-      setProgress('Step 1/4 — Fetching sitemap for ' + c.name + '…');
-      let sitemapUrls = [];
-      try {
-        sitemapUrls = await fetchSitemapUrls(c.sitemap_url, c.sitemap_raw);
-      } catch (e) {
-        console.warn('[AEO] Sitemap fetch error:', e.message);
-      }
-
-      // No sitemap configured (or it returned nothing) — auto-discover the
-      // real sitemap from robots.txt / common paths before giving up and
-      // falling back to homepage-only. This is what lets the engine optimize
-      // the WHOLE site instead of just the homepage when sitemap_url is blank.
-      if (sitemapUrls.length === 0 && c.url) {
-        setProgress('Step 1/4 — No sitemap set, auto-discovering from ' + c.url + '…');
-        try {
-          sitemapUrls = await discoverSitemapUrls(c.url);
-        } catch (e) {
-          console.warn('[AEO] Sitemap auto-discovery error:', e.message);
-        }
-        if (sitemapUrls.length > 0) {
-          setProgress(`Step 1/4 — Auto-discovered ${sitemapUrls.length} pages from sitemap ✓`);
-        }
-      }
-
-      if (sitemapUrls.length > 0) {
-        setProgress(`Step 1/4 — ${sitemapUrls.length} pages from sitemap ✓`);
-      } else if (c.url) {
-        // Sitemap failed — discover real pages from the homepage links instead
-        // of guessing generic paths that may not exist (Shopify uses /pages/, etc.)
-        setProgress('Step 1/4 — No sitemap, discovering pages from homepage links…');
-        const base = c.url.replace(/\/$/, '');
-        try {
-          const homepageHtml = await corsFetchText(base + '/');
-          const tempDoc = new DOMParser().parseFromString(homepageHtml, 'text/html');
-          const origin = new URL(base).origin;
-          const discovered = new Set([base + '/']);
-          for (const a of tempDoc.querySelectorAll('a[href]')) {
-            let href = a.getAttribute('href') || '';
-            if (href.startsWith('#') || href.startsWith('mailto:') || href.startsWith('tel:') || href.startsWith('javascript:')) continue;
-            try {
-              const full = new URL(href, base).href;
-              if (full.startsWith(origin) && !full.includes('#')) {
-                discovered.add(full.split('?')[0]);
-              }
-            } catch {}
-          }
-          sitemapUrls = Array.from(discovered);
-        } catch {
-          sitemapUrls = [base + '/'];
-        }
-        setProgress(`Step 1/4 — Discovered ${sitemapUrls.length} pages from homepage links`);
-      } else {
+      // STEP 1: Discover the site's pages. discoverSiteUrls walks the whole
+      // ladder — configured sitemap → auto-discovered sitemaps (every
+      // "Sitemap:" line in robots.txt plus the common paths, all merged) →
+      // an internal-link crawl — and only lands on homepage-only when the
+      // site is genuinely unreachable. That ladder is what makes a run cover
+      // the WHOLE site rather than a single page.
+      setProgress('Step 1/4 — Finding pages for ' + c.name + '…');
+      const discovery = await discoverSiteUrls(c, {
+        maxPages: SITE_DISCOVERY_CAP,
+        onProgress: (stage) => setProgress('Step 1/4 — ' + c.name + ': ' + stage)
+      });
+      const sitemapUrls = discovery.urls;
+      if (!sitemapUrls.length) {
         setErr(c.name + ' has no sitemap URL, pasted XML, or website URL.');
         setBusy(false);
         return;
       }
-      setProgress(`Step 1/4 — ${sitemapUrls.length} pages from sitemap ✓`);
+      if (discovery.source === 'homepage only') {
+        console.warn('[AEO] Only the homepage is reachable for ' + c.name + ' — no sitemap and no crawlable internal links.');
+      }
+      setProgress(`Step 1/4 — ${sitemapUrls.length} pages found via ${discovery.source} ✓`);
 
       // STEP 2: Pull GA4 page data for prioritization (only if auth passed in Step 0)
       let ga4Rows = [];
@@ -953,11 +956,34 @@ export default function AEOEngine({ sub }) {
         }
       }
 
+      // Rotate through the site instead of re-optimizing the same head pages
+      // every run. Ranking by traffic alone is deterministic, so the homepage
+      // and its neighbours won the shortlist month after month and the rest
+      // of the site was never reached. Pages we have never optimized go
+      // first (still traffic-ranked among themselves); already-covered pages
+      // come after, oldest-first, so a re-run refreshes the stalest work
+      // rather than repeating last month's.
+      const covered = coveredPagesFor(c.id);
+      const fresh = [];
+      const revisits = [];
+      for (const p of prioritized) {
+        const doneAt = covered.get(pageKey(p.url));
+        if (doneAt) revisits.push({ ...p, lastOptimized: doneAt });
+        else fresh.push(p);
+      }
+      revisits.sort((a, b) => (a.lastOptimized < b.lastOptimized ? -1 : 1));
+      const queue = [...fresh, ...revisits];
+
       // Take top N pages (client's pages_per_month or 15)
       const maxPages = c.pages_per_month || 15;
-      const targets = prioritized.slice(0, maxPages);
+      const targets = queue.slice(0, maxPages);
       setUrls(targets.map(t => t.url).join('\n'));
-      setProgress(`Step 3/4 — ${targets.length} pages selected (${prioritized.length} total) ✓`);
+      const newCount = targets.filter(t => !t.lastOptimized).length;
+      setProgress(
+        `Step 3/4 — ${targets.length} pages selected (${newCount} not optimized before` +
+        `${targets.length - newCount > 0 ? `, ${targets.length - newCount} refreshed` : ''}) ` +
+        `from ${prioritized.length} across the site ✓`
+      );
 
       // STEP 4: Generate AEO optimizations in batches.
       // Accumulate only THIS client's new rows and merge them into state with a
@@ -984,6 +1010,9 @@ export default function AEOEngine({ sub }) {
           // Persist each result to Supabase immediately
           saveAeoResult(row).catch(() => {});
         });
+        // Keep the ref in step with the write rather than waiting for the
+        // effect, so coverage is accurate the moment the next client starts.
+        resultsRef.current = { ...resultsRef.current, ...additions };
         setResults(prev => ({ ...prev, ...additions }));
       }
       setHistory(prev => [
@@ -1053,13 +1082,21 @@ export default function AEOEngine({ sub }) {
   }
 
   async function pullFromSitemap() {
-    if (!client?.sitemap_url && !client?.sitemap_raw) { setErr('Client has no sitemap URL or pasted XML.'); return; }
-    setBusy(true); setErr(''); setProgress('Fetching sitemap…');
+    if (!client?.sitemap_url && !client?.sitemap_raw && !client?.url) {
+      setErr('Client has no sitemap URL, pasted XML, or website URL.');
+      return;
+    }
+    setBusy(true); setErr(''); setProgress('Finding pages…');
     try {
-      const locs = await fetchSitemapUrls(client.sitemap_url, client.sitemap_raw);
-      if (!locs.length) throw new Error('No URLs found — check the sitemap URL or paste XML in the client settings.');
-      setUrls(locs.slice(0, 50).join('\n'));
-      setProgress(`Loaded ${locs.length} URLs (showing first 50).`);
+      // Same discovery ladder as the full pipeline, so this button lists the
+      // whole site rather than only what a configured sitemap happens to hold.
+      const { urls: locs, source } = await discoverSiteUrls(client, {
+        maxPages: SITE_DISCOVERY_CAP,
+        onProgress: setProgress
+      });
+      if (!locs.length) throw new Error('No URLs found — check the website URL, or paste sitemap XML in the client settings.');
+      setUrls(locs.join('\n'));
+      setProgress(`Loaded ${locs.length} URLs via ${source}.`);
     } catch (e) { setErr(e.message); }
     finally { setBusy(false); }
   }
