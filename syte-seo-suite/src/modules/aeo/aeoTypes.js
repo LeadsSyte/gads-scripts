@@ -30,11 +30,11 @@ export const AEO_TYPES = [
   { id: 'webpage_schema',      label: 'WebPage Schema', category: 'schema' }
 ];
 
-export const AEO_SYSTEM = `You are Syte AEO Engine — an expert in making web pages citable by AI search engines (ChatGPT, Gemini, Perplexity, Claude, Copilot).
+const AEO_SYSTEM_TEMPLATE = `You are Syte AEO Engine — an expert in making web pages citable by AI search engines (ChatGPT, Gemini, Perplexity, Claude, Copilot).
 
 CRITICAL: Prioritize CONTENT optimizations over schema. AI engines cite pages because of well-structured, answer-ready CONTENT — not because of JSON-LD alone. Schema helps but content is king.
 
-For each page, generate exactly 5 COPY-PASTE READY optimizations — the 5 most impactful ones only. Quality over quantity. At least 3 must be content-type (not schema).
+For each page, generate at most __N__ COPY-PASTE READY optimizations — the __N__ most impactful ones only. Fewer is fine: if the page only has __MIN_CONTENT__ genuinely worthwhile gaps, return __MIN_CONTENT__. Quality over quantity — these are competing against every other page on the site for a shortlist of __TOTAL__ items, so a weak filler item is worse than no item. At least __MIN_CONTENT__ must be content-type (not schema).
 
 OPTIMIZATION TYPES (by priority):
 
@@ -53,7 +53,7 @@ MEDIUM IMPACT — Structure:
 - Internal Linking: Descriptive anchor text linking to related pages. NEVER "click here".
 - Freshness Markers: "Updated April 2026", "As of Q2 2026" — makes AI engines trust recency.
 
-SUPPORTING — Schema (max 2 per page unless the page specifically needs more):
+SUPPORTING — Schema (max __MAX_SCHEMA__ per page — schema alone never earns a slot on the shortlist):
 - FAQ Schema JSON-LD (pairs with FAQ Content Section)
 - Article/BlogPosting Schema (with author, datePublished, dateModified)
 - Author Schema with E-E-A-T credentials
@@ -76,8 +76,9 @@ Return ONLY valid JSON:
 }
 
 RULES:
-- Generate exactly 5 optimizations per page — no more, no less.
-- At least 3 MUST be content-type. Max 2 schema.
+- Generate at most __N__ optimizations per page. Returning fewer is correct when the page has fewer real gaps — never pad to hit the number.
+- At least __MIN_CONTENT__ MUST be content-type. Max __MAX_SCHEMA__ schema.
+- Order the array best-first: index 0 is the single highest-impact item for this page. A site-wide ranker keeps only the best __TOTAL__ items across all pages, and it trusts this ordering.
 - Every implementation must be COMPLETE and COPY-PASTE READY.
 - Answer blocks are strictly 40-60 words. First sentence = complete answer.
 - FAQ answers: first sentence = 20-30 word direct answer. No fluff.
@@ -139,6 +140,36 @@ WHAT NOT TO DO:
 - ❌ <style> tags unless the page uses scoped <style> blocks in similar locations.
 - ❌ Inventing new class names. If you need a class, only use one that already appears in the page HTML.
 `.trim();
+
+// How many optimizations a whole run hands the client, across ALL pages.
+// Previously each page got a fixed 5, so a 12-page run shipped 60 items —
+// far more than an account manager can brief a developer on in a month.
+// The run now generates a small buffer and ranks it down to this many.
+export const AEO_ITEMS_PER_RUN = 10;
+
+// Ceiling on how many items any single page may contribute to that
+// shortlist, so 10 items never all land on the homepage.
+export const MAX_OPTS_PER_PAGE = 3;
+
+// Build the AEO system prompt for a given per-page cap. `total` is the
+// site-wide shortlist size, which the prompt states explicitly so Claude
+// knows its output is competing against the rest of the site rather than
+// being shipped verbatim.
+export function buildAeoSystem(perPage = MAX_OPTS_PER_PAGE, total = AEO_ITEMS_PER_RUN) {
+  const n = Math.max(1, Math.min(10, Math.round(Number(perPage) || MAX_OPTS_PER_PAGE)));
+  const minContent = Math.max(1, Math.ceil(n * 0.6));
+  const maxSchema = Math.max(0, n - minContent);
+  const totalN = Math.max(1, Math.round(Number(total) || AEO_ITEMS_PER_RUN));
+  return AEO_SYSTEM_TEMPLATE
+    .replace(/__N__/g, String(n))
+    .replace(/__MIN_CONTENT__/g, String(minContent))
+    .replace(/__MAX_SCHEMA__/g, String(maxSchema))
+    .replace(/__TOTAL__/g, String(totalN));
+}
+
+// Default-cap prompt, kept as a named export for callers that don't need
+// a custom per-page cap.
+export const AEO_SYSTEM = buildAeoSystem();
 
 // ---------------------------------------------------------------------------
 // DEEP OPTIMIZATION MODE — full-page content rewrite with FAQ + changes log.
