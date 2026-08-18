@@ -26,7 +26,12 @@ const STALE_DAYS = 30;
 // Defaults for the configurable scan depth / suggestion count (overridable
 // per-scan from the New Scan screen).
 const DEFAULT_CRAWL_DEPTH = 100;
-const DEFAULT_SUGGESTIONS = 15;
+// The month's hand-off is a shortlist, not an inventory: 10 fixes an
+// account manager can actually brief a developer on beats 25 that sit
+// untouched. The Settings slider still allows more per scan.
+const DEFAULT_SUGGESTIONS = 10;
+// Hard ceiling regardless of what the slider or the model returns.
+const MAX_TASKS_PER_CLIENT = 25;
 
 function loadTasks() {
   // One-time migration of legacy key.
@@ -516,10 +521,10 @@ export default function TechnicalSEO({ sub }) {
       // client — not append. Otherwise tasks accumulate every run and
       // the user ends up with 100+ stale duplicates after a few scans
       // (which is exactly what was happening). Keep done/verified tasks
-      // as work history. Also cap new tasks at MAX_TASKS_PER_CLIENT to
-      // stop a noisy scan flooding the board.
-      const MAX_TASKS_PER_CLIENT = 25;
-      const cappedNew = newTasks.slice(0, MAX_TASKS_PER_CLIENT);
+      // as work history. Also cap new tasks at the number actually asked
+      // for — Claude sometimes returns more than the limit it was given,
+      // and an over-long board is the thing that stops fixes shipping.
+      const cappedNew = newTasks.slice(0, Math.min(suggestionCount, MAX_TASKS_PER_CLIENT));
       setTasks(prev => {
         const kept = prev.filter(t =>
           t.client_id !== c.id || (t.status === 'done' || t.status === 'verified')
@@ -572,10 +577,9 @@ export default function TechnicalSEO({ sub }) {
         ...t
       })).filter(t => !rejectedKeys.has((t.client_id || '') + '|' + taskDedupKey(t)));
       // Replace open tasks for this client (keep done/verified for history)
-      // and cap at 25 per scan — same logic as the live-scan path. Prevents
-      // task accumulation across re-scans of the same client.
-      const MAX_TASKS_PER_CLIENT = 25;
-      const cappedNew = newTasks.slice(0, MAX_TASKS_PER_CLIENT);
+      // and cap at the requested count — same logic as the live-scan path.
+      // Prevents task accumulation across re-scans of the same client.
+      const cappedNew = newTasks.slice(0, Math.min(suggestionCount, MAX_TASKS_PER_CLIENT));
       const nextTasks = (() => {
         const kept = tasks.filter(t =>
           t.client_id !== c.id || (t.status === 'done' || t.status === 'verified')
@@ -1001,15 +1005,15 @@ export default function TechnicalSEO({ sub }) {
               <input
                 type="number"
                 min={1}
-                max={50}
+                max={MAX_TASKS_PER_CLIENT}
                 value={suggestionCount}
-                onChange={e => setSuggestionCount(Math.max(1, Math.min(50, parseInt(e.target.value, 10) || DEFAULT_SUGGESTIONS)))}
+                onChange={e => setSuggestionCount(Math.max(1, Math.min(MAX_TASKS_PER_CLIENT, parseInt(e.target.value, 10) || DEFAULT_SUGGESTIONS)))}
                 disabled={busy}
                 style={{ width: '100%' }}
               />
             </div>
             <span className="muted" style={{ fontSize: 11 }}>
-              Crawling up to {crawlDepth} pages · generating up to {suggestionCount} prioritised fixes.
+              Crawling up to {crawlDepth} pages · shortlisting the {suggestionCount} highest-impact fixes across the whole site.
             </span>
           </div>
         </div>

@@ -10,7 +10,8 @@ import PipelineView from '../../components/PipelineView.jsx';
 import LogExternalWork from '../../components/LogExternalWork.jsx';
 import { aeoPipelineStatus, monthOptions } from '../../lib/pipelineStatus.js';
 import { listAllImplementations, saveAeoResult, loadAeoResults as loadAeoResultsFromDb, deleteAeoResult, saveDeepResult, listDeepResults, deleteDeepResult, listAeoRejections, saveAeoRejection } from '../../lib/supabase.js';
-import { AEO_SYSTEM, AEO_TYPES, AEO_DEEP_SYSTEM } from './aeoTypes.js';
+import { AEO_TYPES, AEO_DEEP_SYSTEM, buildAeoSystem, MAX_OPTS_PER_PAGE } from './aeoTypes.js';
+import { selectTopOptimizations, aeoItemTarget, pagesForTarget } from './aeoSelect.js';
 import { discoverSiteUrls } from './sitemap.js';
 import QueryDiscovery from './QueryDiscovery.jsx';
 import { listAccountSummaries, runReport } from './ga4.js';
@@ -106,7 +107,11 @@ Return the JSON object as specified in the system prompt.`
   return extractJSON(text);
 }
 
-async function generateForPage(pageUrl, client) {
+// `perPage` is the cap for THIS page — deliberately small, because the run
+// ranks every page's output into one site-wide shortlist afterwards.
+// `total` is that shortlist size, passed into the prompt so Claude knows
+// it is competing for slots rather than filling a quota.
+async function generateForPage(pageUrl, client, perPage = MAX_OPTS_PER_PAGE, total = undefined) {
   // Try to fetch the actual page HTML for analysis.
   let pageHtml = '';
   let pageTitle = '';
@@ -125,10 +130,10 @@ async function generateForPage(pageUrl, client) {
   const inferredTopic = pageTitle || slug.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 
   const text = await claudeComplete({
-    system: AEO_SYSTEM,
+    system: buildAeoSystem(perPage, total),
     messages: [{
       role: 'user',
-      content: `Generate AEO optimizations for this page. Focus on CONTENT optimizations first (answer blocks, FAQs, key takeaways, snippet paragraphs), then schema.
+      content: `Generate AEO optimizations for this page — at most ${perPage}, and only the ones this page genuinely lacks. Focus on CONTENT optimizations first (answer blocks, FAQs, key takeaways, snippet paragraphs), then schema.
 
 Page URL: ${pageUrl}
 Page topic: ${inferredTopic}
@@ -974,15 +979,21 @@ export default function AEOEngine({ sub }) {
       revisits.sort((a, b) => (a.lastOptimized < b.lastOptimized ? -1 : 1));
       const queue = [...fresh, ...revisits];
 
-      // Take top N pages (client's pages_per_month or 15)
-      const maxPages = c.pages_per_month || 15;
+      // The run ships ONE shortlist for the whole site — the best
+      // `itemTarget` optimizations, wherever they live — rather than a fixed
+      // 5 per page. So the page count is derived from the shortlist size
+      // (enough pages to give the ranker real choice) instead of from
+      // `pages_per_month`, which is the content module's article quota and
+      // used to produce 60-item hand-offs here.
+      const itemTarget = aeoItemTarget(c);
+      const maxPages = Math.min(pagesForTarget(itemTarget, queue.length), c.pages_per_month || 15);
       const targets = queue.slice(0, maxPages);
       setUrls(targets.map(t => t.url).join('\n'));
       const newCount = targets.filter(t => !t.lastOptimized).length;
       setProgress(
         `Step 3/4 — ${targets.length} pages selected (${newCount} not optimized before` +
         `${targets.length - newCount > 0 ? `, ${targets.length - newCount} refreshed` : ''}) ` +
-        `from ${prioritized.length} across the site ✓`
+        `from ${prioritized.length} across the site — shortlisting the best ${itemTarget} items ✓`
       );
 
       // STEP 4: Generate AEO optimizations in batches.
@@ -990,41 +1001,52 @@ export default function AEOEngine({ sub }) {
       // functional update. A plain `{ ...results }` snapshot would be stale when
       // this runs inside the "generate all clients" batch loop and would clobber
       // the results generated for earlier clients in the same run.
-      const additions = {};
+      //
+      // Ranking is site-wide, so every page has to be generated before
+      // anything is persisted — a row saved mid-run could hold items the
+      // shortlist later drops.
+      const drafts = [];
       for (let i = 0; i < targets.length; i += BATCH_SIZE) {
         const batch = targets.slice(i, i + BATCH_SIZE);
         setProgress(`Step 4/4 — ${c.name}: Optimizing pages ${i + 1}–${Math.min(i + BATCH_SIZE, targets.length)} of ${targets.length}…`);
         const batchResults = await Promise.all(
-          batch.map(t => generateForPage(t.url, c).catch(e => ({ error: e.message })))
+          batch.map(t => generateForPage(t.url, c, MAX_OPTS_PER_PAGE, itemTarget).catch(e => ({ error: e.message })))
         );
         batch.forEach((t, j) => {
-          const key = c.id + '::' + t.url;
-          const row = {
+          drafts.push({
             url: t.url, path: t.path, client_id: c.id,
             sessions: t.sessions, priority: t.priority,
-            generated_at: new Date().toISOString(),
             optimizations: Array.isArray(batchResults[j]) ? batchResults[j] : [],
             error: batchResults[j]?.error || null
-          };
-          additions[key] = row;
-          // Persist each result to Supabase immediately
-          saveAeoResult(row).catch(() => {});
+          });
         });
-        // Keep the ref in step with the write rather than waiting for the
-        // effect, so coverage is accurate the moment the next client starts.
-        resultsRef.current = { ...resultsRef.current, ...additions };
-        setResults(prev => ({ ...prev, ...additions }));
       }
+
+      // Rank everything the run produced and keep only the best `itemTarget`
+      // items across all pages. Pages trimmed to nothing are not saved, so
+      // they stay "uncovered" and the rotation revisits them next run.
+      const shortlist = selectTopOptimizations(drafts, { limit: itemTarget });
+      const additions = {};
+      const stamp = new Date().toISOString();
+      for (const row of shortlist.rows) {
+        const saved = { ...row, generated_at: stamp };
+        additions[c.id + '::' + saved.url] = saved;
+        saveAeoResult(saved).catch(() => {});
+      }
+      // Keep the ref in step with the write rather than waiting for the
+      // effect, so coverage is accurate the moment the next client starts.
+      resultsRef.current = { ...resultsRef.current, ...additions };
+      setResults(prev => ({ ...prev, ...additions }));
       setHistory(prev => [
         { id: crypto.randomUUID(), client_id: c.id, client_name: c.name,
           count: targets.length, created_at: new Date().toISOString() },
         ...prev
       ]);
-      const totalOpts = targets.reduce((a, t) => {
-        const r = additions[c.id + '::' + t.url];
-        return a + (r?.optimizations?.length || 0);
-      }, 0);
-      setProgress(`Done. ${totalOpts} optimizations across ${targets.length} pages for ${c.name}.`);
+      const pagesWithWork = shortlist.rows.filter(r => (r.optimizations || []).length > 0).length;
+      setProgress(
+        `Done. ${shortlist.kept} optimizations across ${pagesWithWork} page${pagesWithWork === 1 ? '' : 's'} for ${c.name}` +
+        `${shortlist.dropped > 0 ? ` (${shortlist.dropped} lower-impact item${shortlist.dropped === 1 ? '' : 's'} trimmed)` : ''}.`
+      );
     } catch (e) { setErr(e.message); }
     finally { setBusy(false); }
   }
@@ -1129,34 +1151,46 @@ export default function AEOEngine({ sub }) {
     if (!pageList.length) { setErr('Enter at least one URL.'); return; }
 
     setBusy(true); setErr(''); setProgress('');
-    const newResults = { ...results };
+    // Same shortlist rule as the full pipeline: the whole list is generated,
+    // then ranked down to the best `itemTarget` items across every page.
+    const itemTarget = aeoItemTarget(client);
+    const drafts = [];
     try {
       // Process in batches of 3 for rate-limiting.
       for (let i = 0; i < pageList.length; i += BATCH_SIZE) {
         const batch = pageList.slice(i, i + BATCH_SIZE);
         setProgress(`Batch ${Math.floor(i / BATCH_SIZE) + 1} / ${Math.ceil(pageList.length / BATCH_SIZE)}`);
         const batchResults = await Promise.all(
-          batch.map(u => generateForPage(u, client).catch(e => ({ error: e.message })))
+          batch.map(u => generateForPage(u, client, MAX_OPTS_PER_PAGE, itemTarget).catch(e => ({ error: e.message })))
         );
         batch.forEach((u, j) => {
-          const key = client.id + '::' + u;
-          const row = {
+          drafts.push({
             url: u,
             client_id: client.id,
-            generated_at: new Date().toISOString(),
             optimizations: Array.isArray(batchResults[j]) ? batchResults[j] : [],
             error: batchResults[j]?.error || null
-          };
-          newResults[key] = row;
-          saveAeoResult(row).catch(() => {});
+          });
         });
-        setResults({ ...newResults });
       }
+
+      const shortlist = selectTopOptimizations(drafts, { limit: itemTarget });
+      const stamp = new Date().toISOString();
+      const newResults = { ...results };
+      for (const row of shortlist.rows) {
+        const saved = { ...row, generated_at: stamp };
+        newResults[client.id + '::' + saved.url] = saved;
+        saveAeoResult(saved).catch(() => {});
+      }
+      setResults(newResults);
       setHistory(prev => [
         { id: crypto.randomUUID(), client_id: client.id, client_name: client.name, count: pageList.length, created_at: new Date().toISOString() },
         ...prev
       ]);
-      setProgress(`Done. Generated for ${pageList.length} pages.`);
+      const pagesWithWork = shortlist.rows.filter(r => (r.optimizations || []).length > 0).length;
+      setProgress(
+        `Done. ${shortlist.kept} optimizations kept across ${pagesWithWork} of ${pageList.length} pages` +
+        `${shortlist.dropped > 0 ? ` (${shortlist.dropped} lower-impact trimmed)` : ''}.`
+      );
     } catch (e) { setErr(e.message); }
     finally { setBusy(false); }
   }
