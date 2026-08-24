@@ -7,6 +7,7 @@ import { queueCmsChange, updateCmsQueueItem } from '../../lib/supabase.js';
 import { pushToWordPress } from './wordpressPush.js';
 import { pushToShopify } from './shopifyPush.js';
 import { buildAndDownloadZip } from './customZip.js';
+import { verifyPushedDraft } from './verifyDraft.js';
 
 export function clientIsConnected(client) {
   if (!client) return false;
@@ -47,6 +48,17 @@ export async function pushItemInline(client, item) {
       throw new Error('CMS not connected. Open the CMS module to connect WordPress, Shopify, or pick Custom Site.');
     }
 
+    // Step 2b — read the draft back out of the CMS and check what
+    // actually landed there. Profiles prevent the formatting problems we
+    // know about; this catches the ones we don't, before a human opens
+    // the draft. Verification never fails a push.
+    let verification = { level: 'unchecked', problems: [] };
+    if (client.cms_type === 'WordPress' || client.cms_type === 'Shopify') {
+      try { verification = await verifyPushedDraft(client, result); }
+      catch (e) { verification = { level: 'unchecked', problems: ['Verification did not run: ' + e.message] }; }
+    }
+    const allWarnings = [...(result.warnings || []), ...(verification.problems || [])];
+
     await updateCmsQueueItem(row.id, {
       status: 'pushed',
       pushed_at: new Date().toISOString(),
@@ -64,7 +76,8 @@ export async function pushItemInline(client, item) {
         shopify_article_id: result.shopify_article_id || null,
         shopify_blog_id: result.shopify_blog_id || null,
         meta_status: result.meta_status || '',
-        warnings: result.warnings || []
+        verification: verification.level,
+        warnings: allWarnings
       }
     });
     // Fire-and-forget draft-ready notification (internal email, or the
@@ -83,7 +96,8 @@ export async function pushItemInline(client, item) {
       admin_url: result.admin_url || '',
       live_url: result.link || '',
       id: row.id,
-      warnings: result.warnings || []
+      verification: verification.level,
+      warnings: allWarnings
     };
   } catch (e) {
     await updateCmsQueueItem(row.id, { status: 'failed', error_msg: e.message });

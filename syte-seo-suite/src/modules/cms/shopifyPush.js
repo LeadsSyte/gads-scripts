@@ -123,6 +123,8 @@ export async function pushArticleToShopify(client, item) {
     link: article.handle ? 'https://' + publicDomain + '/blogs/' + blog.handle + '/' + article.handle : '',
     shopify_article_id: article.id,
     shopify_blog_id: blogId,
+    meta_title: metaTitle,
+    meta_desc: metaDesc,
     updated_existing: !!existing,
     meta_status: 'set',
     warnings

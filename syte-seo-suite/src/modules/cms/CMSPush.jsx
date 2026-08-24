@@ -381,10 +381,25 @@ export default function CMSPush({ sub }) {
                     {item.payload?.admin_url && (
                       <a href={item.payload.admin_url} target="_blank" rel="noreferrer" style={{ color: ACCENT }}>Admin →</a>
                     )}
-                    {Array.isArray(item.payload?.warnings) && item.payload.warnings.length > 0 && (
-                      <div style={{ color: 'var(--orange, #e8a33d)', fontSize: 11 }} title={item.payload.warnings.join('\n')}>
-                        ⚠ {item.payload.warnings.length} warning{item.payload.warnings.length > 1 ? 's' : ''}
+                    {item.payload?.verification === 'verified' && (
+                      <div style={{ color: 'var(--green)', fontSize: 11 }} title="We re-read the draft in the CMS and it looks right">
+                        ✓ checked on the site
                       </div>
+                    )}
+                    {item.payload?.verification === 'failed' && (
+                      <div style={{ color: 'var(--red)', fontSize: 11, fontWeight: 600 }}>
+                        ✗ looks wrong on the site — read it before approving
+                      </div>
+                    )}
+                    {Array.isArray(item.payload?.warnings) && item.payload.warnings.length > 0 && (
+                      <details style={{ fontSize: 11, color: 'var(--orange, #e8a33d)' }}>
+                        <summary style={{ cursor: 'pointer' }}>
+                          ⚠ {item.payload.warnings.length} thing{item.payload.warnings.length > 1 ? 's' : ''} to check
+                        </summary>
+                        <ul style={{ margin: '4px 0 0 14px', padding: 0 }}>
+                          {item.payload.warnings.map((w, i) => <li key={i} style={{ marginBottom: 2 }}>{w}</li>)}
+                        </ul>
+                      </details>
                     )}
                     {item.status === 'pushed' && (
                       <div className="row" style={{ gap: 6, marginTop: 4 }}>

@@ -168,6 +168,8 @@ export async function pushContentToWordPress(client, item) {
     wp_id: created.id,
     wp_slug: created.slug,
     rest_base: restBase,
+    meta_title: metaTitle,
+    meta_desc: metaDesc,
     updated_existing: !!existing,
     meta_status: metaStatus,
     warnings

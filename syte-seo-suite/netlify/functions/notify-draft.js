@@ -56,8 +56,13 @@ export async function handler(event) {
   const siteUrl = (process.env.URL || 'https://syte-seo-suite.netlify.app').replace(/\/+$/, '');
   const title = row.page_title || 'New article';
 
+  // Guard: never send a client an approval email for a draft that failed
+  // verification — it would put a visibly broken article in front of them.
+  // Those go to the team first, whatever the client's approval mode says.
+  const verificationFailed = row.payload?.verification === 'failed';
+
   try {
-    if (profile.approval_mode === 'client' && profile.client_approval_email) {
+    if (profile.approval_mode === 'client' && profile.client_approval_email && !verificationFailed) {
       // Client-facing approval email with tokenized one-click links.
       const token = randomUUID();
       await supabase.from('syte_suite_cms_queue')
@@ -91,15 +96,18 @@ export async function handler(event) {
       const to = profile.notify_email || process.env.NOTIFY_EMAIL || 'chrisb@syte.co.za';
       const adminUrl = row.payload?.admin_url || '';
       const warnings = Array.isArray(row.payload?.warnings) ? row.payload.warnings : [];
+      const heldBack = verificationFailed && profile.approval_mode === 'client';
       await sendEmail(resendKey, {
         to: [to],
-        subject: 'Draft ready for review: ' + client.name + ' — ' + title,
+        subject: (heldBack ? 'Needs a fix before the client sees it: ' : 'Draft ready for review: ') + client.name + ' — ' + title,
         html: `
           <div style="font-family:Arial,sans-serif;max-width:640px;margin:0 auto;color:#222">
-            <p>A new draft is ready for review.</p>
+            ${heldBack
+              ? '<p style="color:#b91c1c"><strong>This client normally approves their own posts, but the draft did not come out right, so it has NOT been sent to them.</strong> Fix it in the CMS, then use "Re-send for approval" in the suite to send it on.</p>'
+              : '<p>A new draft is ready for review.</p>'}
             <p><strong>Client:</strong> ${esc(client.name)}<br/>
                <strong>Title:</strong> ${esc(title)}</p>
-            ${warnings.length ? '<p style="color:#b45309"><strong>Warnings:</strong> ' + warnings.map(esc).join('; ') + '</p>' : ''}
+            ${warnings.length ? '<p style="color:#b45309"><strong>Things to check:</strong></p><ul style="color:#b45309">' + warnings.map(w => '<li>' + esc(w) + '</li>').join('') + '</ul>' : ''}
             <p>
               ${adminUrl ? `<a href="${adminUrl}">Open the draft in the CMS</a> · ` : ''}
               <a href="${siteUrl}">Open the suite to approve</a>
