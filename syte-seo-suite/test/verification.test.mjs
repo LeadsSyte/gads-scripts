@@ -91,7 +91,7 @@ const PATCHED = VERIF_SRC
   .replace("import { claudeComplete } from './anthropic.js';",
            "const claudeComplete = (...a) => globalThis.__mockClaude(...a);")
   .replace("import { updateImplementation } from './supabase.js';",
-           "const updateImplementation = async (id, patch) => { globalThis.__updates.push({ id, patch }); return { id, ...patch }; };")
+           "const updateImplementation = async (id, patch) => { if (globalThis.__updateThrows) throw new Error(globalThis.__updateThrows); globalThis.__updates.push({ id, patch }); return { id, ...patch }; };")
   .replace("import { listSites } from '../modules/technical/gsc.js';",
            "const listSites = () => globalThis.__mockListSites();");
 
@@ -105,6 +105,7 @@ fs.unlinkSync(tmpFile);
 let pass = 0, fail = 0;
 async function t(name, fn) {
   globalThis.__updates = [];
+  globalThis.__updateThrows = '';
   try { await fn(); console.log('PASS', name); pass++; }
   catch (e) { console.log('FAIL', name, '->', e.message); fail++; }
 }
@@ -534,6 +535,50 @@ await t('markSentToDeveloper: no screenshot means no proof, so it stays sent_to_
   if (verif.isDeveloperHandover(globalThis.__updates[0].patch.verification_detail)) {
     throw new Error('unproven handover should not carry the verified-handover marker');
   }
+});
+
+// An attached email is the evidence. A checker that can't run — API down, no
+// key, a response we can't parse, a format Vision doesn't read — says nothing
+// about the email the user just attached, so it must never block the handover.
+// Leaving these as 'rejected' is what made "Sent to Developer" ask for an
+// email and then not mark the record verified once one was attached.
+
+await t('verifySentToDeveloper: an API failure still verifies the attached email', async () => {
+  globalThis.__mockClaude = async () => { throw new Error('api down'); };
+  const r = await verif.verifySentToDeveloper(HANDOVER_IMPL, { imageBase64: FAKE_IMAGE, sentBy: 'Mike' });
+  assertEq(r.status, 'verified', 'returned status');
+  assertEq(globalThis.__updates.length, 1, 'one persist');
+  assertEq(globalThis.__updates[0].patch.verification_status, 'verified', 'persisted status');
+  if (!globalThis.__updates[0].patch.verification_detail.includes('[SCREENSHOT]')) {
+    throw new Error('email screenshot not kept as proof');
+  }
+  assertMatch(globalThis.__updates[0].patch.verification_detail, /check unavailable/);
+});
+
+await t('verifySentToDeveloper: an unparseable check response still verifies', async () => {
+  globalThis.__mockClaude = async () => 'I could not read that image, sorry.';
+  const r = await verif.verifySentToDeveloper(HANDOVER_IMPL, { imageBase64: FAKE_IMAGE });
+  assertEq(r.status, 'verified', 'returned status');
+  assertEq(globalThis.__updates[0].patch.verification_status, 'verified', 'persisted status');
+});
+
+await t('verifySentToDeveloper: a format Vision cannot read skips the check and still verifies', async () => {
+  let called = false;
+  globalThis.__mockClaude = async () => { called = true; return '{}'; };
+  const r = await verif.verifySentToDeveloper(HANDOVER_IMPL, { imageBase64: FAKE_IMAGE, mediaType: 'image/heic' });
+  assertEq(r.status, 'verified', 'returned status');
+  if (called) throw new Error('should not send an unsupported media type to the checker');
+  assertMatch(globalThis.__updates[0].patch.verification_detail, /image\/heic/);
+});
+
+await t('verifySentToDeveloper: a failed save reports the save, not the check', async () => {
+  globalThis.__mockClaude = async () =>
+    '{"is_email": true, "recipient": "dev@client.com", "subject": "SEO changes", "relates": true, "evidence": "Gmail sent message."}';
+  globalThis.__updateThrows = 'row too large';
+  const r = await verif.verifySentToDeveloper(HANDOVER_IMPL, { imageBase64: FAKE_IMAGE });
+  assertEq(r.status, 'error', 'returned status');
+  assertMatch(r.detail, /saving it failed/);
+  globalThis.__updateThrows = '';
 });
 
 await t('displayVerificationDetail: the internal marker never reaches the UI', async () => {
