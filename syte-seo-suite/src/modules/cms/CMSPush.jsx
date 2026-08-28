@@ -32,6 +32,7 @@ export default function CMSPush({ sub }) {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
   const [err, setErr] = useState('');
+  const [msgFor, setMsgFor] = useState('general');
 
   const [form, setForm] = useState({});
   useEffect(() => { if (client) setForm(client); }, [client?.id]);
@@ -43,16 +44,43 @@ export default function CMSPush({ sub }) {
   }
   useEffect(() => { refreshHistory(); }, [client?.id]);
 
-  async function saveConnector(patch = {}) {
+  // successMsg/scope let callers keep their own result visible — this used
+  // to hardcode 'Saved.', which silently clobbered "connected as ..." so a
+  // successful connection test looked like nothing had happened.
+  async function saveConnector(patch = {}, successMsg = 'Saved.', scope = 'general') {
     if (!client) return;
     setBusy(true); setErr(''); setMsg('');
     try {
       const merged = { ...client, ...form, ...patch };
-      await upsertClient(merged);
+      try {
+        await upsertClient(merged);
+      } catch (e) {
+        // publishing_profile arrives with a migration that may not have been
+        // run on this database yet. Credentials and CMS type must stay
+        // saveable regardless, so drop that one field and retry once.
+        if (/publishing_profile/i.test(e?.message || '')) {
+          const { publishing_profile, ...withoutProfile } = merged;
+          await upsertClient(withoutProfile);
+          await load();
+          setMsgFor(scope);
+          setMsg(successMsg + ' — note: per-client publishing settings were not saved (database migration still pending).');
+          return;
+        }
+        throw e;
+      }
       await load();
-      setMsg('Saved.');
-    } catch (e) { setErr(e.message); }
+      setMsgFor(scope); setMsg(successMsg);
+    } catch (e) { setMsgFor(scope); setErr(e.message); }
     finally { setBusy(false); }
+  }
+
+  // Results render next to the button that produced them; a message at the
+  // bottom of a long page is a message nobody sees.
+  function Status({ scope }) {
+    if (msgFor !== scope) return null;
+    if (err) return <div style={{ color: 'var(--red)', marginTop: 8, fontSize: 13 }}>✗ {err}</div>;
+    if (msg) return <div style={{ color: 'var(--green)', marginTop: 8, fontSize: 13 }}>✓ {msg}</div>;
+    return null;
   }
 
   async function handleDetect() {
@@ -71,18 +99,16 @@ export default function CMSPush({ sub }) {
     setBusy(true); setErr(''); setMsg('');
     try {
       const name = await testWordPress(form.wp_url, form.wp_username, form.wp_app_password);
-      setMsg('WordPress connected as: ' + name);
-      await saveConnector();
-    } catch (e) { setErr(e.message); }
+      await saveConnector({}, 'Connected as "' + name + '" — credentials saved.', 'wp');
+    } catch (e) { setMsgFor('wp'); setErr(e.message); }
     finally { setBusy(false); }
   }
   async function handleTestShopify() {
     setBusy(true); setErr(''); setMsg('');
     try {
       const name = await testShopify(form.shopify_store, form.shopify_token);
-      setMsg('Shopify connected to: ' + name);
-      await saveConnector();
-    } catch (e) { setErr(e.message); }
+      await saveConnector({}, 'Connected to "' + name + '" — credentials saved.', 'shopify');
+    } catch (e) { setMsgFor('shopify'); setErr(e.message); }
     finally { setBusy(false); }
   }
 
@@ -101,8 +127,9 @@ export default function CMSPush({ sub }) {
       const profile = getPublishingProfile(form);
       const stamped = { ...profile, publish_readiness: { ready: result.ready, checked_at: new Date().toISOString(), summary: result.checks.map(c => (c.ok ? 'ok' : 'FAIL') + ' ' + c.name) } };
       setForm(f => ({ ...f, publishing_profile: stamped }));
-      await saveConnector({ publishing_profile: stamped });
-      setMsg(result.ready ? 'Client is READY for automated publishing.' : 'Not ready yet — see the failed checks below.');
+      await saveConnector({ publishing_profile: stamped }, 'Saved.', 'health');
+      setMsgFor('health'); setErr('');
+      setMsg(result.ready ? 'Client is READY for automated publishing.' : 'Not ready yet — see the failed checks above.');
     } catch (e) { setErr(e.message); }
     finally { setBusy(false); }
   }
@@ -196,7 +223,11 @@ export default function CMSPush({ sub }) {
               </div>
               <div className="row" style={{ marginTop: 10 }}>
                 <button onClick={handleTestWp} disabled={busy}>Test Connection</button>
-                <button onClick={() => saveConnector()} disabled={busy}>Save</button>
+                <button onClick={() => saveConnector({}, 'Saved.', 'wp')} disabled={busy}>Save</button>
+              </div>
+              <Status scope="wp" />
+              <div className="muted" style={{ fontSize: 11, marginTop: 6 }}>
+                Site URL is the site root (https://example.co.za) — not the /wp-admin/ address.
               </div>
             </div>
 
@@ -209,8 +240,9 @@ export default function CMSPush({ sub }) {
               <div className="row" style={{ marginTop: 10 }}>
                 <button onClick={handleTestShopify} disabled={busy}>Test Connection</button>
                 <button onClick={handleLoadBlogs} disabled={busy || !form.shopify_store || !form.shopify_token}>Load Blogs</button>
-                <button onClick={() => saveConnector()} disabled={busy}>Save</button>
+                <button onClick={() => saveConnector({}, 'Saved.', 'shopify')} disabled={busy}>Save</button>
               </div>
+              <Status scope="shopify" />
               {blogs.length > 0 && (
                 <div style={{ marginTop: 10 }}>
                   <label>Publish articles to blog</label>
@@ -299,8 +331,9 @@ export default function CMSPush({ sub }) {
                       </label>
                     </div>
                     <div className="row" style={{ marginTop: 10 }}>
-                      <button onClick={() => saveConnector()} disabled={busy}>Save Profile</button>
+                      <button onClick={() => saveConnector({}, 'Profile saved.', 'profile')} disabled={busy}>Save Profile</button>
                     </div>
+                    <Status scope="profile" />
                   </>
                 );
               })()}
@@ -335,6 +368,7 @@ export default function CMSPush({ sub }) {
                   {' · '}{new Date(getPublishingProfile(form).publish_readiness.checked_at).toLocaleString()}
                 </div>
               )}
+              <Status scope="health" />
             </div>
 
             <div className="card">
@@ -344,8 +378,7 @@ export default function CMSPush({ sub }) {
               </div>
             </div>
 
-            {msg && <div style={{ color: 'var(--green)', marginTop: 10 }}>{msg}</div>}
-            {err && <div style={{ color: 'var(--red)', marginTop: 10 }}>{err}</div>}
+            <Status scope="general" />
           </>
         )}
       </div>
