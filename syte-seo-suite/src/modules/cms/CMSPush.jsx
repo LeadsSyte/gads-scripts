@@ -100,7 +100,14 @@ export default function CMSPush({ sub }) {
     try {
       const name = await testWordPress(form.wp_url, form.wp_username, form.wp_app_password);
       await saveConnector({}, 'Connected as "' + name + '" — credentials saved.', 'wp');
-    } catch (e) { setMsgFor('wp'); setErr(e.message); }
+    } catch (e) {
+      // Keep what was typed. A failed test is often transient (network,
+      // a slow site), and losing the credentials means re-fetching an
+      // Application Password that WordPress only ever shows once.
+      try { await upsertClient({ ...client, ...form }); await load(); } catch { /* keep the original error */ }
+      setMsgFor('wp');
+      setErr(e.message + ' — your details were kept, try Test Connection again.');
+    }
     finally { setBusy(false); }
   }
   async function handleTestShopify() {
@@ -108,7 +115,11 @@ export default function CMSPush({ sub }) {
     try {
       const name = await testShopify(form.shopify_store, form.shopify_token);
       await saveConnector({}, 'Connected to "' + name + '" — credentials saved.', 'shopify');
-    } catch (e) { setMsgFor('shopify'); setErr(e.message); }
+    } catch (e) {
+      try { await upsertClient({ ...client, ...form }); await load(); } catch { /* keep the original error */ }
+      setMsgFor('shopify');
+      setErr(e.message + ' — your details were kept, try Test Connection again.');
+    }
     finally { setBusy(false); }
   }
 
