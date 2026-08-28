@@ -157,13 +157,15 @@ await t('markdownToHtml: GFM table — converts the comparison tables Claude act
 | Standard Package | R15,000 - R35,000 | Growing companies |
 `;
   const html = markdownToHtml(md);
-  assertMatch(html, /<table>/);
+  // Tables carry inline styling — client themes often have no table CSS,
+  // and without it the columns render as run-together plain text.
+  assertMatch(html, /<table style="[^"]*border-collapse/);
   assertMatch(html, /<thead>/);
-  assertMatch(html, /<th>Service Level<\/th>/);
-  assertMatch(html, /<th>Monthly Investment<\/th>/);
+  assertMatch(html, /<th[^>]*>Service Level<\/th>/);
+  assertMatch(html, /<th[^>]*>Monthly Investment<\/th>/);
   assertMatch(html, /<tbody>/);
-  assertMatch(html, /<td>Basic Package<\/td>/);
-  assertMatch(html, /<td>R5,000 - R15,000<\/td>/);
+  assertMatch(html, /<td[^>]*>Basic Package<\/td>/);
+  assertMatch(html, /<td[^>]*>R5,000 - R15,000<\/td>/);
   // No leftover pipes in output.
   if (html.includes('|')) throw new Error('table not converted, pipes still present: ' + html);
 });

@@ -78,11 +78,19 @@ export function markdownToHtml(md) {
       const lines = block.trim().split('\n');
       const head = lines[0].split('|').slice(1, -1).map(s => s.trim());
       const rows = lines.slice(2).map(l => l.split('|').slice(1, -1).map(s => s.trim()));
-      const thead = '<thead><tr>' + head.map(h => '<th>' + h + '</th>').join('') + '</tr></thead>';
+      // Inline styles because we do not control the client's theme, and many
+      // have no table CSS at all — the columns then run together as plain
+      // text ("Bridgewater ApartmentsLuxury serviced apartments"). These are
+      // deliberately minimal so a theme that DOES style tables still looks
+      // like itself: borders, padding and a header rule, nothing decorative.
+      const TABLE = ' style="width:100%;border-collapse:collapse;margin:1.5em 0"';
+      const TH = ' style="text-align:left;padding:10px 12px;border-bottom:2px solid #ddd;vertical-align:top"';
+      const TD = ' style="padding:10px 12px;border-bottom:1px solid #eee;vertical-align:top"';
+      const thead = '<thead><tr>' + head.map(h => '<th' + TH + '>' + h + '</th>').join('') + '</tr></thead>';
       const tbody = '<tbody>' + rows.map(r =>
-        '<tr>' + r.map(c => '<td>' + c + '</td>').join('') + '</tr>'
+        '<tr>' + r.map(c => '<td' + TD + '>' + c + '</td>').join('') + '</tr>'
       ).join('') + '</tbody>';
-      return '<table>' + thead + tbody + '</table>';
+      return '<table' + TABLE + '>' + thead + tbody + '</table>';
     }
   );
 
