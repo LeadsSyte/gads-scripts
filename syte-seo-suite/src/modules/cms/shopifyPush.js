@@ -78,7 +78,13 @@ export async function pushArticleToShopify(client, item) {
       ...(metaDesc ? [{ namespace: 'global', key: 'description_tag', value: metaDesc, type: 'single_line_text_field' }] : [])
     ]
   };
-  if (imageAttachment && (profile.hero_mode === 'featured-only' || profile.hero_mode === 'both')) {
+  // Always attach on create when we generated an image (imageAttachment is
+  // only set when hero_mode isn't 'none'). Shopify has to host the file
+  // before we can reference it inline, so even 'inline-only' uploads here —
+  // and leaving it attached keeps the blog listing thumbnail working. A
+  // client picks 'inline-only' precisely because their theme doesn't render
+  // the featured image on the article page, so it shows once, in the body.
+  if (imageAttachment) {
     articleFields.image = { attachment: imageAttachment, alt: title };
   }
 
@@ -107,7 +113,7 @@ export async function pushArticleToShopify(client, item) {
       const j2 = await shopifyRequest(client, {
         method: 'PUT',
         path: 'blogs/' + blogId + '/articles/' + article.id + '.json',
-        body: { article: { id: article.id, body_html: inline, ...(profile.hero_mode === 'inline-only' ? { image: null } : {}) } }
+        body: { article: { id: article.id, body_html: inline } }
       });
       article = j2.article;
     } else {
