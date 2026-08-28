@@ -92,14 +92,20 @@ export async function handler(event) {
   // Best-effort heads-up to the team.
   try {
     const resendKey = process.env.RESEND_API_KEY;
-    if (resendKey) {
-      const { data: client } = await supabase.from('syte_suite_clients').select('name').eq('id', row.client_id).single();
+    const { data: client } = await supabase.from('syte_suite_clients').select('name, publishing_profile').eq('id', row.client_id).single();
+    let prof = client?.publishing_profile;
+    if (typeof prof === 'string') { try { prof = JSON.parse(prof); } catch { prof = {}; } }
+    prof = prof && typeof prof === 'object' ? prof : {};
+    // Same opt-in rule as notify-draft: no hardcoded recipient, and nothing
+    // is sent unless notifications are switched on for this client.
+    const teamEmail = prof.notifications_enabled ? prof.notify_email : null;
+    if (resendKey && teamEmail) {
       await fetch('https://api.resend.com/emails', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + resendKey },
         body: JSON.stringify({
           from: 'Syte SEO Suite <noreply@syte.co.za>',
-          to: [process.env.NOTIFY_EMAIL || 'chrisb@syte.co.za'],
+          to: [teamEmail],
           subject: 'Changes requested: ' + (client?.name || '') + ' — ' + (row.page_title || ''),
           html: '<p>The client requested changes on "' + esc(row.page_title || '') + '".</p>'
             + (comment ? '<p><strong>Their feedback:</strong></p><blockquote style="border-left:3px solid #ccc;margin:8px 0;padding:6px 12px;color:#444">' + esc(comment) + '</blockquote>' : '<p>(No specific feedback was given — check in with them.)</p>')

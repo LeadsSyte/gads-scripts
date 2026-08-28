@@ -10,9 +10,12 @@
 //   Approve flips the queue row to 'approved'; the publish-approved
 //   scheduled function then takes it live.
 //
+// Email is opt-in PER CLIENT: nothing is sent unless that client's
+// publishing profile has notifications_enabled AND a recipient address.
+// There is no global default recipient by design.
+//
 // Env vars: RESEND_API_KEY, SUPABASE_URL, SUPABASE_SERVICE_KEY (or
-// SUPABASE_KEY), NOTIFY_EMAIL (default internal recipient), URL
-// (Netlify-provided site URL, used to build approval links).
+// SUPABASE_KEY), URL (Netlify-provided site URL, for approval links).
 
 import { createClient } from '@supabase/supabase-js';
 import { randomUUID } from 'node:crypto';
@@ -56,6 +59,16 @@ export async function handler(event) {
   const siteUrl = (process.env.URL || 'https://syte-seo-suite.netlify.app').replace(/\/+$/, '');
   const title = row.page_title || 'New article';
 
+  // Opt-in gate. Email is OFF for a client until someone explicitly turns
+  // it on for that client, and there is no global fallback recipient — a
+  // missing address means no email rather than "email the default person".
+  // Publishing works exactly the same either way; only the notification is
+  // suppressed, so silence here can never block a draft.
+  if (!profile.notifications_enabled) {
+    console.log('[notify-draft] notifications are off for', client.name, '- nothing sent');
+    return { statusCode: 200, body: 'notifications disabled for this client' };
+  }
+
   // Guard: never send a client an approval email for a draft that failed
   // verification — it would put a visibly broken article in front of them.
   // Those go to the team first, whatever the client's approval mode says.
@@ -93,7 +106,13 @@ export async function handler(event) {
       console.log('[notify-draft] client approval email sent for', client.name, '-', title);
     } else {
       // Internal notification.
-      const to = profile.notify_email || process.env.NOTIFY_EMAIL || 'chrisb@syte.co.za';
+      // No hardcoded fallback: if no recipient is set for this client we
+      // send nothing rather than emailing someone who never asked for it.
+      const to = profile.notify_email;
+      if (!to) {
+        console.log('[notify-draft] no recipient set for', client.name, '- nothing sent');
+        return { statusCode: 200, body: 'no recipient configured' };
+      }
       const adminUrl = row.payload?.admin_url || '';
       const warnings = Array.isArray(row.payload?.warnings) ? row.payload.warnings : [];
       const heldBack = verificationFailed && profile.approval_mode === 'client';

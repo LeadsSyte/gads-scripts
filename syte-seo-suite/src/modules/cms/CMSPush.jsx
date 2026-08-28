@@ -305,7 +305,18 @@ export default function CMSPush({ sub }) {
                           onChange={e => setP('default_author_id', e.target.value ? Number(e.target.value) : null)} />
                       </div>
                     </div>
-                    <div className="grid-2" style={{ marginTop: 10 }}>
+                    <div className="row" style={{ marginTop: 12, alignItems: 'center' }}>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: 6, margin: 0 }}>
+                        <input type="checkbox" checked={profile.notifications_enabled}
+                          onChange={e => setP('notifications_enabled', e.target.checked)} />
+                        <strong>Send email notifications for this client</strong>
+                      </label>
+                    </div>
+                    <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>
+                      Off by default. While off, drafts are still created and can still be approved —
+                      nobody is emailed about them.
+                    </div>
+                    <div className="grid-2" style={{ marginTop: 10, opacity: profile.notifications_enabled ? 1 : 0.45 }}>
                       <div>
                         <label>Who approves drafts?</label>
                         <select value={profile.approval_mode} onChange={e => setP('approval_mode', e.target.value)}>

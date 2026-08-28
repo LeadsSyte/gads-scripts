@@ -46,11 +46,16 @@ export const PROFILE_DEFAULTS = {
   //                they don't need to see drafts)
   approval_mode: 'internal',
 
+  // Master switch for outbound email on this client. OFF by default and
+  // deliberately so: nobody gets an automated email about their client
+  // until someone has turned it on for that client. There is no global
+  // fallback recipient — no address here means no email, ever.
+  notifications_enabled: false,
+
   // Where the client approval email goes (approval_mode 'client' only).
   client_approval_email: null,
 
-  // Per-client override for the internal "draft ready" notification.
-  // null = the suite-wide default recipient (NOTIFY_EMAIL env).
+  // Who gets the internal "draft ready" notification for this client.
   notify_email: null,
 };
 

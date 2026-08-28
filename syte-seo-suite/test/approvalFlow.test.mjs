@@ -19,6 +19,16 @@ await t('default approval mode is internal', () => {
   assertEq(getPublishingProfile({}).notify_email, null);
 });
 
+await t('email notifications are OFF unless switched on per client', () => {
+  // Nobody should receive automated mail about a client until someone
+  // deliberately enables it. There is no global fallback recipient.
+  assertEq(getPublishingProfile({}).notifications_enabled, false, 'default off');
+  assertEq(getPublishingProfile({ publishing_profile: {} }).notifications_enabled, false, 'empty profile off');
+  assertEq(getPublishingProfile({ publishing_profile: { approval_mode: 'client', client_approval_email: 'x@y.com' } }).notifications_enabled,
+    false, 'still off even with an address set');
+  assertEq(getPublishingProfile({ publishing_profile: { notifications_enabled: true } }).notifications_enabled, true, 'opt-in works');
+});
+
 await t('client approval mode round-trips', () => {
   const p = getPublishingProfile({ publishing_profile: { approval_mode: 'client', client_approval_email: 'ceo@client.co.za' } });
   assertEq(p.approval_mode, 'client');
