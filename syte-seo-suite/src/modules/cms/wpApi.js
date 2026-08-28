@@ -65,9 +65,12 @@ export async function findBySlug(client, slug) {
 // first. Title is the only stable identifier a draft has.
 export async function findEditablePostByTitle(client, title, restBase = 'posts') {
   if (!title) return null;
+  // DRAFTS AND PENDING ONLY. Never match a published post: updating one
+  // would rewrite a live page, and the update sets status=draft, which
+  // would silently take the client's page off their site.
   const results = await wpRequest(client, {
     path: 'wp/v2/' + restBase + '?search=' + encodeURIComponent(title)
-      + '&status=draft,pending,future,publish&context=edit&per_page=20'
+      + '&status=draft,pending&context=edit&per_page=20'
   });
   if (!Array.isArray(results)) return null;
   const norm = s => String(s || '')
@@ -85,8 +88,11 @@ export async function findEditablePostBySlug(client, slug, restBase = 'posts') {
   return Array.isArray(results) && results.length > 0 ? results[0] : null;
 }
 
-export async function updateDraftPost(client, postId, { title, content, status = 'draft', featured_media, categories, author }, restBase = 'posts') {
-  const body = { title, content, status };
+// Deliberately does NOT send `status`. Updating an existing post must never
+// change its publication state — sending status=draft here would unpublish
+// a live page. New posts get their draft status from createDraftPost.
+export async function updateDraftPost(client, postId, { title, content, featured_media, categories, author }, restBase = 'posts') {
+  const body = { title, content };
   if (featured_media) body.featured_media = featured_media;
   if (categories) body.categories = categories;
   if (author) body.author = author;
