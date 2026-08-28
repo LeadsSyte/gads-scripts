@@ -107,6 +107,28 @@ await t('the --- rule left by the metadata block is dropped', () => {
   if (/^\s*---/.test(p.body)) throw new Error('body still starts with a separator: ' + p.body.slice(0, 40));
 });
 
+await t('the QA scoring block never reaches the body, even unterminated', () => {
+  // Real shape: the article ends with a fenced JSON quality score. The
+  // trailing fence gets trimmed early, so the block must still be removed
+  // without one — this reached a live client draft.
+  const withQa = `# Real Title
+
+${'Genuine article content that is long enough to pass. '.repeat(4)}
+
+---
+
+\`\`\`json
+{
+  "keyword_integration": 9,
+  "overall": 91,
+  "suggestions": ["add a stat"]
+}`;
+  const p = parseArticleBody(withQa);
+  assertNotMatch(p.body, /keyword_integration|overall|suggestions/i, 'QA block stripped');
+  assertNotMatch(p.body, /\bjson\b/i, 'no orphaned "json" word left');
+  assertMatch(p.body, /Genuine article content/, 'real content kept');
+});
+
 await t('JSON-LD schema blocks never reach the body', () => {
   const withSchema = '# Title\n\nReal content here that is long enough.\n\n```json\n{"@type":"FAQPage"}\n```';
   const p = parseArticleBody(withSchema);

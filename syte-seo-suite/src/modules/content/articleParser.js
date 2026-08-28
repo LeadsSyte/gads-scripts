@@ -88,6 +88,9 @@ export function markdownToHtml(md) {
 
   // 2. Headings, emphasis, lists, code.
   out = out
+    // Horizontal rules, before headings so --- is not left as a stray
+    // paragraph of dashes on the published page.
+    .replace(/^[ \t]*(?:-{3,}|\*{3,}|_{3,})[ \t]*$/gm, '<hr />')
     .replace(/^#### (.+)$/gm, '<h4>$1</h4>')
     .replace(/^### (.+)$/gm, '<h3>$1</h3>')
     .replace(/^## (.+)$/gm, '<h2>$1</h2>')

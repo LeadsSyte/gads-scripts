@@ -10,6 +10,13 @@ export function parseArticleBody(raw, { stripH1 = true } = {}) {
 
   let text = raw;
 
+  // Remove JSON blocks (JSON-LD schema and the internal QA scoring block)
+  // FIRST, and tolerate a missing closing fence. These usually sit at the
+  // very end of the article, so the trailing-fence trim below would leave
+  // them unterminated and unmatchable — which is how a quality score
+  // ("overall": 91, "suggestions": [...]) reached a client's draft.
+  text = text.replace(/```(?:json)?\s*\{[\s\S]*?(?:```|$)/gi, '');
+
   // Strip code fences: ```html ... ``` or ``` ... ```
   text = text.replace(/^```(?:html)?\s*\n?/i, '').replace(/\n?```\s*$/i, '');
   // If the whole thing is wrapped in a single code fence, strip it.
