@@ -56,12 +56,20 @@ async function wpHealthCheck(client) {
   //    need the PHP snippet before REST accepts them)
   if (testId) {
     try {
+      const probe = 'syte-suite-check';
       await wpRequest(client, {
         method: 'POST',
         path: 'wp/v2/' + restBase + '/' + testId,
-        body: { meta: { rank_math_title: 'test', _yoast_wpseo_title: 'test' } }
+        body: { meta: { rank_math_title: probe, _yoast_wpseo_title: probe } }
       });
-      checks.push({ name: 'SEO meta fields', ok: true, detail: 'Writable' });
+      // Read it back — WordPress returns 200 for meta keys it does not
+      // recognise and writes nothing, so a successful call proves nothing.
+      const after = await wpRequest(client, { path: 'wp/v2/' + restBase + '/' + testId + '?context=edit' });
+      const stored = after?.meta || {};
+      const stuck = stored._yoast_wpseo_title === probe || stored.rank_math_title === probe;
+      checks.push(stuck
+        ? { name: 'SEO meta fields', ok: true, detail: 'Writable and confirmed stored' }
+        : { name: 'SEO meta fields', ok: false, detail: 'WordPress accepted the write but stored nothing — the SEO meta keys need registering for REST (PHP snippet). Drafts still work, they just arrive without SEO title/description.' });
     } catch (e) {
       checks.push({ name: 'SEO meta fields', ok: false, detail: 'Not writable — install the PHP snippet (drafts still work, but without SEO fields): ' + e.message.slice(0, 120) });
     }

@@ -2,7 +2,7 @@
 // so Wordfence, Cloudflare, and CORS never block them.
 // CRITICAL: every created post uses status=draft. NEVER publish.
 
-import { wpRequest, findBySlug, findEditablePostBySlug, updatePostMeta, createDraftPost, updateDraftPost, uploadMedia } from './wpApi.js';
+import { wpRequest, findBySlug, findEditablePostByTitle, updatePostMeta, createDraftPost, updateDraftPost, uploadMedia } from './wpApi.js';
 import { generateHeroImage } from '../content/imageGen.js';
 import { loadSettings } from '../../lib/settings.js';
 import { markdownToHtml } from '../content/articleParser.js';
@@ -101,9 +101,11 @@ export async function pushContentToWordPress(client, item) {
   // Re-push protection: if a draft with this title's slug already exists,
   // update it in place instead of creating a duplicate.
   const restBase = profile.post_type_rest_base || 'posts';
-  const expectedSlug = slugifyTitle(title);
+  // Match on title, not slug: WordPress leaves a draft's slug empty until it
+  // is published, so a slug lookup silently found nothing and every re-push
+  // created another draft.
   let existing = null;
-  try { existing = await findEditablePostBySlug(client, expectedSlug, restBase); } catch { /* lookup is best-effort */ }
+  try { existing = await findEditablePostByTitle(client, title, restBase); } catch { /* lookup is best-effort */ }
 
   // Create (or update) the draft post with clean HTML content. Meta fields
   // are set in a SEPARATE follow-up call because WordPress 403s if the meta
@@ -130,19 +132,25 @@ export async function pushContentToWordPress(client, item) {
     _yoast_wpseo_metadesc:    metaDesc,
     _yoast_wpseo_focuskw:     keyword
   };
+  // updatePostMeta already wraps its argument in { meta: ... }. Passing
+  // { meta: metaFields } therefore sent { meta: { meta: {...} } }, and
+  // WordPress silently ignores meta keys it does not recognise — returning
+  // 200 while writing nothing. The SEO fields looked set for months and
+  // were empty on the page. Send the flat object, then read it back:
+  // a 200 from WordPress is not evidence the value stuck.
   let metaStatus = 'skipped';
   try {
-    await updatePostMeta(client, restBase, created.id, { meta: metaFields });
-    metaStatus = 'set';
+    await updatePostMeta(client, restBase, created.id, metaFields);
+    const check = await wpRequest(client, { path: 'wp/v2/' + restBase + '/' + created.id + '?context=edit' });
+    const stored = check?.meta || {};
+    const titleStored = !!(stored._yoast_wpseo_title || stored.rank_math_title);
+    const descStored = !metaDesc || !!(stored._yoast_wpseo_metadesc || stored.rank_math_description);
+    metaStatus = (titleStored && descStored)
+      ? 'set'
+      : 'ignored by WordPress — the SEO meta keys are not registered for the REST API on this site (needs the PHP snippet)';
   } catch (e) {
-    // Try without the wrapper — some WP versions want flat meta, some want nested.
-    try {
-      await updatePostMeta(client, restBase, created.id, metaFields);
-      metaStatus = 'set';
-    } catch (e2) {
-      console.warn('RankMath/Yoast meta update failed (post still created):', e2.message);
-      metaStatus = 'failed — add the PHP snippet to WordPress (see suite docs)';
-    }
+    console.warn('SEO meta update failed (post still created):', e.message);
+    metaStatus = 'failed — ' + e.message;
   }
 
   const adminUrl = client.wp_url.replace(/\/+$/, '') + '/wp-admin/post.php?post=' + created.id + '&action=edit';

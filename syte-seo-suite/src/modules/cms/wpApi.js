@@ -59,6 +59,24 @@ export async function findBySlug(client, slug) {
 // Find a post the API user can edit (any status — drafts included) whose
 // slug matches. Used for duplicate-push protection. `status=any` needs the
 // edit context, which our Application Password gives us.
+// Match an existing post by title. Drafts in WordPress have an EMPTY slug
+// until they are published, so slug matching can never find one — which is
+// how re-pushing an article created a second draft instead of updating the
+// first. Title is the only stable identifier a draft has.
+export async function findEditablePostByTitle(client, title, restBase = 'posts') {
+  if (!title) return null;
+  const results = await wpRequest(client, {
+    path: 'wp/v2/' + restBase + '?search=' + encodeURIComponent(title)
+      + '&status=draft,pending,future,publish&context=edit&per_page=20'
+  });
+  if (!Array.isArray(results)) return null;
+  const norm = s => String(s || '')
+    .replace(/&#\d+;/g, '').replace(/&[a-z]+;/gi, '')  // entity-encoded & etc.
+    .replace(/[^a-z0-9]+/gi, ' ').replace(/\s+/g, ' ').trim().toLowerCase();
+  const want = norm(title);
+  return results.find(p => norm(p.title?.raw ?? p.title?.rendered) === want) || null;
+}
+
 export async function findEditablePostBySlug(client, slug, restBase = 'posts') {
   if (!slug) return null;
   const results = await wpRequest(client, {

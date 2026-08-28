@@ -103,14 +103,18 @@ export async function verifyPushedDraft(client, result) {
   try {
     if (client.cms_type === 'WordPress' && result?.wp_id) {
       const restBase = result.rest_base || 'posts';
-      const post = await wpRequest(client, { path: 'wp/v2/' + restBase + '/' + result.wp_id });
+      const post = await wpRequest(client, { path: 'wp/v2/' + restBase + '/' + result.wp_id + '?context=edit' });
       const html = post?.content?.rendered ?? post?.content?.raw ?? '';
+      // Check what WordPress actually STORED, not what we sent it. WP accepts
+      // unregistered meta keys with a 200 and writes nothing, so trusting our
+      // own payload here reported SEO fields as present when the page had none.
+      const stored = post?.meta || {};
       return checkDraftContent({
         html,
         profile,
         hasFeaturedImage: !!post?.featured_media,
-        metaTitle: result.meta_title || '',
-        metaDesc: result.meta_desc || ''
+        metaTitle: stored._yoast_wpseo_title || stored.rank_math_title || '',
+        metaDesc: stored._yoast_wpseo_metadesc || stored.rank_math_description || ''
       });
     }
 
