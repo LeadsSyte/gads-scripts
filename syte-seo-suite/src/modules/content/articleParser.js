@@ -92,6 +92,11 @@ export function markdownToHtml(md) {
     .replace(/^### (.+)$/gm, '<h3>$1</h3>')
     .replace(/^## (.+)$/gm, '<h2>$1</h2>')
     .replace(/^# (.+)$/gm, '<h1>$1</h1>')
+    // Images before links — ![alt](src) is a link pattern with a ! in front.
+    // Without these, markdown links reached client pages as literal
+    // "[text](url)", in the CMS push and the copy-as-HTML flow alike.
+    .replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, '<img src="$2" alt="$1" />')
+    .replace(/\[([^\]\n]+)\]\(([^)\s]+)\)/g, '<a href="$2">$1</a>')
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
     .replace(/\*(.+?)\*/g, '<em>$1</em>')
     .replace(/^[-*] (.+)$/gm, '<li>$1</li>')

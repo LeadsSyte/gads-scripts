@@ -22,12 +22,24 @@ export function parseArticleBody(raw, { stripH1 = true } = {}) {
   const metaTitleMatch = text.match(/\*?\*?Meta Title\*?\*?:?\s*(.+)/i);
   const metaDescMatch  = text.match(/\*?\*?Meta Description\*?\*?:?\s*(.+)/i);
 
-  // The article body is everything before the first **Meta Title or ```json.
+  // Where the metadata sits varies by prompt. Older output puts it AFTER
+  // the article, so cutting there works. Newer output puts it at the very
+  // TOP (index 0) — cutting there would keep the whole document, which is
+  // how "Meta Title:" ended up as a visible paragraph on a client's blog.
+  // So: cut only when it trails, and strip the lines wherever they appear.
   const bodyEnd = text.search(/\*?\*?Meta Title\*?\*?:|```json/i);
-  let body = bodyEnd > 0 ? text.slice(0, bodyEnd).trim() : text.trim();
+  let body = bodyEnd > 0 ? text.slice(0, bodyEnd) : text;
+
+  body = body
+    .replace(/```json[\s\S]*?```/gi, '')
+    .replace(/^[ \t]*\*{0,2}Meta (?:Title|Description)\*{0,2}[ \t]*:.*$/gim, '');
 
   // Strip any remaining code fences inside the body.
   body = body.replace(/```(?:html)?\s*\n?/gi, '').replace(/\n?```/g, '');
+
+  // Metadata usually sits above a --- rule; drop the orphaned separator so
+  // the article's own H1 is genuinely first and gets recognised as the title.
+  body = body.replace(/^(?:\s*(?:-{3,}|\*{3,}|_{3,})\s*)+/, '').trim();
 
   // Pull the leading H1 out of the body (markdown `# ...` or `<h1>...</h1>`)
   // and hand it back separately as the post title.

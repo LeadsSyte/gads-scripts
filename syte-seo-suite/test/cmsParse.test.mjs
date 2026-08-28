@@ -70,6 +70,49 @@ await t('empty input safe', () => {
   assertEq(p.body, ''); assertEq(p.articleTitle, ''); assertEq(p.metaTitle, '');
 });
 
+// Real shape from a Kruger Gate Hotel article: metadata at the TOP, above a
+// --- rule. The old parser cut "everything before Meta Title" — which was
+// nothing — so the client's draft opened with the words "Meta Title:".
+const META_FIRST = `**Meta Title:** Paul Kruger Gate: Times, Location & Tips | Kruger Gate Hotel
+
+**Meta Description:** Opening times, exact location and visitor tips for 2026.
+
+---
+
+# Paul Kruger Gate: Opening Times and Location
+
+The gate opens at sunrise throughout the year.
+
+## Getting there
+
+Follow the R536 from Hazyview.`;
+
+await t('metadata at the TOP never reaches the article body', () => {
+  const p = parseArticleBody(META_FIRST);
+  assertNotMatch(p.body, /Meta Title/i, 'no meta title in body');
+  assertNotMatch(p.body, /Meta Description/i, 'no meta desc in body');
+  assertEq(p.metaTitle, 'Paul Kruger Gate: Times, Location & Tips | Kruger Gate Hotel', 'metaTitle still parsed');
+  assertEq(p.metaDesc, 'Opening times, exact location and visitor tips for 2026.', 'metaDesc still parsed');
+});
+
+await t('H1 is still found when metadata sat above it', () => {
+  const p = parseArticleBody(META_FIRST);
+  assertEq(p.articleTitle, 'Paul Kruger Gate: Opening Times and Location', 'articleTitle');
+  assertNotMatch(p.body, /Paul Kruger Gate: Opening Times and Location/, 'H1 removed from body');
+  assertMatch(p.body, /## Getting there/, 'rest of article intact');
+});
+
+await t('the --- rule left by the metadata block is dropped', () => {
+  const p = parseArticleBody(META_FIRST);
+  if (/^\s*---/.test(p.body)) throw new Error('body still starts with a separator: ' + p.body.slice(0, 40));
+});
+
+await t('JSON-LD schema blocks never reach the body', () => {
+  const withSchema = '# Title\n\nReal content here that is long enough.\n\n```json\n{"@type":"FAQPage"}\n```';
+  const p = parseArticleBody(withSchema);
+  assertNotMatch(p.body, /FAQPage|@type/, 'schema stripped');
+});
+
 await t('slugifyTitle matches WP-style slugs', () => {
   assertEq(slugifyTitle('The Complete Guide to Widgets'), 'the-complete-guide-to-widgets');
   assertEq(slugifyTitle("What's New: SEO & AEO in 2026!"), 'whats-new-seo-aeo-in-2026');

@@ -5,6 +5,7 @@
 
 import { parseOutputSections, markdownToHtml } from '../src/modules/content/articleParser.js';
 
+
 let pass = 0, fail = 0;
 async function t(name, fn) {
   try { await fn(); console.log('PASS', name); pass++; }
@@ -182,6 +183,25 @@ await t('markdownToHtml: full real-shape output', () => {
   // Must produce well-formed HTML, no orphan markdown left over.
   if (/^#/.test(html.trim())) throw new Error('# heading not converted');
   if (html.includes('**')) throw new Error('** bold marks not converted: ' + html.slice(0, 200));
+});
+
+// Links reached client pages as literal "[text](url)" — in the CMS push and
+// in the copy-as-HTML button alike, so they had to be fixed by hand.
+await t('markdown links convert to anchors', () => {
+  const html = markdownToHtml('See our [Deluxe Rooms](/accommodation/) for details.');
+  assertMatch(html, /<a href="\/accommodation\/">Deluxe Rooms<\/a>/, 'anchor');
+  if (/\]\(/.test(html)) throw new Error('raw markdown link syntax left: ' + html);
+});
+
+await t('absolute links convert too', () => {
+  const html = markdownToHtml('Book at [our site](https://example.co.za/book).');
+  assertMatch(html, /<a href="https:\/\/example\.co\.za\/book">our site<\/a>/, 'absolute anchor');
+});
+
+await t('markdown images become img tags, not anchors', () => {
+  const html = markdownToHtml('![A lion at dawn](/img/lion.jpg)');
+  assertMatch(html, /<img src="\/img\/lion\.jpg" alt="A lion at dawn" \/>/, 'img tag');
+  if (/<a /.test(html)) throw new Error('image was turned into an anchor: ' + html);
 });
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
