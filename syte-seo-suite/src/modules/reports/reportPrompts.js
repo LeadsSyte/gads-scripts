@@ -19,7 +19,7 @@ CRITICAL TONE RULES (NEVER BREAK):
 AEO TONE RULES:
 - Lead with COVERAGE growth: the headline is "now named in X of Y buyer prompts" and how that moved month-on-month, plus the number of new prompt themes we discovered this month. Coverage and new themes come before any single-metric story.
 - Lead with rank when leading: if the client is #1 vs SA competitors on visibility, say so explicitly.
-- Treat low absolute scores as a starting baseline, not a crisis. Being named in a few of many prompts with no MoM data is "we now have a baseline to attack" — never "AI Visibility Crisis".
+- Treat low absolute scores as a starting point, not a crisis. Being named in a few of many prompts with no MoM data is "we now have a clear starting position to build from", never "AI Visibility Crisis".
 - When coverage is low, frame the citation gap table as the GROWTH PLAN: name the top one or two source domains competitors appear on and give ONE sentence per priority action for getting the brand onto them.
 - Highlight active wins (prompts where the brand appears on at least 70% of runs) before listing zero-coverage opportunities.
 - For zero-coverage category terms, frame as "the next opportunity" not "the missing 93%".
@@ -74,7 +74,7 @@ Return ONLY valid JSON matching this exact shape. No prose before/after, no code
   "topPages": [
     { "page": "/lead-generation/", "users": "57", "delta": "+42%" }
   ],
-  "aeoMomNarrative": "1-2 sentence story about how AEO has moved month-on-month. Lead with COVERAGE growth (named in X of Y prompts, up from Z) and new themes discovered. If no previous month, say 'this is our baseline going forward'.",
+  "aeoMomNarrative": "1-2 sentence story about how AEO has moved month-on-month. Lead with COVERAGE growth (named in X of Y prompts, up from Z) and new themes discovered. If no previous month, say 'this is our starting point, tracked monthly from here'.",
   "aeoCompetitiveNarrative": "1-2 sentence story about where the client sits vs SA competitors on visibility. Use rank + closest rival's gap. Example: 'Krost leads every SA competitor we track, 1.3pp ahead of Universal Storage on visibility.'",
   "citationGapsNarrative": "1-2 sentences on the citation gaps: the top source domains competitors appear on where the brand does not, framed as the growth plan (not a shortfall). Omit if there are no gaps.",
   "aeoStrategy": {
@@ -139,10 +139,36 @@ Score 1-10. readyToSend = true only if score >= 7.
 CRITICAL: fail "Positive-first framing" if the email leads with bad news or reads like a doom report.`;
 
 // ===========================================================================
+// SEO-ONLY MODE - used by the "Generate SEO Report" button.
+// SEO and AEO are separate products with separate deliverables: a client on
+// both gets two reports, never one blended document. These derive from the
+// prompts above rather than restating them, so any later change to the base
+// tone/format rules flows into the SEO report automatically.
+// ===========================================================================
+
+const SEO_SCOPE_RULE = `
+
+HARD SCOPE RULE - SEO ONLY:
+- This output covers organic search only. Do NOT mention AI search, answer engines, AEO, AI visibility, ChatGPT, Perplexity, Gemini, Claude, AI Overviews, citations in AI answers, or share of AI voice. All of that ships in the client's separate AEO report.
+- The metrics you may cite are: organic users, sessions, conversions/leads, revenue, Search Console clicks, impressions, CTR, average position, keyword rankings and movements, top landing pages, technical fixes, content published, and PPC equivalent value.`;
+
+export const ALICE_SEO_SYSTEM = ALICE_SYSTEM + SEO_SCOPE_RULE;
+
+export const MICROSITE_SEO_SYSTEM = MICROSITE_SYSTEM + SEO_SCOPE_RULE + `
+- Never emit aeoSection, aeoMomNarrative, aeoCompetitiveNarrative, aeoStrategy or citationGapsNarrative. Those keys belong to the AEO report and are ignored here.`;
+
+export const QA_SEO_SYSTEM = QA_SYSTEM + `
+
+This email is the SEO report, which is a separate deliverable from the client's AEO report.
+Add one more entry to the checks array, before "suggestion":
+    { "label": "Contains zero AEO / AI-search talk (SEO scope only)", "pass": true, "note": "" }
+CRITICAL: fail that check, and drop readyToSend to false, if any AEO, AI-visibility, answer-engine or LLM-citation reference appears.`;
+
+// ===========================================================================
 // AEO-ONLY MODE — used by the "Generate AEO Report" button.
 // Strictly forbids any SEO talk and rewrites the tone rules to kill the
 // "AI visibility crisis" framings that were making first-month reports
-// read as doom. AEO is a long-game product; even a 0% baseline is a
+// read as doom. AEO is a long-game product; even a 0% starting point is a
 // measurement framework, not a failure.
 // ===========================================================================
 
@@ -157,7 +183,7 @@ ABSOLUTE RULE — STRICT SCOPE:
 
 ABSOLUTE RULE — NO DOOM FRAMING:
 - Forbidden phrases (and any close paraphrase): "AI visibility crisis", "missing from X% of responses", "virtually invisible", "critical gap", "alarming", "concerning", "underperforming", "behind", "doom", "trouble", "warning sign", "red flag", "shortfall", "the bad news", "hallucination", "the AI is wrong about you".
-- AEO is a long-game discipline. Being named in a few of many prompts is a baseline to grow from, not a crisis. Frame everything as either momentum (if there's MoM data) or starting position (if month one).
+- AEO is a long-game discipline. Being named in a few of many prompts is a starting point to grow from, not a crisis. Frame everything as either momentum (if there's MoM data) or starting position (if month one).
 - If the brand is #1 vs SA competitors, lead with that, even if absolute coverage is in single digits.
 - If coverage or citations moved up at all, that is the headline regardless of absolute level.
 - If neither, lead with the strongest active prompt win or the strongest engine.
@@ -204,21 +230,21 @@ ABSOLUTE RULE — STRICT SCOPE:
 
 ABSOLUTE RULE — NO DOOM FRAMING:
 - Forbidden in headline / subheadline / narrative: "crisis", "missing from", "virtually invisible", "critical", "alarming", "doom", "trouble", "behind", "warning", "shortfall", "concerning".
-- A first snapshot with low absolute visibility is a "baseline" — never a "crisis". Frame as opportunity, momentum, or competitive position.
-- Headline should celebrate the strongest of: (a) competitive rank if leading SA competitors, (b) MoM growth if any metric moved up, (c) a head-term win if any query hits 50%+ on any engine, (d) "month 1 baseline locked in" if none of the above.
+- A first snapshot with low absolute visibility is a "starting point", never a "crisis". Frame as opportunity, momentum, or competitive position.
+- Headline should celebrate the strongest of: (a) competitive rank if leading SA competitors, (b) MoM growth if any metric moved up, (c) a head-term win if any query hits 50%+ on any engine, (d) "month 1 starting position locked in" if none of the above.
 
 Return ONLY valid JSON, no prose, no code fences:
 {
   "headline": "punchy, specific, NEVER doom-framed — celebrate position, momentum or wins",
   "subheadline": "one sentence reinforcing the headline with a concrete number",
-  "narrative": "2-3 sentences telling a confident momentum/baseline story. Use real numbers from the payload.",
+  "narrative": "2-3 sentences telling a confident momentum or starting-position story. Use real numbers from the payload.",
   "highlights": [
     { "label": "Named In", "value": "8 of 20", "delta": "+3", "positive": true },
     { "label": "Coverage Rate", "value": "40%", "delta": "+8pp", "positive": true },
     { "label": "Share of Voice", "value": "34%", "delta": "+6pp", "positive": true },
     { "label": "AEO Index", "value": "52", "delta": "+9", "positive": true }
   ],
-  "aeoMomNarrative": "1-2 sentences on MoM movement. LEAD with coverage growth (named in X of Y prompts, up from Z) and new themes discovered. If first month, say 'this is our baseline going forward, every metric is now tracked monthly'.",
+  "aeoMomNarrative": "1-2 sentences on MoM movement. LEAD with coverage growth (named in X of Y prompts, up from Z) and new themes discovered. If first month, say 'this is our starting point, every metric is now tracked monthly from here'.",
   "aeoCompetitiveNarrative": "1-2 sentences on competitive standing vs SA rivals. Use rank + closest competitor's gap. If brand is #1 say so explicitly.",
   "citationGapsNarrative": "1-2 sentences on the citation gaps as the growth plan: the top source domains competitors appear on where the brand does not. Omit if no gaps in the payload.",
   "aeoStrategy": {
@@ -371,7 +397,7 @@ function engagementLine(client, monthLabel) {
   const e = engagementNote(client?.start_date, monthLabel);
   if (!e) return null;
   if (e.months <= 1) return null; // genuinely new client — "month 1" is fine
-  return `ENGAGEMENT CONTEXT: this client has been with Syte since ${e.start}, so ${monthLabel || 'this month'} is month ${e.months} of the engagement. This is the FIRST AEO snapshot, but NOT the client's first month. Do NOT call it "Month 1", a "month-1 campaign", or imply the relationship is new. Frame it as: we have now added AI-visibility (AEO) measurement to your existing program, establishing the baseline we track from here.`;
+  return `ENGAGEMENT CONTEXT: this client has been with Syte since ${e.start}, so ${monthLabel || 'this month'} is month ${e.months} of the engagement. This is the FIRST AEO snapshot, but NOT the client's first month. Do NOT call it "Month 1", a "month-1 campaign", or imply the relationship is new. Frame it as: we have now added AI-visibility (AEO) measurement to your existing program, establishing the starting point we track from here.`;
 }
 
 export function buildAlicePayload(form, aeo, workSummary) {
@@ -383,7 +409,14 @@ export function buildAlicePayload(form, aeo, workSummary) {
   const aliceEng = engagementLine({ start_date: form.startDate }, form.month);
   if (aliceEng) lines.push(aliceEng);
   lines.push('');
-  lines.push('TONE INSTRUCTION: Always lead with the biggest positive. If traffic is down MoM, check if YoY is up. If everything is down, lead with work done (articles, fixes, AEO improvements). NEVER make this read like bad news.');
+  lines.push('TONE INSTRUCTION: Always lead with the biggest positive. If traffic is down MoM, check if YoY is up. If everything is down, lead with work done (articles, fixes, ranking gains). NEVER make this read like bad news.');
+
+  // The SEO report is a separate deliverable from the AEO report. Say so
+  // in the payload as well as the system prompt: the model reaches for
+  // AI-visibility framing when the client is known to buy both.
+  if (form.seoOnly) {
+    lines.push('SCOPE: This is the SEO report ONLY. The client receives a separate AEO report, so do not mention AI search, answer engines, AEO, or AI visibility anywhere in this output.');
+  }
 
   if (form.algorithmContext) {
     lines.push(`\nAlgorithm / market context: ${form.algorithmContext}`);
@@ -399,7 +432,9 @@ export function buildAlicePayload(form, aeo, workSummary) {
     if (workSummary.content.summary)         workLines.push('Content: ' + workSummary.content.summary);
     if (workSummary.content.topics?.length)   workLines.push('  Topics: ' + workSummary.content.topics.join(', '));
     if (workSummary.technical.summary)        workLines.push('Technical: ' + workSummary.technical.summary);
-    if (workSummary.aeo.summary)             workLines.push('AEO: ' + workSummary.aeo.summary);
+    // AEO work is reported in the separate AEO report, so it only
+    // appears here when this payload is in AEO scope.
+    if (form.hasAeo && workSummary.aeo.summary) workLines.push('AEO: ' + workSummary.aeo.summary);
     if (workSummary.implementations.summary) workLines.push('Verified: ' + workSummary.implementations.summary);
   }
   if (form.additionalWork) workLines.push('Other work: ' + form.additionalWork);
@@ -584,7 +619,7 @@ export function buildAeoPayload({ client, monthLabel: ml, previousMonthLabel, pr
     lines.push(`Sentiment:  ${compare.previous?.sentiment ?? '—'}% → ${compare.current?.sentiment ?? '—'}% (${fmt(d.sentiment)})`);
     lines.push('LEAD WITH THE STRONGEST POSITIVE DELTA — citations and mentions are the gold-standard metrics.');
   } else {
-    lines.push('\nThis is the first AEO SNAPSHOT (the first AEO measurement, not necessarily the client\'s first month — see ENGAGEMENT CONTEXT above). No MoM comparison yet; frame it as the measurement baseline we now track from here.');
+    lines.push('\nThis is the first AEO SNAPSHOT (the first AEO measurement, not necessarily the client\'s first month — see ENGAGEMENT CONTEXT above). No MoM comparison yet; frame it as the first measurement we now track from here.');
   }
 
   if (ranking?.length && brandRank) {

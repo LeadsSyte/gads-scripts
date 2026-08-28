@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { loadSettings, saveSettings, engineStatus, estimateSweepCost } from '../lib/settings.js';
+import { loadSettings, saveSettings, estimateSweepCost, hasBuiltinEngine } from '../lib/settings.js';
 import { useClients } from '../store/useClients.js';
 import GoogleServerAccounts from './GoogleServerAccounts.jsx';
 
@@ -17,14 +17,13 @@ export default function SuiteSettingsModal({ onClose }) {
   // for shoulder-surfing protection but the operator can flip the eye
   // icon to verify what's actually saved (useful when debugging the
   // "millions of stars and I can't tell what's in there" case).
-  const [shown, setShown] = useState({ openaiKey: false, perplexityKey: false, googleAiKey: false });
+  const [shown, setShown] = useState({ openaiKey: false, googleAiKey: false });
   const clients = useClients(s => s.clients);
 
   // Track unsaved-edit state so a stray backdrop click doesn't blow
   // away half-pasted keys. Click-away on a clean modal still closes.
   const isDirty =
     (form.openaiKey || '') !== (persisted.openaiKey || '') ||
-    (form.perplexityKey || '') !== (persisted.perplexityKey || '') ||
     (form.googleAiKey || '') !== (persisted.googleAiKey || '');
 
   function tryClose() {
@@ -46,38 +45,40 @@ export default function SuiteSettingsModal({ onClose }) {
     const cleaned = {
       ...form,
       openaiKey:    (form.openaiKey || '').trim(),
-      perplexityKey:(form.perplexityKey || '').trim(),
       googleAiKey:  (form.googleAiKey || '').trim(),
     };
-    saveSettings(cleaned);
-    setForm(cleaned);
-    setPersisted(cleaned);   // dots now reflect what runs will actually use
+    // saveSettings drops blank fields (never blanks a stored key), so use its
+    // MERGED return — not `cleaned` — for the dots, or an untouched-but-empty
+    // box would wrongly show a stored key as cleared.
+    const merged = saveSettings(cleaned);
+    setForm(merged);
+    setPersisted(merged);   // dots now reflect what runs will actually use
     setSaved(true);
     setTimeout(() => setSaved(false), 1500);
   }
 
-  // Dots reflect the SAVED keys (what AEO runs read), not the input boxes.
+  // Dots reflect what AEO runs will actually use: a SAVED personal key, or the
+  // deployment's built-in (env-var) key for that engine. Claude is always
+  // built in.
   const status = {
-    chatgpt:    !!persisted.openaiKey,
-    perplexity: !!persisted.perplexityKey,
-    gemini:     !!persisted.googleAiKey,
-    claude:     true
+    chatgpt: !!persisted.openaiKey || hasBuiltinEngine('chatgpt'),
+    gemini:  !!persisted.googleAiKey || hasBuiltinEngine('gemini'),
+    claude:  true
   };
   // A field is "pending" when the box holds a key that hasn't been saved yet —
   // green dot would be a lie, so we warn and show it as not-yet-active.
   const pending = {
-    openaiKey:    (form.openaiKey || '').trim() !== (persisted.openaiKey || ''),
-    perplexityKey:(form.perplexityKey || '').trim() !== (persisted.perplexityKey || ''),
-    googleAiKey:  (form.googleAiKey || '').trim() !== (persisted.googleAiKey || ''),
+    openaiKey:   (form.openaiKey || '').trim() !== (persisted.openaiKey || ''),
+    googleAiKey: (form.googleAiKey || '').trim() !== (persisted.googleAiKey || ''),
   };
-  const hasUnsaved = pending.openaiKey || pending.perplexityKey || pending.googleAiKey;
+  const hasUnsaved = pending.openaiKey || pending.googleAiKey;
 
   // Sniff for the most common copy-paste mistake — pasting an Anthropic
   // key into the OpenAI field. The two services use distinct prefixes
   // (sk-ant-…  vs  sk-proj-… or sk-…), so we can catch this before the
   // key burns 45 iterations of 401s in the next AEO probe. Same for
-  // Perplexity (pplx-…) and Google AI (AIza…). All checks tolerate
-  // empty / whitespace input (no nag on a half-pasted key).
+  // Google AI (AIza…). All checks tolerate empty / whitespace input
+  // (no nag on a half-pasted key).
   //
   // We also flag non-ASCII characters — autocorrected hyphens (em dash
   // U+2014), smart quotes, and NBSP all sneak in when copying from
@@ -104,14 +105,10 @@ export default function SuiteSettingsModal({ onClose }) {
   if (k(form.openaiKey) && !k(form.openaiKey).startsWith('sk-')) {
     issues.push({ field: 'openaiKey', message: 'OpenAI keys start with sk-…' });
   }
-  if (k(form.perplexityKey) && !k(form.perplexityKey).startsWith('pplx-')) {
-    issues.push({ field: 'perplexityKey', message: 'Perplexity keys start with pplx-…' });
-  }
   if (k(form.googleAiKey) && !k(form.googleAiKey).startsWith('AIza')) {
     issues.push({ field: 'googleAiKey', message: 'Google AI Studio keys start with AIza…' });
   }
   checkAscii('openaiKey', 'OpenAI key');
-  checkAscii('perplexityKey', 'Perplexity key');
   checkAscii('googleAiKey', 'Google AI key');
 
   const aeoClients = clients.filter(c => c.does_aeo !== false).length;
@@ -176,15 +173,13 @@ export default function SuiteSettingsModal({ onClose }) {
         <div className="card" style={{ marginBottom: 14 }}>
           <strong>AEO Snapshot — Engine Keys</strong>
           <div className="muted" style={{ fontSize: 12, marginTop: 4, marginBottom: 12 }}>
-            Keys stay on this device. Missing engines are skipped gracefully.
+            ChatGPT, Gemini and Claude keys are built into this deployment, so every engine runs for everyone — no key needed. The fields below are <strong>optional</strong>: paste a personal key only to override the built-in one on this device.
           </div>
-          {row('OpenAI API Key (GPT-4o)', 'openaiKey', 'sk-proj-…')}
-          {row('Perplexity API Key (Sonar)', 'perplexityKey', 'pplx-…')}
-          {row('Google AI API Key (Gemini)', 'googleAiKey', 'AIza…')}
+          {row('OpenAI API Key (GPT-4o) — optional override', 'openaiKey', 'sk-proj-…')}
+          {row('Google AI API Key (Gemini) — optional override', 'googleAiKey', 'AIza…')}
 
           <div className="row" style={{ gap: 14, marginTop: 8, flexWrap: 'wrap' }}>
             <span style={{ fontSize: 12 }}>{statusDot(status.chatgpt)}ChatGPT{pending.openaiKey ? ' (unsaved)' : ''}</span>
-            <span style={{ fontSize: 12 }}>{statusDot(status.perplexity)}Perplexity{pending.perplexityKey ? ' (unsaved)' : ''}</span>
             <span style={{ fontSize: 12 }}>{statusDot(status.gemini)}Gemini{pending.googleAiKey ? ' (unsaved)' : ''}</span>
             <span style={{ fontSize: 12 }}>{statusDot(status.claude)}Claude (built-in)</span>
           </div>

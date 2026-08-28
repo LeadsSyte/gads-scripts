@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useClients } from '../../store/useClients.js';
-import { listCmsQueue, updateCmsQueueItem, upsertClient } from '../../lib/supabase.js';
+import { listCmsQueue, updateCmsQueueItem, updateClientFields } from '../../lib/supabase.js';
 import { detectCms, testWordPress, testShopify } from './cmsDetect.js';
 import { getPublishingProfile } from './publishingProfile.js';
 
@@ -51,16 +51,31 @@ export default function CMSPush({ sub }) {
     if (!client) return;
     setBusy(true); setErr(''); setMsg('');
     try {
-      const merged = { ...client, ...form, ...patch };
+      // Persist ONLY the CMS connector fields. `form` mirrors the whole
+      // client, so writing it back would revert unrelated fields (e.g. the
+      // account-manager assignments) from a stale snapshot.
+      const connector = {
+        cms_type:        form.cms_type ?? '',
+        cms_detected:    form.cms_detected ?? false,
+        wp_url:          form.wp_url ?? '',
+        wp_username:     form.wp_username ?? '',
+        wp_app_password: form.wp_app_password ?? '',
+        shopify_store:   form.shopify_store ?? '',
+        shopify_token:   form.shopify_token ?? '',
+        // Only sent when actually set, so a database without the column
+        // never sees it.
+        ...(form.publishing_profile ? { publishing_profile: form.publishing_profile } : {}),
+        ...patch
+      };
       try {
-        await upsertClient(merged);
+        await updateClientFields(client.id, connector);
       } catch (e) {
         // publishing_profile arrives with a migration that may not have been
         // run on this database yet. Credentials and CMS type must stay
         // saveable regardless, so drop that one field and retry once.
         if (/publishing_profile/i.test(e?.message || '')) {
-          const { publishing_profile, ...withoutProfile } = merged;
-          await upsertClient(withoutProfile);
+          const { publishing_profile, ...withoutProfile } = connector;
+          await updateClientFields(client.id, withoutProfile);
           await load();
           setMsgFor(scope);
           setMsg(successMsg + ' — note: per-client publishing settings were not saved (database migration still pending).');

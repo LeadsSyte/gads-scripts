@@ -20,6 +20,8 @@ create table if not exists syte_suite_clients (
   author text,
   author_creds text,
   pages_per_month int default 15,
+  -- Site-wide AEO shortlist size (see supabase-schema-aeo-items-per-month.sql).
+  aeo_items_per_month int default 10,
   cms_type text,
   cms_detected boolean default false,
   wp_url text,

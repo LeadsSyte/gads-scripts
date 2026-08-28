@@ -86,6 +86,113 @@ await t('aeoOnly mode hides SEO sections', () => {
   assertNotContains(html, 'Top Pages by Organic Clicks', 'no top pages table');
 });
 
+// ── SEO / AEO separation ───────────────────────────────────────────
+// The two reports are separate deliverables. A client on both services
+// receives two documents; neither may leak the other's data.
+
+const FULL_PROBE = {
+  visibility_score: 42, detection_rate: 60, top3_rate: 20,
+  mentions: 12, citations: 5, sentiment_score: 80,
+  engines_used: ['chatgpt', 'perplexity'], queries_count: 4, iterations: 2, total_runs: 8,
+  engine_scores: { chatgpt: 50, perplexity: 34 },
+  per_query: [
+    { query: 'industrial shelving', engine: 'chatgpt', engine_label: 'ChatGPT', visibility: 75, top3_rate: 50, avg_position: 2, sentiment: 'positive', mentioned: true },
+    { query: 'pallet racking', engine: 'perplexity', engine_label: 'Perplexity', visibility: 0, mentioned: false }
+  ],
+  keyword_wins: {
+    active: [{ query: 'industrial shelving', engine_label: 'ChatGPT', visibility: 75 }],
+    emerging: [{ query: 'racking systems', engine_label: 'ChatGPT', visibility: 40 }],
+    zero: [{ query: 'pallet racking' }]
+  }
+};
+const FULL_COMPARE = {
+  has_previous: true, previous_month: '2026-03',
+  previous: { visibility: 30, mentions: 8, citations: 3, detection: 40, top3: 10, sentiment: 70 },
+  current:  { visibility: 42, mentions: 12, citations: 5, detection: 60, top3: 20, sentiment: 80 },
+  deltas: {
+    visibility: { absolute: 12, percent: 40 }, mentions: { absolute: 4, percent: 50 },
+    citations: { absolute: 2, percent: 67 }, detection: { absolute: 20, percent: 50 },
+    top3: { absolute: 10, percent: 100 }, sentiment: { absolute: 10, percent: 14 }
+  }
+};
+const FULL_RANKING = [
+  { name: 'Acme Hotels', isBrand: true, visibility: 42, mentions: 12, citations: 5, top3_rate: 20, avg_position: 2 },
+  { name: 'Rival Co', isBrand: false, visibility: 30, mentions: 8, citations: 2, top3_rate: 10, avg_position: 4 }
+];
+const MICRO_WITH_AEO = {
+  ...MICRO_BASE,
+  aeoSection: { show: true, score: 42, byEngine: { ChatGPT: 50 }, topQueries: [], competitors: [] },
+  aeoMomNarrative: 'Citations climbed 67% month-on-month.',
+  aeoCompetitiveNarrative: 'Acme leads every tracked SA rival.',
+  aeoStrategy: { show: true, priorities: [{ tier: 'Quick Win', title: 'Own pallet racking', rationale: 'Close on Gemini', tags: ['FAQ'] }], zeroOpportunity: 'Attack the 0% category terms.' }
+};
+const SEO_DATA = {
+  clientType: 'lead_gen',
+  keywords: [{ query: 'shelving jhb', position: 4, change: 2, clicks: 30, impressions: 600, ctr: '5%' }],
+  keywordBuckets: {
+    headTermWins: [], top3: [], top10: [], improved: [], striking: [], branded: [],
+    counts: { eligible: 1, top3: 0, top10: 0, improved: 0, striking: 0, branded: 0 }
+  },
+  traffic: {
+    current: { users: 1000, sessions: 1500, conversions: 20 },
+    previous: { users: 800, sessions: 1200, conversions: 15 },
+    yoy: { users: 600, sessions: 1000, conversions: 10 },
+    momChange: { users: 25, sessions: 25, conversions: 33 },
+    yoyChange: { users: 67, sessions: 50, conversions: 100 }
+  },
+  topPages: [{ page: 'https://acme.co.za/shelving', clicks: 30, impressions: 600, position: 4 }]
+};
+
+await t('seoOnly mode strips every AEO section even when AEO data is supplied', () => {
+  const html = buildMicrositeHtml({
+    micro: MICRO_WITH_AEO, client: CLIENT, monthLabel: 'April 2026', seoOnly: true,
+    reportData: SEO_DATA,
+    rankscale: 'https://rankscale.example/acme',
+    aeoProbe: FULL_PROBE, aeoCompare: FULL_COMPARE, aeoRanking: FULL_RANKING
+  });
+  // SEO content is present…
+  assertContains(html, 'Organic Performance, Detailed Comparison', 'traffic table');
+  assertContains(html, 'Top Pages by Organic Clicks', 'top pages table');
+  // …and nothing AEO survives.
+  assertNotContains(html, 'Your AI Search Presence', 'aeoSection');
+  assertNotContains(html, 'AI Visibility: Headline Metrics', 'probe headline metrics');
+  assertNotContains(html, 'Month-on-Month', 'aeo MoM table');
+  assertNotContains(html, 'Competitive Landscape', 'competitive landscape');
+  assertNotContains(html, 'Keyword Performance', 'aeo keyword wins');
+  assertNotContains(html, "Next Month's Strategy", 'aeo strategy');
+  assertNotContains(html, 'Query × Engine Visibility Detail', 'per-query detail');
+  assertNotContains(html, 'How AI Engines Describe You', 'engine descriptions');
+  assertNotContains(html, 'Citation Gaps', 'citation gaps');
+  assertNotContains(html, 'Rankscale', 'rankscale link');
+  assertNotContains(html, 'Citations climbed', 'aeo MoM narrative');
+  assertNotContains(html, 'Acme leads every tracked SA rival', 'aeo competitive narrative');
+  assertNotContains(html, 'industrial shelving', 'aeo probe query');
+});
+
+await t('aeoOnly mode strips every SEO section even when SEO data is supplied', () => {
+  const html = buildMicrositeHtml({
+    micro: MICRO_WITH_AEO, client: CLIENT, monthLabel: 'April 2026', aeoOnly: true,
+    reportData: SEO_DATA,
+    aeoProbe: FULL_PROBE, aeoCompare: FULL_COMPARE, aeoRanking: FULL_RANKING
+  });
+  assertContains(html, 'AI Visibility: Headline Metrics', 'probe metrics present');
+  assertNotContains(html, 'Organic Performance, Detailed Comparison', 'no traffic table');
+  assertNotContains(html, 'Top Pages by Organic Clicks', 'no top pages table');
+  assertNotContains(html, 'shelving jhb', 'no SEO keyword');
+  assertNotContains(html, 'PPC Equivalent Value', 'no PPC section');
+});
+
+await t('labels the report type in the title, hero and footer', () => {
+  const seo = buildMicrositeHtml({ micro: MICRO_BASE, client: CLIENT, monthLabel: 'April 2026', seoOnly: true });
+  assertContains(seo, '<title>Acme Hotels, April 2026 SEO Performance Report</title>', 'seo title');
+  assertContains(seo, 'April 2026 · SEO Performance Report', 'seo hero pill');
+  assertContains(seo, 'SEO Performance Report prepared for Acme Hotels', 'seo footer');
+
+  const aeo = buildMicrositeHtml({ micro: MICRO_BASE, client: CLIENT, monthLabel: 'April 2026', aeoOnly: true });
+  assertContains(aeo, '<title>Acme Hotels, April 2026 AEO Performance Report</title>', 'aeo title');
+  assertContains(aeo, 'April 2026 · AEO Performance Report', 'aeo hero pill');
+});
+
 await t('escapes HTML in client name (no XSS)', () => {
   const html = buildMicrositeHtml({
     micro: MICRO_BASE, client: { name: '<script>alert(1)</script>' },

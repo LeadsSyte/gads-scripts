@@ -9,7 +9,7 @@ import ExternalWork from '../../components/ExternalWork.jsx';
 import { technicalPipelineStatus, monthOptions } from '../../lib/pipelineStatus.js';
 import { getAudit, syncWebceoClients, webceoDiagnose } from './webceo.js';
 import { crawlSiteForIssues, summarizeCrawlForAI } from './crawler.js';
-import { upsertClient, listAllImplementations, saveTseoTasks, loadTseoTasks, updateTseoTask, logImplementation, updateImplementation, listTseoRejections, saveTseoRejection } from '../../lib/supabase.js';
+import { upsertClient, listAllImplementations, replaceClientOpenTasks, loadTseoTasks, updateTseoTask, logImplementation, updateImplementation, listTseoRejections, saveTseoRejection } from '../../lib/supabase.js';
 import { checkOffPageTask, isOffPageTask } from '../../lib/verification.js';
 import { querySearchAnalytics } from './gsc.js';
 import { ensureToken, SCOPES, getToken, clearToken } from './googleAuth.js';
@@ -26,7 +26,12 @@ const STALE_DAYS = 30;
 // Defaults for the configurable scan depth / suggestion count (overridable
 // per-scan from the New Scan screen).
 const DEFAULT_CRAWL_DEPTH = 100;
-const DEFAULT_SUGGESTIONS = 15;
+// The month's hand-off is a shortlist, not an inventory: 10 fixes an
+// account manager can actually brief a developer on beats 25 that sit
+// untouched. The Settings slider still allows more per scan.
+const DEFAULT_SUGGESTIONS = 10;
+// Hard ceiling regardless of what the slider or the model returns.
+const MAX_TASKS_PER_CLIENT = 25;
 
 function loadTasks() {
   // One-time migration of legacy key.
@@ -121,6 +126,7 @@ RULES:
 - Every page_url must be a real, complete URL found in the audit data. NEVER use wildcards (*), generic paths, or invented URLs.
 - Every copy_paste_fix must be FINISHED — ready to paste. No [PLACEHOLDER] values. Use the actual page title, product name, or content from the audit data. For alt text, describe what the image shows based on the filename/context.
 - If the audit shows the same issue on many pages, pick the MOST IMPORTANT pages (homepage, high-traffic pages, key service/product pages) and create individual tasks for each.
+- COVER THE WHOLE SITE. The audit data spans every page we could crawl, not just the homepage. Spread the task list across as many DISTINCT page URLs as the findings support — never hand back a list where most tasks point at the same URL. Cap any single page at 2 tasks while other pages still have unaddressed issues; only stack more on one page when the rest of the site is genuinely clean.
 - For image alt text issues: include the specific image URL and the specific page where it's found, with a real descriptive alt text based on the image filename and page context.
 - For missing meta titles/descriptions: write the actual title/description for that specific page.
 - For missing schema: write the complete JSON-LD for that specific page using real data from the audit.
@@ -158,7 +164,7 @@ async function triageAudit(auditData, clientUrl, taskLimit = DEFAULT_SUGGESTIONS
 Crawler findings (each PAGE block lists specific issues found on that URL with suggested fixes):
 ${dataText.slice(0, 80000)}
 
-Create one task per MEANINGFUL issue on a SPECIFIC page, up to ${taskLimit} tasks. Use the exact URLs shown. When the crawler suggests a fix, use it as the copy_paste_fix (refine if needed). Prioritize critical issues (noindex, missing titles) first.`
+Create one task per MEANINGFUL issue on a SPECIFIC page, up to ${taskLimit} tasks. Use the exact URLs shown. When the crawler suggests a fix, use it as the copy_paste_fix (refine if needed). Prioritize critical issues (noindex, missing titles) first, and spread the list across the different page URLs above rather than stacking it on the homepage.`
     }],
     max_tokens: 16000,
     temperature: 0.3
@@ -204,7 +210,9 @@ async function verifyFix(task, client) {
     try { html = await corsFetchText(task.page_url); } catch {}
   }
   if (!html || html.length < 200) {
-    return { status: 'failed', detail: 'Could not fetch the page to verify.' };
+    // Page unreachable (proxy/network). Inconclusive — do NOT mark the task
+    // failed, which would knock a verified fix back into the pipeline.
+    return { status: 'inconclusive', detail: 'Could not fetch the page to verify (network/proxy issue). Task status left unchanged — try again or verify manually.' };
   }
 
   const verdict = await claudeComplete({
@@ -413,10 +421,14 @@ export default function TechnicalSEO({ sub }) {
     }
   }
 
-  // Persist tasks to both Supabase + localStorage on every change.
+  // Persist tasks to localStorage on every change (immediate, always works).
+  // NOTE: We deliberately do NOT bulk-write the whole task list to Supabase
+  // here. Doing so on every change let a stale in-memory snapshot overwrite
+  // teammates' assignee/status edits. Instead, each mutation persists only
+  // what it changed: status/assignee edits via updateTseoTask(), and new scan
+  // tasks via an explicit replaceClientOpenTasks() (scoped delete + upsert).
   useEffect(() => {
-    saveTasks(tasks); // localStorage (immediate, always works)
-    if (tasks.length > 0) saveTseoTasks(tasks).catch(() => {}); // Supabase (async, best-effort)
+    saveTasks(tasks); // localStorage cache
   }, [tasks]);
   useEffect(() => { saveTeam(team); }, [team]);
 
@@ -454,11 +466,15 @@ export default function TechnicalSEO({ sub }) {
       try {
         const crawl = await crawlSiteForIssues(c, {
           maxPages: crawlDepth,
+          onDiscovery: (stage) => setMsg(`Step 1/3 — ${c.name}: ${stage}`),
           onProgress: (done, total) => setMsg(`Step 1/3 — Crawling ${c.name}: ${done}/${total} pages`)
         });
         auditData = summarizeCrawlForAI(crawl);
         dataSource = 'In-house Crawler';
-        setMsg(`Step 1/3 — Crawled ${crawl.totalCrawled} pages, ${crawl.withIssues} have issues ✓`);
+        const scope = crawl.urlsDiscovered > crawl.urlsAttempted
+          ? ` (${crawl.urlsDiscovered} found via ${crawl.discoverySource}, capped at ${crawl.urlsAttempted})`
+          : crawl.discoverySource ? ` via ${crawl.discoverySource}` : '';
+        setMsg(`Step 1/3 — Crawled ${crawl.totalCrawled} pages${scope}, ${crawl.withIssues} have issues ✓`);
       } catch (e) {
         setMsg(`Step 1/3 — Crawler failed (${e.message.slice(0, 60)}), trying GSC…`);
       }
@@ -505,16 +521,20 @@ export default function TechnicalSEO({ sub }) {
       // client — not append. Otherwise tasks accumulate every run and
       // the user ends up with 100+ stale duplicates after a few scans
       // (which is exactly what was happening). Keep done/verified tasks
-      // as work history. Also cap new tasks at MAX_TASKS_PER_CLIENT to
-      // stop a noisy scan flooding the board.
-      const MAX_TASKS_PER_CLIENT = 25;
-      const cappedNew = newTasks.slice(0, MAX_TASKS_PER_CLIENT);
+      // as work history. Also cap new tasks at the number actually asked
+      // for — Claude sometimes returns more than the limit it was given,
+      // and an over-long board is the thing that stops fixes shipping.
+      const cappedNew = newTasks.slice(0, Math.min(suggestionCount, MAX_TASKS_PER_CLIENT));
       setTasks(prev => {
         const kept = prev.filter(t =>
           t.client_id !== c.id || (t.status === 'done' || t.status === 'verified')
         );
         return [...cappedNew, ...kept];
       });
+      // Persist the replacement: scoped delete of THIS client's open tasks +
+      // upsert of the fresh set. Non-destructive to other clients and to
+      // done/verified history; no blanket table rewrite (see supabase.js).
+      replaceClientOpenTasks(c.id, cappedNew).catch(() => {});
 
       const critical = cappedNew.filter(t => t.priority === 'critical').length;
       const high = cappedNew.filter(t => t.priority === 'high').length;
@@ -557,10 +577,9 @@ export default function TechnicalSEO({ sub }) {
         ...t
       })).filter(t => !rejectedKeys.has((t.client_id || '') + '|' + taskDedupKey(t)));
       // Replace open tasks for this client (keep done/verified for history)
-      // and cap at 25 per scan — same logic as the live-scan path. Prevents
-      // task accumulation across re-scans of the same client.
-      const MAX_TASKS_PER_CLIENT = 25;
-      const cappedNew = newTasks.slice(0, MAX_TASKS_PER_CLIENT);
+      // and cap at the requested count — same logic as the live-scan path.
+      // Prevents task accumulation across re-scans of the same client.
+      const cappedNew = newTasks.slice(0, Math.min(suggestionCount, MAX_TASKS_PER_CLIENT));
       const nextTasks = (() => {
         const kept = tasks.filter(t =>
           t.client_id !== c.id || (t.status === 'done' || t.status === 'verified')
@@ -568,7 +587,8 @@ export default function TechnicalSEO({ sub }) {
         return [...cappedNew, ...kept];
       })();
       setTasks(nextTasks);
-      saveTseoTasks(nextTasks).catch(() => {});
+      // Scoped, non-destructive persist (see live-scan path + supabase.js).
+      replaceClientOpenTasks(c.id, cappedNew).catch(() => {});
 
       const critical = cappedNew.filter(t => t.priority === 'critical').length;
       const high = cappedNew.filter(t => t.priority === 'high').length;
@@ -633,11 +653,12 @@ export default function TechnicalSEO({ sub }) {
       // only if we can't find the task's client in the list.
       const taskClient = clients.find(c => c.id === task.client_id) || client;
       const r = await verifyFix(task, taskClient);
-      // 'manual_required' = off-page check couldn't be automated. Don't
-      // overwrite the task status as failed — surface a message instead so
-      // the user knows to confirm manually.
-      if (r.status === 'manual_required') {
-        setMsg('Manual verification required: ' + (r.detail || 'this task happens off-page.'));
+      // 'manual_required' = off-page check couldn't be automated.
+      // 'inconclusive' = the page couldn't be fetched (transient network).
+      // In both cases, don't overwrite the task status (which would demote a
+      // verified fix) — surface a message so the user can confirm manually.
+      if (r.status === 'manual_required' || r.status === 'inconclusive') {
+        setMsg((r.status === 'inconclusive' ? '' : 'Manual verification required: ') + (r.detail || 'this task happens off-page.'));
       } else {
         updateTask(task.id, { status: r.status });
         if (r.detail) setMsg(r.detail);
@@ -984,15 +1005,15 @@ export default function TechnicalSEO({ sub }) {
               <input
                 type="number"
                 min={1}
-                max={50}
+                max={MAX_TASKS_PER_CLIENT}
                 value={suggestionCount}
-                onChange={e => setSuggestionCount(Math.max(1, Math.min(50, parseInt(e.target.value, 10) || DEFAULT_SUGGESTIONS)))}
+                onChange={e => setSuggestionCount(Math.max(1, Math.min(MAX_TASKS_PER_CLIENT, parseInt(e.target.value, 10) || DEFAULT_SUGGESTIONS)))}
                 disabled={busy}
                 style={{ width: '100%' }}
               />
             </div>
             <span className="muted" style={{ fontSize: 11 }}>
-              Crawling up to {crawlDepth} pages · generating up to {suggestionCount} prioritised fixes.
+              Crawling up to {crawlDepth} pages · shortlisting the {suggestionCount} highest-impact fixes across the whole site.
             </span>
           </div>
         </div>

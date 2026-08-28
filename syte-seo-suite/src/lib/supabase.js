@@ -79,6 +79,36 @@ export async function upsertClient(client) {
   return client;
 }
 
+// Partial update: writes ONLY the given fields on a client row and leaves
+// every other column untouched. Use this for inline / single-field edits
+// (assigning a person, toggling a service, refreshing a WebCEO mapping) so a
+// save built from a stale in-memory copy can't silently revert unrelated
+// fields. That full-row overwrite is exactly what reset the per-service
+// account-manager assignments: an action that meant to change one field
+// rewrote the whole record from a snapshot taken before the reassignment.
+// The full-object upsertClient stays for the client editor form, which
+// intentionally rewrites a freshly-loaded record (and can clear fields).
+export async function updateClientFields(id, fields) {
+  assertClientId(id, 'updateClientFields');
+  if (supabase) {
+    const payload = { ...fields, updated_at: new Date().toISOString() };
+    const { data, error } = await supabase
+      .from('syte_suite_clients')
+      .update(payload)
+      .eq('id', id)
+      .select()
+      .single();
+    if (error) throw error;
+    return data;
+  }
+  const list = JSON.parse(localStorage.getItem(LS_PREFIX + 'clients') || '[]');
+  const idx = list.findIndex(c => c.id === id);
+  if (idx < 0) return null;
+  list[idx] = { ...list[idx], ...fields };
+  localStorage.setItem(LS_PREFIX + 'clients', JSON.stringify(list));
+  return list[idx];
+}
+
 export async function deleteClient(id) {
   if (supabase) {
     const { error } = await supabase.from('syte_suite_clients').delete().eq('id', id);
@@ -559,11 +589,18 @@ function pickKeys(obj, keys) {
   return out;
 }
 
-// Upsert the generated-log row into the localStorage mirror by (client, month).
+// Upsert the generated-log row into the localStorage mirror by
+// (client, month, report_type). The SEO and AEO reports are separate
+// deliverables, so generating one must never overwrite the record of the
+// other. Rows logged before the split carry report_type 'full'.
 function upsertGeneratedLocal(payload) {
   try {
     const list = JSON.parse(localStorage.getItem(GEN_LOG_KEY) || '[]');
-    const idx = list.findIndex(r => r.client_id === payload.client_id && r.month === payload.month);
+    const idx = list.findIndex(r =>
+      r.client_id === payload.client_id &&
+      r.month === payload.month &&
+      (r.report_type || 'full') === (payload.report_type || 'full')
+    );
     if (idx >= 0) list[idx] = { ...list[idx], ...payload };
     else list.push({ id: crypto.randomUUID(), ...payload });
     localStorage.setItem(GEN_LOG_KEY, JSON.stringify(list));
@@ -572,11 +609,13 @@ function upsertGeneratedLocal(payload) {
 }
 
 async function dbUpsertGenerated(payload) {
+  // Keyed by report_type too: the SEO and AEO reports coexist for a month.
   const { data: existing } = await supabase
     .from('syte_suite_report_generated_log')
     .select('id')
     .eq('client_id', payload.client_id)
     .eq('month', payload.month)
+    .eq('report_type', payload.report_type || 'full')
     .limit(1);
   if (existing?.length > 0) {
     const { data, error } = await supabase
@@ -593,7 +632,12 @@ async function dbUpsertGenerated(payload) {
 }
 
 export async function logReportGenerated(row) {
-  const payload = { ...row, generated_at: row.generated_at || new Date().toISOString() };
+  const payload = {
+    ...row,
+    // Rows are keyed by report type; default keeps pre-split callers working.
+    report_type: row.report_type || 'full',
+    generated_at: row.generated_at || new Date().toISOString()
+  };
   // Always mirror to localStorage FIRST so the just-generated status survives
   // a refresh even if every DB write below fails — e.g. the content columns
   // were never migrated in, so the full insert errors with "column … does not
@@ -647,15 +691,22 @@ export async function listGeneratedReports(clientId) {
 // Fetch the full saved content (email body + microsite JSON + QA + probe +
 // reportData snapshot) for a single client/month so the report can be
 // re-rendered without regenerating it. Returns null when nothing is saved.
-export async function getGeneratedReport(clientId, month) {
+//
+// A month can now hold both an SEO and an AEO report. Pass reportType to
+// pick one; without it the most recently generated of the two is returned,
+// which is the one the operator was last working on.
+export async function getGeneratedReport(clientId, month, reportType) {
   assertClientId(clientId, 'getGeneratedReport');
   if (supabase) {
     try {
-      const { data, error } = await supabase
+      let q = supabase
         .from('syte_suite_report_generated_log')
         .select('*')
         .eq('client_id', clientId)
-        .eq('month', month)
+        .eq('month', month);
+      if (reportType) q = q.eq('report_type', reportType);
+      const { data, error } = await q
+        .order('generated_at', { ascending: false })
         .limit(1)
         .maybeSingle();
       if (error) throw error;
@@ -668,7 +719,11 @@ export async function getGeneratedReport(clientId, month) {
     }
   }
   const list = JSON.parse(localStorage.getItem(GEN_LOG_KEY) || '[]');
-  return list.find(r => r.client_id === clientId && r.month === month) || null;
+  const matches = list
+    .filter(r => r.client_id === clientId && r.month === month)
+    .filter(r => !reportType || (r.report_type || 'full') === reportType)
+    .sort((a, b) => String(b.generated_at || '').localeCompare(String(a.generated_at || '')));
+  return matches[0] || null;
 }
 
 // ---------------------------------------------------------------------------
@@ -824,38 +879,50 @@ export async function deleteExternalWork(id) {
 
 const TSEO_KEY = LS_PREFIX + 'tseo_tasks';
 
+// Build the Supabase row shape from a task object.
+function tseoTaskRow(t) {
+  return {
+    id: t.id,
+    client_id: t.client_id,
+    client_name: t.client_name,
+    title: t.title,
+    description: t.description,
+    priority: t.priority,
+    page_url: t.page_url,
+    fix_type: t.fix_type,
+    copy_paste_fix: t.copy_paste_fix,
+    impact: t.impact,
+    effort: t.effort,
+    status: t.status || 'open',
+    assignee: t.assignee,
+    data_source: t.data_source,
+    impl_id: t.impl_id || null,
+    created_at: t.created_at || new Date().toISOString()
+  };
+}
+
+// Non-destructive upsert of task rows, keyed on id. Never deletes anything —
+// updates rows that exist, inserts the rest.
+async function upsertTseoRows(tasks) {
+  if (!supabase || !tasks || tasks.length === 0) return;
+  const { error } = await supabase
+    .from('syte_suite_tseo_tasks')
+    .upsert(tasks.map(tseoTaskRow), { onConflict: 'id' });
+  if (error) console.error('saveTseoTasks error:', error);
+}
+
 export async function saveTseoTasks(tasks) {
-  // Bulk upsert: clear old tasks for clients in this batch, insert new ones.
-  if (supabase && tasks.length > 0) {
-    // Get unique client IDs in this batch
-    const clientIds = [...new Set(tasks.map(t => t.client_id).filter(Boolean))];
-    for (const cid of clientIds) {
-      const clientTasks = tasks.filter(t => t.client_id === cid);
-      // Delete existing tasks for this client, then insert fresh
-      await supabase.from('syte_suite_tseo_tasks').delete().eq('client_id', cid);
-      const { error } = await supabase.from('syte_suite_tseo_tasks').insert(
-        clientTasks.map(t => ({
-          id: t.id,
-          client_id: t.client_id,
-          client_name: t.client_name,
-          title: t.title,
-          description: t.description,
-          priority: t.priority,
-          page_url: t.page_url,
-          fix_type: t.fix_type,
-          copy_paste_fix: t.copy_paste_fix,
-          impact: t.impact,
-          effort: t.effort,
-          status: t.status || 'open',
-          assignee: t.assignee,
-          data_source: t.data_source,
-          impl_id: t.impl_id || null,
-          created_at: t.created_at || new Date().toISOString()
-        }))
-      );
-      if (error) console.error('saveTseoTasks error:', error);
-    }
-  }
+  // Non-destructive upsert keyed on the task id. Each task row carries a
+  // stable uuid, so this updates rows that already exist and inserts new
+  // ones WITHOUT deleting anything.
+  //
+  // The previous implementation deleted every row for a client and
+  // re-inserted from the caller's in-memory snapshot. Because this ran on
+  // every task change and the app is multi-user, one browser's stale snapshot
+  // could wipe assignees/statuses that teammates had set — the "all assigned
+  // tasks were reset" bug. Upsert never removes rows another user added, and
+  // callers now pass only the rows they actually changed (see TechnicalSEO).
+  await upsertTseoRows(tasks);
   // Always keep localStorage in sync as fallback. The cache can blow past
   // the per-origin quota when tasks carry large copy_paste_fix payloads
   // (full JSON-LD, meta descriptions, etc.); drop the cache rather than
@@ -867,6 +934,20 @@ export async function saveTseoTasks(tasks) {
     try { localStorage.removeItem(TSEO_KEY); } catch {}
     try { localStorage.setItem(TSEO_KEY, json); } catch {}
   }
+}
+
+// Re-scan replace: swap ONE client's OPEN tasks for a fresh set, leaving
+// done/verified history and every OTHER client's tasks untouched. This is the
+// only destructive task write, and it is scoped + deliberate (a user-triggered
+// scan) — unlike the old blanket delete+insert that ran on every state change
+// and reset the whole team's assignments. localStorage is refreshed by the
+// caller's full-state persist effect, so we don't rewrite it here.
+export async function replaceClientOpenTasks(clientId, newTasks) {
+  if (supabase && clientId) {
+    await supabase.from('syte_suite_tseo_tasks')
+      .delete().eq('client_id', clientId).eq('status', 'open');
+  }
+  await upsertTseoRows(newTasks);
 }
 
 export async function loadTseoTasks() {

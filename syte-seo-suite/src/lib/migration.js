@@ -32,7 +32,8 @@ function mapLegacy(rec, source) {
     org_name: rec.org_name || rec.orgName || rec.organization || rec.name || '',
     author: rec.author || rec.authorName || '',
     author_creds: rec.author_creds || rec.authorCreds || rec.credentials || '',
-    pages_per_month: rec.pages_per_month || rec.pagesPerMonth || 15
+    pages_per_month: rec.pages_per_month || rec.pagesPerMonth || 15,
+    aeo_items_per_month: rec.aeo_items_per_month || rec.aeoItemsPerMonth || 10
   };
   return out;
 }

@@ -2,7 +2,7 @@
 // WebCEO; if it stops detecting issues correctly the entire Technical
 // SEO module silently produces zero tasks. Uses linkedom for DOMParser
 // (browser API not available in Node) and mocks fetch + corsFetchText
-// + fetchSitemapUrls so the test exercises the real crawler logic.
+// + discoverSiteUrls so the test exercises the real crawler logic.
 //
 // Run: npm test  (from syte-seo-suite/)
 
@@ -26,13 +26,19 @@ globalThis.DOMParser = FakeDOMParser;
 
 // Patch the source: replace the two external imports with global stubs.
 globalThis.__corsFetchText = async () => { throw new Error('corsFetchText not configured'); };
-globalThis.__fetchSitemapUrls = async () => { throw new Error('fetchSitemapUrls not configured'); };
+globalThis.__discoverSiteUrls = async () => { throw new Error('discoverSiteUrls not configured'); };
 
 const PATCHED = SRC
   .replace("import { corsFetchText } from '../../lib/corsProxy.js';",
            "const corsFetchText = (...a) => globalThis.__corsFetchText(...a);")
-  .replace("import { fetchSitemapUrls } from '../aeo/sitemap.js';",
-           "const fetchSitemapUrls = (...a) => globalThis.__fetchSitemapUrls(...a);");
+  .replace("import { discoverSiteUrls } from '../aeo/sitemap.js';",
+           "const discoverSiteUrls = (...a) => globalThis.__discoverSiteUrls(...a);");
+
+// Discovery is exercised in sitemap.test.mjs; here we only need it to hand
+// the crawler a URL list, so express each case as the list it should return.
+function stubUrls(urls, source = 'test') {
+  globalThis.__discoverSiteUrls = async () => ({ urls, source, total: urls.length });
+}
 
 const tmp = path.join(os.tmpdir(), 'crawler-' + Date.now() + '.mjs');
 fs.writeFileSync(tmp, PATCHED);
@@ -54,7 +60,7 @@ async function t(name, fn) {
   fetchCalls = [];
   fetchHandler = () => { throw new Error('fetch not configured for ' + name); };
   globalThis.__corsFetchText = async () => { throw new Error('corsFetchText not configured for ' + name); };
-  globalThis.__fetchSitemapUrls = async () => { throw new Error('fetchSitemapUrls not configured for ' + name); };
+  globalThis.__discoverSiteUrls = async () => { throw new Error('discoverSiteUrls not configured for ' + name); };
   try { await fn(); console.log('PASS', name); pass++; }
   catch (e) { console.log('FAIL', name, '->', e.message); fail++; }
 }
@@ -99,7 +105,7 @@ await t('summarizeCrawlForAI: skips pages with zero issues', () => {
 const FILLER = '<p>' + 'lorem ipsum dolor sit amet consectetur adipiscing elit '.repeat(10) + '</p>';
 
 await t('crawlSiteForIssues: walks sitemap URLs and detects missing meta', async () => {
-  globalThis.__fetchSitemapUrls = async () => ['https://example.test/about', 'https://example.test/contact'];
+  stubUrls(['https://example.test/about', 'https://example.test/contact']);
   fetchHandler = (url, init) => {
     const target = JSON.parse(init.body).url;
     const html = target.endsWith('/about')
@@ -115,7 +121,7 @@ await t('crawlSiteForIssues: walks sitemap URLs and detects missing meta', async
 });
 
 await t('crawlSiteForIssues: throws when no urls discovered', async () => {
-  globalThis.__fetchSitemapUrls = async () => [];
+  stubUrls([], 'none');
   globalThis.__corsFetchText = async () => { throw new Error('not reachable'); };
   fetchHandler = (url, init) => jsonRes({ html: '', source: 'none' });
   let caught;
@@ -127,27 +133,73 @@ await t('crawlSiteForIssues: throws when no urls discovered', async () => {
   }
 });
 
-await t('crawlSiteForIssues: discovers links from homepage when sitemap empty', async () => {
-  globalThis.__fetchSitemapUrls = async () => [];
-  fetchHandler = (url, init) => {
-    const target = JSON.parse(init.body).url;
-    if (target === 'https://example.test/') {
-      // Homepage HTML must clear the 500-char threshold for link discovery.
-      return jsonRes({
-        status: 200,
-        source: 'jina-reader',
-        html: '<html><body><a href="/about">About</a> <a href="/services">Services</a> <a href="https://other.test/">External</a>' + FILLER + FILLER + '</body></html>'
-      });
-    }
-    return jsonRes({ status: 200, html: '<html><head><title>Page</title></head><body><h1>Page</h1>' + FILLER + '</body></html>', source: 'jina-reader' });
-  };
+// The scan must audit the whole site, not the first page discovery hands
+// back — this is the regression that produced homepage-only fix lists.
+await t('crawlSiteForIssues: crawls every discovered page, not just the first', async () => {
+  const site = ['https://example.test/', 'https://example.test/about', 'https://example.test/services',
+                'https://example.test/pricing', 'https://example.test/contact', 'https://example.test/blog/post-1'];
+  stubUrls(site, 'auto-discovered sitemap');
+  fetchHandler = (url, init) => jsonRes({
+    status: 200, source: 'direct',
+    html: '<html><head><title>Page</title></head><body><h1>Page</h1>' + FILLER + '</body></html>'
+  });
   const result = await mod.crawlSiteForIssues({ url: 'https://example.test/' });
-  // Homepage + /about + /services — all internal, external link skipped.
-  if (result.totalCrawled < 2) throw new Error('expected ≥2 pages crawled, got ' + result.totalCrawled);
-  // External should NOT have been crawled.
-  for (const p of result.pages) {
-    if (p.url.includes('other.test')) throw new Error('external link should not have been crawled');
-  }
+  assertEq(result.totalCrawled, site.length, 'totalCrawled');
+  for (const u of site) assertContains(result.pages, p => p.url === u, 'crawled ' + u);
+  assertEq(result.discoverySource, 'auto-discovered sitemap', 'discoverySource surfaced');
+});
+
+await t('crawlSiteForIssues: maxPages caps the crawl but reports the true site size', async () => {
+  const site = Array.from({ length: 12 }, (_, i) => 'https://example.test/page-' + i);
+  stubUrls(site, 'configured sitemap');
+  fetchHandler = () => jsonRes({
+    status: 200, source: 'direct',
+    html: '<html><head><title>Page</title></head><body><h1>Page</h1>' + FILLER + '</body></html>'
+  });
+  const result = await mod.crawlSiteForIssues({ url: 'https://example.test/' }, { maxPages: 5 });
+  assertEq(result.urlsAttempted, 5, 'urlsAttempted');
+  assertEq(result.urlsDiscovered, 12, 'urlsDiscovered');
+});
+
+// ============================================================================
+// summarizeCrawlForAI — breadth over depth under the character budget
+// ============================================================================
+await t('summarizeCrawlForAI: every page gets a line before any page gets two', () => {
+  const pages = Array.from({ length: 40 }, (_, i) => ({
+    url: 'https://x.test/page-' + i,
+    title: 'Page ' + i,
+    issueCount: 4,
+    issues: [
+      { type: 'meta_title', severity: 'high', detail: 'x'.repeat(120), fix: 'y'.repeat(120) },
+      { type: 'h1', severity: 'medium', detail: 'x'.repeat(120), fix: 'y'.repeat(120) },
+      { type: 'image_alt', severity: 'low', detail: 'x'.repeat(120), fix: 'y'.repeat(120) },
+      { type: 'open_graph', severity: 'low', detail: 'x'.repeat(120), fix: 'y'.repeat(120) }
+    ]
+  }));
+  // A budget too small for everything — breadth must win over depth.
+  const summary = mod.summarizeCrawlForAI(
+    { totalCrawled: 40, withIssues: 40, withErrors: 0, pages },
+    { maxChars: 14000 }
+  );
+  const listed = pages.filter(p => summary.includes('PAGE: ' + p.url)).length;
+  if (listed !== 40) throw new Error('expected all 40 pages represented, got ' + listed);
+  if (summary.length > 14000) throw new Error('budget exceeded: ' + summary.length);
+  if (!/Trimmed to fit/.test(summary)) throw new Error('trimming must be disclosed');
+});
+
+await t('summarizeCrawlForAI: worst issue on a page is the one that survives', () => {
+  const summary = mod.summarizeCrawlForAI({
+    totalCrawled: 1, withIssues: 1, withErrors: 0,
+    pages: [{
+      url: 'https://x.test/a', title: 'A', issueCount: 2,
+      issues: [
+        { type: 'open_graph', severity: 'low', detail: 'low one', fix: null },
+        { type: 'robots', severity: 'critical', detail: 'noindex', fix: null }
+      ]
+    }]
+  }, { maxIssuesPerPage: 1 });
+  if (!summary.includes('noindex')) throw new Error('critical issue dropped');
+  if (summary.includes('low one')) throw new Error('low issue kept over critical');
 });
 
 // ============================================================================
@@ -156,7 +208,7 @@ await t('crawlSiteForIssues: discovers links from homepage when sitemap empty', 
 async function crawlOne(html) {
   // Pad to clear the crawler's 200-char minimum.
   const padded = html.includes('</body>') ? html.replace('</body>', FILLER + '</body>') : html + FILLER;
-  globalThis.__fetchSitemapUrls = async () => ['https://x.test/page'];
+  stubUrls(['https://x.test/page']);
   fetchHandler = () => jsonRes({ status: 200, html: padded, source: 'test' });
   const r = await mod.crawlSiteForIssues({ url: 'https://x.test/', sitemap_url: 'https://x.test/sitemap.xml' });
   return r.pages[0];
@@ -188,7 +240,7 @@ await t('skips a soft 404 (200 status, content says "not found")', async () => {
 });
 
 await t('skips real 404 by HTTP status', async () => {
-  globalThis.__fetchSitemapUrls = async () => ['https://x.test/dead'];
+  stubUrls(['https://x.test/dead']);
   fetchHandler = () => jsonRes({ status: 404, html: '<html><body>x</body></html>'.repeat(50), source: 'test' });
   const r = await mod.crawlSiteForIssues({ url: 'https://x.test/', sitemap_url: 'https://x.test/sitemap.xml' });
   if (!r.pages[0].skipped) throw new Error('404 page should be skipped');

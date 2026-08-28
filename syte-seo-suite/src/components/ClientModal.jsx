@@ -44,7 +44,8 @@ const BASE_FIELDS = [
   ['internal_links',    'Internal Links (one per line)', 'textarea'],
   ['sitemap_url',       'Sitemap URL',        'input'],
   ['wceo_project_id',   'WebCEO Project ID',  'input'],
-  ['pages_per_month',   'Pages / month',      'number']
+  ['pages_per_month',   'Pages / month',      'number'],
+  ['aeo_items_per_month', 'AEO items / month (default 10)', 'number']
 ];
 
 const REPORTING_FIELDS = [
@@ -111,6 +112,7 @@ function Field({ k, label, type, value, onChange }) {
 export default function ClientModal({ initial, onClose }) {
   const [f, setF] = useState({
     pages_per_month: 15,
+    aeo_items_per_month: 10,
     does_technical: true,
     does_content: true,
     does_aeo: true,

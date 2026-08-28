@@ -91,7 +91,7 @@ const PATCHED = VERIF_SRC
   .replace("import { claudeComplete } from './anthropic.js';",
            "const claudeComplete = (...a) => globalThis.__mockClaude(...a);")
   .replace("import { updateImplementation } from './supabase.js';",
-           "const updateImplementation = async (id, patch) => { globalThis.__updates.push({ id, patch }); return { id, ...patch }; };")
+           "const updateImplementation = async (id, patch) => { if (globalThis.__updateThrows) throw new Error(globalThis.__updateThrows); globalThis.__updates.push({ id, patch }); return { id, ...patch }; };")
   .replace("import { listSites } from '../modules/technical/gsc.js';",
            "const listSites = () => globalThis.__mockListSites();");
 
@@ -105,6 +105,7 @@ fs.unlinkSync(tmpFile);
 let pass = 0, fail = 0;
 async function t(name, fn) {
   globalThis.__updates = [];
+  globalThis.__updateThrows = '';
   try { await fn(); console.log('PASS', name); pass++; }
   catch (e) { console.log('FAIL', name, '->', e.message); fail++; }
 }
@@ -121,6 +122,10 @@ await t('on-page: head-only HTML from page-proxy is rejected (Krost case)', asyn
   // Simulates Jina returning <head> + inline CSS only — what happens on
   // some Elementor pages. Page-proxy used to accept this and feed it to
   // Claude, producing the misleading "body content not included" error.
+  // hasUsefulBody now rejects it, so every fetch method fails. That is an
+  // upstream-proxy problem, NOT evidence the change is absent — so it must
+  // resolve to 'inconclusive' (which never demotes a verified record),
+  // never 'failed'.
   const headOnly = '<!DOCTYPE html><html><head><title>Krost</title>' +
     '<style>body{margin:0}.elementor-1234{padding:20px}'.padEnd(900, ' /* css */') + '</style></head><body></body></html>';
   let proxyCalls = 0, corsCalls = 0;
@@ -132,7 +137,7 @@ await t('on-page: head-only HTML from page-proxy is rejected (Krost case)', asyn
       page_url: 'https://krostshelving.com/' },
     { url: 'https://krostshelving.com/' }
   );
-  assertEq(r.status, 'failed');
+  assertEq(r.status, 'inconclusive');
   assertMatch(r.detail, /Could not fetch/);
   if (proxyCalls < 1) throw new Error('page-proxy should have been called');
   if (corsCalls < 1) throw new Error('should have fallen through to cors after head-only response');
@@ -181,18 +186,37 @@ await t('on-page: HTML verification — Claude says not implemented', async () =
   assertMatch(r.detail, /Meta description not present/);
 });
 
-await t('on-page: page fetch fails everywhere', async () => {
+await t('on-page: page fetch fails everywhere -> inconclusive (not failed)', async () => {
   mockResponses = new Map([[/page-proxy/, () => jsonRes({ error: 'fail' }, 502)]]);
   globalThis.__mockCorsFetchText = async () => { throw new Error('cors blocked'); };
   const r = await verif.verifyImplementation(
     { id: '3', change_type: 'article', title: 'Article', page_url: 'https://example.com/blog/x' },
     { url: 'https://example.com' }
   );
-  assertEq(r.status, 'failed');
+  // A "Failed to fetch" is inconclusive — it must NOT be recorded as failed.
+  assertEq(r.status, 'inconclusive');
   assertMatch(r.detail, /Could not fetch/);
+  assertEq(globalThis.__updates[0].patch.verification_status, 'inconclusive');
 });
 
-await t('on-page: Claude returns junk JSON', async () => {
+await t('on-page: fetch fails on ALREADY-VERIFIED record -> stays verified', async () => {
+  // This is the core regression: a transient fetch failure during a re-verify
+  // must never knock a verified fix back out of "Fixes Verified on Site".
+  mockResponses = new Map([[/page-proxy/, () => jsonRes({ error: 'fail' }, 502)]]);
+  globalThis.__mockCorsFetchText = async () => { throw new Error('cors blocked'); };
+  const r = await verif.verifyImplementation(
+    { id: '3v', change_type: 'article', title: 'Article', page_url: 'https://example.com/blog/x',
+      verification_status: 'verified' },
+    { url: 'https://example.com' }
+  );
+  assertEq(r.status, 'verified');
+  // The verification_status must NOT be overwritten — only the detail note.
+  assertEq(globalThis.__updates.length, 1);
+  assertEq(globalThis.__updates[0].patch.verification_status, undefined);
+  assertMatch(globalThis.__updates[0].patch.verification_detail, /Kept the previous/);
+});
+
+await t('on-page: Claude returns junk JSON -> inconclusive (not failed)', async () => {
   const html = '<html><head><title>Page</title></head><body><h1>Heading One</h1>' +
     '<p>Some real body content goes here so the useful-body check passes — at least sixty characters of visible text is required.</p></body></html>';
   mockResponses = new Map([[/page-proxy/, () => jsonRes({ status: 200, html, source: 'direct' })]]);
@@ -201,7 +225,8 @@ await t('on-page: Claude returns junk JSON', async () => {
     { id: '4', change_type: 'h1', title: 'fix h1', page_url: 'https://example.com/' },
     { url: 'https://example.com' }
   );
-  assertEq(r.status, 'failed');
+  // Verifier malfunction is inconclusive, not proof the work is absent.
+  assertEq(r.status, 'inconclusive');
   assertMatch(r.detail, /Could not parse/);
 });
 
@@ -454,6 +479,130 @@ await t('checkOffPageTask DOES NOT call updateImplementation', async () => {
     { url: 'https://x.com/', gsc_property: 'sc-domain:fleetwoodonsea.co.za' }
   );
   if (globalThis.__updates.length !== 0) throw new Error('checkOffPageTask should not persist');
+});
+
+// =================== SENT TO DEVELOPER ===================
+// Handing a change to the client's developer and attaching the email is a
+// completed, evidenced deliverable — it must land as 'verified', with the
+// screenshot kept as proof and a marker so a later re-check can tell it
+// apart from work verified as live on the page.
+
+const HANDOVER_IMPL = { id: 'h1', change_type: 'meta', title: 'Meta description', page_url: 'https://x.com/about' };
+const FAKE_IMAGE = 'a'.repeat(400);
+
+await t('verifySentToDeveloper: confirmed email screenshot marks the record VERIFIED', async () => {
+  globalThis.__mockClaude = async () =>
+    '{"is_email": true, "recipient": "dev@client.com", "subject": "SEO changes", "relates": true, "evidence": "Gmail sent message."}';
+  const r = await verif.verifySentToDeveloper(HANDOVER_IMPL, { imageBase64: FAKE_IMAGE, sentBy: 'Mike' });
+  assertEq(r.status, 'verified', 'returned status');
+  assertEq(globalThis.__updates.length, 1, 'one persist');
+  assertEq(globalThis.__updates[0].patch.verification_status, 'verified', 'persisted status');
+  if (!verif.isDeveloperHandover(globalThis.__updates[0].patch.verification_detail)) {
+    throw new Error('handover marker missing from stored detail');
+  }
+  if (!globalThis.__updates[0].patch.verification_detail.includes('[SCREENSHOT]')) {
+    throw new Error('email screenshot not kept as proof');
+  }
+});
+
+await t('verifySentToDeveloper: a rejected screenshot persists NOTHING', async () => {
+  globalThis.__mockClaude = async () =>
+    '{"is_email": false, "recipient": "", "subject": "", "relates": false, "evidence": "This is a photo of a cat."}';
+  const r = await verif.verifySentToDeveloper(HANDOVER_IMPL, { imageBase64: FAKE_IMAGE });
+  assertEq(r.status, 'rejected', 'returned status');
+  assertEq(globalThis.__updates.length, 0, 'nothing persisted');
+});
+
+await t('verifySentToDeveloper: an empty screenshot is rejected before any API call', async () => {
+  const r = await verif.verifySentToDeveloper(HANDOVER_IMPL, { imageBase64: '' });
+  assertEq(r.status, 'rejected', 'returned status');
+  assertEq(globalThis.__updates.length, 0, 'nothing persisted');
+});
+
+await t('markSentToDeveloper: manual override WITH a screenshot verifies', async () => {
+  const r = await verif.markSentToDeveloper(HANDOVER_IMPL, 'Mike', { imageBase64: FAKE_IMAGE });
+  assertEq(r.status, 'verified', 'returned status');
+  assertEq(globalThis.__updates[0].patch.verification_status, 'verified', 'persisted status');
+  if (!verif.isDeveloperHandover(globalThis.__updates[0].patch.verification_detail)) {
+    throw new Error('handover marker missing');
+  }
+});
+
+await t('markSentToDeveloper: no screenshot means no proof, so it stays sent_to_developer', async () => {
+  const r = await verif.markSentToDeveloper(HANDOVER_IMPL, 'Mike');
+  assertEq(r.status, 'sent_to_developer', 'returned status');
+  assertEq(globalThis.__updates[0].patch.verification_status, 'sent_to_developer', 'persisted status');
+  if (verif.isDeveloperHandover(globalThis.__updates[0].patch.verification_detail)) {
+    throw new Error('unproven handover should not carry the verified-handover marker');
+  }
+});
+
+// An attached email is the evidence. A checker that can't run — API down, no
+// key, a response we can't parse, a format Vision doesn't read — says nothing
+// about the email the user just attached, so it must never block the handover.
+// Leaving these as 'rejected' is what made "Sent to Developer" ask for an
+// email and then not mark the record verified once one was attached.
+
+await t('verifySentToDeveloper: an API failure still verifies the attached email', async () => {
+  globalThis.__mockClaude = async () => { throw new Error('api down'); };
+  const r = await verif.verifySentToDeveloper(HANDOVER_IMPL, { imageBase64: FAKE_IMAGE, sentBy: 'Mike' });
+  assertEq(r.status, 'verified', 'returned status');
+  assertEq(globalThis.__updates.length, 1, 'one persist');
+  assertEq(globalThis.__updates[0].patch.verification_status, 'verified', 'persisted status');
+  if (!globalThis.__updates[0].patch.verification_detail.includes('[SCREENSHOT]')) {
+    throw new Error('email screenshot not kept as proof');
+  }
+  assertMatch(globalThis.__updates[0].patch.verification_detail, /check unavailable/);
+});
+
+await t('verifySentToDeveloper: an unparseable check response still verifies', async () => {
+  globalThis.__mockClaude = async () => 'I could not read that image, sorry.';
+  const r = await verif.verifySentToDeveloper(HANDOVER_IMPL, { imageBase64: FAKE_IMAGE });
+  assertEq(r.status, 'verified', 'returned status');
+  assertEq(globalThis.__updates[0].patch.verification_status, 'verified', 'persisted status');
+});
+
+await t('verifySentToDeveloper: a format Vision cannot read skips the check and still verifies', async () => {
+  let called = false;
+  globalThis.__mockClaude = async () => { called = true; return '{}'; };
+  const r = await verif.verifySentToDeveloper(HANDOVER_IMPL, { imageBase64: FAKE_IMAGE, mediaType: 'image/heic' });
+  assertEq(r.status, 'verified', 'returned status');
+  if (called) throw new Error('should not send an unsupported media type to the checker');
+  assertMatch(globalThis.__updates[0].patch.verification_detail, /image\/heic/);
+});
+
+await t('verifySentToDeveloper: a failed save reports the save, not the check', async () => {
+  globalThis.__mockClaude = async () =>
+    '{"is_email": true, "recipient": "dev@client.com", "subject": "SEO changes", "relates": true, "evidence": "Gmail sent message."}';
+  globalThis.__updateThrows = 'row too large';
+  const r = await verif.verifySentToDeveloper(HANDOVER_IMPL, { imageBase64: FAKE_IMAGE });
+  assertEq(r.status, 'error', 'returned status');
+  assertMatch(r.detail, /saving it failed/);
+  globalThis.__updateThrows = '';
+});
+
+await t('displayVerificationDetail: the internal marker never reaches the UI', async () => {
+  globalThis.__mockClaude = async () =>
+    '{"is_email": true, "recipient": "dev@client.com", "subject": "SEO changes", "relates": true, "evidence": "Sent message."}';
+  const r = await verif.verifySentToDeveloper(HANDOVER_IMPL, { imageBase64: FAKE_IMAGE });
+  const shown = verif.displayVerificationDetail(r.detail);
+  if (shown.includes('[HANDOVER]')) throw new Error('marker leaked into displayed text');
+  if (!shown.includes('Sent to developer')) throw new Error('human-readable detail lost');
+});
+
+await t('an already-verified handover is never demoted by an inconclusive re-check', async () => {
+  globalThis.__mockCorsFetchText = async () => { throw new Error('cors blocked'); };
+  globalThis.__mockClaude = async () => { throw new Error('api down'); };
+  const r = await verif.verifyImplementation(
+    { id: 'h2', change_type: 'meta', title: 'Meta', page_url: 'https://x.com/about', verification_status: 'verified' },
+    { url: 'https://x.com/' }
+  );
+  assertEq(r.status, 'verified', 'kept prior status');
+  for (const u of globalThis.__updates) {
+    if (u.patch.verification_status && u.patch.verification_status !== 'verified') {
+      throw new Error('inconclusive re-check downgraded a verified record to ' + u.patch.verification_status);
+    }
+  }
 });
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');

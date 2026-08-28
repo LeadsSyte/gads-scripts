@@ -1,30 +1,47 @@
 import React, { useState } from 'react';
 import { useClients } from '../store/useClients.js';
 import { logImplementation, updateImplementation } from '../lib/supabase.js';
-import { verifyImplementation, verifyImplementationFromHtml, verifyImplementationVisually, isOffPageTask, verifySentToDeveloper, markSentToDeveloper } from '../lib/verification.js';
+import { verifyImplementation, verifyImplementationFromHtml, verifyImplementationVisually, isOffPageTask, verifySentToDeveloper, markSentToDeveloper, displayVerificationDetail } from '../lib/verification.js';
 
-// Downscale an image file to a JPEG base64 string (no data: prefix).
+// Read an image file for the email-proof flow. Returns { base64, mediaType }.
 // Email screenshots straight off a retina display can be several MB —
 // resizing keeps the Vision call cheap and the stored evidence small.
-async function fileToJpegBase64(file, maxWidth = 1200, quality = 0.8) {
+//
+// If the browser can't decode the file (HEIC straight off an iPhone, or any
+// format <img> won't render) we fall back to the file's own bytes instead of
+// throwing. The attached email IS the proof of the handover, so losing it to
+// a canvas failure — and with it the verification — is exactly what must not
+// happen here.
+async function fileToImagePayload(file, maxWidth = 1200, quality = 0.8) {
   const dataUrl = await new Promise((resolve, reject) => {
     const r = new FileReader();
     r.onload = () => resolve(r.result);
     r.onerror = () => reject(new Error('Could not read the image file.'));
     r.readAsDataURL(file);
   });
-  const img = await new Promise((resolve, reject) => {
-    const i = new Image();
-    i.onload = () => resolve(i);
-    i.onerror = () => reject(new Error('The file is not a readable image.'));
-    i.src = dataUrl;
-  });
-  const scale = Math.min(1, maxWidth / img.width);
-  const canvas = document.createElement('canvas');
-  canvas.width = Math.round(img.width * scale);
-  canvas.height = Math.round(img.height * scale);
-  canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
-  return canvas.toDataURL('image/jpeg', quality).split(',')[1];
+  const raw = {
+    base64: String(dataUrl).split(',')[1] || '',
+    mediaType: file.type || 'application/octet-stream'
+  };
+  try {
+    const img = await new Promise((resolve, reject) => {
+      const i = new Image();
+      i.onload = () => resolve(i);
+      i.onerror = () => reject(new Error('undecodable image'));
+      i.src = dataUrl;
+    });
+    const scale = Math.min(1, maxWidth / img.width);
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(img.width * scale);
+    canvas.height = Math.round(img.height * scale);
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#fff'; // flatten transparency
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    return { base64: canvas.toDataURL('image/jpeg', quality).split(',')[1], mediaType: 'image/jpeg' };
+  } catch {
+    return raw;
+  }
 }
 
 // Reusable "Mark as Implemented" button. Place it next to any generated
@@ -113,14 +130,26 @@ export default function MarkImplementedButton({
     if (!result?.impl?.id || !file) return;
     setSentBusy(true); setSentMsg(''); setErr('');
     try {
-      const imageBase64 = await fileToJpegBase64(file);
-      const r = await verifySentToDeveloper(result.impl, { imageBase64, sentBy });
-      if (r.status === 'sent_to_developer') {
+      const { base64, mediaType } = await fileToImagePayload(file);
+      const r = await verifySentToDeveloper(result.impl, { imageBase64: base64, mediaType, sentBy });
+      // Attaching the email is what verifies the handover, so 'verified' is
+      // the only outcome that closes the panel. 'rejected' (Claude read the
+      // image and it isn't an email) and 'error' (the save failed) both keep
+      // it open, showing the real reason plus the manual override — the old
+      // code treated 'error' as success and closed on a row that never
+      // actually changed.
+      if (r.status === 'verified') {
         setResult({ ...result, status: r.status, detail: r.detail });
         setShowSentPanel(false);
         setSentFile(null);
+        // Tell the parent to reload. Without this the row stayed put in
+        // whatever list it came from — the record WAS updated in Supabase,
+        // but nothing on screen moved, so attaching the email looked like it
+        // had done nothing at all. onVerified also flips a Technical SEO
+        // task's own status, which is correct for a verified handover.
+        onVerified?.();
       } else {
-        setSentMsg(r.detail); // rejected — keep the panel open for retry / manual override
+        setSentMsg(r.detail); // keep the panel open for retry / manual override
       }
     } catch (e) {
       setSentMsg(e.message);
@@ -133,13 +162,26 @@ export default function MarkImplementedButton({
     if (!result?.impl?.id) return;
     setSentBusy(true);
     try {
-      let imageBase64;
-      try { if (sentFile) imageBase64 = await fileToJpegBase64(sentFile); } catch {}
-      const r = await markSentToDeveloper(result.impl, sentBy, { imageBase64 });
+      // Carry the attached file through so the override verifies. Reading it
+      // can only fail if the file itself is unreadable — a format the canvas
+      // can't decode still comes back as raw bytes, which is what kept an
+      // attached email from verifying before.
+      let imageBase64, mediaType;
+      if (sentFile) {
+        try {
+          const payload = await fileToImagePayload(sentFile);
+          imageBase64 = payload.base64;
+          mediaType = payload.mediaType;
+        } catch {}
+      }
+      const r = await markSentToDeveloper(result.impl, sentBy, { imageBase64, mediaType });
       setResult({ ...result, status: r.status, detail: r.detail });
       setShowSentPanel(false);
       setSentFile(null);
       setSentMsg('');
+      // Only an override that carried a screenshot verifies the record; a
+      // bare confirmation stays 'sent to developer' and must not flip a task.
+      if (r.status === 'verified') onVerified?.();
     } catch (e) {
       setSentMsg(e.message);
     } finally {
@@ -194,7 +236,9 @@ export default function MarkImplementedButton({
         ctx.drawImage(img, 0, 0, width, height);
         resolve(canvas.toDataURL('image/jpeg', 0.85));
       };
-      img.onerror = reject;
+      // Undecodable (HEIC etc.) — keep the original bytes rather than
+      // failing the upload outright.
+      img.onerror = () => resolve(dataUrl);
       img.src = dataUrl;
     });
   }
@@ -320,13 +364,14 @@ export default function MarkImplementedButton({
   const statusColor =
     result?.status === 'verified' ? 'var(--green)' :
     result?.status === 'sent_to_developer' ? 'var(--blue)' :
-    result?.status === 'manual_required' || result?.status === 'pending' ? 'var(--orange)' :
+    (result?.status === 'manual_required' || result?.status === 'pending' || result?.status === 'inconclusive') ? 'var(--orange)' :
     'var(--red)';
   const statusLabel =
     result?.status === 'verified' ? '✓ Verified' :
     result?.status === 'sent_to_developer' ? '📧 Sent to Developer' :
     result?.status === 'manual_required' ? '⚑ Manual verification required' :
     result?.status === 'pending' ? '⏳ Pending' :
+    result?.status === 'inconclusive' ? '⚠ Couldn’t reach the page — verify manually' :
     '✗ Auto-verify failed';
 
   return (
@@ -477,7 +522,7 @@ export default function MarkImplementedButton({
         // path) so we can render the image inline. Marker convention:
         //   …prose…[SCREENSHOT]data:image/jpeg;base64,XXX[/SCREENSHOT]
         const m = String(result.detail).match(/\[SCREENSHOT\]([\s\S]+?)\[\/SCREENSHOT\]/);
-        const text = m ? result.detail.replace(m[0], '').trim() : result.detail;
+        const text = displayVerificationDetail(m ? result.detail.replace(m[0], '') : result.detail);
         const screenshot = m ? m[1] : '';
         return (
           <div style={{
@@ -549,7 +594,8 @@ export default function MarkImplementedButton({
           <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 4 }}>📧 Upload a screenshot of the email</div>
           <div className="muted" style={{ fontSize: 10, marginBottom: 6, lineHeight: 1.4 }}>
             Screenshot the email you sent to the client's developer (Gmail/Outlook — the sent message or compose window is fine).
-            Checking starts as soon as you attach it, then the change is marked <strong>Sent to Developer</strong>.
+            Checking starts as soon as you attach it, then the change is marked <strong>✓ Verified</strong> with the
+            email kept as proof of the handover.
           </div>
           <input
             type="text"

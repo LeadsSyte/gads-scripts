@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useClients } from '../../store/useClients.js';
 import { listAllImplementations, updateImplementation, getImplementationDetail } from '../../lib/supabase.js';
-import { verifyImplementation } from '../../lib/verification.js';
+import { verifyImplementation, isDeveloperHandover, displayVerificationDetail } from '../../lib/verification.js';
 
 // In-app view of the same data the weekly email shows. Lets Michael and
 // Chris see implementation progress across all clients in real time
@@ -12,7 +12,10 @@ const STATUS_STYLES = {
   failed:          { color: 'var(--red)',    label: '✗ Failed',           badge: 'red' },
   pending:         { color: 'var(--orange)', label: '⏳ Pending',          badge: 'orange' },
   manual_required: { color: 'var(--orange)', label: '⚑ Manual required',  badge: 'orange' },
-  sent_to_developer: { color: 'var(--blue)', label: '📧 Sent to Developer', badge: 'blue' }
+  sent_to_developer: { color: 'var(--blue)', label: '📧 Sent to Developer', badge: 'blue' },
+  // Verifier couldn't reach the page (transient network/proxy). NOT a
+  // failure — the prior result, if any, was preserved.
+  inconclusive:    { color: 'var(--orange)', label: '⚠ Inconclusive',     badge: 'orange' }
 };
 
 export default function ImplementationProgress() {
@@ -36,7 +39,7 @@ export default function ImplementationProgress() {
     setDetails(prev => ({ ...prev, [id]: { loading: true } }));
     try {
       const text = await getImplementationDetail(id);
-      setDetails(prev => ({ ...prev, [id]: { loading: false, text } }));
+      setDetails(prev => ({ ...prev, [id]: { loading: false, text: displayVerificationDetail(text) } }));
     } catch {
       setDetails(prev => ({ ...prev, [id]: { loading: false, text: '(could not load details)' } }));
     }
@@ -85,7 +88,8 @@ export default function ImplementationProgress() {
     failed:          items.filter(r => r.verification_status === 'failed').length,
     pending:         items.filter(r => r.verification_status === 'pending').length,
     manual_required: items.filter(r => r.verification_status === 'manual_required').length,
-    sent_to_developer: items.filter(r => r.verification_status === 'sent_to_developer').length
+    sent_to_developer: items.filter(r => r.verification_status === 'sent_to_developer').length,
+    inconclusive:    items.filter(r => r.verification_status === 'inconclusive').length
   }), [items]);
 
   const modules = useMemo(() => {
@@ -96,22 +100,31 @@ export default function ImplementationProgress() {
   async function reverify(impl) {
     setVerifyingId(impl.id);
     try {
-      // A "sent to developer" record stays sent-to-developer until the
-      // change is actually live — a failed page scan just means the dev
-      // hasn't implemented it yet. Snapshot the stored detail BEFORE the
-      // scan (the bulk list doesn't load verification_detail, and it can
-      // hold the email-screenshot proof) so we can restore it if the
-      // change isn't live yet, instead of letting the failed scan wipe it.
-      const wasSentToDev = impl.verification_status === 'sent_to_developer';
-      let sentDetail = '';
-      if (wasSentToDev) {
-        try { sentDetail = await getImplementationDetail(impl.id); } catch {}
+      // A developer handover keeps its status until the change is actually
+      // live — a failed page scan just means the dev hasn't implemented it
+      // yet, which is not evidence our work is missing. Snapshot the stored
+      // detail BEFORE the scan (the bulk list doesn't load
+      // verification_detail, and it holds both the email-screenshot proof
+      // and the handover marker) so we can restore it instead of letting the
+      // scan wipe the proof and demote the record.
+      //
+      // The status alone can't identify a handover any more: attaching the
+      // email verifies the record, so a handover now reads 'verified'. Fetch
+      // the detail for both candidate statuses and let the marker decide.
+      const maybeHandover = impl.verification_status === 'sent_to_developer' ||
+                            impl.verification_status === 'verified';
+      let priorDetail = '';
+      if (maybeHandover) {
+        try { priorDetail = await getImplementationDetail(impl.id); } catch {}
       }
+      const wasHandover = impl.verification_status === 'sent_to_developer' ||
+                          isDeveloperHandover(priorDetail);
+
       const r = await verifyImplementation(impl, clientMap[impl.client_id]);
-      if (wasSentToDev && r?.status !== 'verified') {
+      if (wasHandover && r?.status !== 'verified') {
         await updateImplementation(impl.id, {
-          verification_status: 'sent_to_developer',
-          verification_detail: (sentDetail || 'Sent to developer.') +
+          verification_status: impl.verification_status,
+          verification_detail: (priorDetail || 'Sent to developer.') +
             ' · Re-check ' + new Date().toLocaleDateString('en-ZA') + ': not live on the page yet.'
         });
       }
@@ -159,7 +172,7 @@ export default function ImplementationProgress() {
 
       {/* Filters */}
       <div className="row" style={{ gap: 8, marginBottom: 14, flexWrap: 'wrap' }}>
-        {['all', 'verified', 'sent_to_developer', 'failed', 'manual_required', 'pending'].map(f => (
+        {['all', 'verified', 'sent_to_developer', 'failed', 'manual_required', 'inconclusive', 'pending'].map(f => (
           <button
             key={f}
             onClick={() => setFilter(f)}

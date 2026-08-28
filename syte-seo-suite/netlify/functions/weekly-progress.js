@@ -51,7 +51,7 @@ export default async function handler() {
     supabase
       .from('syte_suite_implementations')
       .select(IMPL_COLS)
-      .in('verification_status', ['pending', 'failed', 'sent_to_developer'])
+      .in('verification_status', ['pending', 'failed', 'sent_to_developer', 'inconclusive'])
       .order('created_at', { ascending: false }),
     supabase
       .from('syte_suite_clients')

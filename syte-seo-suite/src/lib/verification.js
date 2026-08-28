@@ -379,28 +379,91 @@ function hasUsefulBody(html) {
   return text.length >= 60;
 }
 
+// Marker kept inside verification_detail so a developer handover stays
+// recognisable after the fact. The record's status is 'verified' (attaching
+// the email is what verifies it), so the status column alone can no longer
+// tell a handover from an on-page verification — this marker can. It lives in
+// the detail rather than in its own column because the bulk list query omits
+// verification_detail; anything that needs to know fetches the detail for the
+// one row it cares about.
+export const HANDOVER_MARKER = '[HANDOVER]';
+
+export function isDeveloperHandover(detail) {
+  return typeof detail === 'string' && detail.includes(HANDOVER_MARKER);
+}
+
+// Strip internal markers before showing a detail string to a user.
+export function displayVerificationDetail(detail) {
+  return String(detail || '').split(HANDOVER_MARKER).join('').trim();
+}
+
 // "Sent to Developer" verification — used when we hand technical
 // optimizations or content changes to the client's developer instead of
 // implementing them ourselves. The team member uploads a screenshot of the
 // email they sent; Claude Vision confirms it actually shows a sent email
-// that relates to this change, then the record is marked
-// 'sent_to_developer'. If the screenshot can't be confirmed, NOTHING is
-// persisted — the caller can retry with a better screenshot or use
-// markSentToDeveloper() to override manually.
+// that relates to this change, and the record is then marked 'verified' with
+// the screenshot kept as the proof.
+//
+// The attached email IS the verification for this flow: the deliverable we
+// committed to was handing the change over, and the screenshot evidences it.
+// Records keep the HANDOVER_MARKER so "verified because we emailed the dev"
+// stays distinguishable from "verified because it's live on the page" — see
+// the re-check guard in ImplementationProgress, which must not demote a
+// handover to 'failed' just because the developer hasn't shipped it yet.
+//
+// If the screenshot itself can't be read at all, NOTHING is persisted — the
+// caller can retry with a better screenshot. But an unreachable or unreadable
+// AI check is NOT a rejection: the email is attached either way, so the
+// handover is still recorded as verified with a note that the automatic check
+// didn't run. Only an image Claude can see and says is not an email is
+// rejected.
+const VISION_MEDIA_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+
+// Persist a handover as verified, keeping the email screenshot as proof.
+// Split out from the check so a failed DB write reports "couldn't save"
+// instead of the misleading "couldn't check the screenshot".
+async function persistHandover(impl, { parts, imageBase64, mediaType }) {
+  const detail = parts.filter(Boolean).join(' · ');
+  // Keep the email screenshot as proof, using the same [SCREENSHOT]
+  // marker the history view already renders (fetched on demand via
+  // getImplementationDetail — never in bulk list queries).
+  const stored = detail + '\n[SCREENSHOT]data:' + mediaType + ';base64,' + imageBase64 + '[/SCREENSHOT]';
+  try {
+    await updateImplementation(impl.id, {
+      verification_status: 'verified',
+      verification_detail: stored,
+      verified_at: new Date().toISOString()
+    });
+  } catch (e) {
+    return { status: 'error', detail: 'The email was checked, but saving it failed (' + (e.message || 'database error') + '). Try again.' };
+  }
+  return { status: 'verified', detail: stored, handover: true };
+}
+
 export async function verifySentToDeveloper(impl, { imageBase64, mediaType = 'image/jpeg', sentBy = '' } = {}) {
   if (!imageBase64 || imageBase64.length < 100) {
     return { status: 'rejected', detail: 'Screenshot is empty or too small — upload a screenshot of the email you sent.' };
   }
-  try {
-    const resp = await claudeComplete({
-      system: 'You verify that a screenshot shows an email sent to a website developer about an SEO/content change. Return ONLY valid JSON.',
-      messages: [{
-        role: 'user',
-        content: [
-          { type: 'image', source: { type: 'base64', media_type: mediaType, data: imageBase64 } },
-          {
-            type: 'text',
-            text: `This screenshot should show an email (Gmail, Outlook, or any mail client — compose window or sent message) sent to a website developer, handing over the following change for implementation:
+
+  // Run the Vision check when we can. Whatever happens here only shapes the
+  // wording of the detail — it never decides whether the handover is
+  // recorded, except in the one case where Claude can see the image and says
+  // it isn't an email.
+  let parsed = null;
+  let checkNote = '';
+  if (!VISION_MEDIA_TYPES.includes(mediaType)) {
+    checkNote = 'automatic screenshot check skipped (' + mediaType + ' is not a format the checker reads) — attached email kept as proof';
+  } else {
+    try {
+      const resp = await claudeComplete({
+        system: 'You verify that a screenshot shows an email sent to a website developer about an SEO/content change. Return ONLY valid JSON.',
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'image', source: { type: 'base64', media_type: mediaType, data: imageBase64 } },
+            {
+              type: 'text',
+              text: `This screenshot should show an email (Gmail, Outlook, or any mail client — compose window or sent message) sent to a website developer, handing over the following change for implementation:
 
 CHANGE:
 - Type: ${impl.change_type || ''}
@@ -420,62 +483,102 @@ Return ONLY JSON:
   "relates": true or false,
   "evidence": "1-2 sentences describing what the screenshot shows"
 }`
-          }
-        ]
-      }],
-      model: 'claude-sonnet-4-6',
-      max_tokens: 400,
-      temperature: 0
-    });
-    let parsed;
-    try {
+            }
+          ]
+        }],
+        model: 'claude-sonnet-4-6',
+        max_tokens: 400,
+        temperature: 0
+      });
       const m = resp.match(/\{[\s\S]*\}/);
       parsed = m ? JSON.parse(m[0]) : null;
-    } catch { parsed = null; }
-    if (!parsed) {
-      return { status: 'rejected', detail: 'Could not read the screenshot verification response. Try again or mark as sent manually.' };
+      if (!parsed) checkNote = 'automatic screenshot check returned nothing readable — attached email kept as proof';
+    } catch (e) {
+      // API down, no key, timeout, CORS — none of these say anything about
+      // the email the user just attached, so none of them block the handover.
+      parsed = null;
+      checkNote = 'automatic screenshot check unavailable (' + (e.message || 'API error') + ') — attached email kept as proof';
     }
-    if (!parsed.is_email) {
-      return { status: 'rejected', detail: 'The screenshot does not look like an email: ' + (parsed.evidence || 'no email visible.') + ' Upload a screenshot of the sent email, or mark as sent manually.' };
-    }
-    const detail = [
-      'Email screenshot confirmed' + (parsed.recipient ? ' — sent to ' + parsed.recipient : ''),
-      parsed.subject ? 'Subject: "' + parsed.subject + '"' : '',
-      parsed.evidence || '',
-      sentBy ? 'Sent by ' + sentBy : '',
-      '(Sent to developer — awaiting implementation on site)'
-    ].filter(Boolean).join(' · ');
-    // Keep the email screenshot as proof, using the same [SCREENSHOT]
-    // marker the history view already renders (fetched on demand via
-    // getImplementationDetail — never in bulk list queries).
-    const stored = detail + '\n[SCREENSHOT]data:' + mediaType + ';base64,' + imageBase64 + '[/SCREENSHOT]';
-    await updateImplementation(impl.id, {
-      verification_status: 'sent_to_developer',
-      verification_detail: stored,
-      verified_at: new Date().toISOString()
-    });
-    return { status: 'sent_to_developer', detail: stored };
-  } catch (e) {
-    return { status: 'rejected', detail: 'Could not check the screenshot (' + (e.message || 'API error') + '). Try again or mark as sent manually.' };
   }
+
+  // The only genuine rejection: Claude read the image and it is not an email.
+  if (parsed && parsed.is_email === false) {
+    return {
+      status: 'rejected',
+      detail: 'The screenshot does not look like an email: ' + (parsed.evidence || 'no email visible.') +
+              ' Upload a screenshot of the sent email, or mark as sent manually.'
+    };
+  }
+
+  return persistHandover(impl, {
+    parts: [
+      HANDOVER_MARKER,
+      '✓ Sent to developer — email attached' + (parsed?.recipient ? ', sent to ' + parsed.recipient : ''),
+      parsed?.subject ? 'Subject: "' + parsed.subject + '"' : '',
+      parsed?.evidence || '',
+      checkNote,
+      sentBy ? 'Sent by ' + sentBy : '',
+      '(Verified as handed over — awaiting implementation on site)'
+    ],
+    imageBase64,
+    mediaType
+  });
 }
 
 // Manual override for the sent-to-developer flow — used when the AI check
 // on the screenshot fails but the team member confirms the email was sent.
-// If a screenshot was uploaded, keep it as proof even though the AI
-// couldn't confirm it.
+//
+// An attached screenshot is proof whether or not the AI could read it, so an
+// override WITH a screenshot verifies the record exactly like the AI path
+// does. An override with no screenshot has no evidence behind it, so it stays
+// in 'sent_to_developer' until someone attaches the email.
 export async function markSentToDeveloper(impl, sentBy = '', { imageBase64, mediaType = 'image/jpeg' } = {}) {
-  const detail = 'Marked as sent to developer' + (sentBy ? ' by ' + sentBy : '') +
-    ' (manual confirmation, screenshot check skipped) · (Awaiting implementation on site)';
+  const verified = !!imageBase64;
+  const detail = [
+    verified ? HANDOVER_MARKER : '',
+    (verified ? '✓ Sent to developer — email screenshot attached' : 'Marked as sent to developer') +
+      (sentBy ? ' by ' + sentBy : ''),
+    '(manual confirmation, automatic screenshot check skipped)',
+    verified
+      ? '(Verified as handed over — awaiting implementation on site)'
+      : '(Awaiting implementation on site)'
+  ].filter(Boolean).join(' · ');
   const stored = imageBase64
     ? detail + '\n[SCREENSHOT]data:' + mediaType + ';base64,' + imageBase64 + '[/SCREENSHOT]'
     : detail;
   await updateImplementation(impl.id, {
-    verification_status: 'sent_to_developer',
+    verification_status: verified ? 'verified' : 'sent_to_developer',
     verification_detail: stored,
     verified_at: new Date().toISOString()
   });
-  return { status: 'sent_to_developer', detail: stored };
+  return { status: verified ? 'verified' : 'sent_to_developer', detail: stored, handover: verified };
+}
+
+// A verification attempt is INCONCLUSIVE — not evidence the work is absent —
+// when the page can't be fetched (CORS proxy down, "Failed to fetch"), the
+// screenshot service errors, or the verifier API / JSON parse fails. These
+// outcomes must NEVER downgrade a record that was already verified or manually
+// confirmed: a transient network blip must not knock a client out of "Fixes
+// Verified on Site" and back into "Fixes Generated". For records that were not
+// yet verified we record 'inconclusive' so the UI prompts for a manual re-check
+// instead of showing a misleading red "failed".
+async function persistInconclusive(impl, detail) {
+  const prior = impl?.verification_status;
+  if (prior === 'verified' || prior === 'manual_required' || prior === 'sent_to_developer') {
+    // Keep the prior good status — only note that the latest auto-check
+    // couldn't reach the page. Do NOT touch verification_status.
+    await updateImplementation(impl.id, {
+      verification_detail: detail + ' · Kept the previous "' + prior +
+        '" result (this auto re-check was inconclusive, not a failure).'
+    });
+    return { status: prior, detail, inconclusive: true };
+  }
+  await updateImplementation(impl.id, {
+    verification_status: 'inconclusive',
+    verification_detail: detail,
+    verified_at: new Date().toISOString()
+  });
+  return { status: 'inconclusive', detail, inconclusive: true };
 }
 
 // Verify using pasted HTML — used when automated fetching fails (Shopify
@@ -483,13 +586,9 @@ export async function markSentToDeveloper(impl, sentBy = '', { imageBase64, medi
 // the live page HTML (view source → copy/paste) and Claude verifies.
 export async function verifyImplementationFromHtml(impl, pastedHtml) {
   if (!pastedHtml || pastedHtml.length < 100) {
-    const detail = 'Pasted HTML is too short or empty.';
-    await updateImplementation(impl.id, {
-      verification_status: 'failed',
-      verification_detail: detail,
-      verified_at: new Date().toISOString()
-    });
-    return { status: 'failed', detail };
+    // Empty/short paste is inconclusive input, not proof of absence — never
+    // let it demote an already-verified record.
+    return persistInconclusive(impl, 'Pasted HTML is too short or empty.');
   }
   const pageData = { html: pastedHtml.slice(0, 40000), source: 'pasted-html' };
   return runVerifyWithHtml(impl, pageData);
@@ -544,9 +643,8 @@ Return ONLY valid JSON:
       parsed = jsonMatch ? JSON.parse(jsonMatch[0]) : null;
     } catch { parsed = null; }
     if (!parsed) {
-      const detail = 'Could not parse verification response.';
-      await updateImplementation(impl.id, { verification_status: 'failed', verification_detail: detail, verified_at: new Date().toISOString() });
-      return { status: 'failed', detail };
+      // Verifier returned unparseable output — inconclusive, not a failure.
+      return persistInconclusive(impl, 'Could not parse verification response.');
     }
     const status = parsed.implemented ? 'verified' : 'failed';
     const detail = [
@@ -558,9 +656,8 @@ Return ONLY valid JSON:
     await updateImplementation(impl.id, { verification_status: status, verification_detail: detail, verified_at: new Date().toISOString() });
     return { status, detail };
   } catch (e) {
-    const detail = 'Verification API error: ' + e.message;
-    await updateImplementation(impl.id, { verification_status: 'failed', verification_detail: detail, verified_at: new Date().toISOString() });
-    return { status: 'failed', detail };
+    // Verifier API threw (rate limit, network) — inconclusive, not a failure.
+    return persistInconclusive(impl, 'Verification API error: ' + e.message);
   }
 }
 
@@ -589,9 +686,8 @@ export async function verifyImplementationVisually(impl) {
     imageBase64 = btoa(binary);
     if (!imageBase64 || imageBase64.length < 100) throw new Error('Screenshot is empty or too small');
   } catch (e) {
-    const detail = 'Could not capture page screenshot: ' + e.message;
-    await updateImplementation(impl.id, { verification_status: 'failed', verification_detail: detail, verified_at: new Date().toISOString() });
-    return { status: 'failed', detail };
+    // Screenshot service unreachable (thum.io down / 403) — inconclusive.
+    return persistInconclusive(impl, 'Could not capture page screenshot: ' + e.message);
   }
 
   // Ask Claude Vision to check if the content is visible.
@@ -644,8 +740,7 @@ Return ONLY JSON:
     } catch { parsed = null; }
 
     if (!parsed) {
-      await updateImplementation(impl.id, { verification_status: 'failed', verification_detail: 'Could not parse visual verification.', verified_at: new Date().toISOString() });
-      return { status: 'failed', detail: 'Could not parse visual verification response.' };
+      return persistInconclusive(impl, 'Could not parse visual verification response.');
     }
 
     const status = parsed.visible ? 'verified' : 'failed';
@@ -653,9 +748,8 @@ Return ONLY JSON:
     await updateImplementation(impl.id, { verification_status: status, verification_detail: detail, verified_at: new Date().toISOString() });
     return { status, detail };
   } catch (e) {
-    const detail = 'Visual verification error: ' + e.message;
-    await updateImplementation(impl.id, { verification_status: 'failed', verification_detail: detail, verified_at: new Date().toISOString() });
-    return { status: 'failed', detail };
+    // Vision API threw — inconclusive, not proof the change is absent.
+    return persistInconclusive(impl, 'Visual verification error: ' + e.message);
   }
 }
 
@@ -668,26 +762,18 @@ export async function verifyImplementation(impl, client) {
   }
 
   if (!impl?.page_url) {
-    const detail = 'No page URL to scan.';
-    await updateImplementation(impl.id, {
-      verification_status: 'failed',
-      verification_detail: detail,
-      verified_at: new Date().toISOString()
-    });
-    return { status: 'failed', detail };
+    // No URL to scan — a config gap, not proof of absence. Don't demote.
+    return persistInconclusive(impl, 'No page URL to scan.');
   }
 
   let pageData;
   try {
     pageData = await fetchPageContent(impl, client);
   } catch (e) {
-    const detail = 'Could not fetch the page: ' + e.message;
-    await updateImplementation(impl.id, {
-      verification_status: 'failed',
-      verification_detail: detail,
-      verified_at: new Date().toISOString()
-    });
-    return { status: 'failed', detail };
+    // Page unreachable by every method ("Failed to fetch"). This is the
+    // classic transient proxy/network failure — it is NOT evidence the change
+    // was removed, so it must not demote an already-verified record.
+    return persistInconclusive(impl, 'Could not fetch the page: ' + e.message);
   }
 
   // If the post is a WordPress draft, note that in the verification
@@ -750,13 +836,8 @@ Return ONLY valid JSON (no prose, no code fences):
     } catch { parsed = null; }
 
     if (!parsed) {
-      const detail = 'Could not parse verification response.';
-      await updateImplementation(impl.id, {
-        verification_status: 'failed',
-        verification_detail: detail,
-        verified_at: new Date().toISOString()
-      });
-      return { status: 'failed', detail };
+      // Verifier returned unparseable output — inconclusive, not a failure.
+      return persistInconclusive(impl, 'Could not parse verification response.');
     }
 
     const status = parsed.implemented ? 'verified' : 'failed';
@@ -774,12 +855,7 @@ Return ONLY valid JSON (no prose, no code fences):
     });
     return { status, detail };
   } catch (e) {
-    const detail = 'Verification API error: ' + e.message;
-    await updateImplementation(impl.id, {
-      verification_status: 'failed',
-      verification_detail: detail,
-      verified_at: new Date().toISOString()
-    });
-    return { status: 'failed', detail };
+    // Verifier API threw (rate limit, network) — inconclusive, not a failure.
+    return persistInconclusive(impl, 'Verification API error: ' + e.message);
   }
 }

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useClients } from '../../store/useClients.js';
 import { claudeComplete, extractJSON } from '../../lib/anthropic.js';
 import { corsFetchText } from '../../lib/corsProxy.js';
@@ -10,8 +10,9 @@ import PipelineView from '../../components/PipelineView.jsx';
 import LogExternalWork from '../../components/LogExternalWork.jsx';
 import { aeoPipelineStatus, monthOptions } from '../../lib/pipelineStatus.js';
 import { listAllImplementations, saveAeoResult, loadAeoResults as loadAeoResultsFromDb, deleteAeoResult, saveDeepResult, listDeepResults, deleteDeepResult, listAeoRejections, saveAeoRejection } from '../../lib/supabase.js';
-import { AEO_SYSTEM, AEO_TYPES, AEO_DEEP_SYSTEM } from './aeoTypes.js';
-import { fetchSitemapUrls } from './sitemap.js';
+import { AEO_TYPES, AEO_DEEP_SYSTEM, buildAeoSystem, MAX_OPTS_PER_PAGE } from './aeoTypes.js';
+import { selectTopOptimizations, aeoItemTarget, pagesForTarget } from './aeoSelect.js';
+import { discoverSiteUrls } from './sitemap.js';
 import QueryDiscovery from './QueryDiscovery.jsx';
 import { listAccountSummaries, runReport } from './ga4.js';
 import { ensureToken, SCOPES, getToken, clearToken } from '../technical/googleAuth.js';
@@ -20,6 +21,11 @@ const ACCENT = '#00d4aa';
 const RESULTS_KEY = 'syte-suite-aeo-results';
 const HISTORY_KEY = 'syte-suite-aeo-history';
 const BATCH_SIZE = 3;
+// How many of the site's pages we pull into the prioritization step. Only
+// `pages_per_month` of these get optimized in a given run, but the pool has
+// to be the whole site so the ranking picks this month's best pages from
+// everything rather than from a homepage-shaped shortlist.
+const SITE_DISCOVERY_CAP = 500;
 
 function loadResults() { try { return JSON.parse(localStorage.getItem(RESULTS_KEY) || '{}'); } catch { return {}; } }
 // Supabase is the source of truth for AEO results — localStorage is only a
@@ -37,6 +43,19 @@ function saveResults(r) {
     }
   }
 }
+// Identity of a page for coverage tracking — ignores the trailing-slash and
+// www differences that would otherwise make the same page look never-visited.
+function pageKey(url) {
+  try {
+    const u = new URL(url);
+    let path = u.pathname;
+    if (path.length > 1 && path.endsWith('/')) path = path.slice(0, -1);
+    return u.hostname.replace(/^www\./, '') + path.toLowerCase();
+  } catch {
+    return String(url || '').toLowerCase();
+  }
+}
+
 function loadHistory() { try { return JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]'); } catch { return []; } }
 function saveHistory(h) {
   try { localStorage.setItem(HISTORY_KEY, JSON.stringify(h.slice(0, 100))); }
@@ -88,7 +107,11 @@ Return the JSON object as specified in the system prompt.`
   return extractJSON(text);
 }
 
-async function generateForPage(pageUrl, client) {
+// `perPage` is the cap for THIS page — deliberately small, because the run
+// ranks every page's output into one site-wide shortlist afterwards.
+// `total` is that shortlist size, passed into the prompt so Claude knows
+// it is competing for slots rather than filling a quota.
+async function generateForPage(pageUrl, client, perPage = MAX_OPTS_PER_PAGE, total = undefined) {
   // Try to fetch the actual page HTML for analysis.
   let pageHtml = '';
   let pageTitle = '';
@@ -107,10 +130,10 @@ async function generateForPage(pageUrl, client) {
   const inferredTopic = pageTitle || slug.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 
   const text = await claudeComplete({
-    system: AEO_SYSTEM,
+    system: buildAeoSystem(perPage, total),
     messages: [{
       role: 'user',
-      content: `Generate AEO optimizations for this page. Focus on CONTENT optimizations first (answer blocks, FAQs, key takeaways, snippet paragraphs), then schema.
+      content: `Generate AEO optimizations for this page — at most ${perPage}, and only the ones this page genuinely lacks. Focus on CONTENT optimizations first (answer blocks, FAQs, key takeaways, snippet paragraphs), then schema.
 
 Page URL: ${pageUrl}
 Page topic: ${inferredTopic}
@@ -638,6 +661,12 @@ export default function AEOEngine({ sub }) {
   const client = useClients(s => s.current());
   const [urls, setUrls] = useState('');
   const [results, setResults] = useState(loadResults());
+  // Mirror of `results` that the pipeline can read synchronously. runForClient
+  // runs sequentially inside the all-clients batch, so a captured `results`
+  // snapshot goes stale after the first client — the ref always has the
+  // pages we've already covered, which is what page rotation depends on.
+  const resultsRef = useRef(results);
+  useEffect(() => { resultsRef.current = results; }, [results]);
   const [history, setHistory] = useState(loadHistory());
   const [properties, setProperties] = useState([]);
   const [busy, setBusy] = useState(false);
@@ -647,6 +676,10 @@ export default function AEOEngine({ sub }) {
   // generated by a future run that matches a rejected (type, name) pair on
   // the same page is hidden from the UI.
   const [rejectionsByPage, setRejectionsByPage] = useState(() => new Map());
+
+  // Batch state — "generate all AEO clients' items for the month".
+  const [batchBusy, setBatchBusy] = useState(false);
+  const [batchProgress, setBatchProgress] = useState('');
 
   // Deep optimization state — single page, full rewrite + FAQ + changes log.
   const [deepUrl, setDeepUrl] = useState('');
@@ -800,8 +833,24 @@ export default function AEOEngine({ sub }) {
     } catch (e) { setErr(e.message); }
   }
 
+  // Pages this client already has optimizations for → the newest date we
+  // generated them. A row that only carries an error doesn't count as
+  // covered, so failed pages get another go on the next run.
+  function coveredPagesFor(clientId) {
+    const map = new Map();
+    for (const row of Object.values(resultsRef.current || {})) {
+      if (!row || row.client_id !== clientId || !row.url) continue;
+      if (!Array.isArray(row.optimizations) || row.optimizations.length === 0) continue;
+      const key = pageKey(row.url);
+      const at = row.generated_at || '';
+      if (!map.has(key) || at > map.get(key)) map.set(key, at);
+    }
+    return map;
+  }
+
   // Full AEO pipeline — ported from old Syte AEO Engine v2.
-  // Steps: 0) Pre-check auth  1) Fetch sitemap  2) Pull GA4 data  3) Prioritize  4) Batch optimize
+  // Steps: 0) Pre-check auth  1) Discover the site's pages  2) Pull GA4 data
+  //        3) Prioritize + rotate  4) Batch optimize
   async function runForClient(c) {
     if (!c) return;
     setBusy(true); setErr(''); setProgress('');
@@ -832,48 +881,27 @@ export default function AEOEngine({ sub }) {
         }
       }
 
-      // STEP 1: Fetch sitemap (with pasted XML fallback)
-      setProgress('Step 1/4 — Fetching sitemap for ' + c.name + '…');
-      let sitemapUrls = [];
-      try {
-        sitemapUrls = await fetchSitemapUrls(c.sitemap_url, c.sitemap_raw);
-      } catch (e) {
-        console.warn('[AEO] Sitemap fetch error:', e.message);
-      }
-
-      if (sitemapUrls.length > 0) {
-        setProgress(`Step 1/4 — ${sitemapUrls.length} pages from sitemap ✓`);
-      } else if (c.url) {
-        // Sitemap failed — discover real pages from the homepage links instead
-        // of guessing generic paths that may not exist (Shopify uses /pages/, etc.)
-        setProgress('Step 1/4 — No sitemap, discovering pages from homepage links…');
-        const base = c.url.replace(/\/$/, '');
-        try {
-          const homepageHtml = await corsFetchText(base + '/');
-          const tempDoc = new DOMParser().parseFromString(homepageHtml, 'text/html');
-          const origin = new URL(base).origin;
-          const discovered = new Set([base + '/']);
-          for (const a of tempDoc.querySelectorAll('a[href]')) {
-            let href = a.getAttribute('href') || '';
-            if (href.startsWith('#') || href.startsWith('mailto:') || href.startsWith('tel:') || href.startsWith('javascript:')) continue;
-            try {
-              const full = new URL(href, base).href;
-              if (full.startsWith(origin) && !full.includes('#')) {
-                discovered.add(full.split('?')[0]);
-              }
-            } catch {}
-          }
-          sitemapUrls = Array.from(discovered);
-        } catch {
-          sitemapUrls = [base + '/'];
-        }
-        setProgress(`Step 1/4 — Discovered ${sitemapUrls.length} pages from homepage links`);
-      } else {
+      // STEP 1: Discover the site's pages. discoverSiteUrls walks the whole
+      // ladder — configured sitemap → auto-discovered sitemaps (every
+      // "Sitemap:" line in robots.txt plus the common paths, all merged) →
+      // an internal-link crawl — and only lands on homepage-only when the
+      // site is genuinely unreachable. That ladder is what makes a run cover
+      // the WHOLE site rather than a single page.
+      setProgress('Step 1/4 — Finding pages for ' + c.name + '…');
+      const discovery = await discoverSiteUrls(c, {
+        maxPages: SITE_DISCOVERY_CAP,
+        onProgress: (stage) => setProgress('Step 1/4 — ' + c.name + ': ' + stage)
+      });
+      const sitemapUrls = discovery.urls;
+      if (!sitemapUrls.length) {
         setErr(c.name + ' has no sitemap URL, pasted XML, or website URL.');
         setBusy(false);
         return;
       }
-      setProgress(`Step 1/4 — ${sitemapUrls.length} pages from sitemap ✓`);
+      if (discovery.source === 'homepage only') {
+        console.warn('[AEO] Only the homepage is reachable for ' + c.name + ' — no sitemap and no crawlable internal links.');
+      }
+      setProgress(`Step 1/4 — ${sitemapUrls.length} pages found via ${discovery.source} ✓`);
 
       // STEP 2: Pull GA4 page data for prioritization (only if auth passed in Step 0)
       let ga4Rows = [];
@@ -933,57 +961,164 @@ export default function AEOEngine({ sub }) {
         }
       }
 
-      // Take top N pages (client's pages_per_month or 15)
-      const maxPages = c.pages_per_month || 15;
-      const targets = prioritized.slice(0, maxPages);
-      setUrls(targets.map(t => t.url).join('\n'));
-      setProgress(`Step 3/4 — ${targets.length} pages selected (${prioritized.length} total) ✓`);
+      // Rotate through the site instead of re-optimizing the same head pages
+      // every run. Ranking by traffic alone is deterministic, so the homepage
+      // and its neighbours won the shortlist month after month and the rest
+      // of the site was never reached. Pages we have never optimized go
+      // first (still traffic-ranked among themselves); already-covered pages
+      // come after, oldest-first, so a re-run refreshes the stalest work
+      // rather than repeating last month's.
+      const covered = coveredPagesFor(c.id);
+      const fresh = [];
+      const revisits = [];
+      for (const p of prioritized) {
+        const doneAt = covered.get(pageKey(p.url));
+        if (doneAt) revisits.push({ ...p, lastOptimized: doneAt });
+        else fresh.push(p);
+      }
+      revisits.sort((a, b) => (a.lastOptimized < b.lastOptimized ? -1 : 1));
+      const queue = [...fresh, ...revisits];
 
-      // STEP 4: Generate AEO optimizations in batches
-      const newResults = { ...results };
+      // The run ships ONE shortlist for the whole site — the best
+      // `itemTarget` optimizations, wherever they live — rather than a fixed
+      // 5 per page. So the page count is derived from the shortlist size
+      // (enough pages to give the ranker real choice) instead of from
+      // `pages_per_month`, which is the content module's article quota and
+      // used to produce 60-item hand-offs here.
+      const itemTarget = aeoItemTarget(c);
+      const maxPages = Math.min(pagesForTarget(itemTarget, queue.length), c.pages_per_month || 15);
+      const targets = queue.slice(0, maxPages);
+      setUrls(targets.map(t => t.url).join('\n'));
+      const newCount = targets.filter(t => !t.lastOptimized).length;
+      setProgress(
+        `Step 3/4 — ${targets.length} pages selected (${newCount} not optimized before` +
+        `${targets.length - newCount > 0 ? `, ${targets.length - newCount} refreshed` : ''}) ` +
+        `from ${prioritized.length} across the site — shortlisting the best ${itemTarget} items ✓`
+      );
+
+      // STEP 4: Generate AEO optimizations in batches.
+      // Accumulate only THIS client's new rows and merge them into state with a
+      // functional update. A plain `{ ...results }` snapshot would be stale when
+      // this runs inside the "generate all clients" batch loop and would clobber
+      // the results generated for earlier clients in the same run.
+      //
+      // Ranking is site-wide, so every page has to be generated before
+      // anything is persisted — a row saved mid-run could hold items the
+      // shortlist later drops.
+      const drafts = [];
       for (let i = 0; i < targets.length; i += BATCH_SIZE) {
         const batch = targets.slice(i, i + BATCH_SIZE);
         setProgress(`Step 4/4 — ${c.name}: Optimizing pages ${i + 1}–${Math.min(i + BATCH_SIZE, targets.length)} of ${targets.length}…`);
         const batchResults = await Promise.all(
-          batch.map(t => generateForPage(t.url, c).catch(e => ({ error: e.message })))
+          batch.map(t => generateForPage(t.url, c, MAX_OPTS_PER_PAGE, itemTarget).catch(e => ({ error: e.message })))
         );
         batch.forEach((t, j) => {
-          const key = c.id + '::' + t.url;
-          const row = {
+          drafts.push({
             url: t.url, path: t.path, client_id: c.id,
             sessions: t.sessions, priority: t.priority,
-            generated_at: new Date().toISOString(),
             optimizations: Array.isArray(batchResults[j]) ? batchResults[j] : [],
             error: batchResults[j]?.error || null
-          };
-          newResults[key] = row;
-          // Persist each result to Supabase immediately
-          saveAeoResult(row).catch(() => {});
+          });
         });
-        setResults({ ...newResults });
       }
+
+      // Rank everything the run produced and keep only the best `itemTarget`
+      // items across all pages. Pages trimmed to nothing are not saved, so
+      // they stay "uncovered" and the rotation revisits them next run.
+      const shortlist = selectTopOptimizations(drafts, { limit: itemTarget });
+      const additions = {};
+      const stamp = new Date().toISOString();
+      for (const row of shortlist.rows) {
+        const saved = { ...row, generated_at: stamp };
+        additions[c.id + '::' + saved.url] = saved;
+        saveAeoResult(saved).catch(() => {});
+      }
+      // Keep the ref in step with the write rather than waiting for the
+      // effect, so coverage is accurate the moment the next client starts.
+      resultsRef.current = { ...resultsRef.current, ...additions };
+      setResults(prev => ({ ...prev, ...additions }));
       setHistory(prev => [
         { id: crypto.randomUUID(), client_id: c.id, client_name: c.name,
           count: targets.length, created_at: new Date().toISOString() },
         ...prev
       ]);
-      const totalOpts = targets.reduce((a, t) => {
-        const r = newResults[c.id + '::' + t.url];
-        return a + (r?.optimizations?.length || 0);
-      }, 0);
-      setProgress(`Done. ${totalOpts} optimizations across ${targets.length} pages for ${c.name}.`);
+      const pagesWithWork = shortlist.rows.filter(r => (r.optimizations || []).length > 0).length;
+      setProgress(
+        `Done. ${shortlist.kept} optimizations across ${pagesWithWork} page${pagesWithWork === 1 ? '' : 's'} for ${c.name}` +
+        `${shortlist.dropped > 0 ? ` (${shortlist.dropped} lower-impact item${shortlist.dropped === 1 ? '' : 's'} trimmed)` : ''}.`
+      );
     } catch (e) { setErr(e.message); }
     finally { setBusy(false); }
   }
 
+  // Generate the month's AEO items for every AEO client in one go.
+  // Runs the full per-client pipeline sequentially so batches stay inside
+  // rate limits and the Google OAuth popup (if needed) appears only once —
+  // the token is cached after the first client, so later clients reuse it.
+  // By default skips clients that already have items generated this month;
+  // pass { includeExisting: true } to force a re-run for everyone.
+  async function runForAllClients({ includeExisting = false } = {}) {
+    if (busy || batchBusy) return;
+
+    // Clients already generated this month (any page result dated this month).
+    const generatedThisMonth = new Set(
+      Object.values(results)
+        .filter(r => (r.generated_at || '').slice(0, 7) === currentMonth)
+        .map(r => r.client_id)
+    );
+
+    const queue = aeoClients.filter(c => {
+      const hasSource = !!(c.sitemap_url || c.sitemap_raw || c.ga4_property_id || c.url);
+      if (!hasSource) return false; // credentials missing — nothing to optimize
+      return includeExisting || !generatedThisMonth.has(c.id);
+    });
+
+    if (!queue.length) {
+      setErr('');
+      setBatchProgress(
+        includeExisting
+          ? 'No AEO clients have a sitemap, GA4 property, or website URL to optimize.'
+          : `All AEO clients already have items for ${monthLabel}. Use "Re-run All" to regenerate.`
+      );
+      return;
+    }
+
+    setBatchBusy(true); setErr('');
+    let completed = 0;
+    for (let i = 0; i < queue.length; i++) {
+      const c = queue[i];
+      setBatchProgress(`Generating ${monthLabel} items — client ${i + 1}/${queue.length}: ${c.name}…`);
+      useClients.getState().select(c.id);
+      try {
+        // runForClient swallows its own errors into `err`, so one bad client
+        // never halts the batch.
+        await runForClient(c);
+        completed++;
+      } catch {
+        // Unexpected throw — keep going with the rest of the queue.
+      }
+    }
+    setBatchProgress(`Done — generated ${monthLabel} items for ${completed} of ${queue.length} client${queue.length === 1 ? '' : 's'}.`);
+    setBatchBusy(false);
+    refreshImplementations();
+  }
+
   async function pullFromSitemap() {
-    if (!client?.sitemap_url && !client?.sitemap_raw) { setErr('Client has no sitemap URL or pasted XML.'); return; }
-    setBusy(true); setErr(''); setProgress('Fetching sitemap…');
+    if (!client?.sitemap_url && !client?.sitemap_raw && !client?.url) {
+      setErr('Client has no sitemap URL, pasted XML, or website URL.');
+      return;
+    }
+    setBusy(true); setErr(''); setProgress('Finding pages…');
     try {
-      const locs = await fetchSitemapUrls(client.sitemap_url, client.sitemap_raw);
-      if (!locs.length) throw new Error('No URLs found — check the sitemap URL or paste XML in the client settings.');
-      setUrls(locs.slice(0, 50).join('\n'));
-      setProgress(`Loaded ${locs.length} URLs (showing first 50).`);
+      // Same discovery ladder as the full pipeline, so this button lists the
+      // whole site rather than only what a configured sitemap happens to hold.
+      const { urls: locs, source } = await discoverSiteUrls(client, {
+        maxPages: SITE_DISCOVERY_CAP,
+        onProgress: setProgress
+      });
+      if (!locs.length) throw new Error('No URLs found — check the website URL, or paste sitemap XML in the client settings.');
+      setUrls(locs.join('\n'));
+      setProgress(`Loaded ${locs.length} URLs via ${source}.`);
     } catch (e) { setErr(e.message); }
     finally { setBusy(false); }
   }
@@ -1016,34 +1151,46 @@ export default function AEOEngine({ sub }) {
     if (!pageList.length) { setErr('Enter at least one URL.'); return; }
 
     setBusy(true); setErr(''); setProgress('');
-    const newResults = { ...results };
+    // Same shortlist rule as the full pipeline: the whole list is generated,
+    // then ranked down to the best `itemTarget` items across every page.
+    const itemTarget = aeoItemTarget(client);
+    const drafts = [];
     try {
       // Process in batches of 3 for rate-limiting.
       for (let i = 0; i < pageList.length; i += BATCH_SIZE) {
         const batch = pageList.slice(i, i + BATCH_SIZE);
         setProgress(`Batch ${Math.floor(i / BATCH_SIZE) + 1} / ${Math.ceil(pageList.length / BATCH_SIZE)}`);
         const batchResults = await Promise.all(
-          batch.map(u => generateForPage(u, client).catch(e => ({ error: e.message })))
+          batch.map(u => generateForPage(u, client, MAX_OPTS_PER_PAGE, itemTarget).catch(e => ({ error: e.message })))
         );
         batch.forEach((u, j) => {
-          const key = client.id + '::' + u;
-          const row = {
+          drafts.push({
             url: u,
             client_id: client.id,
-            generated_at: new Date().toISOString(),
             optimizations: Array.isArray(batchResults[j]) ? batchResults[j] : [],
             error: batchResults[j]?.error || null
-          };
-          newResults[key] = row;
-          saveAeoResult(row).catch(() => {});
+          });
         });
-        setResults({ ...newResults });
       }
+
+      const shortlist = selectTopOptimizations(drafts, { limit: itemTarget });
+      const stamp = new Date().toISOString();
+      const newResults = { ...results };
+      for (const row of shortlist.rows) {
+        const saved = { ...row, generated_at: stamp };
+        newResults[client.id + '::' + saved.url] = saved;
+        saveAeoResult(saved).catch(() => {});
+      }
+      setResults(newResults);
       setHistory(prev => [
         { id: crypto.randomUUID(), client_id: client.id, client_name: client.name, count: pageList.length, created_at: new Date().toISOString() },
         ...prev
       ]);
-      setProgress(`Done. Generated for ${pageList.length} pages.`);
+      const pagesWithWork = shortlist.rows.filter(r => (r.optimizations || []).length > 0).length;
+      setProgress(
+        `Done. ${shortlist.kept} optimizations kept across ${pagesWithWork} of ${pageList.length} pages` +
+        `${shortlist.dropped > 0 ? ` (${shortlist.dropped} lower-impact trimmed)` : ''}.`
+      );
     } catch (e) { setErr(e.message); }
     finally { setBusy(false); }
   }
@@ -1142,19 +1289,70 @@ export default function AEOEngine({ sub }) {
   }
 
   if (sub === 'Run Optimizations') {
+    // How many AEO clients still need their items generated this month.
+    const runnableAeoClients = aeoClients.filter(
+      c => c.sitemap_url || c.sitemap_raw || c.ga4_property_id || c.url
+    );
+    const generatedThisMonthIds = new Set(
+      Object.values(results)
+        .filter(r => (r.generated_at || '').slice(0, 7) === currentMonth)
+        .map(r => r.client_id)
+    );
+    const pendingCount = runnableAeoClients.filter(c => !generatedThisMonthIds.has(c.id)).length;
+
     return (
       <div className="content-area">
-        {/* Status bar — shows progress when running from a pipeline card */}
-        {(busy || progress || err) && (
-          <div className="card" style={{ marginBottom: 12, padding: '10px 16px', borderColor: busy ? ACCENT : err ? 'var(--red)' : 'var(--green)' }}>
-            <div className="row" style={{ gap: 10 }}>
-              {busy && <span className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} />}
-              <span style={{ fontSize: 13, color: err ? 'var(--red)' : busy ? 'var(--text)' : 'var(--green)' }}>
-                {err || progress || 'Running…'}
-              </span>
-            </div>
+        {/* Status bar — shows progress when running from a pipeline card or batch */}
+        {(busy || batchBusy || progress || batchProgress || err) && (
+          <div className="card" style={{ marginBottom: 12, padding: '10px 16px', borderColor: (busy || batchBusy) ? ACCENT : err ? 'var(--red)' : 'var(--green)' }}>
+            {batchProgress && (
+              <div className="row" style={{ gap: 10, marginBottom: (busy || progress || err) ? 6 : 0 }}>
+                {batchBusy && <span className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} />}
+                <span style={{ fontSize: 13, fontWeight: 600, color: batchBusy ? 'var(--text)' : 'var(--green)' }}>
+                  {batchProgress}
+                </span>
+              </div>
+            )}
+            {(busy || progress || err) && (
+              <div className="row" style={{ gap: 10 }}>
+                {busy && <span className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} />}
+                <span style={{ fontSize: 13, color: err ? 'var(--red)' : busy ? 'var(--text)' : 'var(--green)' }}>
+                  {err || progress || 'Running…'}
+                </span>
+              </div>
+            )}
           </div>
         )}
+
+        {/* Generate all clients' items for the month */}
+        <div className="card" style={{ marginBottom: 14, padding: 14, borderColor: ACCENT }}>
+          <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+            <div style={{ minWidth: 220, flex: 1 }}>
+              <strong style={{ fontSize: 14 }}>Generate all AEO items — {monthLabel}</strong>
+              <div className="muted" style={{ fontSize: 12, marginTop: 2 }}>
+                Runs the full pipeline for every AEO client, sequentially. {pendingCount > 0
+                  ? `${pendingCount} client${pendingCount === 1 ? '' : 's'} not yet generated this month.`
+                  : 'All clients already have items this month.'}
+              </div>
+            </div>
+            <div className="row" style={{ gap: 8, flexShrink: 0 }}>
+              <button
+                className="primary"
+                style={{ background: ACCENT, borderColor: ACCENT, color: '#000' }}
+                onClick={() => runForAllClients({ includeExisting: false })}
+                disabled={busy || batchBusy || pendingCount === 0}
+              >
+                {batchBusy ? 'Generating…' : `Generate Pending${pendingCount > 0 ? ` (${pendingCount})` : ''}`}
+              </button>
+              <button
+                onClick={() => { if (confirm(`Re-run the AEO pipeline for all ${runnableAeoClients.length} AEO clients? This regenerates items even where already done this month.`)) runForAllClients({ includeExisting: true }); }}
+                disabled={busy || batchBusy || runnableAeoClients.length === 0}
+              >
+                Re-run All
+              </button>
+            </div>
+          </div>
+        </div>
 
         {/* Pipeline overview */}
         <PipelineView

@@ -6,7 +6,7 @@
 // Built-in Claude uses the suite's sessionStorage key. The three others use
 // user-provided keys from localStorage (lib/settings.js).
 
-import { loadSettings } from '../../lib/settings.js';
+import { loadSettings, hasBuiltinEngine } from '../../lib/settings.js';
 import { getStoredApiKey } from '../../lib/auth.js';
 import { fetchWithTimeout } from '../../lib/http.js';
 
@@ -73,7 +73,9 @@ export const chatgpt = {
   // (retrieval visibility); search_off omits it (parametric visibility).
   retrievalNative: false,
   supportsSearchOff: true,
-  isConfigured: () => !!loadSettings().openaiKey,
+  // A personal OpenAI key OR the deployment's built-in key (served by the
+  // openai-proxy from OPENAI_API_KEY) makes ChatGPT available to everyone.
+  isConfigured: () => !!loadSettings().openaiKey || hasBuiltinEngine('chatgpt'),
   // One web-search attempt at a given retrieval depth. Deeper context =
   // ChatGPT reads more pages = it names more brands (closer to what you see
   // manually on chatgpt.com), but takes longer. Returns a normalised
@@ -110,70 +112,44 @@ export const chatgpt = {
   async ask(query, { search = true } = {}) {
     const { openaiKey } = loadSettings();
     const searchMode = search ? 'search_on' : 'search_off';
+    // A 401/403 is a bad / expired / forbidden key (or a project without
+    // access to gpt-4o or the web_search tool). Retrying or falling back to a
+    // no-search call is futile — the key is the problem — so flag it as a
+    // configError. The runner then benches ChatGPT for good AND the coverage
+    // warning says "check the key" instead of the engine silently cooldown-
+    // looping a doomed call across every prompt (a "Claude-only" report with
+    // no obvious reason). Mirrors Gemini's existing configError handling.
+    const isAuth = (x) => x.error && (x.status === 401 || x.status === 403);
     try {
       if (!search) {
         // Parametric: no web search, straight to the model.
         const r = await this._searchAt(query, null, openaiKey);
-        if (r.error) return { ...r, searchMode };
+        if (r.error) return { ...r, configError: isAuth(r) || undefined, searchMode };
         return { text: r.text, raw: r.raw, model: 'gpt-4o', searchMode };
       }
       // Retrieval: reliability first. A 'low' web search finishes inside
       // Netlify's 10s function limit far more often than 'medium' — and a
       // 'medium' 504 storm was benching ChatGPT out of the whole report (the
       // "only Claude showed up" symptom). So try 'low' web search first; if it
-      // still times out, fall back to a parametric (no-search) call, which is
-      // fast and can't 504, so ChatGPT returns SOMETHING instead of nothing.
-      const isTimeout = (x) => x.error && !x.rateLimited && (x.status === 504 || x.status === 502 || /timeout|timed out/i.test(x.error));
+      // fails for ANY reason other than a bad key or a sustained rate-limit,
+      // fall back to a parametric (no-search) call — that covers Netlify 504
+      // timeouts AND non-timeout failures (e.g. the web_search tool being
+      // rejected for the model/project), so ChatGPT returns SOMETHING instead
+      // of erroring to zero across the whole run.
       let usedMode = searchMode;
       let r = await this._searchAt(query, 'low', openaiKey);
-      if (isTimeout(r)) {
+      if (r.error && !r.rateLimited && !isAuth(r)) {
         const p = await this._searchAt(query, null, openaiKey);
         if (!p.error) { r = p; usedMode = 'search_off'; }   // parametric fallback succeeded
       }
       if (r.error) {
         // A 429 that survived retries is a sustained rate-limit — flag it so
-        // the runner cools ChatGPT down (not permanently benched).
-        return { error: r.error, rateLimited: r.rateLimited, searchMode };
+        // the runner cools ChatGPT down (not permanently benched). A 401/403
+        // is a bad key — flag it as configError so it's benched + surfaced.
+        return { error: r.error, rateLimited: r.rateLimited, configError: isAuth(r) || undefined, searchMode };
       }
       return { text: r.text, raw: r.raw, model: 'gpt-4o', searchMode: usedMode };
     } catch (e) { return { error: e.message, searchMode }; }
-  }
-};
-
-// ------- Perplexity --------------------------------------------------------
-export const perplexity = {
-  id: 'perplexity',
-  label: 'Perplexity',
-  model: 'sonar',
-  retrievalNative: true,      // always search_on (retrieval-native)
-  supportsSearchOff: false,
-  isConfigured: () => !!loadSettings().perplexityKey,
-  async ask(query) {
-    const { perplexityKey } = loadSettings();
-    try {
-      const res = await fetchJsonWithRetry('https://api.perplexity.ai/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: 'Bearer ' + perplexityKey
-        },
-        body: JSON.stringify({
-          model: 'sonar',
-          max_tokens: MAX_TOKENS,
-          messages: [
-            { role: 'system', content: 'Be precise and concise.' },
-            { role: 'user', content: query }
-          ]
-        })
-      });
-      if (!res.ok) {
-        const txt = await res.text().catch(() => '');
-        return { error: 'Perplexity ' + res.status + ' ' + txt.slice(0, 200), rateLimited: res.status === 429 };
-      }
-      const data = await res.json();
-      const text = data.choices?.[0]?.message?.content || '';
-      return { text, raw: data, model: 'sonar', searchMode: 'search_on' };
-    } catch (e) { return { error: e.message }; }
   }
 };
 
@@ -202,15 +178,17 @@ const RETRYABLE_GEMINI_STATUS = new Set([500, 502, 503, 504]);
 const GEMINI_RETRY_DELAYS_MS = [1000, 2000, 4000];
 
 async function geminiCall(model, body, apiKey) {
-  const url = 'https://generativelanguage.googleapis.com/v1beta/models/'
-    + model + ':generateContent?key=' + encodeURIComponent(apiKey);
+  // Route through the gemini-proxy Netlify function so the API key stays
+  // server-side. A personal key (apiKey) is forwarded as an override; when it's
+  // blank the proxy uses the built-in GOOGLE_AI_KEY env var. `body` is the
+  // generateContent payload (JSON string); the proxy forwards it to Google.
   let lastErr = null;
   for (let attempt = 0; attempt <= GEMINI_RETRY_DELAYS_MS.length; attempt++) {
     try {
-      const res = await fetchWithTimeout(url, {
+      const res = await fetchWithTimeout('/.netlify/functions/gemini-proxy', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body
+        body: JSON.stringify({ apiKey, model, payload: body })
       }, ENGINE_TIMEOUT_MS);
       if (res.ok) {
         const data = await res.json();
@@ -247,7 +225,9 @@ export const gemini = {
   model: GEMINI_PRIMARY,
   retrievalNative: true,      // always search_on (retrieval-native)
   supportsSearchOff: false,
-  isConfigured: () => !!loadSettings().googleAiKey,
+  // A personal Google AI key OR the deployment's built-in key (served by the
+  // gemini-proxy from GOOGLE_AI_KEY) makes Gemini available to everyone.
+  isConfigured: () => !!loadSettings().googleAiKey || hasBuiltinEngine('gemini'),
   async ask(query) {
     const { googleAiKey } = loadSettings();
     const body = JSON.stringify({ contents: [{ parts: [{ text: query }] }] });
@@ -318,7 +298,7 @@ export const claude = {
   }
 };
 
-export const ALL_ENGINES = [chatgpt, perplexity, gemini, claude];
+export const ALL_ENGINES = [chatgpt, gemini, claude];
 
 export function activeEngines() {
   return ALL_ENGINES.filter(e => e.isConfigured());
@@ -332,9 +312,8 @@ export function engineReadiness() {
   return ALL_ENGINES.map(e => ({ id: e.id, label: e.label, ready: !!e.isConfigured() }));
 }
 
-// The engines a full cross-engine snapshot is expected to cover. Perplexity is
-// optional (rarely keyed), so it's not part of the "did the run cover the core
-// three?" check the report uses.
+// The engines a full cross-engine snapshot is expected to cover — the complete
+// set now that Perplexity has been retired from the probe.
 export const CORE_ENGINE_IDS = ['claude', 'chatgpt', 'gemini'];
 
 // Resolve which run modes a probe runs on an engine (Requirement 5).

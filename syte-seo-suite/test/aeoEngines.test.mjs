@@ -16,7 +16,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SRC = fs.readFileSync(path.join(__dirname, '../src/modules/reports/aeoEngines.js'), 'utf8');
 
 const PATCHED = SRC
-  .replace("import { loadSettings } from '../../lib/settings.js';", 'const loadSettings = () => ({});')
+  .replace("import { loadSettings, hasBuiltinEngine } from '../../lib/settings.js';", 'const loadSettings = () => ({}); const hasBuiltinEngine = () => false;')
   .replace("import { getStoredApiKey } from '../../lib/auth.js';", 'const getStoredApiKey = () => null;')
   .replace("import { fetchWithTimeout } from '../../lib/http.js';",
            'const fetchWithTimeout = (...a) => globalThis.__fetchWithTimeout(...a);')
@@ -114,8 +114,9 @@ await t('CORE_ENGINE_IDS covers claude/chatgpt/gemini', async () => {
 
 await t('engineReadiness reports one entry per engine with a ready flag', async () => {
   const r = mod.engineReadiness();
-  assertEq(r.length, 4, 'four engines');
-  // loadSettings/getStoredApiKey are stubbed empty here, so nothing is ready.
+  assertEq(r.length, 3, 'three engines');
+  // loadSettings/getStoredApiKey are stubbed empty here (and hasBuiltinEngine
+  // is stubbed false), so nothing is ready.
   assertEq(r.every(e => e.ready === false), true, 'all not ready with no keys');
   assertEq(r.every(e => typeof e.label === 'string' && !!e.id), true, 'shape');
 });

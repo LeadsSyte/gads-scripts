@@ -55,5 +55,25 @@ t('saveSettings broadcasts SETTINGS_EVENT so open views refresh at once', () => 
   ok(dispatched.includes(s.SETTINGS_EVENT), 'SETTINGS_EVENT dispatched on save');
 });
 
+t('a blank field never wipes a stored key (modal saves all fields at once)', () => {
+  globalThis.localStorage.store = {};
+  // Both keys are configured and persisted.
+  s.saveSettings({ openaiKey: 'sk-a', googleAiKey: 'AIzab' });
+  // The modal re-saves the WHOLE form — and if it was opened before hydration
+  // landed, a box looks empty and arrives as ''. That must NOT blank the
+  // stored key, or the next AEO run drops to Claude-only.
+  s.saveSettings({ openaiKey: '', googleAiKey: 'AIzab' });
+  eq(s.loadSettings().openaiKey, 'sk-a', 'openai survived a blank re-save');
+  eq(s.loadSettings().googleAiKey, 'AIzab', 'gemini survived a blank re-save');
+  eq(s.engineStatus().chatgpt, true, 'chatgpt still configured');
+  eq(s.engineStatus().gemini, true, 'gemini still configured');
+});
+
+t('a corrupted settings blob loads as empty defaults without throwing', () => {
+  globalThis.localStorage.store = { 'syte-suite-settings': '{not valid json' };
+  const loaded = s.loadSettings();               // must not throw
+  eq(loaded.openaiKey, '', 'corrupt blob → empty openaiKey default');
+});
+
 console.log(`\n${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);

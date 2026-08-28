@@ -154,8 +154,15 @@ function renderKeywordSections(rd) {
 // aeoRanking: sorted competitive landscape including the brand
 // aeoOnly: when true, suppress all SEO sections (traffic table, keywords,
 //          top pages, PPC equivalent, generic top-pages from microJson).
-export function buildMicrositeHtml({ micro, client, monthLabel, previousMonthLabel, rankscale, reportData, aeoProbe, aeoCompare, aeoRanking, aeoOnly = false }) {
-  const aeo = micro?.aeoSection || {};
+// seoOnly: the mirror image — suppress every AEO section (AI visibility
+//          metrics, AEO month-on-month, competitive landscape, keyword
+//          wins, citation gaps, next-month AEO strategy, query × engine
+//          detail, Rankscale link). SEO and AEO are sold and reported as
+//          separate products, so a report is one or the other, never a
+//          blend. Every AEO input is dropped at the source below rather
+//          than gated per section, so sections added later stay covered.
+export function buildMicrositeHtml({ micro, client, monthLabel, previousMonthLabel, rankscale, reportData, aeoProbe, aeoCompare, aeoRanking, aeoOnly = false, seoOnly = false }) {
+  const aeo = seoOnly ? {} : (micro?.aeoSection || {});
   const showAeo = !!aeo.show && !aeoOnly;
   const ppc = micro?.ppcEquivalent || {};
   const showPpc = !!ppc.show && !aeoOnly;
@@ -164,10 +171,17 @@ export function buildMicrositeHtml({ micro, client, monthLabel, previousMonthLab
   const rd = aeoOnly ? {} : (reportData || {});
   const traffic = rd.traffic || {};
   const isEcom = rd.clientType === 'ecommerce';
-  const probe = aeoProbe || {};
-  const cmp = aeoCompare || null;
-  const ranking = aeoRanking || null;
+  const probe = seoOnly ? {} : (aeoProbe || {});
+  const cmp = seoOnly ? null : (aeoCompare || null);
+  const ranking = seoOnly ? null : (aeoRanking || null);
+  const aeoStrategy = seoOnly ? null : (micro?.aeoStrategy || null);
+  const aeoMomNarrative = seoOnly ? '' : (micro?.aeoMomNarrative || '');
+  const aeoCompetitiveNarrative = seoOnly ? '' : (micro?.aeoCompetitiveNarrative || '');
   const brandRank = ranking ? ranking.findIndex(r => r.isBrand) + 1 : null;
+  // Report type is part of the deliverable's identity — it goes in the
+  // title, hero pill and footer so a client can never mistake the AEO
+  // report for the SEO one (or vice versa).
+  const reportKind = seoOnly ? 'SEO Performance' : aeoOnly ? 'AEO Performance' : 'Performance';
 
   const highlights = (micro?.highlights || []).map(h => `
     <div class="metric">
@@ -221,10 +235,9 @@ export function buildMicrositeHtml({ micro, client, monthLabel, previousMonthLab
   const queryRows = showAeo ? (aeo.topQueries || []).map(q => `
     <tr>
       <td>${esc(q.query)}</td>
-      <td>${q.chatgpt    ? '✓' : '—'}</td>
-      <td>${q.perplexity ? '✓' : '—'}</td>
-      <td>${q.gemini     ? '✓' : '—'}</td>
-      <td>${q.claude     ? '✓' : '—'}</td>
+      <td>${q.chatgpt ? '✓' : '—'}</td>
+      <td>${q.gemini  ? '✓' : '—'}</td>
+      <td>${q.claude  ? '✓' : '—'}</td>
     </tr>
   `).join('') : '';
 
@@ -238,7 +251,8 @@ export function buildMicrositeHtml({ micro, client, monthLabel, previousMonthLab
     </div>
   `).join('') : '';
 
-  const rankscaleBtn = rankscale
+  // Rankscale is the AEO dashboard — it has no place in an SEO report.
+  const rankscaleBtn = (rankscale && !seoOnly)
     ? `<a class="btn" href="${esc(rankscale)}" target="_blank" rel="noreferrer">View Full Rankscale Dashboard →</a>`
     : '';
 
@@ -250,7 +264,7 @@ export function buildMicrositeHtml({ micro, client, monthLabel, previousMonthLab
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>${esc(client.name || 'Client')} — ${esc(monthLabel)} Report</title>
+<title>${esc(client.name || 'Client')} — ${esc(monthLabel)} ${esc(reportKind)} Report</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=Syne:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -385,7 +399,7 @@ export function buildMicrositeHtml({ micro, client, monthLabel, previousMonthLab
 
     <header class="hero">
       <div class="logo">SYTE</div>
-      <div class="pill">${esc(monthLabel)} Report</div>
+      <div class="pill">${esc(monthLabel)} · ${esc(reportKind)} Report</div>
       <h1>${esc(micro?.headline || 'Monthly performance update')}</h1>
       <p class="subhead">${esc(micro?.subheadline || '')}</p>
       <div class="prepared">Prepared by Alice, Syte Digital Agency — for ${esc(client.name)}</div>
@@ -445,13 +459,13 @@ export function buildMicrositeHtml({ micro, client, monthLabel, previousMonthLab
       ${engineTiles ? `<div class="engines">${engineTiles}</div>` : ''}
       ${queryRows ? `
       <table>
-        <thead><tr><th>Query</th><th>ChatGPT</th><th>Perplexity</th><th>Gemini</th><th>Claude</th></tr></thead>
+        <thead><tr><th>Query</th><th>ChatGPT</th><th>Gemini</th><th>Claude</th></tr></thead>
         <tbody>${queryRows}</tbody>
       </table>` : ''}
       ${competitors ? `<div style="margin-top:16px">${competitors}</div>` : ''}
       ${aeo.sentiment ? `<span class="sentiment-badge">${esc(aeo.sentiment)} of AI mentions are positive</span>` : ''}
       ${aeo.narrative ? `<p class="narrative" style="margin-top:16px">${esc(aeo.narrative)}</p>` : ''}
-      <p class="aeo-footer">Tracked across ChatGPT, Gemini, Perplexity &amp; Claude using Syte's proprietary AEO Snapshot methodology.</p>
+      <p class="aeo-footer">Tracked across ChatGPT, Gemini &amp; Claude using Syte's proprietary AEO Snapshot methodology.</p>
       ${rankscaleBtn}
     </section>` : ''}
 
@@ -463,13 +477,13 @@ export function buildMicrositeHtml({ micro, client, monthLabel, previousMonthLab
         (${(probe.engines_used || []).join(', ')}) across ${probe.scorable_probes || probe.queries_count || new Set(probe.per_query.map(r => r.query)).size} buyer prompts × ${probe.iterations || 1} iterations = ${probe.total_runs || probe.per_query.length} total responses.
       </p>
       ${(probe.mentions || 0) === 0 && (probe.citations || 0) === 0 && !cmp?.has_previous ? `
-      <!-- No signal yet → reframe as "Establishing baseline" rather than blasting six big "0%" panels at the client (which reads as a doom report even though it's a brand-new measurement). The detail table below still shows every query that was probed. -->
+      <!-- No signal yet → reframe as "Establishing the starting point" rather than blasting six big "0%" panels at the client (which reads as a doom report even though it's a brand-new measurement). The detail table below still shows every query that was probed. -->
       <div style="padding:24px;background:var(--surface);border:1px solid var(--border);border-radius:12px;margin-bottom:20px;border-left:4px solid var(--accent);">
         <div style="font-family:'DM Serif Display',serif;font-size:24px;line-height:1.2;color:var(--text);margin-bottom:8px;">
-          Establishing the AI-visibility baseline
+          Establishing your AI-visibility starting point
         </div>
         <p style="color:var(--muted);font-size:13px;margin:0;line-height:1.55;">
-          This is the first month of AEO measurement. We probed ${probe.queries_count || new Set(probe.per_query.map(r => r.query)).size} category-demand queries across ${probe.engines_used?.length || 0} engines and the brand isn't yet surfacing in answers — that's normal at month one and tells us exactly which queries are open opportunities. Next month's report will compare against this baseline so you can see momentum.
+          This is the first month of AEO measurement. We probed ${probe.queries_count || new Set(probe.per_query.map(r => r.query)).size} category-demand queries across ${probe.engines_used?.length || 0} engines and the brand isn't yet surfacing in answers — that's normal at month one and tells us exactly which queries are open opportunities. Next month's report will compare against this first snapshot so you can see momentum.
         </p>
       </div>` : `
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-bottom:20px;">
@@ -488,8 +502,8 @@ export function buildMicrositeHtml({ micro, client, monthLabel, previousMonthLab
           </div>
         `).join('')}
       </div>
-      ${cmp?.has_previous ? `<p style="color:var(--muted);font-size:12px;font-style:italic;">Deltas vs ${esc(previousMonthLabel || cmp.previous_month || 'last month')}</p>` : '<p style="color:var(--muted);font-size:12px;font-style:italic;">First snapshot — this is the baseline. MoM deltas appear from next month.</p>'}`}
-      ${micro?.aeoMomNarrative ? `<p class="narrative" style="margin-top:14px;">${esc(micro.aeoMomNarrative)}</p>` : ''}
+      ${cmp?.has_previous ? `<p style="color:var(--muted);font-size:12px;font-style:italic;">Deltas vs ${esc(previousMonthLabel || cmp.previous_month || 'last month')}</p>` : '<p style="color:var(--muted);font-size:12px;font-style:italic;">First snapshot: this is our starting point. MoM deltas appear from next month.</p>'}`}
+      ${aeoMomNarrative ? `<p class="narrative" style="margin-top:14px;">${esc(aeoMomNarrative)}</p>` : ''}
       ${(() => {
         // Surface per-engine health when any engine errored across runs —
         // otherwise the report quietly omits failed engines (engineScores
@@ -558,7 +572,7 @@ export function buildMicrositeHtml({ micro, client, monthLabel, previousMonthLab
           ? `<strong style="color:var(--green);">${esc(client.name)} leads</strong> all tracked competitors on visibility.`
           : `${esc(client.name)} ranks <strong>#${brandRank}</strong> of ${ranking.length} brands tracked. Closest leader: ${esc(ranking[0].name)} at ${ranking[0].visibility}%.`}
       </p>
-      ${micro?.aeoCompetitiveNarrative ? `<p class="narrative" style="margin-bottom:14px;">${esc(micro.aeoCompetitiveNarrative)}</p>` : ''}
+      ${aeoCompetitiveNarrative ? `<p class="narrative" style="margin-bottom:14px;">${esc(aeoCompetitiveNarrative)}</p>` : ''}
       <table class="data-table" style="width:100%;border-collapse:collapse;font-size:12px;">
         <thead>
           <tr style="border-bottom:2px solid var(--border);text-align:left;">
@@ -626,11 +640,11 @@ export function buildMicrositeHtml({ micro, client, monthLabel, previousMonthLab
       ` : ''}
     </section>` : ''}
 
-    ${micro?.aeoStrategy?.show && (micro.aeoStrategy?.priorities?.length || micro.aeoStrategy?.zeroOpportunity) ? `
+    ${aeoStrategy?.show && (aeoStrategy?.priorities?.length || aeoStrategy?.zeroOpportunity) ? `
     <section>
       <h2>Next Month's Strategy</h2>
       <p style="color:var(--muted);font-size:13px;margin-bottom:14px;">Based on emerging wins and zero-visibility category terms — these are the queries we're attacking next.</p>
-      ${(micro.aeoStrategy.priorities || []).map((p, i) => `
+      ${(aeoStrategy.priorities || []).map((p, i) => `
         <div style="padding:18px;background:var(--surface);border:1px solid var(--border);border-left:4px solid ${p.tier === 'Quick Win' ? 'var(--green)' : p.tier === 'Grow Share' ? 'var(--orange)' : 'var(--accent)'};border-radius:10px;margin-bottom:12px;">
           <div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:6px;">
             Priority ${i + 1} — ${esc(p.tier || 'Strategy')}
@@ -644,10 +658,10 @@ export function buildMicrositeHtml({ micro, client, monthLabel, previousMonthLab
           ` : ''}
         </div>
       `).join('')}
-      ${micro.aeoStrategy.zeroOpportunity ? `
+      ${aeoStrategy.zeroOpportunity ? `
         <div style="padding:16px 20px;background:linear-gradient(135deg,rgba(200,240,96,.08),rgba(167,139,250,.04));border:1px solid rgba(200,240,96,.25);border-radius:10px;margin-top:14px;">
           <div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--accent);margin-bottom:6px;">The 0% Terms — Biggest Opportunity</div>
-          <p style="font-size:14px;">${esc(micro.aeoStrategy.zeroOpportunity)}</p>
+          <p style="font-size:14px;">${esc(aeoStrategy.zeroOpportunity)}</p>
         </div>
       ` : ''}
     </section>` : ''}
@@ -847,7 +861,7 @@ export function buildMicrositeHtml({ micro, client, monthLabel, previousMonthLab
     <footer>
       <div class="logo">SYTE</div>
       <div>hello@syte.co.za &middot; syte.co.za</div>
-      <div class="confidential">Confidential — Prepared for ${esc(client.name)} &middot; ${esc(monthLabel)}</div>
+      <div class="confidential">Confidential — ${esc(reportKind)} Report prepared for ${esc(client.name)} &middot; ${esc(monthLabel)}</div>
     </footer>
   </div>
 </body>

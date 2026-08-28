@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { useClients } from '../../store/useClients.js';
-import { upsertClient, diagnoseSupabase } from '../../lib/supabase.js';
+import { upsertClient, updateClientFields, diagnoseSupabase } from '../../lib/supabase.js';
 import { syncWebceoClients } from '../technical/webceo.js';
 import ClientModal from '../../components/ClientModal.jsx';
 import ImportClientsModal from '../../components/ImportClientsModal.jsx';
@@ -194,7 +194,9 @@ export default function ClientsMaster() {
   async function toggleService(client, key, value) {
     setRowBusy(client.id); setErr('');
     try {
-      await upsertClient({ ...client, [key]: value });
+      // Write only the toggled flag — never the whole row — so this can't
+      // clobber a person assignment (or any other field) changed elsewhere.
+      await updateClientFields(client.id, { [key]: value });
       await reload();
     } catch (e) { setErr(e.message); }
     finally { setRowBusy(null); }
@@ -204,7 +206,9 @@ export default function ClientsMaster() {
   async function setPerson(client, field, value) {
     setRowBusy(client.id); setErr('');
     try {
-      await upsertClient({ ...client, [field]: value });
+      // Write only the changed person field so a concurrent/stale snapshot
+      // can't revert the other assignments back on save.
+      await updateClientFields(client.id, { [field]: value });
       await reload();
     } catch (e) { setErr(e.message); }
     finally { setRowBusy(null); }
