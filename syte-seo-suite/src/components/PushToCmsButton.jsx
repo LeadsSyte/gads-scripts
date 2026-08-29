@@ -15,7 +15,10 @@ import { pushItemInline, clientIsConnected } from '../modules/cms/pushAction.js'
 //   - label?: override button text (default "Push to CMS")
 //   - onSuccess?: (result) => void
 //   - disabled?: bool
-export default function PushToCmsButton({ item, client: clientProp, label = 'Push to CMS', onSuccess, disabled }) {
+// `compact` matches the smaller buttons this sits beside in dense lists
+// (Mark as Implemented, .txt, Delete). Without it this button renders at the
+// default size and towers over its neighbours.
+export default function PushToCmsButton({ item, client: clientProp, label = 'Push to CMS', onSuccess, disabled, compact = false }) {
   const selected = useClients(s => s.current());
   const client = clientProp || selected;
   const [busy, setBusy] = useState(false);
@@ -44,7 +47,11 @@ export default function PushToCmsButton({ item, client: clientProp, label = 'Pus
       <button
         onClick={go}
         disabled={disabled || busy || !client}
-        style={{ borderColor: 'var(--mod-cms)', color: 'var(--mod-cms)' }}
+        style={{
+          borderColor: 'var(--mod-cms)',
+          color: 'var(--mod-cms)',
+          ...(compact ? { fontSize: 11, padding: '5px 14px' } : {})
+        }}
         title={!connected ? 'Connect a CMS first (CMS module → Connector)' : 'Push to ' + (client?.cms_type || 'CMS')}
       >
         {busy ? 'Pushing…' : result ? 'Pushed ✓' : label}

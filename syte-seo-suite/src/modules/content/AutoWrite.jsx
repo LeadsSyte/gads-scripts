@@ -529,7 +529,10 @@ export default function AutoWrite() {
                         {a.opportunity_type && <span className="badge" style={{ marginLeft: 6, fontSize: 8 }}>{a.opportunity_type}</span>}
                       </div>
                     </div>
-                    <div className="row" style={{ gap: 6, flexShrink: 0, flexWrap: 'wrap' }}>
+                    {/* flexShrink must stay 1: with 0 the row keeps its full
+                        natural width, so flexWrap never triggers and the last
+                        buttons (.txt, Delete) were clipped off the edge. */}
+                    <div className="row" style={{ gap: 6, flexShrink: 1, flexWrap: 'wrap', minWidth: 0 }}>
                       {hasCms && (
                         <PushToCmsButton
                           item={{
@@ -544,6 +547,7 @@ export default function AutoWrite() {
                           // belongs to. Without it, it would use the dropdown
                           // selection and publish to the wrong site.
                           client={client}
+                          compact
                           label={hasShopify ? 'Push to Shopify' : 'Push to WP'}
                           onSuccess={r => { if (r?.live_url) setPushedUrls(prev => ({ ...prev, [a.id || i]: r.live_url })); }}
                         />
