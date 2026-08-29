@@ -46,16 +46,24 @@ export default function PushToCmsButton({ item, client: clientProp, label = 'Pus
     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
       <button
         onClick={go}
-        disabled={disabled || busy || !client}
+        // Disabled rather than hidden when the client has no CMS connection:
+        // an absent button reads as "the feature is broken", whereas a greyed
+        // one with a reason reads as "this client isn't set up yet".
+        disabled={disabled || busy || !client || !connected}
         style={{
           borderColor: 'var(--mod-cms)',
           color: 'var(--mod-cms)',
           ...(compact ? { fontSize: 11, padding: '5px 14px' } : {})
         }}
-        title={!connected ? 'Connect a CMS first (CMS module → Connector)' : 'Push to ' + (client?.cms_type || 'CMS')}
+        title={!connected
+          ? 'No CMS connection for ' + (client?.name || 'this client') + ' yet — add the credentials in CMS → Connector'
+          : 'Push to ' + (client?.cms_type || 'CMS')}
       >
         {busy ? 'Pushing…' : result ? 'Pushed ✓' : label}
       </button>
+      {!connected && client && (
+        <span className="muted" style={{ fontSize: 10 }}>not connected</span>
+      )}
       {result?.admin_url && (
         <a href={result.admin_url} target="_blank" rel="noreferrer" style={{ color: 'var(--mod-cms)', fontSize: 12 }}>
           Review in admin →

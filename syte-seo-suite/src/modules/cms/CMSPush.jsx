@@ -17,7 +17,13 @@ function statusBadge(s) {
     failed: 'red',
     skipped: ''
   };
-  const label = s === 'pushed' ? 'awaiting review' : s;
+  // Statuses are stored with underscores; never show the raw value.
+  const labels = {
+    pushed: 'awaiting review',
+    changes_requested: 'changes requested',
+    publish_failed: 'publish failed'
+  };
+  const label = labels[s] || String(s || '').replace(/_/g, ' ');
   return <span className={'badge ' + (map[s] || '')}>{label}</span>;
 }
 
@@ -173,9 +179,25 @@ export default function CMSPush({ sub }) {
   // Review actions: 'pushed' (awaiting review) → approved | changes_requested.
   // The publish-approved scheduled function flips approved rows live.
   async function setReviewStatus(item, status) {
+    // Rejecting without saying why leaves whoever picks it up guessing, so
+    // ask for a note and store it on the row where the reviewer can see it.
+    let note = '';
+    if (status === 'changes_requested') {
+      const answer = prompt('What needs changing on "' + (item.page_title || 'this article') + '"?\n\nThis is saved against the article so whoever fixes it knows what to do.', '');
+      if (answer === null) return;            // cancelled — leave the row alone
+      note = answer.trim();
+    }
     setBusy(true); setErr('');
     try {
-      await updateCmsQueueItem(item.id, { status });
+      const patch = { status };
+      if (status === 'changes_requested') {
+        patch.payload = {
+          ...(item.payload || {}),
+          change_comment: note,
+          changes_requested_at: new Date().toISOString()
+        };
+      }
+      await updateCmsQueueItem(item.id, patch);
       await refreshHistory();
     } catch (e) { setErr(e.message); }
     finally { setBusy(false); }
@@ -320,15 +342,17 @@ export default function CMSPush({ sub }) {
                           onChange={e => setP('default_author_id', e.target.value ? Number(e.target.value) : null)} />
                       </div>
                     </div>
-                    <div className="row" style={{ marginTop: 12, alignItems: 'center' }}>
-                      <label style={{ display: 'flex', alignItems: 'center', gap: 6, margin: 0 }}>
+                    {/* Both toggles in this card share one shape: checkbox +
+                        short label, explanation on the muted line beneath. */}
+                    <div className="row" style={{ marginTop: 14, alignItems: 'center' }}>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: 8, margin: 0 }}>
                         <input type="checkbox" checked={profile.notifications_enabled}
                           onChange={e => setP('notifications_enabled', e.target.checked)} />
-                        <strong>Send email notifications for this client</strong>
+                        Send email notifications for this client
                       </label>
                     </div>
                     <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>
-                      Off by default. While off, drafts are still created and can still be approved —
+                      Off by default. Drafts are still created and can still be approved while it is off —
                       nobody is emailed about them.
                     </div>
                     <div className="grid-2" style={{ marginTop: 10, opacity: profile.notifications_enabled ? 1 : 0.45 }}>
@@ -360,12 +384,16 @@ export default function CMSPush({ sub }) {
                         </div>
                       )}
                     </div>
-                    <div className="row" style={{ marginTop: 10, alignItems: 'center' }}>
-                      <label style={{ display: 'flex', alignItems: 'center', gap: 6, margin: 0 }}>
+                    <div className="row" style={{ marginTop: 14, alignItems: 'center' }}>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: 8, margin: 0 }}>
                         <input type="checkbox" checked={profile.strip_leading_h1}
                           onChange={e => setP('strip_leading_h1', e.target.checked)} />
-                        Strip article H1 into the post title (prevents double titles — leave on unless this theme needs it)
+                        Strip the article H1 into the post title
                       </label>
+                    </div>
+                    <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>
+                      Stops the title appearing twice. Leave on unless this client's theme
+                      does not render the post title itself.
                     </div>
                     <div className="row" style={{ marginTop: 10 }}>
                       <button onClick={() => saveConnector({}, 'Profile saved.', 'profile')} disabled={busy}>Save Profile</button>
@@ -448,8 +476,23 @@ export default function CMSPush({ sub }) {
                   <td><span className="badge">{item.change_type}</span></td>
                   <td>{statusBadge(item.status)}</td>
                   <td>
-                    {item.payload?.admin_url && (
-                      <a href={item.payload.admin_url} target="_blank" rel="noreferrer" style={{ color: ACCENT }}>Admin →</a>
+                    {/* Preview first — it renders the draft in the client's own
+                        theme, which is what a reviewer wants. Edit is the
+                        secondary link for actually changing the article.
+                        Older rows have no preview_url, so fall back to edit. */}
+                    {(item.payload?.preview_url || item.payload?.admin_url) && (
+                      <div className="row" style={{ gap: 8 }}>
+                        <a href={item.payload.preview_url || item.payload.admin_url} target="_blank" rel="noreferrer"
+                           style={{ color: ACCENT }} title="Opens the draft rendered in the client's theme">
+                          Preview →
+                        </a>
+                        {item.payload?.admin_url && (
+                          <a href={item.payload.admin_url} target="_blank" rel="noreferrer"
+                             className="muted" style={{ fontSize: 11 }} title="Open in the WordPress editor">
+                            Edit
+                          </a>
+                        )}
+                      </div>
                     )}
                     {item.payload?.verification === 'verified' && (
                       <div style={{ color: 'var(--green)', fontSize: 11 }} title="We re-read the draft in the CMS and it looks right">

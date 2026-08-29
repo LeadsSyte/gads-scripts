@@ -68,6 +68,7 @@ export async function pushItemInline(client, item) {
       payload: {
         ...(row.payload || {}),
         admin_url: result.admin_url || '',
+        preview_url: result.preview_url || '',
         live_url: result.link || '',
         // The publish-approved scheduled function needs these to flip the
         // draft live after approval — without an id it can't publish.

@@ -533,7 +533,10 @@ export default function AutoWrite() {
                         natural width, so flexWrap never triggers and the last
                         buttons (.txt, Delete) were clipped off the edge. */}
                     <div className="row" style={{ gap: 6, flexShrink: 1, flexWrap: 'wrap', minWidth: 0 }}>
-                      {hasCms && (
+                      {/* Always rendered. The button disables itself and says
+                          "not connected" when the client has no credentials,
+                          which is far clearer than the button vanishing. */}
+                      {(
                         <PushToCmsButton
                           item={{
                             module: 'content',
