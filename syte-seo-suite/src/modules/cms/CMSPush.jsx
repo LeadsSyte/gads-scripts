@@ -43,11 +43,34 @@ export default function CMSPush({ sub }) {
   const [form, setForm] = useState({});
   useEffect(() => { if (client) setForm(client); }, [client?.id]);
 
+  const [showAllAttempts, setShowAllAttempts] = useState(false);
+
   async function refreshHistory() {
     if (!client) { setHistory([]); return; }
     try { setHistory(await listCmsQueue(client.id)); }
     catch (e) { setErr(e.message); }
   }
+
+  // Every push is logged, so re-pushing an article after a fix leaves a row
+  // behind each time — and the older rows point at drafts that may since
+  // have been replaced or deleted. Show the latest attempt per article by
+  // default, and count the rest rather than listing them.
+  const latestPerArticle = React.useMemo(() => {
+    const sorted = [...history].sort((a, b) =>
+      new Date(b.pushed_at || b.created_at) - new Date(a.pushed_at || a.created_at));
+    const seen = new Map();
+    for (const row of sorted) {
+      const key = (row.page_title || '').trim().toLowerCase();
+      if (!seen.has(key)) seen.set(key, { row, earlier: 0 });
+      else seen.get(key).earlier++;
+    }
+    return [...seen.values()];
+  }, [history]);
+
+  const supersededCount = history.length - latestPerArticle.length;
+  const visibleRows = showAllAttempts
+    ? history.map(row => ({ row, earlier: 0 }))
+    : latestPerArticle;
   useEffect(() => { refreshHistory(); }, [client?.id]);
 
   // successMsg/scope let callers keep their own result visible — this used
@@ -345,7 +368,7 @@ export default function CMSPush({ sub }) {
                     {/* Both toggles in this card share one shape: checkbox +
                         short label, explanation on the muted line beneath. */}
                     <div className="row" style={{ marginTop: 14, alignItems: 'center' }}>
-                      <label style={{ display: 'flex', alignItems: 'center', gap: 8, margin: 0 }}>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: 8, margin: 0, width: '100%' }}>
                         <input type="checkbox" checked={profile.notifications_enabled}
                           onChange={e => setP('notifications_enabled', e.target.checked)} />
                         Send email notifications for this client
@@ -385,7 +408,7 @@ export default function CMSPush({ sub }) {
                       )}
                     </div>
                     <div className="row" style={{ marginTop: 14, alignItems: 'center' }}>
-                      <label style={{ display: 'flex', alignItems: 'center', gap: 8, margin: 0 }}>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: 8, margin: 0, width: '100%' }}>
                         <input type="checkbox" checked={profile.strip_leading_h1}
                           onChange={e => setP('strip_leading_h1', e.target.checked)} />
                         Strip the article H1 into the post title
@@ -457,13 +480,21 @@ export default function CMSPush({ sub }) {
         <div className="muted" style={{ fontSize: 13, marginBottom: 12 }}>
           Every inline push from Content Engine, Technical SEO, and AEO Engine is logged here.
         </div>
+        {supersededCount > 0 && (
+          <div className="muted" style={{ fontSize: 12, marginBottom: 10 }}>
+            Showing the latest push per article. {supersededCount} earlier attempt{supersededCount > 1 ? 's are' : ' is'} hidden.{' '}
+            <a href="#" onClick={e => { e.preventDefault(); setShowAllAttempts(v => !v); }} style={{ color: ACCENT }}>
+              {showAllAttempts ? 'Hide them' : 'Show every attempt'}
+            </a>
+          </div>
+        )}
         <div className="card">
           <table>
             <thead>
               <tr><th>Date</th><th>Module</th><th>Page</th><th>Type</th><th>Status</th><th>Review</th></tr>
             </thead>
             <tbody>
-              {history.map(item => (
+              {visibleRows.map(({ row: item, earlier }) => (
                 <tr key={item.id}>
                   <td className="muted" style={{ fontSize: 12 }}>
                     {item.pushed_at ? new Date(item.pushed_at).toLocaleString() : new Date(item.created_at).toLocaleString()}
@@ -472,6 +503,11 @@ export default function CMSPush({ sub }) {
                   <td style={{ maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis' }}>
                     <div style={{ fontWeight: 600 }}>{item.page_title}</div>
                     <div className="muted" style={{ fontSize: 11 }}>{item.page_url}</div>
+                    {earlier > 0 && (
+                      <div className="muted" style={{ fontSize: 10 }}>
+                        re-pushed · {earlier} earlier attempt{earlier > 1 ? 's' : ''} superseded
+                      </div>
+                    )}
                   </td>
                   <td><span className="badge">{item.change_type}</span></td>
                   <td>{statusBadge(item.status)}</td>
