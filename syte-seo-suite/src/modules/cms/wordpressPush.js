@@ -154,6 +154,9 @@ export async function pushContentToWordPress(client, item) {
   }
 
   const adminUrl = client.wp_url.replace(/\/+$/, '') + '/wp-admin/post.php?post=' + created.id + '&action=edit';
+  // Renders the draft in the client's own theme — what a reviewer actually
+  // wants to see. Requires being logged into that site, same as the editor.
+  const previewUrl = client.wp_url.replace(/\/+$/, '') + '/?p=' + created.id + '&preview=true';
 
   // WordPress drafts return `link` as a preview URL (?p=123), not the
   // real permalink. Build the actual URL from the slug WordPress assigned
@@ -172,6 +175,7 @@ export async function pushContentToWordPress(client, item) {
   return {
     ok: true,
     admin_url: adminUrl,
+    preview_url: previewUrl,
     link: realLink,
     wp_id: created.id,
     wp_slug: created.slug,

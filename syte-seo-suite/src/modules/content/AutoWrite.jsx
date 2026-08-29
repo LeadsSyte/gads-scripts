@@ -529,8 +529,14 @@ export default function AutoWrite() {
                         {a.opportunity_type && <span className="badge" style={{ marginLeft: 6, fontSize: 8 }}>{a.opportunity_type}</span>}
                       </div>
                     </div>
-                    <div className="row" style={{ gap: 6, flexShrink: 0, flexWrap: 'wrap' }}>
-                      {hasCms && (
+                    {/* flexShrink must stay 1: with 0 the row keeps its full
+                        natural width, so flexWrap never triggers and the last
+                        buttons (.txt, Delete) were clipped off the edge. */}
+                    <div className="row" style={{ gap: 6, flexShrink: 1, flexWrap: 'wrap', minWidth: 0 }}>
+                      {/* Always rendered. The button disables itself and says
+                          "not connected" when the client has no credentials,
+                          which is far clearer than the button vanishing. */}
+                      {(
                         <PushToCmsButton
                           item={{
                             module: 'content',
@@ -539,6 +545,12 @@ export default function AutoWrite() {
                             change_type: 'article',
                             payload: { html: a.output, meta_title: a.topic, primary_keyword: a.keyword }
                           }}
+                          // This pipeline lists every client at once, so the
+                          // button must be told which client this article
+                          // belongs to. Without it, it would use the dropdown
+                          // selection and publish to the wrong site.
+                          client={client}
+                          compact
                           label={hasShopify ? 'Push to Shopify' : 'Push to WP'}
                           onSuccess={r => { if (r?.live_url) setPushedUrls(prev => ({ ...prev, [a.id || i]: r.live_url })); }}
                         />

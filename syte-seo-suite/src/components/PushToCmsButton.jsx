@@ -7,11 +7,20 @@ import { pushItemInline, clientIsConnected } from '../modules/cms/pushAction.js'
 //
 // Props:
 //   - item: { module, page_url, page_title, change_type, payload }
+//   - client?: the client this item belongs to. REQUIRED anywhere the view
+//     lists more than one client's content. Without it the button falls back
+//     to the globally selected client, which in a multi-client list is
+//     whatever happens to be in the dropdown — that published one client's
+//     article to a different client's website.
 //   - label?: override button text (default "Push to CMS")
 //   - onSuccess?: (result) => void
 //   - disabled?: bool
-export default function PushToCmsButton({ item, label = 'Push to CMS', onSuccess, disabled }) {
-  const client = useClients(s => s.current());
+// `compact` matches the smaller buttons this sits beside in dense lists
+// (Mark as Implemented, .txt, Delete). Without it this button renders at the
+// default size and towers over its neighbours.
+export default function PushToCmsButton({ item, client: clientProp, label = 'Push to CMS', onSuccess, disabled, compact = false }) {
+  const selected = useClients(s => s.current());
+  const client = clientProp || selected;
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null);
   const [err, setErr] = useState('');
@@ -37,12 +46,24 @@ export default function PushToCmsButton({ item, label = 'Push to CMS', onSuccess
     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
       <button
         onClick={go}
-        disabled={disabled || busy || !client}
-        style={{ borderColor: 'var(--mod-cms)', color: 'var(--mod-cms)' }}
-        title={!connected ? 'Connect a CMS first (CMS module → Connector)' : 'Push to ' + (client?.cms_type || 'CMS')}
+        // Disabled rather than hidden when the client has no CMS connection:
+        // an absent button reads as "the feature is broken", whereas a greyed
+        // one with a reason reads as "this client isn't set up yet".
+        disabled={disabled || busy || !client || !connected}
+        style={{
+          borderColor: 'var(--mod-cms)',
+          color: 'var(--mod-cms)',
+          ...(compact ? { fontSize: 11, padding: '5px 14px' } : {})
+        }}
+        title={!connected
+          ? 'No CMS connection for ' + (client?.name || 'this client') + ' yet — add the credentials in CMS → Connector'
+          : 'Push to ' + (client?.cms_type || 'CMS')}
       >
         {busy ? 'Pushing…' : result ? 'Pushed ✓' : label}
       </button>
+      {!connected && client && (
+        <span className="muted" style={{ fontSize: 10 }}>not connected</span>
+      )}
       {result?.admin_url && (
         <a href={result.admin_url} target="_blank" rel="noreferrer" style={{ color: 'var(--mod-cms)', fontSize: 12 }}>
           Review in admin →
