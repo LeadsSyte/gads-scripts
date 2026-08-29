@@ -539,6 +539,11 @@ export default function AutoWrite() {
                             change_type: 'article',
                             payload: { html: a.output, meta_title: a.topic, primary_keyword: a.keyword }
                           }}
+                          // This pipeline lists every client at once, so the
+                          // button must be told which client this article
+                          // belongs to. Without it, it would use the dropdown
+                          // selection and publish to the wrong site.
+                          client={client}
                           label={hasShopify ? 'Push to Shopify' : 'Push to WP'}
                           onSuccess={r => { if (r?.live_url) setPushedUrls(prev => ({ ...prev, [a.id || i]: r.live_url })); }}
                         />

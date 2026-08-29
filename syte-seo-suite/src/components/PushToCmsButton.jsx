@@ -7,11 +7,17 @@ import { pushItemInline, clientIsConnected } from '../modules/cms/pushAction.js'
 //
 // Props:
 //   - item: { module, page_url, page_title, change_type, payload }
+//   - client?: the client this item belongs to. REQUIRED anywhere the view
+//     lists more than one client's content. Without it the button falls back
+//     to the globally selected client, which in a multi-client list is
+//     whatever happens to be in the dropdown — that published one client's
+//     article to a different client's website.
 //   - label?: override button text (default "Push to CMS")
 //   - onSuccess?: (result) => void
 //   - disabled?: bool
-export default function PushToCmsButton({ item, label = 'Push to CMS', onSuccess, disabled }) {
-  const client = useClients(s => s.current());
+export default function PushToCmsButton({ item, client: clientProp, label = 'Push to CMS', onSuccess, disabled }) {
+  const selected = useClients(s => s.current());
+  const client = clientProp || selected;
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null);
   const [err, setErr] = useState('');
