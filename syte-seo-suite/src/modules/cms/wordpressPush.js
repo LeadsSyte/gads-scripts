@@ -2,10 +2,12 @@
 // so Wordfence, Cloudflare, and CORS never block them.
 // CRITICAL: every created post uses status=draft. NEVER publish.
 
-import { wpRequest, findBySlug, updatePostMeta, createDraftPost, uploadMedia } from './wpApi.js';
+import { wpRequest, findBySlug, findEditablePostByTitle, updatePostMeta, createDraftPost, updateDraftPost, uploadMedia } from './wpApi.js';
 import { generateHeroImage } from '../content/imageGen.js';
 import { loadSettings } from '../../lib/settings.js';
 import { markdownToHtml } from '../content/articleParser.js';
+import { parseArticleBody, slugifyTitle } from './parseArticle.js';
+import { getPublishingProfile } from './publishingProfile.js';
 
 function slugFromUrl(pageUrl) {
   try {
@@ -13,39 +15,6 @@ function slugFromUrl(pageUrl) {
     const parts = u.pathname.split('/').filter(Boolean);
     return parts[parts.length - 1] || '';
   } catch { return ''; }
-}
-
-// Parse the raw Claude output into body vs metadata sections so we only
-// push clean article HTML to WordPress, not the meta/schema/QA blocks.
-function parseArticleBody(raw) {
-  if (!raw) return { body: '', metaTitle: '', metaDesc: '' };
-
-  let text = raw;
-
-  // Strip code fences: ```html ... ``` or ``` ... ```
-  text = text.replace(/^```(?:html)?\s*\n?/i, '').replace(/\n?```\s*$/i, '');
-  // If the whole thing is wrapped in a single code fence, strip it.
-  if (/^```/.test(text)) {
-    text = text.replace(/^```(?:html)?\s*\n/i, '');
-    const lastFence = text.lastIndexOf('```');
-    if (lastFence > 0) text = text.slice(0, lastFence);
-  }
-
-  const metaTitleMatch = text.match(/\*?\*?Meta Title\*?\*?:?\s*(.+)/i);
-  const metaDescMatch  = text.match(/\*?\*?Meta Description\*?\*?:?\s*(.+)/i);
-
-  // The article body is everything before the first **Meta Title or ```json.
-  const bodyEnd = text.search(/\*?\*?Meta Title\*?\*?:|```json/i);
-  let body = bodyEnd > 0 ? text.slice(0, bodyEnd).trim() : text.trim();
-
-  // Strip any remaining code fences inside the body.
-  body = body.replace(/```(?:html)?\s*\n?/gi, '').replace(/\n?```/g, '');
-
-  return {
-    body,
-    metaTitle: metaTitleMatch ? metaTitleMatch[1].trim().replace(/\*+/g, '') : '',
-    metaDesc:  metaDescMatch  ? metaDescMatch[1].trim().replace(/\*+/g, '') : '',
-  };
 }
 
 // markdownToHtml lives in ../content/articleParser.js so the CMS push,
@@ -84,23 +53,28 @@ export async function pushMetaToWordPress(client, item) {
 
 export async function pushContentToWordPress(client, item) {
   const p = item.payload || {};
+  const profile = getPublishingProfile(client);
 
   // Parse the raw output to extract just the article body (no meta/schema/QA)
   // and convert from markdown to clean HTML.
   const rawContent = p.html || p.code || p.fix || '';
-  const parsed = parseArticleBody(rawContent);
-  const cleanHtml = markdownToHtml(parsed.body);
+  const parsed = parseArticleBody(rawContent, { stripH1: profile.strip_leading_h1 });
+  let cleanHtml = markdownToHtml(parsed.body);
 
-  // Use parsed meta title if available, fall back to item title.
-  const title = parsed.metaTitle || item.page_title || 'Syte SEO draft';
+  // Post title: the article's own H1 (now stripped from the body so themes
+  // don't render a double title). Meta title is the SEO <title>, which is
+  // usually different (has the brand suffix) — don't conflate them.
+  const title = parsed.articleTitle || parsed.metaTitle || item.page_title || 'Syte SEO draft';
   const metaTitle = parsed.metaTitle || p.meta_title || title;
   const metaDesc = parsed.metaDesc || p.meta_description || '';
   const keyword = p.primary_keyword || '';
 
   // Auto-generate and upload a featured image if an image API key is set.
   let featuredMediaId = null;
+  let inlineHeroHtml = '';
   const settings = loadSettings();
-  const hasImageApi = !!(settings.openaiKey || settings.googleAiKey);
+  const heroWanted = profile.hero_mode !== 'none';
+  const hasImageApi = heroWanted && !!(settings.openaiKey || settings.googleAiKey);
   if (hasImageApi) {
     try {
       // Auto flow on CMS push — try whichever provider works, since the
@@ -109,21 +83,44 @@ export async function pushContentToWordPress(client, item) {
       const base64 = img.dataUrl.replace(/^data:image\/\w+;base64,/, '');
       const safeName = (title || 'hero').replace(/[^a-z0-9]+/gi, '-').slice(0, 50) + '.png';
       const attachment = await uploadMedia(client, base64, safeName);
-      featuredMediaId = attachment.id;
+      // hero_mode decides placement: featured image, inline at the top of
+      // the body (for themes that don't render featured images), or both.
+      if (profile.hero_mode === 'featured-only' || profile.hero_mode === 'both') {
+        featuredMediaId = attachment.id;
+      }
+      if (profile.hero_mode === 'inline-only' || profile.hero_mode === 'both') {
+        const src = attachment.source_url || '';
+        if (src) inlineHeroHtml = '<img src="' + src + '" alt="' + (title || '').replace(/"/g, '&quot;') + '" />\n';
+      }
     } catch (e) {
       console.warn('Featured image generation/upload failed (post still created):', e.message);
     }
   }
+  if (inlineHeroHtml) cleanHtml = inlineHeroHtml + cleanHtml;
 
-  // Create the draft post with clean HTML content. Meta fields are set
-  // in a SEPARATE follow-up call because WordPress 403s if the meta keys
-  // aren't registered for REST yet (requires the PHP snippet on the WP side).
-  const created = await createDraftPost(client, {
+  // Re-push protection: if a draft with this title's slug already exists,
+  // update it in place instead of creating a duplicate.
+  const restBase = profile.post_type_rest_base || 'posts';
+  // Match on title, not slug: WordPress leaves a draft's slug empty until it
+  // is published, so a slug lookup silently found nothing and every re-push
+  // created another draft.
+  let existing = null;
+  try { existing = await findEditablePostByTitle(client, title, restBase); } catch { /* lookup is best-effort */ }
+
+  // Create (or update) the draft post with clean HTML content. Meta fields
+  // are set in a SEPARATE follow-up call because WordPress 403s if the meta
+  // keys aren't registered for REST yet (requires the PHP snippet on the WP side).
+  const postFields = {
     title,
     content: cleanHtml,
     status: 'draft', // HARD CONSTRAINT — never publish
-    featured_media: featuredMediaId || undefined
-  });
+    featured_media: featuredMediaId || undefined,
+    categories: profile.default_category_id ? [profile.default_category_id] : undefined,
+    author: profile.default_author_id || undefined
+  };
+  const created = existing
+    ? await updateDraftPost(client, existing.id, postFields, restBase)
+    : await createDraftPost(client, postFields, restBase);
 
   // Follow-up: set Yoast + RankMath fields. If this fails (meta keys
   // not registered), we log a warning but the draft is already created.
@@ -135,19 +132,25 @@ export async function pushContentToWordPress(client, item) {
     _yoast_wpseo_metadesc:    metaDesc,
     _yoast_wpseo_focuskw:     keyword
   };
+  // updatePostMeta already wraps its argument in { meta: ... }. Passing
+  // { meta: metaFields } therefore sent { meta: { meta: {...} } }, and
+  // WordPress silently ignores meta keys it does not recognise — returning
+  // 200 while writing nothing. The SEO fields looked set for months and
+  // were empty on the page. Send the flat object, then read it back:
+  // a 200 from WordPress is not evidence the value stuck.
   let metaStatus = 'skipped';
   try {
-    await updatePostMeta(client, 'posts', created.id, { meta: metaFields });
-    metaStatus = 'set';
+    await updatePostMeta(client, restBase, created.id, metaFields);
+    const check = await wpRequest(client, { path: 'wp/v2/' + restBase + '/' + created.id + '?context=edit' });
+    const stored = check?.meta || {};
+    const titleStored = !!(stored._yoast_wpseo_title || stored.rank_math_title);
+    const descStored = !metaDesc || !!(stored._yoast_wpseo_metadesc || stored.rank_math_description);
+    metaStatus = (titleStored && descStored)
+      ? 'set'
+      : 'ignored by WordPress — the SEO meta keys are not registered for the REST API on this site (needs the PHP snippet)';
   } catch (e) {
-    // Try without the wrapper — some WP versions want flat meta, some want nested.
-    try {
-      await updatePostMeta(client, 'posts', created.id, metaFields);
-      metaStatus = 'set';
-    } catch (e2) {
-      console.warn('RankMath/Yoast meta update failed (post still created):', e2.message);
-      metaStatus = 'failed — add the PHP snippet to WordPress (see suite docs)';
-    }
+    console.warn('SEO meta update failed (post still created):', e.message);
+    metaStatus = 'failed — ' + e.message;
   }
 
   const adminUrl = client.wp_url.replace(/\/+$/, '') + '/wp-admin/post.php?post=' + created.id + '&action=edit';
@@ -160,7 +163,25 @@ export async function pushContentToWordPress(client, item) {
     ? baseUrl + '/' + created.slug + '/'
     : created.link || '';
 
-  return { ok: true, admin_url: adminUrl, link: realLink, wp_id: created.id, wp_slug: created.slug };
+  // Surface degradations instead of swallowing them — an unattended batch
+  // run must never look "green" when SEO meta or the hero image failed.
+  const warnings = [];
+  if (metaStatus !== 'set') warnings.push('SEO meta not set: ' + metaStatus);
+  if (hasImageApi && !featuredMediaId) warnings.push('featured image failed — draft has no hero image');
+
+  return {
+    ok: true,
+    admin_url: adminUrl,
+    link: realLink,
+    wp_id: created.id,
+    wp_slug: created.slug,
+    rest_base: restBase,
+    meta_title: metaTitle,
+    meta_desc: metaDesc,
+    updated_existing: !!existing,
+    meta_status: metaStatus,
+    warnings
+  };
 }
 
 export async function pushToWordPress(client, item) {

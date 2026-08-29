@@ -2,3 +2,6 @@
 *.env
 .env.*
 secrets.*
+
+# Internal planning and client-access notes — never commit to a public repo
+docs/

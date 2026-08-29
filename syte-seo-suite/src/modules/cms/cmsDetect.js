@@ -65,11 +65,9 @@ export async function testWordPress(wpUrl, username, appPassword) {
 }
 
 export async function testShopify(store, token) {
-  const cleanStore = store.replace(/^https?:\/\//, '').replace(/\/$/, '');
-  const res = await fetch('https://' + cleanStore + '/admin/api/2024-01/shop.json', {
-    headers: { 'X-Shopify-Access-Token': token }
-  });
-  if (!res.ok) throw new Error('Shopify auth failed: ' + res.status);
-  const j = await res.json();
+  // Route through the Netlify shopify-proxy — the Admin API blocks
+  // browser-origin requests, so a direct fetch always failed here.
+  const { shopifyRequest } = await import('./shopifyApi.js');
+  const j = await shopifyRequest({ shopify_store: store, shopify_token: token }, { path: 'shop.json' });
   return j.shop?.name || 'connected';
 }

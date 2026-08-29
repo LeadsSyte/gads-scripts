@@ -19,6 +19,19 @@ export async function handler(event) {
     return { statusCode: 405, headers: corsHeaders(), body: 'Method Not Allowed' };
   }
 
+  // Auth gate: when WP_PROXY_AUTH is set (SHA-256 hex of the suite key),
+  // require the matching X-Suite-Auth header. Without it this function is
+  // an open relay anyone on the internet can push WP requests through.
+  // Enforcement is opt-in via the env var so deploys stay backwards-
+  // compatible until the frontend that sends the header is live.
+  const requiredAuth = process.env.WP_PROXY_AUTH;
+  if (requiredAuth) {
+    const given = event.headers['x-suite-auth'] || event.headers['X-Suite-Auth'] || '';
+    if (given !== requiredAuth) {
+      return { statusCode: 401, headers: corsHeaders(), body: JSON.stringify({ error: 'Unauthorized' }) };
+    }
+  }
+
   let payload;
   try { payload = JSON.parse(event.body || '{}'); }
   catch { return { statusCode: 400, headers: corsHeaders(), body: 'Invalid JSON' }; }
@@ -86,9 +99,12 @@ export async function handler(event) {
 }
 
 function corsHeaders() {
+  // Restrict browsers to the suite's own origin (overridable via env for
+  // local dev). Server-to-server callers are unaffected by CORS; the
+  // WP_PROXY_AUTH gate above is what actually blocks them.
   return {
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Allow-Origin': process.env.ALLOWED_ORIGIN || 'https://syte-seo-suite.netlify.app',
+    'Access-Control-Allow-Headers': 'Content-Type, X-Suite-Auth',
     'Access-Control-Allow-Methods': 'POST, OPTIONS'
   };
 }
