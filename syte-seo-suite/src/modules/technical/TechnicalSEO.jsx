@@ -391,7 +391,10 @@ function TaskCard({ task: t, onUpdate, onMarkDone, onVerify, onReject, busy, bui
                 // Marking implemented + verified must also flip the task's own
                 // status, otherwise the badge stays at its last value (e.g.
                 // FAILED) while a verified impl row exists — the two sources of
-                // truth disagree and the pipeline card looks unverified.
+                // truth disagree and the pipeline card looks unverified. This
+                // fires for a developer handover too: emailing the change to
+                // the client's dev is delivered work (deliveryStatus.js), so
+                // the task must not stay OPEN behind it.
                 onUpdate(t.id, { status: 'verified' });
                 onVerified?.();
               }}

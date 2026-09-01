@@ -231,5 +231,35 @@ await t('does not crash with completely minimal input', () => {
   assertContains(html, '</html>');
 });
 
+// The report covers the month that has happened — it carries no plan for
+// the next one. The model can still emit the old forward-looking keys from a
+// cached generation; the renderer must drop them rather than print a plan.
+await t('never renders next-month plans, even if the payload carries them', () => {
+  const html = buildMicrositeHtml({
+    micro: {
+      ...MICRO_BASE,
+      whatNext: 'Next month we will attack pallet racking queries.',
+      aeoStrategy: {
+        show: true,
+        priorities: [{ tier: 'Quick Win', title: 'Pallet Racking South Africa', rationale: 'Close to winning.', tags: ['FAQ Schema'] }],
+        zeroOpportunity: 'The 0% terms are the foundation play.'
+      }
+    },
+    client: CLIENT,
+    monthLabel: 'April 2026',
+    aeoProbe: {
+      per_query: [{ query: 'pallet racking', engine: 'chatgpt', mentioned: true, visibility: 80 }],
+      keyword_wins: { zero: [{ query: 'industrial shelving', engine: 'chatgpt', visibility: 0 }] }
+    }
+  });
+  assertNotContains(html, "What's Next", 'what-next heading');
+  assertNotContains(html, "Next Month's Strategy", 'strategy heading');
+  assertNotContains(html, 'Next month we will attack', 'whatNext prose');
+  assertNotContains(html, 'Pallet Racking South Africa', 'strategy priority');
+  assertNotContains(html, 'foundation play', 'zero-opportunity prose');
+  // The zero-visibility callout used to point at the strategy section below it.
+  assertNotContains(html, "next month's strategy", 'dangling pointer to the removed section');
+});
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 if (fail > 0) process.exit(1);
