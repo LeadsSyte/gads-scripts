@@ -12,9 +12,11 @@ import { SERVICE_META, serviceEnabled, serviceAssignee } from '../../lib/service
 
 const UNASSIGNED = 'Unassigned';
 
-// Modules that have a tracked completion status. 'reporting' has no status in
-// approvalsStatus, so it's shown as a service but doesn't gate completion.
+// The SEO services this view cares about — the ones with a tracked completion
+// status in approvalsStatus. Monthly reporting is deliberately excluded: it has
+// no sign-off of its own, so it is neither listed nor counted here.
 const TRACKED = ['content', 'technical', 'aeo'];
+const SERVICES = SERVICE_META.filter(s => TRACKED.includes(s.service));
 
 function isModuleDone(client, status, mod) {
   const flagKey = 'does_' + mod;
@@ -68,7 +70,7 @@ export default function AccountManagers() {
       const status = approvalsStatus(c, implementations, tasks, aeoResults, month);
       // person -> Set(service) for this client
       const perPerson = {};
-      for (const s of SERVICE_META) {
+      for (const s of SERVICES) {
         if (!serviceEnabled(c, s.flag)) continue;
         const person = serviceAssignee(c, s.mgr) || UNASSIGNED;
         (perPerson[person] ||= new Set()).add(s.service);
@@ -80,9 +82,8 @@ export default function AccountManagers() {
       }
       for (const [person, services] of Object.entries(perPerson)) {
         const g = (byPerson[person] ||= { manager: person, clients: [] });
-        // Done = every tracked service this person owns here is verified.
-        const trackedOwned = [...services].filter(s => TRACKED.includes(s));
-        const allDone = trackedOwned.every(mod => isModuleDone(c, status, mod));
+        // Done = every service this person owns here is verified.
+        const allDone = [...services].every(mod => isModuleDone(c, status, mod));
         g.clients.push({ client: c, services, allDone });
       }
     }
@@ -93,8 +94,7 @@ export default function AccountManagers() {
       done: g.clients.filter(x => x.allDone).length,
       tech:    has(g, 'technical'),
       content: has(g, 'content'),
-      aeo:     has(g, 'aeo'),
-      reports: has(g, 'reporting')
+      aeo:     has(g, 'aeo')
     }));
     // Named people first (alphabetical), Unassigned last.
     return list.sort((a, b) => {
@@ -158,7 +158,7 @@ export default function AccountManagers() {
               </div>
 
               <div className="muted" style={{ fontSize: 11, marginTop: 6 }}>
-                Tech {g.tech} · Content {g.content} · AEO {g.aeo} · Reports {g.reports}
+                Tech {g.tech} · Content {g.content} · AEO {g.aeo}
               </div>
 
               {/* Completion bar for the selected month */}
@@ -185,7 +185,7 @@ export default function AccountManagers() {
                     .slice()
                     .sort((a, b) => a.client.name.localeCompare(b.client.name))
                     .map(({ client, services, allDone }) => {
-                      const svcLabels = SERVICE_META
+                      const svcLabels = SERVICES
                         .filter(s => services.has(s.service))
                         .map(s => s.label);
                       return (
