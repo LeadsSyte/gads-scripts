@@ -9,10 +9,12 @@ import ExternalWork from '../../components/ExternalWork.jsx';
 import { technicalPipelineStatus, monthOptions } from '../../lib/pipelineStatus.js';
 import { getAudit, syncWebceoClients, webceoDiagnose } from './webceo.js';
 import { crawlSiteForIssues, summarizeCrawlForAI } from './crawler.js';
+import { completedWorkForClient, filterRepeatTasks, completedWorkPrompt } from './taskHistory.js';
 import { upsertClient, listAllImplementations, replaceClientOpenTasks, loadTseoTasks, updateTseoTask, logImplementation, updateImplementation, listTseoRejections, saveTseoRejection } from '../../lib/supabase.js';
 import { checkOffPageTask, isOffPageTask } from '../../lib/verification.js';
 import { querySearchAnalytics } from './gsc.js';
 import { ensureToken, SCOPES, getToken, clearToken } from './googleAuth.js';
+import { serverAuthEnabled } from '../../lib/googleServerAuth.js';
 
 const ACCENT = '#ff6b35';
 const TASKS_KEY = 'syte-suite-tseo-tasks';
@@ -143,11 +145,12 @@ PRIORITIZATION (biggest wins first):
 - Medium = weak meta descriptions, missing alt text on important images, thin content pages, slow pages, missing breadcrumb schema.
 - Low = minor polish, cosmetic heading issues, optional schema types.
 - Sort: critical first, then high + quick effort, then high + moderate, then medium, then low.
+- NEVER re-suggest work that is listed as ALREADY COMPLETED in the user message. That work has been briefed and shipped in an earlier month; repeating it wastes the whole hand-off and the account manager has to strip it out by hand. If a page's only remaining issues are already-completed ones, skip that page and spend the slot on a page with genuinely open issues.
 - Generate up to ${limit} tasks — the MOST IMPACTFUL issues to fix, ordered biggest-win first. Quality over quantity: only create a task for a real, fixable issue present in the audit data. If there are fewer than ${limit} meaningful issues, return only the real ones — never pad the list. Critical issues come first, then the highest-ROI quick wins.
 `.trim();
 }
 
-async function triageAudit(auditData, clientUrl, taskLimit = DEFAULT_SUGGESTIONS) {
+async function triageAudit(auditData, clientUrl, taskLimit = DEFAULT_SUGGESTIONS, completedWork = '') {
   // auditData is now a pre-summarized string from the crawler (plus optional
   // GSC JSON appended). When it's a string, pass it through verbatim — Claude
   // reads the PAGE / issue / fix lines directly and creates tasks from them.
@@ -160,17 +163,69 @@ async function triageAudit(auditData, clientUrl, taskLimit = DEFAULT_SUGGESTIONS
     messages: [{
       role: 'user',
       content: `Client URL: ${clientUrl}
-
+${completedWork ? `
+ALREADY COMPLETED — work shipped for this client in earlier months, listed per page.
+DO NOT create a task for any of these again, however differently you would word it.
+The crawler may still report the underlying issue (a change can be live but not yet
+re-crawled, or only partly propagated); that is not a reason to re-brief it.
+${completedWork}
+` : ''}
 Crawler findings (each PAGE block lists specific issues found on that URL with suggested fixes):
 ${dataText.slice(0, 80000)}
 
-Create one task per MEANINGFUL issue on a SPECIFIC page, up to ${taskLimit} tasks. Use the exact URLs shown. When the crawler suggests a fix, use it as the copy_paste_fix (refine if needed). Prioritize critical issues (noindex, missing titles) first, and spread the list across the different page URLs above rather than stacking it on the homepage.`
+Create one task per MEANINGFUL issue on a SPECIFIC page that is NOT in the already-completed list, up to ${taskLimit} tasks. Use the exact URLs shown. When the crawler suggests a fix, use it as the copy_paste_fix (refine if needed). Prioritize critical issues (noindex, missing titles) first, and spread the list across the different page URLs above rather than stacking it on the homepage.`
     }],
     max_tokens: 16000,
     temperature: 0.3
   });
   const parsed = extractJSON(text);
   return parsed?.tasks || [];
+}
+
+// Triage that will not hand back work this client has already had.
+//
+// The exclusion list in the prompt does most of the job, but models restate
+// things in new words, so the result is filtered too — and a filtered list is
+// a SHORT list, which is how a 10-fix hand-off would quietly become a 4-fix
+// one. So when suppression takes a real bite out of the shortlist, triage
+// runs once more with the repeats named explicitly, and the two passes are
+// merged into one list of genuinely open work.
+async function triageWithoutRepeats(auditData, clientUrl, taskLimit, completedByPage) {
+  const completedText = completedWorkPrompt(completedByPage);
+  const first = await triageAudit(auditData, clientUrl, taskLimit, completedText);
+  const filtered = filterRepeatTasks(first, completedByPage);
+  let tasks = filtered.tasks;
+  let removed = filtered.removed;
+
+  if (removed > 0 && tasks.length < taskLimit) {
+    const keptKeys = new Set(tasks.map(t => taskDedupKey(t)));
+    const repeats = first
+      .filter(t => !keptKeys.has(taskDedupKey(t)))
+      .map(t => '  - ' + (t.page_url || '') + ': ' + (t.title || ''))
+      .join('\n');
+    try {
+      const second = await triageAudit(
+        auditData, clientUrl, taskLimit - tasks.length,
+        completedText +
+        '\n\nAlso already covered — you proposed these moments ago and every one of them\n' +
+        'repeats completed work. Find DIFFERENT issues on other pages instead:\n' + repeats
+      );
+      const secondFiltered = filterRepeatTasks(second, completedByPage);
+      removed += secondFiltered.removed;
+      // Treat the first pass as completed work too, so the top-up can't
+      // hand back the same fix in different words.
+      const firstAsDone = completedWorkForClient({
+        tasks: tasks.map(t => ({ ...t, status: 'done' }))
+      });
+      const fresh = filterRepeatTasks(secondFiltered.tasks, firstAsDone).tasks;
+      tasks = tasks.concat(fresh).slice(0, taskLimit);
+    } catch {
+      // Top-up is best-effort — a short list of real work still beats a full
+      // list padded with repeats.
+    }
+  }
+
+  return { tasks, removed };
 }
 
 async function verifyFix(task, client) {
@@ -482,8 +537,14 @@ export default function TechnicalSEO({ sub }) {
       // STEP 1b: Enrich with GSC data if available (for traffic/impression context).
       if (c.gsc_property) {
         try {
-          await ensureToken([SCOPES.gsc], { expectedEmail: gscEmail });
-          const gscData = await querySearchAnalytics(c.gsc_property, { days: 28, dimensions: ['page'], rowLimit: 100 });
+          // Under server auth the proxy holds the token — a browser sign-in
+          // here just throws and silently drops GSC from every scan.
+          if (!serverAuthEnabled()) {
+            await ensureToken([SCOPES.gsc], { expectedEmail: gscEmail });
+          }
+          const gscData = await querySearchAnalytics(c.gsc_property, {
+            days: 28, dimensions: ['page'], rowLimit: 100, expectedEmail: gscEmail
+          });
           auditData = (auditData || '') + '\n\n=== GSC TRAFFIC DATA (last 28 days) ===\n' + JSON.stringify(gscData).slice(0, 20000);
           dataSource += (dataSource ? ' + GSC' : 'GSC');
         } catch (e) {
@@ -495,12 +556,23 @@ export default function TechnicalSEO({ sub }) {
         throw new Error(`${c.name}: Could not crawl site. Ensure the client has a sitemap URL or valid website URL.`);
       }
 
-      // STEP 2: AI triage — send crawl findings to Claude for prioritized task generation
+      // STEP 2: AI triage — send crawl findings to Claude for prioritized task
+      // generation, with everything already fixed for this client held back so
+      // the month's slots go to work that is genuinely still open. Pulled
+      // fresh rather than read off component state so a scan always sees the
+      // latest completed work.
       setMsg(`Step 2/3 — AI analyzing ${dataSource} data for ${c.name} (biggest wins first)…`);
-      const triaged = await triageAudit(auditData, c.url, suggestionCount);
+      const scanImpls = await listAllImplementations().catch(() => []);
+      const completedByPage = completedWorkForClient({ tasks, impls: scanImpls, clientId: c.id });
+      const { tasks: triaged, removed: repeatsSkipped } =
+        await triageWithoutRepeats(auditData, c.url, suggestionCount, completedByPage);
 
       if (!triaged.length) {
-        setMsg(`No issues found for ${c.name} — site looks clean from ${dataSource} data.`);
+        setMsg(
+          repeatsSkipped > 0
+            ? `No NEW issues for ${c.name} — every fix ${dataSource} surfaced has already been done (${repeatsSkipped} repeat${repeatsSkipped === 1 ? '' : 's'} skipped).`
+            : `No issues found for ${c.name} — site looks clean from ${dataSource} data.`
+        );
         setBusy(false);
         return;
       }
@@ -540,10 +612,11 @@ export default function TechnicalSEO({ sub }) {
       const high = cappedNew.filter(t => t.priority === 'high').length;
       const quickWins = cappedNew.filter(t => t.effort === 'quick').length;
       setMsg(
-        `Added ${newTasks.length} tasks for ${c.name} from ${dataSource}` +
+        `Added ${cappedNew.length} tasks for ${c.name} from ${dataSource}` +
         (critical ? ` · ${critical} critical` : '') +
         (high ? ` · ${high} high priority` : '') +
-        (quickWins ? ` · ${quickWins} quick wins` : '')
+        (quickWins ? ` · ${quickWins} quick wins` : '') +
+        (repeatsSkipped ? ` · ${repeatsSkipped} already-done repeat${repeatsSkipped === 1 ? '' : 's'} skipped` : '')
       );
     } catch (e) { setErr(e.message); }
     finally { setBusy(false); }
@@ -557,10 +630,17 @@ export default function TechnicalSEO({ sub }) {
     setBusy(true); setErr(''); setMsg('');
     try {
       setMsg(`Step 1/2 — AI analyzing pasted audit data for ${c.name}…`);
-      const triaged = await triageAudit(pastedText, c.url, suggestionCount);
+      const pasteImpls = await listAllImplementations().catch(() => []);
+      const completedByPage = completedWorkForClient({ tasks, impls: pasteImpls, clientId: c.id });
+      const { tasks: triaged, removed: repeatsSkipped } =
+        await triageWithoutRepeats(pastedText, c.url, suggestionCount, completedByPage);
 
       if (!triaged.length) {
-        setMsg(`No actionable issues found in pasted data for ${c.name}.`);
+        setMsg(
+          repeatsSkipped > 0
+            ? `No NEW issues in the pasted data for ${c.name} — all of it repeats work already done (${repeatsSkipped} skipped).`
+            : `No actionable issues found in pasted data for ${c.name}.`
+        );
         setBusy(false);
         return;
       }
@@ -594,7 +674,8 @@ export default function TechnicalSEO({ sub }) {
       const high = cappedNew.filter(t => t.priority === 'high').length;
       setMsg(`Added ${cappedNew.length} tasks for ${c.name} from pasted data` +
         (critical ? ` · ${critical} critical` : '') +
-        (high ? ` · ${high} high priority` : ''));
+        (high ? ` · ${high} high priority` : '') +
+        (repeatsSkipped ? ` · ${repeatsSkipped} already-done repeat${repeatsSkipped === 1 ? '' : 's'} skipped` : ''));
     } catch (e) { setErr(e.message); }
     finally { setBusy(false); }
   }
@@ -1283,20 +1364,28 @@ export default function TechnicalSEO({ sub }) {
 
   if (sub === 'Settings') {
     const gToken = getToken();
+    const serverAuth = serverAuthEnabled();
     return (
       <div className="content-area">
         <h2 style={{ marginTop: 0 }}>Technical SEO Settings</h2>
         <div className="card">
           <strong>Google Search Console</strong>
           <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
-            {gToken ? 'Connected (expires ' + new Date(gToken.expires_at).toLocaleString() + ')' : 'Not connected'}
+            {serverAuth
+              // Server-managed accounts: this browser never holds a token, so
+              // reporting "Not connected" here was purely an artefact of
+              // asking the wrong question.
+              ? 'Managed on the server — connect accounts under Suite Settings → Connected Google Accounts, then bind each client in Edit Client → Google Connections.'
+              : gToken ? 'Connected (expires ' + new Date(gToken.expires_at).toLocaleString() + ')' : 'Not connected'}
           </div>
-          <div className="row" style={{ marginTop: 10 }}>
-            <button onClick={() => ensureToken([SCOPES.gsc]).then(() => window.location.reload())}>
-              Connect GSC
-            </button>
-            {gToken && <button onClick={() => { clearToken(); window.location.reload(); }}>Disconnect</button>}
-          </div>
+          {!serverAuth && (
+            <div className="row" style={{ marginTop: 10 }}>
+              <button onClick={() => ensureToken([SCOPES.gsc]).then(() => window.location.reload())}>
+                Connect GSC
+              </button>
+              {gToken && <button onClick={() => { clearToken(); window.location.reload(); }}>Disconnect</button>}
+            </div>
+          )}
         </div>
       </div>
     );
