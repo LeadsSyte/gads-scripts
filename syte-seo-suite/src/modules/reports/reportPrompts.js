@@ -3,6 +3,7 @@
 // Tone is always positive-first — lead with wins, acknowledge dips with action plans.
 
 import { SYTE_DESIGN_SYSTEM, SEO_REASONING_MODULE } from './designSystem.js';
+import { isDelivered } from '../../lib/deliveryStatus.js';
 
 export const ALICE_SYSTEM = `${SYTE_DESIGN_SYSTEM}
 
@@ -338,7 +339,9 @@ export function getWorkSummary(clientId, month) {
   const impls = loadImplementations().filter(
     i => i.client_id === clientId && (i.implemented_at || i.created_at || '').slice(0, 7) === m
   );
-  const verified = impls.filter(i => i.verification_status === 'verified').length;
+  // Delivered work — verified on the live page, or handed to the client's
+  // developer by email (deliveryStatus.js).
+  const verified = impls.filter(i => isDelivered(i.verification_status)).length;
 
   return {
     content: {

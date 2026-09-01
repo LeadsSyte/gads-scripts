@@ -13,6 +13,7 @@ import MarkImplementedButton from '../../components/MarkImplementedButton.jsx';
 import PipelineView from '../../components/PipelineView.jsx';
 import LogExternalWork from '../../components/LogExternalWork.jsx';
 import { contentPipelineStatus, monthOptions } from '../../lib/pipelineStatus.js';
+import { isDelivered, isHandoverStatus } from '../../lib/deliveryStatus.js';
 import { listAllImplementations, saveBlogResult, loadContentHistory, deleteBlogResult, listCmsQueue } from '../../lib/supabase.js';
 import { pushItemInline } from '../cms/pushAction.js';
 import { parseOutputSections, markdownToHtml } from './articleParser.js';
@@ -506,7 +507,11 @@ export default function AutoWrite() {
                   (im.title === (a.topic || a.keyword) ||
                    (pushedUrls[a.id || i] && im.page_url === pushedUrls[a.id || i]))
                 );
-                const isVerified = impl?.verification_status === 'verified';
+                // A handover (emailed to the client's developer) is delivered
+                // work, same as a live-page verification — see deliveryStatus.js.
+                // The badge wording still says which of the two it was.
+                const isVerified = isDelivered(impl?.verification_status);
+                const isHandover = isHandoverStatus(impl?.verification_status);
                 const isPending = impl && impl.verification_status === 'pending';
                 return (
                 <div key={a.id || i} style={{
@@ -518,7 +523,9 @@ export default function AutoWrite() {
                       <div className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                         <div style={{ fontWeight: 600, fontSize: 13 }}>{a.topic || a.keyword || 'Untitled'}</div>
                         {isVerified && (
-                          <span className="badge green" style={{ fontSize: 9 }}>✓ Verified live</span>
+                          <span className="badge green" style={{ fontSize: 9 }}>
+                            {isHandover ? '📧 Sent to developer' : '✓ Verified live'}
+                          </span>
                         )}
                         {isPending && (
                           <span className="badge" style={{ fontSize: 9, color: 'var(--orange)', borderColor: 'color-mix(in srgb, var(--orange) 40%, var(--border))' }}>⏳ Awaiting verification</span>

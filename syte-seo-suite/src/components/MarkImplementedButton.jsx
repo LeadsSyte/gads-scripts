@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useClients } from '../store/useClients.js';
 import { logImplementation, updateImplementation } from '../lib/supabase.js';
 import { verifyImplementation, verifyImplementationFromHtml, verifyImplementationVisually, isOffPageTask, verifySentToDeveloper, markSentToDeveloper, displayVerificationDetail } from '../lib/verification.js';
+import { isDelivered } from '../lib/deliveryStatus.js';
 
 // Read an image file for the email-proof flow. Returns { base64, mediaType }.
 // Email screenshots straight off a retina display can be several MB —
@@ -179,9 +180,12 @@ export default function MarkImplementedButton({
       setShowSentPanel(false);
       setSentFile(null);
       setSentMsg('');
-      // Only an override that carried a screenshot verifies the record; a
-      // bare confirmation stays 'sent to developer' and must not flip a task.
-      if (r.status === 'verified') onVerified?.();
+      // Both outcomes are a completed handover: with a screenshot the record
+      // reads 'verified', without one it stays 'sent_to_developer' — and the
+      // suite counts either as delivered work (deliveryStatus.js). So the
+      // parent is told either way, which is what moves the row out of its
+      // list and flips a Technical SEO task's own status.
+      if (isDelivered(r.status)) onVerified?.();
     } catch (e) {
       setSentMsg(e.message);
     } finally {
@@ -368,7 +372,7 @@ export default function MarkImplementedButton({
     'var(--red)';
   const statusLabel =
     result?.status === 'verified' ? '✓ Verified' :
-    result?.status === 'sent_to_developer' ? '📧 Sent to Developer' :
+    result?.status === 'sent_to_developer' ? '📧 Sent to Developer — counts as delivered' :
     result?.status === 'manual_required' ? '⚑ Manual verification required' :
     result?.status === 'pending' ? '⏳ Pending' :
     result?.status === 'inconclusive' ? '⚠ Couldn’t reach the page — verify manually' :
