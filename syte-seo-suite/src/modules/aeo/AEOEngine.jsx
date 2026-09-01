@@ -17,6 +17,7 @@ import { discoverSiteUrls } from './sitemap.js';
 import QueryDiscovery from './QueryDiscovery.jsx';
 import { listAccountSummaries, runReport } from './ga4.js';
 import { ensureToken, SCOPES, getToken, clearToken } from '../technical/googleAuth.js';
+import { serverAuthEnabled } from '../../lib/googleServerAuth.js';
 
 const ACCENT = '#00d4aa';
 const RESULTS_KEY = 'syte-suite-aeo-results';
@@ -847,8 +848,16 @@ export default function AEOEngine({ sub }) {
 
   async function loadGa4Properties() {
     try {
-      await ensureToken([SCOPES.ga4]);
-      const data = await listAccountSummaries();
+      const ga4Email = client?.ga4_account_email || client?.google_account_email || null;
+      if (serverAuthEnabled()) {
+        if (!ga4Email) {
+          setErr('Select a client bound to a Google account first — server auth lists properties per connected account.');
+          return;
+        }
+      } else {
+        await ensureToken([SCOPES.ga4]);
+      }
+      const data = await listAccountSummaries(ga4Email);
       const props = [];
       for (const acc of data.accountSummaries || []) {
         for (const p of acc.propertySummaries || []) {
@@ -890,7 +899,15 @@ export default function AEOEngine({ sub }) {
       // skipped when that account already has a live cached token.
       const ga4Email = c.ga4_account_email || c.google_account_email || null;
       let ga4Ready = false;
-      if (c.ga4_property_id) {
+      if (c.ga4_property_id && serverAuthEnabled()) {
+        // Server-managed accounts: the proxy holds the token. Readiness is
+        // just "is this client bound to an account" — running the browser
+        // sign-in here threw and dropped GA4 from every run.
+        ga4Ready = !!ga4Email;
+        setProgress(ga4Ready
+          ? 'Google account ' + ga4Email + ' ✓'
+          : 'No Google account bound to this client — using sitemap order');
+      } else if (c.ga4_property_id) {
         const existingToken = getToken();
         if (!existingToken || !existingToken.access_token) {
           setProgress('Connecting to Google Analytics — please sign in…');
@@ -936,7 +953,7 @@ export default function AEOEngine({ sub }) {
         try {
           // Token is already valid from Step 0, so this won't trigger a popup.
           // Still add a timeout in case the API itself is slow.
-          const ga4Promise = runReport(c.ga4_property_id, 30);
+          const ga4Promise = runReport(c.ga4_property_id, 30, ga4Email);
           const timeout = new Promise((_, reject) =>
             setTimeout(() => reject(new Error('GA4 API timed out after 20s')), 20000)
           );
@@ -1206,8 +1223,10 @@ export default function AEOEngine({ sub }) {
     setBusy(true); setErr(''); setProgress('Running GA4 report…');
     try {
       const ga4Email = client.ga4_account_email || client.google_account_email || null;
-      await ensureToken([SCOPES.ga4], { expectedEmail: ga4Email });
-      const report = await runReport(client.ga4_property_id, 30);
+      if (!serverAuthEnabled()) {
+        await ensureToken([SCOPES.ga4], { expectedEmail: ga4Email });
+      }
+      const report = await runReport(client.ga4_property_id, 30, ga4Email);
       const rows = (report.rows || [])
         .map(r => ({
           path: r.dimensionValues?.[0]?.value || '',
@@ -1781,17 +1800,22 @@ export default function AEOEngine({ sub }) {
 
   if (sub === 'Settings') {
     const gToken = getToken();
+    const serverAuth = serverAuthEnabled();
     return (
       <div className="content-area">
         <h2 style={{ marginTop: 0 }}>AEO Engine Settings</h2>
         <div className="card" style={{ marginBottom: 14 }}>
           <strong>Google Analytics 4</strong>
           <div className="muted" style={{ fontSize: 12 }}>
-            {gToken ? 'Connected' : 'Not connected'}
+            {serverAuth
+              ? 'Managed on the server — connect accounts under Suite Settings → Connected Google Accounts. Listing uses the selected client\'s bound account.'
+              : gToken ? 'Connected' : 'Not connected'}
           </div>
           <div className="row" style={{ marginTop: 10 }}>
-            <button onClick={loadGa4Properties}>Connect & List Properties</button>
-            {gToken && <button onClick={() => { clearToken(); window.location.reload(); }}>Disconnect</button>}
+            <button onClick={loadGa4Properties}>
+              {serverAuth ? 'List Properties' : 'Connect & List Properties'}
+            </button>
+            {!serverAuth && gToken && <button onClick={() => { clearToken(); window.location.reload(); }}>Disconnect</button>}
           </div>
         </div>
         {properties.length > 0 && (

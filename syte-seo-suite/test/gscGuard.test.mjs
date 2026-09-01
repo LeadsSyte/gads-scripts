@@ -124,6 +124,60 @@ t('reports the first failing check as the blocker (fix order)', () => {
   assertEq(r.blocker.code, 'no-property', 'property comes first');
 });
 
+// ── Server-managed Google accounts (VITE_GOOGLE_SERVER_AUTH) ──────────────
+// In this mode the browser never holds a Google token — the proxy does. The
+// gate used to ask "is this browser signed in?", so every client on every
+// report read "Search Console is not connected", and report generation was
+// blocked outright. What counts here is the client's account binding.
+const SERVER_CLIENT = {
+  name: 'Acme',
+  gsc_property: 'sc-domain:acme.co.za',
+  gsc_account_email: 'admin@syte.co.za'
+};
+
+t('server auth: passes with a bound account and no browser token', () => {
+  const r = evaluateGscReadiness({
+    client: SERVER_CLIENT, reportData: GOOD_DATA, month: MONTH,
+    token: null, serverAuth: true
+  });
+  assert(r.ok, 'should be ok: ' + JSON.stringify(r.blocker));
+});
+
+t('server auth: falls back to the legacy single account field', () => {
+  const r = evaluateGscReadiness({
+    client: { name: 'Acme', gsc_property: 'sc-domain:acme.co.za', google_account_email: 'admin@syte.co.za' },
+    reportData: GOOD_DATA, month: MONTH, token: null, serverAuth: true
+  });
+  assert(r.ok, 'legacy binding still counts as connected');
+});
+
+t('server auth: blocks when no account is bound to the client', () => {
+  const r = evaluateGscReadiness({
+    client: CLIENT, reportData: GOOD_DATA, month: MONTH, token: null, serverAuth: true
+  });
+  assert(!r.ok, 'should block');
+  assertEq(r.blocker.code, 'not-connected', 'code');
+  // 'connect' would send the operator to a browser sign-in that does nothing
+  // in this mode — the fix is binding the client to a connected account.
+  assertEq(r.blocker.action, 'configure', 'action');
+});
+
+t('server auth: a real fetch error still blocks, with its own message', () => {
+  const r = evaluateGscReadiness({
+    client: SERVER_CLIENT, month: MONTH, token: null, serverAuth: true,
+    reportData: { ...GOOD_DATA, errors: ['GSC: 403 permission denied'] }
+  });
+  assert(!r.ok, 'should block');
+  assertEq(r.blocker.code, 'fetch-error', 'code');
+});
+
+t('browser mode is unchanged when serverAuth is not passed', () => {
+  const r = evaluateGscReadiness({ client: SERVER_CLIENT, reportData: GOOD_DATA, month: MONTH, token: null });
+  assert(!r.ok, 'a bound account is not a browser token');
+  assertEq(r.blocker.code, 'not-connected', 'code');
+  assertEq(r.blocker.action, 'connect', 'action');
+});
+
 t('does not crash on an empty call', () => {
   const r = evaluateGscReadiness();
   assert(!r.ok, 'nothing configured = blocked');

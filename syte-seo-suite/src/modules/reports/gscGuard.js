@@ -24,12 +24,17 @@ function gscErrors(reportData) {
 
 // month: 'YYYY-MM' (the report month)
 // token: the saved Google OAuth token (or null) — see googleAuth.getToken()
+// serverAuth: true when the suite runs on server-managed Google accounts
+//   (VITE_GOOGLE_SERVER_AUTH). In that mode the browser never holds a token —
+//   the proxy does — so asking "is this browser signed in?" is the wrong
+//   question and answering it made every client read as disconnected. What
+//   counts there is whether the client is bound to a connected account.
 // reportData: the object returned by fetchReportData(), or null
 //
 // Returns { ok, checks: [{ key, label, pass, note }], blocker }
 // blocker (when !ok): { code, message, action } where action is one of
 // 'configure' | 'connect' | 'refresh' — what the UI should offer next.
-export function evaluateGscReadiness({ client, reportData, month, token } = {}) {
+export function evaluateGscReadiness({ client, reportData, month, token, serverAuth = false } = {}) {
   const checks = [];
   const add = (key, label, pass, note = '') => checks.push({ key, label, pass, note });
 
@@ -38,12 +43,21 @@ export function evaluateGscReadiness({ client, reportData, month, token } = {}) 
   add('property', 'Search Console property configured', hasProperty,
     hasProperty ? property : 'Set it in Edit Client → Google Connections');
 
+  // Which account this client's Search Console reads through. Per-API
+  // binding wins over the legacy single account field.
+  const boundAccount = client?.gsc_account_email || client?.google_account_email || '';
   const scope = token?.scope || '';
-  const connected = !!token?.access_token && scope.includes(SCOPES.gsc);
+  const connected = serverAuth
+    ? !!boundAccount
+    : !!token?.access_token && scope.includes(SCOPES.gsc);
   add('connected', 'Google account connected with Search Console access', connected,
-    connected ? '' : token?.access_token
-      ? 'Signed in, but Search Console permission was not granted'
-      : 'Not signed in to Google');
+    connected
+      ? (serverAuth ? boundAccount : '')
+      : serverAuth
+        ? 'No Google account is bound to this client — pick one in Edit Client → Google Connections'
+        : token?.access_token
+          ? 'Signed in, but Search Console permission was not granted'
+          : 'Not signed in to Google');
 
   const errs = gscErrors(reportData);
   // 'No property configured' is already covered by the property check —
@@ -75,8 +89,10 @@ export function evaluateGscReadiness({ client, reportData, month, token } = {}) 
     },
     connected: {
       code: 'not-connected',
-      message: 'Search Console is not connected. Connect the Google account that has access to this property, then refresh the data.',
-      action: 'connect'
+      message: serverAuth
+        ? 'No Google account is bound to this client. Pick the account that has access to this property in Edit Client → Google Connections (connect it first under Suite Settings → Connected Google Accounts).'
+        : 'Search Console is not connected. Connect the Google account that has access to this property, then refresh the data.',
+      action: serverAuth ? 'configure' : 'connect'
     },
     fetched: {
       code: reportData ? 'fetch-error' : 'no-data',

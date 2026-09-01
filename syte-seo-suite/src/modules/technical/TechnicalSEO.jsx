@@ -14,6 +14,7 @@ import { upsertClient, listAllImplementations, replaceClientOpenTasks, loadTseoT
 import { checkOffPageTask, isOffPageTask } from '../../lib/verification.js';
 import { querySearchAnalytics } from './gsc.js';
 import { ensureToken, SCOPES, getToken, clearToken } from './googleAuth.js';
+import { serverAuthEnabled } from '../../lib/googleServerAuth.js';
 
 const ACCENT = '#ff6b35';
 const TASKS_KEY = 'syte-suite-tseo-tasks';
@@ -536,8 +537,14 @@ export default function TechnicalSEO({ sub }) {
       // STEP 1b: Enrich with GSC data if available (for traffic/impression context).
       if (c.gsc_property) {
         try {
-          await ensureToken([SCOPES.gsc], { expectedEmail: gscEmail });
-          const gscData = await querySearchAnalytics(c.gsc_property, { days: 28, dimensions: ['page'], rowLimit: 100 });
+          // Under server auth the proxy holds the token — a browser sign-in
+          // here just throws and silently drops GSC from every scan.
+          if (!serverAuthEnabled()) {
+            await ensureToken([SCOPES.gsc], { expectedEmail: gscEmail });
+          }
+          const gscData = await querySearchAnalytics(c.gsc_property, {
+            days: 28, dimensions: ['page'], rowLimit: 100, expectedEmail: gscEmail
+          });
           auditData = (auditData || '') + '\n\n=== GSC TRAFFIC DATA (last 28 days) ===\n' + JSON.stringify(gscData).slice(0, 20000);
           dataSource += (dataSource ? ' + GSC' : 'GSC');
         } catch (e) {
@@ -1357,20 +1364,28 @@ export default function TechnicalSEO({ sub }) {
 
   if (sub === 'Settings') {
     const gToken = getToken();
+    const serverAuth = serverAuthEnabled();
     return (
       <div className="content-area">
         <h2 style={{ marginTop: 0 }}>Technical SEO Settings</h2>
         <div className="card">
           <strong>Google Search Console</strong>
           <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
-            {gToken ? 'Connected (expires ' + new Date(gToken.expires_at).toLocaleString() + ')' : 'Not connected'}
+            {serverAuth
+              // Server-managed accounts: this browser never holds a token, so
+              // reporting "Not connected" here was purely an artefact of
+              // asking the wrong question.
+              ? 'Managed on the server — connect accounts under Suite Settings → Connected Google Accounts, then bind each client in Edit Client → Google Connections.'
+              : gToken ? 'Connected (expires ' + new Date(gToken.expires_at).toLocaleString() + ')' : 'Not connected'}
           </div>
-          <div className="row" style={{ marginTop: 10 }}>
-            <button onClick={() => ensureToken([SCOPES.gsc]).then(() => window.location.reload())}>
-              Connect GSC
-            </button>
-            {gToken && <button onClick={() => { clearToken(); window.location.reload(); }}>Disconnect</button>}
-          </div>
+          {!serverAuth && (
+            <div className="row" style={{ marginTop: 10 }}>
+              <button onClick={() => ensureToken([SCOPES.gsc]).then(() => window.location.reload())}>
+                Connect GSC
+              </button>
+              {gToken && <button onClick={() => { clearToken(); window.location.reload(); }}>Disconnect</button>}
+            </div>
+          )}
         </div>
       </div>
     );

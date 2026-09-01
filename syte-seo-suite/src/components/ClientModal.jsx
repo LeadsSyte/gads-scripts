@@ -171,7 +171,10 @@ export default function ClientModal({ initial, onClose }) {
       if (f.gsc_property) {
         try {
           setGenMsg('Reading your top Google rankings…');
-          const gscKeywords = await topQueriesByImpression(f.gsc_property, 90);
+          const gscKeywords = await topQueriesByImpression(
+            f.gsc_property, 90,
+            f.gsc_account_email || f.google_account_email || null
+          );
           // Pass the industry as the "category" so generic category words in
           // the brand name (e.g. "Shelving" in "Krost Shelving") aren't treated
           // as branded and don't drop legitimate category rankings.

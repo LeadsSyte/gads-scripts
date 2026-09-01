@@ -357,7 +357,7 @@ export default function MonthlyReport() {
           // ONLY if a token is already present (no popup).
           setReportData(cached.data);
           setFetchStatus('Loaded older cache · Refreshing with new keyword depth…');
-          if (!getToken()?.access_token) {
+          if (!serverAuthEnabled() && !getToken()?.access_token) {
             setFetchStatus('Loaded older cache · Click Refresh Data to pull the latest keyword set');
             return;
           }
@@ -518,7 +518,11 @@ export default function MonthlyReport() {
   // position and click figure in it comes from Search Console, so a report
   // built on a broken feed is worse than no report at all.
   const gscReady = useMemo(
-    () => evaluateGscReadiness({ client, reportData, month, token: getToken() }),
+    () => evaluateGscReadiness({
+      client, reportData, month,
+      token: getToken(),
+      serverAuth: serverAuthEnabled()
+    }),
     [client, reportData, month, tokenVersion]
   );
 

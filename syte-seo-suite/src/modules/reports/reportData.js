@@ -192,7 +192,14 @@ export async function fetchReportData(client, year, month1Based) {
     try {
       // Silent-only: a popup here (deep in the async fetch) has no user gesture,
       // so the browser blocks it and Google returns popup_failed_to_open.
-      await ensureToken([SCOPES.gsc], { expectedEmail: gscEmail, interactive: false });
+      //
+      // Skipped entirely under server auth — the proxy holds the tokens and
+      // the browser never has one, so this preflight threw requiresInteraction
+      // on every client and took the whole GSC pull down with it. That is what
+      // made every client look like its Search Console had disconnected.
+      if (!serverAuthEnabled()) {
+        await ensureToken([SCOPES.gsc], { expectedEmail: gscEmail, interactive: false });
+      }
       const [curKw, prevKw, pages] = await Promise.all([
         fetchKeywordRankings(client.gsc_property, periods.current, gscEmail),
         fetchKeywordRankings(client.gsc_property, periods.prev, gscEmail),

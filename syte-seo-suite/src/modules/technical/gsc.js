@@ -54,8 +54,11 @@ async function gscFetch(path, init = {}, { expectedEmail = null, interactive = f
   return res.json();
 }
 
-export async function listSites() {
-  return gscFetch('/webmasters/v3/sites');
+// `expectedEmail` pins the account: under server auth the proxy REQUIRES one
+// (it holds a token per account), and in browser mode it selects the right
+// cached token. Callers that know the client must pass its GSC account.
+export async function listSites(expectedEmail = null) {
+  return gscFetch('/webmasters/v3/sites', {}, { expectedEmail });
 }
 
 // Generic keyword/page query. `dimensions` is an array like ['query'],
