@@ -992,6 +992,11 @@ export async function saveAeoResult(result) {
       sessions: result.sessions || 0,
       priority: result.priority,
       optimizations: result.optimizations || [],
+      // Append-only ledger of every optimization this page has ever been
+      // given ("type::name"). `optimizations` is replaced on each run, so
+      // without this the next run has no memory of what it already shipped
+      // and hands the client the same items again.
+      prior_keys: result.prior_keys || [],
       error: result.error,
       generated_at: result.generated_at || new Date().toISOString()
     };
@@ -1002,10 +1007,17 @@ export async function saveAeoResult(result) {
       .eq('client_id', result.client_id)
       .eq('url', result.url)
       .limit(1);
-    if (existing?.length > 0) {
-      await supabase.from('syte_suite_aeo_results').update(row).eq('id', existing[0].id);
-    } else {
-      await supabase.from('syte_suite_aeo_results').insert(row);
+    const write = (payload) => existing?.length > 0
+      ? supabase.from('syte_suite_aeo_results').update(payload).eq('id', existing[0].id)
+      : supabase.from('syte_suite_aeo_results').insert(payload);
+    const { error } = await write(row);
+    // supabase-schema-aeo-prior-keys.sql may not have been run yet on this
+    // project. Losing the run's optimizations over a missing ledger column
+    // would be far worse than losing the ledger, so retry without it.
+    if (error && /prior_keys/i.test(error.message || '')) {
+      const { prior_keys, ...legacy } = row;
+      console.warn('[aeo] prior_keys column missing — run supabase-schema-aeo-prior-keys.sql. Saving without the ledger.');
+      await write(legacy);
     }
   }
 }

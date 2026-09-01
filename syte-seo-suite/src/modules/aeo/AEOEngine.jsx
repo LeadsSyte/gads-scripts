@@ -12,6 +12,7 @@ import { aeoPipelineStatus, monthOptions } from '../../lib/pipelineStatus.js';
 import { listAllImplementations, saveAeoResult, loadAeoResults as loadAeoResultsFromDb, deleteAeoResult, saveDeepResult, listDeepResults, deleteDeepResult, listAeoRejections, saveAeoRejection } from '../../lib/supabase.js';
 import { AEO_TYPES, AEO_DEEP_SYSTEM, buildAeoSystem, MAX_OPTS_PER_PAGE } from './aeoTypes.js';
 import { selectTopOptimizations, aeoItemTarget, pagesForTarget } from './aeoSelect.js';
+import { priorWorkForClient, filterRepeatOptimizations, priorLabelsForPage, nextPriorKeys } from './aeoHistory.js';
 import { discoverSiteUrls } from './sitemap.js';
 import QueryDiscovery from './QueryDiscovery.jsx';
 import { listAccountSummaries, runReport } from './ga4.js';
@@ -54,6 +55,18 @@ function pageKey(url) {
   } catch {
     return String(url || '').toLowerCase();
   }
+}
+
+// The saved row for a page, if there is one. Keyed lookup first; a scan by
+// page identity second, so a URL that gained or lost a trailing slash between
+// runs still finds its own history instead of starting a second ledger.
+function findSavedRow(results, clientId, url) {
+  const direct = results?.[clientId + '::' + url];
+  if (direct) return direct;
+  const id = pageKey(url);
+  return Object.values(results || {}).find(
+    r => r?.client_id === clientId && pageKey(r.url) === id
+  ) || null;
 }
 
 function loadHistory() { try { return JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]'); } catch { return []; } }
@@ -111,7 +124,7 @@ Return the JSON object as specified in the system prompt.`
 // ranks every page's output into one site-wide shortlist afterwards.
 // `total` is that shortlist size, passed into the prompt so Claude knows
 // it is competing for slots rather than filling a quota.
-async function generateForPage(pageUrl, client, perPage = MAX_OPTS_PER_PAGE, total = undefined) {
+async function generateForPage(pageUrl, client, perPage = MAX_OPTS_PER_PAGE, total = undefined, alreadyDone = []) {
   // Try to fetch the actual page HTML for analysis.
   let pageHtml = '';
   let pageTitle = '';
@@ -129,11 +142,24 @@ async function generateForPage(pageUrl, client, perPage = MAX_OPTS_PER_PAGE, tot
   try { slug = new URL(pageUrl).pathname.split('/').filter(Boolean).pop() || ''; } catch {}
   const inferredTopic = pageTitle || slug.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 
+  // Everything this page has already been given in an earlier run, been
+  // marked implemented, or had rejected. Naming it in the prompt is what
+  // makes the model spend the page's slots on gaps it has not filled yet;
+  // filterRepeatOptimizations afterwards is the guarantee.
+  const doneList = (alreadyDone || []).filter(Boolean);
+  const alreadyDoneBlock = doneList.length
+    ? 'ALREADY DELIVERED FOR THIS PAGE — DO NOT SUGGEST ANY OF THESE AGAIN, in any wording:\n' +
+      doneList.map(d => '- ' + d).join('\n') +
+      '\n\nThese were handed to the client in earlier months. Suggest only work that is genuinely NEW for this page. ' +
+      'If the page has no remaining gaps worth a slot, return an empty optimizations array — that is a correct answer, ' +
+      'and far better than restating work already done.\n\n'
+    : '';
+
   const text = await claudeComplete({
     system: buildAeoSystem(perPage, total),
     messages: [{
       role: 'user',
-      content: `Generate AEO optimizations for this page — at most ${perPage}, and only the ones this page genuinely lacks. Focus on CONTENT optimizations first (answer blocks, FAQs, key takeaways, snippet paragraphs), then schema.
+      content: `${alreadyDoneBlock}Generate AEO optimizations for this page — at most ${perPage}, and only the ones this page genuinely lacks. Focus on CONTENT optimizations first (answer blocks, FAQs, key takeaways, snippet paragraphs), then schema.
 
 Page URL: ${pageUrl}
 Page topic: ${inferredTopic}
@@ -988,12 +1014,30 @@ export default function AEOEngine({ sub }) {
       const itemTarget = aeoItemTarget(c);
       const maxPages = Math.min(pagesForTarget(itemTarget, queue.length), c.pages_per_month || 15);
       const targets = queue.slice(0, maxPages);
-      setUrls(targets.map(t => t.url).join('\n'));
+      // Suppressing repeats can empty a revisited page completely, so the run
+      // is allowed to reach further down the rotation until the shortlist can
+      // actually be filled. Bounded: a site with nothing new left must not
+      // turn into a full-site generation.
+      const pageCeiling = Math.min(queue.length, maxPages * 3, 24);
+
+      // Everything this client has already been handed, page by page: items
+      // shipped by earlier runs (including the ledger carried on each saved
+      // row), items marked implemented, items rejected. Pulled fresh rather
+      // than read off component state so a run inside the all-clients batch
+      // sees the same record the UI does.
+      const impls = await listAllImplementations().catch(() => []);
+      const priorByPage = priorWorkForClient({
+        results: resultsRef.current,
+        impls,
+        rejectionsByPage,
+        clientId: c.id
+      });
       const newCount = targets.filter(t => !t.lastOptimized).length;
       setProgress(
         `Step 3/4 — ${targets.length} pages selected (${newCount} not optimized before` +
         `${targets.length - newCount > 0 ? `, ${targets.length - newCount} refreshed` : ''}) ` +
-        `from ${prioritized.length} across the site — shortlisting the best ${itemTarget} items ✓`
+        `from ${prioritized.length} across the site — shortlisting the best ${itemTarget} items, ` +
+        `reaching further down the rotation if repeats thin them out ✓`
       );
 
       // STEP 4: Generate AEO optimizations in batches.
@@ -1006,13 +1050,26 @@ export default function AEOEngine({ sub }) {
       // anything is persisted — a row saved mid-run could hold items the
       // shortlist later drops.
       const drafts = [];
-      for (let i = 0; i < targets.length; i += BATCH_SIZE) {
-        const batch = targets.slice(i, i + BATCH_SIZE);
-        setProgress(`Step 4/4 — ${c.name}: Optimizing pages ${i + 1}–${Math.min(i + BATCH_SIZE, targets.length)} of ${targets.length}…`);
+      const attempted = [];
+      let deduped = { rows: [], removed: 0 };
+      let usable = 0;
+      // Always generate the pages the rotation selected — the ranker needs
+      // real choice — then keep going past them only while repeat suppression
+      // has left the shortlist short.
+      for (let i = 0; i < pageCeiling && (i < maxPages || usable < itemTarget); i += BATCH_SIZE) {
+        const batch = queue.slice(i, Math.min(i + BATCH_SIZE, pageCeiling));
+        if (!batch.length) break;
+        setProgress(
+          `Step 4/4 — ${c.name}: Optimizing pages ${i + 1}–${i + batch.length}` +
+          `${usable > 0 ? ` (${usable}/${itemTarget} new items so far)` : ''}…`
+        );
         const batchResults = await Promise.all(
-          batch.map(t => generateForPage(t.url, c, MAX_OPTS_PER_PAGE, itemTarget).catch(e => ({ error: e.message })))
+          batch.map(t => generateForPage(
+            t.url, c, MAX_OPTS_PER_PAGE, itemTarget, priorLabelsForPage(priorByPage, t.url)
+          ).catch(e => ({ error: e.message })))
         );
         batch.forEach((t, j) => {
+          attempted.push(t);
           drafts.push({
             url: t.url, path: t.path, client_id: c.id,
             sessions: t.sessions, priority: t.priority,
@@ -1020,16 +1077,29 @@ export default function AEOEngine({ sub }) {
             error: batchResults[j]?.error || null
           });
         });
+        // Re-filter and re-rank the whole accumulation each round: both are
+        // pure and cheap, and `usable` has to be what would actually ship —
+        // the ranker's per-page and schema caps trim the raw count.
+        deduped = filterRepeatOptimizations(drafts, priorByPage);
+        usable = selectTopOptimizations(deduped.rows, { limit: itemTarget }).kept;
       }
+      setUrls(attempted.map(t => t.url).join('\n'));
 
-      // Rank everything the run produced and keep only the best `itemTarget`
-      // items across all pages. Pages trimmed to nothing are not saved, so
-      // they stay "uncovered" and the rotation revisits them next run.
-      const shortlist = selectTopOptimizations(drafts, { limit: itemTarget });
+      // Rank what survived and keep only the best `itemTarget` items across
+      // all pages. Pages trimmed to nothing are not saved, so they stay
+      // "uncovered" and the rotation revisits them next run.
+      const shortlist = selectTopOptimizations(deduped.rows, { limit: itemTarget });
       const additions = {};
       const stamp = new Date().toISOString();
       for (const row of shortlist.rows) {
-        const saved = { ...row, generated_at: stamp };
+        // Carry the page's ledger forward so next month still knows about
+        // this month's items after `optimizations` is replaced.
+        const existing = findSavedRow(resultsRef.current, c.id, row.url);
+        const saved = {
+          ...row,
+          generated_at: stamp,
+          prior_keys: nextPriorKeys(existing, row.optimizations)
+        };
         additions[c.id + '::' + saved.url] = saved;
         saveAeoResult(saved).catch(() => {});
       }
@@ -1044,8 +1114,16 @@ export default function AEOEngine({ sub }) {
       ]);
       const pagesWithWork = shortlist.rows.filter(r => (r.optimizations || []).length > 0).length;
       setProgress(
-        `Done. ${shortlist.kept} optimizations across ${pagesWithWork} page${pagesWithWork === 1 ? '' : 's'} for ${c.name}` +
-        `${shortlist.dropped > 0 ? ` (${shortlist.dropped} lower-impact item${shortlist.dropped === 1 ? '' : 's'} trimmed)` : ''}.`
+        shortlist.kept === 0 && deduped.removed > 0
+          // Not a failure: the run reached every page it could and everything
+          // it produced repeats work already delivered. Say so plainly rather
+          // than reporting "0 optimizations", which reads as a broken run.
+          ? `Nothing new for ${c.name} — all ${deduped.removed} optimization${deduped.removed === 1 ? '' : 's'} this run produced ` +
+            `repeat work already delivered on ${attempted.length} page${attempted.length === 1 ? '' : 's'}. ` +
+            `Try a Deep Optimization on a key page, or add pages to the sitemap.`
+          : `Done. ${shortlist.kept} optimizations across ${pagesWithWork} page${pagesWithWork === 1 ? '' : 's'} for ${c.name}` +
+            `${deduped.removed > 0 ? ` — ${deduped.removed} repeat${deduped.removed === 1 ? '' : 's'} of work already delivered skipped` : ''}` +
+            `${shortlist.dropped > 0 ? ` (${shortlist.dropped} lower-impact item${shortlist.dropped === 1 ? '' : 's'} trimmed)` : ''}.`
       );
     } catch (e) { setErr(e.message); }
     finally { setBusy(false); }
@@ -1156,12 +1234,25 @@ export default function AEOEngine({ sub }) {
     const itemTarget = aeoItemTarget(client);
     const drafts = [];
     try {
+      // Same repeat suppression as the full pipeline — a hand-picked URL list
+      // is exactly where an AM re-runs last month's pages, so it needs the
+      // prior-work record more than the rotation does, not less.
+      const impls = await listAllImplementations().catch(() => []);
+      const priorByPage = priorWorkForClient({
+        results: resultsRef.current,
+        impls,
+        rejectionsByPage,
+        clientId: client.id
+      });
+
       // Process in batches of 3 for rate-limiting.
       for (let i = 0; i < pageList.length; i += BATCH_SIZE) {
         const batch = pageList.slice(i, i + BATCH_SIZE);
         setProgress(`Batch ${Math.floor(i / BATCH_SIZE) + 1} / ${Math.ceil(pageList.length / BATCH_SIZE)}`);
         const batchResults = await Promise.all(
-          batch.map(u => generateForPage(u, client, MAX_OPTS_PER_PAGE, itemTarget).catch(e => ({ error: e.message })))
+          batch.map(u => generateForPage(
+            u, client, MAX_OPTS_PER_PAGE, itemTarget, priorLabelsForPage(priorByPage, u)
+          ).catch(e => ({ error: e.message })))
         );
         batch.forEach((u, j) => {
           drafts.push({
@@ -1173,14 +1264,21 @@ export default function AEOEngine({ sub }) {
         });
       }
 
-      const shortlist = selectTopOptimizations(drafts, { limit: itemTarget });
+      const deduped = filterRepeatOptimizations(drafts, priorByPage);
+      const shortlist = selectTopOptimizations(deduped.rows, { limit: itemTarget });
       const stamp = new Date().toISOString();
       const newResults = { ...results };
       for (const row of shortlist.rows) {
-        const saved = { ...row, generated_at: stamp };
+        const existing = findSavedRow(resultsRef.current, client.id, row.url);
+        const saved = {
+          ...row,
+          generated_at: stamp,
+          prior_keys: nextPriorKeys(existing, row.optimizations)
+        };
         newResults[client.id + '::' + saved.url] = saved;
         saveAeoResult(saved).catch(() => {});
       }
+      resultsRef.current = newResults;
       setResults(newResults);
       setHistory(prev => [
         { id: crypto.randomUUID(), client_id: client.id, client_name: client.name, count: pageList.length, created_at: new Date().toISOString() },
@@ -1189,6 +1287,7 @@ export default function AEOEngine({ sub }) {
       const pagesWithWork = shortlist.rows.filter(r => (r.optimizations || []).length > 0).length;
       setProgress(
         `Done. ${shortlist.kept} optimizations kept across ${pagesWithWork} of ${pageList.length} pages` +
+        `${deduped.removed > 0 ? ` — ${deduped.removed} repeat${deduped.removed === 1 ? '' : 's'} of work already delivered skipped` : ''}` +
         `${shortlist.dropped > 0 ? ` (${shortlist.dropped} lower-impact trimmed)` : ''}.`
       );
     } catch (e) { setErr(e.message); }
