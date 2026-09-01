@@ -6,9 +6,11 @@
 // 2026-08-30. Two consequences, both silent:
 //   1. every SEO report included the last day of the previous month and
 //      dropped the last day of the month it was reporting on;
-//   2. the Search Console guard compares period.current.startDate against the
-//      selected month, so it blocked the report with
-//      "Loaded data starts 2026-07-31, expected 2026-08".
+//   2. the Search Console guard compared period.current.startDate against the
+//      selected month and blocked the report with "Loaded data starts
+//      2026-07-31, expected 2026-08". (That check has since been removed —
+//      reporting runs a month in arrears — but the window itself must still
+//      be the calendar month it claims to be.)
 // It reproduces in any positive-offset timezone and never in UTC.
 //
 // Run: node test/reportPeriods.test.mjs
@@ -60,6 +62,8 @@ t('previous + year-on-year windows line up with their own months', () => {
   process.env.TZ = 'UTC';
 });
 
+// The guard no longer polices the month (reporting runs a month in arrears),
+// but a report built from these ranges must still clear it cleanly.
 t('the Search Console guard accepts a report built from these ranges', () => {
   process.env.TZ = 'Africa/Johannesburg';
   const periods = getReportPeriods(2026, 7);
@@ -74,8 +78,6 @@ t('the Search Console guard accepts a report built from these ranges', () => {
       errors: []
     }
   });
-  const monthCheck = readiness.checks.find(c => c.key === 'month');
-  if (!monthCheck.pass) throw new Error('month check still failing: ' + monthCheck.note);
   assertEq(readiness.ok, true, 'readiness.ok');
   assertEq(readiness.blocker, null, 'blocker');
   process.env.TZ = 'UTC';

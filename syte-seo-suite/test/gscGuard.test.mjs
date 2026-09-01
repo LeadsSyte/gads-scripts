@@ -81,12 +81,24 @@ t('ignores GA4 errors — they do not block the Search Console gate', () => {
   assert(r.ok, 'GA4 problems are reported elsewhere, not by this gate');
 });
 
-t('blocks when the loaded data is for a different month', () => {
+// Reporting runs a month in arrears — August is when the July report goes
+// out — so the loaded window routinely isn't the month named in the picker.
+// This used to block the report; it must not.
+t('does NOT block when the loaded data covers a different month', () => {
   const r = evaluateGscReadiness({
     client: CLIENT, month: '2026-05', token: TOKEN, reportData: GOOD_DATA
   });
-  assert(!r.ok, 'stale cache must not be reported as this month');
-  assertEq(r.blocker.code, 'month-mismatch', 'code');
+  assert(r.ok, 'a different loaded month must not block the report');
+  assertEq(r.blocker, null, 'blocker');
+  assert(!r.checks.some(c => c.key === 'month'), 'the month check is gone entirely');
+});
+
+t('shows which window is loaded so it can still be eyeballed', () => {
+  const r = evaluateGscReadiness({
+    client: CLIENT, month: MONTH, token: TOKEN, reportData: GOOD_DATA
+  });
+  const fetched = r.checks.find(c => c.key === 'fetched');
+  assert(/Loaded window: /.test(fetched.note), 'fetched note should name the window: ' + fetched.note);
 });
 
 t('blocks when GSC is connected but returns nothing for the month', () => {

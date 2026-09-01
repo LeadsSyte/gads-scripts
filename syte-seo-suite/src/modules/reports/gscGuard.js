@@ -2,10 +2,11 @@
 //
 // An SEO report is only as good as its Search Console feed. If the Google
 // account isn't connected, the property isn't set, the API errored, or GSC
-// came back empty (or for the wrong month), every keyword table and ranking
-// claim in the report is wrong — and a wrong report is worse than a late
-// one. This module answers one question: is GSC connected AND reading
-// accurately for this client and month? If not, it says exactly what to fix.
+// came back empty, every keyword table and ranking claim in the report is
+// wrong — and a wrong report is worse than a late one. This module answers
+// one question: is GSC connected AND returning data? If not, it says exactly
+// what to fix. It does NOT police which month the loaded data covers — see
+// the note in evaluateGscReadiness.
 //
 // Pure functions only — no network, no DOM — so the rules are testable.
 
@@ -50,15 +51,21 @@ export function evaluateGscReadiness({ client, reportData, month, token } = {}) 
   // don't report the same problem twice.
   const realErrs = errs.filter(e => !/no property configured/i.test(e));
   const fetched = !!reportData && realErrs.length === 0;
+  const period = reportData?.period?.current;
+  const loadedWindow = period?.startDate
+    ? period.startDate + ' → ' + (period.endDate || '?')
+    : '';
   add('fetched', 'Search Console data fetched without errors', fetched,
-    !reportData ? 'No data pulled yet for this month' : realErrs.join(' · '));
+    !reportData ? 'No data pulled yet for this month'
+      : fetched ? (loadedWindow && 'Loaded window: ' + loadedWindow)
+      : realErrs.join(' · '));
 
-  // Guard against a cached payload from a different month being passed off
-  // as this month's numbers.
-  const periodStart = reportData?.period?.current?.startDate || '';
-  const monthMatches = !month || !periodStart || periodStart.startsWith(month);
-  add('month', 'Data covers the selected report month', monthMatches,
-    monthMatches ? '' : `Loaded data starts ${periodStart}, expected ${month}`);
+  // NOTE: there is deliberately no "does the loaded data match the selected
+  // month" check. Reporting runs a month in arrears here — August is when the
+  // July report goes out — so the window the team wants loaded is routinely
+  // not the month named in the picker, and blocking on that mismatch stopped
+  // legitimate reports. The loaded window is shown on the 'fetched' check
+  // instead, so it stays visible without gating anything.
 
   const keywords = reportData?.keywords || [];
   const topPages = reportData?.topPages || [];
@@ -83,11 +90,6 @@ export function evaluateGscReadiness({ client, reportData, month, token } = {}) 
       message: reportData
         ? 'Search Console returned an error, so the numbers in this report cannot be trusted: ' + realErrs.join(' · ')
         : 'Search Console data has not been pulled for this month yet.',
-      action: 'refresh'
-    },
-    month: {
-      code: 'month-mismatch',
-      message: 'The loaded Search Console data is for a different month than the one selected. Refresh the data before generating.',
       action: 'refresh'
     },
     reading: {

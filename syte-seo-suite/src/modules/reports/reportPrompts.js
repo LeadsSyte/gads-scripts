@@ -78,18 +78,6 @@ Return ONLY valid JSON matching this exact shape. No prose before/after, no code
   "aeoMomNarrative": "1-2 sentence story about how AEO has moved month-on-month. Lead with COVERAGE growth (named in X of Y prompts, up from Z) and new themes discovered. If no previous month, say 'this is our starting point, tracked monthly from here'.",
   "aeoCompetitiveNarrative": "1-2 sentence story about where the client sits vs SA competitors on visibility. Use rank + closest rival's gap. Example: 'Krost leads every SA competitor we track, 1.3pp ahead of Universal Storage on visibility.'",
   "citationGapsNarrative": "1-2 sentences on the citation gaps: the top source domains competitors appear on where the brand does not, framed as the growth plan (not a shortfall). Omit if there are no gaps.",
-  "aeoStrategy": {
-    "show": true,
-    "priorities": [
-      {
-        "tier": "Quick Win",
-        "title": "Pallet Racking South Africa",
-        "rationale": "Already at 83-100% on Gemini variants. Gap is ChatGPT and AI Overview. A dedicated FAQ page with schema should push to full visibility.",
-        "tags": ["FAQ Schema", "ChatGPT gap", "High commercial intent"]
-      }
-    ],
-    "zeroOpportunity": "1-2 sentence callout for the biggest 0%-visibility category terms — frame as the biggest opportunity, not a failure."
-  },
   "ppcEquivalent": {
     "show": true,
     "value": "R48,200",
@@ -97,19 +85,17 @@ Return ONLY valid JSON matching this exact shape. No prose before/after, no code
     "avgCpc": "R20",
     "narrative": "This organic traffic would have cost approximately R48,200 in Google Ads."
   },
-  "whatNext": "forward-looking sentence about next month — specific, not generic",
   "clientName": "Client Name"
 }
 
 Rules:
-- VOICE: every prose field (narrative, aeoMomNarrative, aeoCompetitiveNarrative, ppcEquivalent.narrative, whatNext, aeoStrategy.zeroOpportunity) is written TO the client, in second person ("your") and first-person plural ("we"/"our"). NEVER refer to the client by name in the third person. WRONG: "Digital Parks Africa's focus on data sovereignty is paying dividends." RIGHT: "Your focus on data sovereignty is paying dividends." or "Our work on data-sovereignty positioning is paying dividends in search visibility." Mentioning the brand name once conversationally is fine; describing the brand from the outside is not.
+- The report covers the month that has happened. It does NOT contain plans, next steps or anything we intend to do next month — no "what's next" closer, no strategy or priorities section. Report the period, stop there.
+- VOICE: every prose field (narrative, aeoMomNarrative, aeoCompetitiveNarrative, ppcEquivalent.narrative) is written TO the client, in second person ("your") and first-person plural ("we"/"our"). NEVER refer to the client by name in the third person. WRONG: "Digital Parks Africa's focus on data sovereignty is paying dividends." RIGHT: "Your focus on data sovereignty is paying dividends." or "Our work on data-sovereignty positioning is paying dividends in search visibility." Mentioning the brand name once conversationally is fine; describing the brand from the outside is not.
 - Don't write like a press release or third-party briefing. The reader works at the client company — they don't want to be told about themselves.
 - Use the real numbers from the user's payload, not made-up ones.
 - Only include sections for services the client actually has.
 - aeoMomNarrative + aeoCompetitiveNarrative are short stories the microsite renders alongside auto-built tables. The tables get built from raw probe data — you only write the prose.
-- aeoStrategy.priorities: 3-5 items based on the EMERGING WINS list in the payload (queries with 30-69% visibility) — these are the close-to-winning queries. Use Quick Win for the highest-visibility emerging items, Grow Share for mid-tier, Own the Category for zero-visibility terms with high search volume.
-- aeoStrategy.zeroOpportunity: pick 2-3 zero-visibility queries from the payload that look like high-volume category terms ("pallet racking", "industrial shelving") and frame them as the next month's foundation play.
-- If no AEO data, omit aeoMomNarrative, aeoCompetitiveNarrative, aeoStrategy.
+- If no AEO data, omit aeoMomNarrative and aeoCompetitiveNarrative.
 - If no click data for PPC estimate, set ppcEquivalent.show = false.
 - workDone: ONLY populate items from the explicit "=== WHAT SYTE DID THIS MONTH ===" section in the user payload. If that section says "NO WORK DATA AVAILABLE" or contains no concrete numbers (articles, fixes, optimizations, verified changes), set workDone.show = false and workDone.items = []. NEVER invent generic strategy items like "Complete site assessment" or "SEO roadmap development". Each card must correspond to a specific line in the payload, no inferences from the brand or industry.
 - Highlights: 3-6 metrics. Prefer coverage-led metrics FIRST: "named in X of Y prompts", coverage rate + MoM delta, share of voice, then the AEO Index. Use citations/sentiment as secondary.
@@ -156,7 +142,7 @@ HARD SCOPE RULE - SEO ONLY:
 export const ALICE_SEO_SYSTEM = ALICE_SYSTEM + SEO_SCOPE_RULE;
 
 export const MICROSITE_SEO_SYSTEM = MICROSITE_SYSTEM + SEO_SCOPE_RULE + `
-- Never emit aeoSection, aeoMomNarrative, aeoCompetitiveNarrative, aeoStrategy or citationGapsNarrative. Those keys belong to the AEO report and are ignored here.`;
+- Never emit aeoSection, aeoMomNarrative, aeoCompetitiveNarrative or citationGapsNarrative. Those keys belong to the AEO report and are ignored here.`;
 
 export const QA_SEO_SYSTEM = QA_SYSTEM + `
 
@@ -198,7 +184,7 @@ OPENING LINES (pick the strongest available, in this priority order):
 2. "[Brand] holds X% share of voice across AI answers in [category], [ahead of / closing on] [competitor]." (if share of voice is a strong story)
 3. "Two months in, [Brand] now leads/sits #X among South African [category] brands on AI visibility." (if competitive position is strong)
 4. "[Brand] is showing up in [Engine] for [N] head-of-category prompts including '[query]'." (if active wins exist)
-5. "We've now added AI-visibility measurement to your program. [Brand] is tracked across [Y] buyer prompts x [M] engines, with [K] new prompt themes mapped for next month." (first AEO snapshot — do NOT say "Month 1" or imply the client is new unless the payload's ENGAGEMENT CONTEXT confirms it)
+5. "We've now added AI-visibility measurement to your program. [Brand] is tracked across [Y] buyer prompts x [M] engines, with [K] new prompt themes mapped." (first AEO snapshot — do NOT say "Month 1" or imply the client is new unless the payload's ENGAGEMENT CONTEXT confirms it)
 
 VOICE & POINT OF VIEW (NEVER BREAK):
 - Write TO the client, not ABOUT them. Second person ("your", "you've") and first-person plural ("we", "we've", "our") only.
@@ -211,7 +197,7 @@ WRITING RULES:
 - Under 250 words total.
 - Cite specific numbers from the payload: prompt coverage (X of Y), coverage MoM delta, new themes discovered, share of voice, citation count, engine names, prompt examples.
 - NEVER use em dashes or en dashes. Use commas or colons instead. This is a hard house rule.
-- End with a forward-looking sentence about what we're attacking next month, pulled from the EMERGING WINS or the CITATION GAPS in the payload, not the ZERO list.
+- Report the month that has happened. Do NOT end with what we're attacking next month, a plan, or any other forward commitment: close on where things stand now.
 - Sign off: Alice | Syte Digital Agency | hello@syte.co.za
 
 FORMAT:
@@ -248,28 +234,15 @@ Return ONLY valid JSON, no prose, no code fences:
   "aeoMomNarrative": "1-2 sentences on MoM movement. LEAD with coverage growth (named in X of Y prompts, up from Z) and new themes discovered. If first month, say 'this is our starting point, every metric is now tracked monthly from here'.",
   "aeoCompetitiveNarrative": "1-2 sentences on competitive standing vs SA rivals. Use rank + closest competitor's gap. If brand is #1 say so explicitly.",
   "citationGapsNarrative": "1-2 sentences on the citation gaps as the growth plan: the top source domains competitors appear on where the brand does not. Omit if no gaps in the payload.",
-  "aeoStrategy": {
-    "show": true,
-    "priorities": [
-      {
-        "tier": "Quick Win",
-        "title": "Pallet Racking South Africa",
-        "rationale": "Already 83-100% on Gemini variants. Gap is ChatGPT and AI Overview. A dedicated FAQ page with schema closes it.",
-        "tags": ["FAQ Schema", "ChatGPT gap", "High commercial intent"]
-      }
-    ],
-    "zeroOpportunity": "1-2 sentences framing 2-3 zero-visibility category terms as the foundational play for next month — opportunity language, never failure language."
-  },
-  "whatNext": "forward-looking sentence about what we're attacking next month — specific deliverable",
   "clientName": "Client Name"
 }
 
 Rules:
 - DO NOT include workDone, topPages, ppcEquivalent. Those are SEO and will be ignored anyway.
+- The report covers the month that has happened. It does NOT contain plans, next steps or priorities for next month — no "what's next" closer, no strategy section. Report the period, stop there.
 - highlights: 4-6 items, drawn ONLY from AEO metrics. Order coverage-led: "named in X of Y prompts" and coverage rate FIRST, then share of voice, then the AEO Index, then citations/sentiment.
 - citationGapsNarrative: frame the top competitor source domains as the growth plan, never a failure. Omit if no gaps in the payload.
 - NEVER use em dashes or en dashes anywhere in the JSON strings. Use commas or colons. Hard house rule.
-- aeoStrategy.priorities: 3-5 items based on the EMERGING WINS in the payload (queries with 30-69% visibility — these are close to winning). Use Quick Win for highest-visibility emerging items, Grow Share for mid-tier, Own the Category for high-volume zero-visibility terms.
 - Use real numbers from the payload, not made-up ones.`;
 
 export const QA_AEO_SYSTEM = `You are a senior copy reviewer at Syte Digital Agency reviewing an AEO-only monthly performance email. Return ONLY JSON in this shape (no prose, no code fences):
@@ -660,6 +633,6 @@ export function buildAeoPayload({ client, monthLabel: ml, previousMonthLabel, pr
     lines.push('If coverage is low, frame these as the plan: one sentence per top (P1) action.');
   }
 
-  lines.push('\nWrite an AEO performance email AND microsite JSON. LEAD with coverage growth (named in X of Y prompts, MoM) and new themes discovered. Then the strongest competitive position, the prompts to attack next month (from emerging wins or citation gaps), and one concrete deliverable. Confident, forward-looking, coverage-led. Never use em dashes or en dashes.');
+  lines.push('\nWrite an AEO performance email AND microsite JSON. LEAD with coverage growth (named in X of Y prompts, MoM) and new themes discovered. Then the strongest competitive position and the citation picture. Report the month that has happened: no plans, next steps or priorities for next month. Confident, coverage-led. Never use em dashes or en dashes.');
   return lines.join('\n');
 }
