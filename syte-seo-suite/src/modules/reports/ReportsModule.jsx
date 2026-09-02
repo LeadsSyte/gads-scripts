@@ -6,7 +6,7 @@ import Baseline from './Baseline.jsx';
 import ReportsHistory from './ReportsHistory.jsx';
 import MarkEmailedModal from './MarkEmailedModal.jsx';
 import DevExport from './DevExport.jsx';
-import { listSentReports, listGeneratedReports } from '../../lib/supabase.js';
+import { listSentReports, listGeneratedReports, syncGeneratedLocal } from '../../lib/supabase.js';
 import { previousMonthKey, monthKeyLabel, selectableMonthKeys } from './reportMonths.js';
 
 const ACCENT = '#a78bfa';
@@ -24,6 +24,8 @@ export default function ReportsModule({ sub }) {
   const [allGenerated, setAllGenerated] = useState([]);
   const [emailModal, setEmailModal] = useState(null); // { client } | null
   const [loadErr, setLoadErr] = useState('');
+  // How many device-only reports were just pushed up to the shared database.
+  const [recovered, setRecovered] = useState(0);
   // Which month the board is showing. Defaults to the month just finished —
   // what the generator defaults to — but is selectable, so a report logged
   // under a different month is findable instead of silently absent.
@@ -34,6 +36,11 @@ export default function ReportsModule({ sub }) {
   // returns from the report generator (so a just-generated report shows).
   const loadStatus = React.useCallback(async () => {
     try {
+      // Reports that only reached this device — a DB write that failed while
+      // the log still allowed one report per client per month — go up first,
+      // so they show for everyone instead of needing to be regenerated.
+      const sync = await syncGeneratedLocal();
+      setRecovered(sync?.pushed || 0);
       const [sent, generated] = await Promise.all([
         listSentReports(),
         listGeneratedReports()
@@ -279,6 +286,13 @@ export default function ReportsModule({ sub }) {
           </select>
         </label>
       </div>
+
+      {recovered > 0 && (
+        <div className="muted" style={{ fontSize: 12, marginBottom: 14 }}>
+          Uploaded {recovered} report{recovered === 1 ? '' : 's'} that had only been saved on this device.
+          {' '}They now show for everyone.
+        </div>
+      )}
 
       {loadErr && (
         <div className="card" style={{ marginBottom: 14, borderColor: 'var(--red)', color: 'var(--red)', fontSize: 12 }}>

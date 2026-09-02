@@ -42,7 +42,7 @@ function installLocalStorage(quotaBytes = Infinity) {
 
 installLocalStorage();
 
-const { logReportGenerated, listGeneratedReports, getGeneratedReport } =
+const { logReportGenerated, listGeneratedReports, getGeneratedReport, syncGeneratedLocal } =
   await import('../src/lib/supabase.js');
 
 let pass = 0, fail = 0;
@@ -149,6 +149,16 @@ await t('logging never throws — it reports where the row landed', async () => 
   assertEq(res.saved_to, 'local', 'saved_to');
   assertEq(res.month, '2026-08', 'payload returned');
   assert(res.generated_at, 'stamped a generation time');
+});
+
+await t('the recovery sync is a no-op with nowhere to sync to', async () => {
+  installLocalStorage();
+  await logReportGenerated({ client_id: CLIENT, month: '2026-08', report_type: 'seo' });
+  const res = await syncGeneratedLocal();
+  assertEq(res.pushed, 0, 'pushed');
+  assertEq(res.failed, 0, 'failed');
+  // The local row is untouched — nothing to push to, nothing lost.
+  assertEq((await listGeneratedReports(CLIENT)).length, 1, 'row still listed');
 });
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');

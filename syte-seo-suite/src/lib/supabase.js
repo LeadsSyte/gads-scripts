@@ -775,6 +775,56 @@ export async function logReportGenerated(row) {
   };
 }
 
+// Push reports that only ever reached this device up to the shared database.
+//
+// While the log still carried the pre-split `unique (client_id, month)` key,
+// the second report generated for a client in a month could not be inserted,
+// so it was kept locally and shown nowhere else. Once the DB accepts it, the
+// row should go up rather than have the operator regenerate the report — the
+// content mirror still holds the microsite, so nothing is lost.
+//
+// Safe to call on every load: rows already in the DB are skipped, and a row
+// that still won't write is simply left for next time.
+export async function syncGeneratedLocal() {
+  const result = { pushed: 0, failed: 0, error: '' };
+  if (!supabase) return result;
+  const localRows = readGeneratedIndex();
+  if (localRows.length === 0) return result;
+
+  let dbKeys;
+  try {
+    const { data, error } = await supabase
+      .from('syte_suite_report_generated_log')
+      .select('client_id, month, report_type');
+    if (error) throw error;
+    dbKeys = new Set((data || []).map(generatedKey));
+  } catch (e) {
+    result.error = e.message;
+    return result;
+  }
+
+  for (const row of localRows) {
+    if (dbKeys.has(generatedKey(row))) continue;
+    // Send the content back up with it, so the report opens for everyone and
+    // not just on the device that built it.
+    const payload = { ...row, ...(readGeneratedContent(row) || {}) };
+    delete payload.id; // a local uuid is not this table's id
+    try {
+      await dbUpsertGenerated(payload);
+      result.pushed++;
+    } catch (e) {
+      try {
+        await dbUpsertGenerated(pickKeys(payload, GEN_LOG_STATUS_COLS));
+        result.pushed++;
+      } catch (e2) {
+        result.failed++;
+        result.error = result.error || e2.message;
+      }
+    }
+  }
+  return result;
+}
+
 // Newest-first status rows for the Generated dashboard. Content columns are
 // left out: the dashboard only needs status, and the payloads are large.
 export async function listGeneratedReports(clientId) {
