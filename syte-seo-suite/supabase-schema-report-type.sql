@@ -35,16 +35,36 @@ begin
      where rel.relname = 'syte_suite_report_generated_log'
        and con.contype = 'u'
        and (
-         select array_agg(att.attname order by att.attname)
-           from unnest(con.conkey) k
-           join pg_attribute att on att.attrelid = con.conrelid and att.attnum = k
-       ) = array['client_id', 'month']
+         -- attname is Postgres's `name` type; cast it so the comparison
+         -- against a text[] literal has an operator to use.
+         select array_agg(att.attname::text order by att.attname::text)
+           from unnest(con.conkey) as k
+           join pg_attribute att
+             on att.attrelid = con.conrelid
+            and att.attnum = k
+       ) = array['client_id', 'month']::text[]
   loop
     execute format('alter table syte_suite_report_generated_log drop constraint %I', c.conname);
   end loop;
 end $$;
 
 -- 3. The real key. Pre-existing rows are already unique on (client_id, month),
---    so adding report_type cannot collide.
-create unique index if not exists syte_suite_report_generated_log_client_month_type_key
-  on syte_suite_report_generated_log(client_id, month, report_type);
+--    so adding report_type cannot collide. Skipped when the table was created
+--    with the three-column key already in place (a fresh install), so this
+--    doesn't leave a duplicate index behind.
+do $$
+begin
+  if exists (
+    select 1
+      from pg_index i
+      join pg_class t on t.oid = i.indrelid
+     where t.relname = 'syte_suite_report_generated_log'
+       and i.indisunique
+       and pg_get_indexdef(i.indexrelid) like '%(client_id, month, report_type)'
+  ) then
+    raise notice 'syte_suite_report_generated_log is already keyed by (client_id, month, report_type)';
+  else
+    execute 'create unique index syte_suite_report_generated_log_client_month_type_key '
+         || 'on syte_suite_report_generated_log(client_id, month, report_type)';
+  end if;
+end $$;
