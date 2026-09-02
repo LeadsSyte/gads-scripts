@@ -574,7 +574,23 @@ export async function getSentReportPdf(id) {
 // Generation tracking — records when a report microsite has been built
 // (regardless of whether it has been sent yet). Used by the Reports module
 // to surface "Generated" cards distinct from "Sent" cards.
+//
+// Storage is deliberately split in two:
+//   GEN_LOG_KEY      — one lean status row per (client, month, report_type).
+//                      Small enough that it always fits, so the "Generated"
+//                      card survives even when everything else fails.
+//   GEN_CONTENT_KEY  — the heavy payload (microsite JSON, saved report data,
+//                      an edited HTML override that can run to megabytes),
+//                      one localStorage entry per report, written
+//                      best-effort and pruned when the quota is hit.
+//
+// They used to share one array. A single report could carry a ~2MB HTML
+// override, so after a few clients the array blew past the ~5MB localStorage
+// quota, setItem threw, and the catch swallowed it — losing the status row
+// too. Combined with a failing DB write that made generated reports vanish
+// completely.
 const GEN_LOG_KEY = LS_PREFIX + 'report_generated_log';
+const GEN_CONTENT_KEY = LS_PREFIX + 'report_generated_content:';
 
 // Status-only columns that exist on the base table even when the heavy
 // content columns (microsite_json, report_data, qa, …) haven't been migrated
@@ -583,29 +599,96 @@ const GEN_LOG_KEY = LS_PREFIX + 'report_generated_log';
 // fails on a project that only ran supabase-schema-reports.sql.
 const GEN_LOG_STATUS_COLS = ['client_id', 'month', 'generated_at', 'qa_score', 'email_subject', 'report_type'];
 
+// Heavy columns — everything needed to re-render a saved report. Kept out of
+// the status row and out of the list queries.
+const GEN_LOG_CONTENT_COLS = ['email_body', 'microsite_json', 'qa', 'aeo_probe', 'report_data', 'microsite_html_override'];
+
+// Run supabase-schema-report-type.sql to fix. Named in the operator-facing
+// warning so the failure says what to do about it.
+const GEN_TYPE_MIGRATION = 'supabase-schema-report-type.sql';
+
 function pickKeys(obj, keys) {
   const out = {};
   for (const k of keys) if (obj[k] !== undefined) out[k] = obj[k];
   return out;
 }
 
-// Upsert the generated-log row into the localStorage mirror by
-// (client, month, report_type). The SEO and AEO reports are separate
-// deliverables, so generating one must never overwrite the record of the
-// other. Rows logged before the split carry report_type 'full'.
-function upsertGeneratedLocal(payload) {
+function omitKeys(obj, keys) {
+  const out = { ...obj };
+  for (const k of keys) delete out[k];
+  return out;
+}
+
+// The SEO and AEO reports are separate deliverables that coexist for a
+// month, so every lookup is keyed by all three fields. Rows logged before
+// the split carry report_type 'full'.
+function generatedKey(r) {
+  return (r.client_id || '') + '|' + (r.month || '') + '|' + (r.report_type || 'full');
+}
+
+function readGeneratedIndex() {
+  try { return JSON.parse(localStorage.getItem(GEN_LOG_KEY) || '[]'); } catch { return []; }
+}
+
+// Store the heavy half of a report on its own key. Best-effort: on a quota
+// error, drop the oldest stored payloads (other reports keep their status
+// rows and can be regenerated) and retry once.
+function writeGeneratedContent(payload) {
+  const content = pickKeys(payload, GEN_LOG_CONTENT_COLS);
+  if (Object.keys(content).length === 0) return true;
+  const key = GEN_CONTENT_KEY + generatedKey(payload);
+  const body = JSON.stringify(content);
   try {
-    const list = JSON.parse(localStorage.getItem(GEN_LOG_KEY) || '[]');
-    const idx = list.findIndex(r =>
-      r.client_id === payload.client_id &&
-      r.month === payload.month &&
-      (r.report_type || 'full') === (payload.report_type || 'full')
-    );
-    if (idx >= 0) list[idx] = { ...list[idx], ...payload };
-    else list.push({ id: crypto.randomUUID(), ...payload });
-    localStorage.setItem(GEN_LOG_KEY, JSON.stringify(list));
+    localStorage.setItem(key, body);
+    return true;
   } catch {}
+  // Quota. Evict other reports' content, oldest generation first.
+  const index = readGeneratedIndex()
+    .filter(r => generatedKey(r) !== generatedKey(payload))
+    .sort((a, b) => String(a.generated_at || '').localeCompare(String(b.generated_at || '')));
+  for (const stale of index) {
+    try { localStorage.removeItem(GEN_CONTENT_KEY + generatedKey(stale)); } catch {}
+    try {
+      localStorage.setItem(key, body);
+      return true;
+    } catch {}
+  }
+  // Still no room — the status row below is what matters; the report content
+  // lives in the DB (or can be regenerated).
+  try { localStorage.removeItem(key); } catch {}
+  return false;
+}
+
+function readGeneratedContent(row) {
+  try {
+    const raw = localStorage.getItem(GEN_CONTENT_KEY + generatedKey(row));
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
+}
+
+// Upsert the generated-log row into the localStorage mirror by
+// (client, month, report_type). Generating one report must never overwrite
+// the record of the other.
+function upsertGeneratedLocal(payload) {
+  const status = omitKeys(payload, GEN_LOG_CONTENT_COLS);
+  try {
+    const list = readGeneratedIndex();
+    const idx = list.findIndex(r => generatedKey(r) === generatedKey(payload));
+    if (idx >= 0) list[idx] = { ...list[idx], ...status };
+    else list.push({ id: crypto.randomUUID(), ...status });
+    localStorage.setItem(GEN_LOG_KEY, JSON.stringify(list));
+  } catch (e) {
+    console.warn('[reports] generated-report status mirror write failed:', e.message);
+  }
+  writeGeneratedContent(payload);
   return payload;
+}
+
+// Postgres unique-violation. Raised when the generated log still carries the
+// pre-split `unique (client_id, month)` constraint and a client already has
+// the other report type logged for that month.
+function isUniqueViolation(e) {
+  return e?.code === '23505' || /duplicate key value|unique constraint/i.test(e?.message || '');
 }
 
 async function dbUpsertGenerated(payload) {
@@ -627,10 +710,26 @@ async function dbUpsertGenerated(payload) {
   const { data, error } = await supabase
     .from('syte_suite_report_generated_log')
     .insert(payload).select().single();
-  if (error) throw error;
+  if (error) {
+    if (isUniqueViolation(error)) {
+      const e = new Error(
+        'The reports table still allows only one report per client per month, so this ' +
+        (payload.report_type || 'full').toUpperCase() +
+        ' report could not be saved alongside the other one. Run ' + GEN_TYPE_MIGRATION + ' in Supabase.'
+      );
+      e.needsTypeMigration = true;
+      throw e;
+    }
+    throw error;
+  }
   return data;
 }
 
+// Log a generated report. Never throws: the return value carries where the
+// row actually landed so the caller can tell the operator when a report is
+// only on this device.
+//   saved_to      'db' | 'local'
+//   save_warning  operator-facing reason the shared copy failed, if it did
 export async function logReportGenerated(row) {
   const payload = {
     ...row,
@@ -638,54 +737,80 @@ export async function logReportGenerated(row) {
     report_type: row.report_type || 'full',
     generated_at: row.generated_at || new Date().toISOString()
   };
-  // Always mirror to localStorage FIRST so the just-generated status survives
-  // a refresh even if every DB write below fails — e.g. the content columns
+  // Always mirror locally FIRST so the just-generated status survives a
+  // refresh even if every DB write below fails — e.g. the content columns
   // were never migrated in, so the full insert errors with "column … does not
   // exist". listGeneratedReports / getGeneratedReport merge this back in.
   upsertGeneratedLocal(payload);
-  if (supabase) {
+  if (!supabase) return { ...payload, saved_to: 'local' };
+
+  let warning = '';
+  try {
+    return { ...(await dbUpsertGenerated(payload)), saved_to: 'db' };
+  } catch (e) {
+    warning = e.message;
+    console.warn('[reports] logReportGenerated full write failed, retrying with status-only columns:', e.message);
+    // A unique violation is about the row's identity, not its columns —
+    // retrying with fewer columns hits exactly the same constraint.
+    if (e.needsTypeMigration) return { ...payload, saved_to: 'local', save_warning: warning };
+    // The heavy content columns may not exist on this project. Retry with
+    // just the status columns so the "Generated" card still shows on every
+    // device (the full content stays available from the local mirror).
     try {
-      return await dbUpsertGenerated(payload);
-    } catch (e) {
-      console.warn('[reports] logReportGenerated full write failed, retrying with status-only columns:', e.message);
-      // The heavy content columns may not exist on this project. Retry with
-      // just the status columns so the "Generated" card still shows on every
-      // device (the full content stays available from the local mirror).
-      try {
-        return await dbUpsertGenerated(pickKeys(payload, GEN_LOG_STATUS_COLS));
-      } catch (e2) {
-        console.warn('[reports] logReportGenerated status-only write also failed, using localStorage only:', e2.message);
-      }
+      const data = await dbUpsertGenerated(pickKeys(payload, GEN_LOG_STATUS_COLS));
+      return {
+        ...payload, ...data, saved_to: 'db',
+        save_warning: 'Saved the report status, but its content stayed on this device only ' +
+          '(the report content columns are missing — run supabase-schema-persistence.sql). Cause: ' + warning
+      };
+    } catch (e2) {
+      warning = e2.message;
+      console.warn('[reports] logReportGenerated status-only write also failed, using localStorage only:', e2.message);
     }
   }
-  return payload;
+  return {
+    ...payload,
+    saved_to: 'local',
+    save_warning: 'This report was saved on this device only — it will not show for anyone else. Cause: ' + warning
+  };
 }
 
+// Newest-first status rows for the Generated dashboard. Content columns are
+// left out: the dashboard only needs status, and the payloads are large.
 export async function listGeneratedReports(clientId) {
   let dbRows = [];
   if (supabase) {
     try {
-      let q = supabase
-        .from('syte_suite_report_generated_log')
-        .select('*')
-        .order('generated_at', { ascending: false });
-      if (clientId) q = q.eq('client_id', clientId);
-      const { data, error } = await q;
-      if (error) throw error;
+      const run = (cols) => {
+        let q = supabase
+          .from('syte_suite_report_generated_log')
+          .select(cols)
+          .order('generated_at', { ascending: false });
+        if (clientId) q = q.eq('client_id', clientId);
+        return q;
+      };
+      let { data, error } = await run(GEN_LOG_STATUS_COLS.concat('id').join(', '));
+      if (error) {
+        // report_type not migrated in yet — retry without it.
+        ({ data, error } = await run('id, client_id, month, generated_at, qa_score, email_subject'));
+        if (error) throw error;
+      }
       dbRows = data || [];
-    } catch {
+    } catch (e) {
       // Table may not exist — merge falls back to localStorage only.
+      console.warn('[reports] listGeneratedReports DB read failed, using localStorage:', e.message);
     }
   }
   // Merge the localStorage mirror so a row that only made it to the local
-  // cache (DB write failed / offline) still surfaces. The DB wins on conflict,
-  // keyed by (client_id, month).
-  let localRows = [];
-  try { localRows = JSON.parse(localStorage.getItem(GEN_LOG_KEY) || '[]'); } catch {}
+  // cache (DB write failed / offline) still surfaces. The DB wins on
+  // conflict, keyed by (client_id, month, report_type) — keying it by
+  // (client_id, month) alone dropped a locally-saved AEO report whenever the
+  // SEO report for that month had reached the DB.
+  let localRows = readGeneratedIndex();
   if (clientId) localRows = localRows.filter(r => r.client_id === clientId);
-  const key = r => (r.client_id || '') + '|' + (r.month || '');
-  const dbKeys = new Set(dbRows.map(key));
-  return [...dbRows, ...localRows.filter(r => !dbKeys.has(key(r)))];
+  const dbKeys = new Set(dbRows.map(generatedKey));
+  return [...dbRows, ...localRows.filter(r => !dbKeys.has(generatedKey(r)))]
+    .sort((a, b) => String(b.generated_at || '').localeCompare(String(a.generated_at || '')));
 }
 
 // Fetch the full saved content (email body + microsite JSON + QA + probe +
@@ -713,17 +838,28 @@ export async function getGeneratedReport(clientId, month, reportType) {
       // Only return the DB row when there IS one. A missing row (data null)
       // falls through to the local mirror below, so a report whose full write
       // failed and only landed in localStorage still rehydrates review mode.
-      if (data) return data;
+      if (data) {
+        // A status-only row — written when the content columns aren't
+        // migrated in — has no microsite to render. The device that
+        // generated it still holds the content, so fill it back in rather
+        // than showing an empty review screen.
+        if (!data.microsite_json) {
+          const local = readGeneratedContent({ ...data, report_type: data.report_type || reportType || 'full' });
+          if (local) return { ...data, ...local };
+        }
+        return data;
+      }
     } catch (e) {
       console.warn('[reports] getGeneratedReport DB read failed, using localStorage:', e.message);
     }
   }
-  const list = JSON.parse(localStorage.getItem(GEN_LOG_KEY) || '[]');
-  const matches = list
+  const matches = readGeneratedIndex()
     .filter(r => r.client_id === clientId && r.month === month)
     .filter(r => !reportType || (r.report_type || 'full') === reportType)
     .sort((a, b) => String(b.generated_at || '').localeCompare(String(a.generated_at || '')));
-  return matches[0] || null;
+  const found = matches[0];
+  if (!found) return null;
+  return { ...found, ...(readGeneratedContent(found) || {}) };
 }
 
 // ---------------------------------------------------------------------------
