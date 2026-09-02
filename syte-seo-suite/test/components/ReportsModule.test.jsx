@@ -11,10 +11,12 @@ import { describe, test, expect, vi, beforeEach } from 'vitest';
 const mockListSent = vi.fn();
 const mockListGenerated = vi.fn();
 const mockLogSent = vi.fn();
+const mockSync = vi.fn();
 vi.mock('../../src/lib/supabase.js', () => ({
   listSentReports: (...a) => mockListSent(...a),
   listGeneratedReports: (...a) => mockListGenerated(...a),
-  logReportSent: (...a) => mockLogSent(...a)
+  logReportSent: (...a) => mockLogSent(...a),
+  syncGeneratedLocal: (...a) => mockSync(...a)
 }));
 
 // Mock the heavy children — they have their own tests; here we just
@@ -41,16 +43,15 @@ vi.mock('../../src/store/useClients.js', () => ({
 
 import ReportsModule from '../../src/modules/reports/ReportsModule.jsx';
 
-// Helper: produce a YYYY-MM key for last month in the same way ReportsModule does.
-function previousMonthKey() {
-  const d = new Date();
-  d.setMonth(d.getMonth() - 1);
-  return d.toISOString().slice(0, 7);
-}
+// The same helper ReportsModule uses, so the test can't drift from the app's
+// idea of which month the board defaults to.
+import { previousMonthKey, shiftMonthKey, monthKeyLabel } from '../../src/modules/reports/reportMonths.js';
 
 beforeEach(() => {
   mockListSent.mockReset();
   mockListGenerated.mockReset();
+  mockSync.mockReset();
+  mockSync.mockResolvedValue({ pushed: 0, failed: 0, error: '' });
   mockSelect = vi.fn();
 });
 
@@ -137,6 +138,77 @@ describe('ReportsModule', () => {
     expect(screen.getByText('PDF')).toBeInTheDocument();
     // A manual send still counts as sent → regenerate is offered.
     expect(screen.getByRole('button', { name: /Regenerate Report/i })).toBeInTheDocument();
+  });
+
+
+  test('a newer report for another month does not hide this month\'s', async () => {
+    // Regression: the board took each client's globally-newest generated row
+    // and dropped the client to Pending when that row was for another month —
+    // so a report generated for August disappeared the moment a September one
+    // existed.
+    const month = previousMonthKey();
+    const later = shiftMonthKey(month, 1);
+    mockClients = [{ id: 'c1', name: 'Acme' }];
+    mockListSent.mockResolvedValue([]);
+    mockListGenerated.mockResolvedValue([
+      { client_id: 'c1', month: later, generated_at: '2030-01-02T00:00:00Z', report_type: 'seo' },
+      { client_id: 'c1', month, generated_at: '2029-01-01T00:00:00Z', report_type: 'seo' }
+    ]);
+    render(<ReportsModule sub="Monthly Report" />);
+    await waitFor(() => expect(screen.getByText(/Generated — awaiting send/)).toBeInTheDocument());
+  });
+
+  test('points at the months that do have reports when this one has none', async () => {
+    const other = shiftMonthKey(previousMonthKey(), -3);
+    mockClients = [{ id: 'c1', name: 'Acme' }];
+    mockListSent.mockResolvedValue([]);
+    mockListGenerated.mockResolvedValue([
+      { client_id: 'c1', month: other, generated_at: new Date().toISOString(), report_type: 'seo' }
+    ]);
+    render(<ReportsModule sub="Monthly Report" />);
+    // The hint names the month the reports were actually logged under...
+    const link = await screen.findByRole('link', { name: monthKeyLabel(other) });
+    // ...and switching to it surfaces them.
+    await userEvent.click(link);
+    await waitFor(() => expect(screen.getByText(/Generated — awaiting send/)).toBeInTheDocument());
+    expect(screen.getByRole('heading', { name: new RegExp(monthKeyLabel(other)) })).toBeInTheDocument();
+  });
+
+  test('surfaces a failed status read instead of showing everyone as pending', async () => {
+    mockClients = [{ id: 'c1', name: 'Acme' }];
+    mockListSent.mockRejectedValue(new Error('relation does not exist'));
+    mockListGenerated.mockResolvedValue([]);
+    render(<ReportsModule sub="Monthly Report" />);
+    expect(await screen.findByText(/Could not load report status: relation does not exist/)).toBeInTheDocument();
+  });
+
+
+  test('pushes device-only reports up on load and says so', async () => {
+    // Reports stranded in localStorage while the DB still allowed one report
+    // per client per month are recovered rather than regenerated.
+    const month = previousMonthKey();
+    mockClients = [{ id: 'c1', name: 'Acme' }];
+    mockListSent.mockResolvedValue([]);
+    mockSync.mockResolvedValue({ pushed: 2, failed: 0, error: '' });
+    mockListGenerated.mockResolvedValue([
+      { client_id: 'c1', month, generated_at: new Date().toISOString(), report_type: 'aeo' }
+    ]);
+    render(<ReportsModule sub="Monthly Report" />);
+    expect(await screen.findByText(/Uploaded 2 reports that had only been saved on this device/)).toBeInTheDocument();
+    expect(screen.getByText(/Generated — awaiting send/)).toBeInTheDocument();
+  });
+
+  test('a failed upload does not stop the board loading', async () => {
+    const month = previousMonthKey();
+    mockClients = [{ id: 'c1', name: 'Acme' }];
+    mockListSent.mockResolvedValue([]);
+    mockSync.mockResolvedValue({ pushed: 0, failed: 1, error: 'permission denied' });
+    mockListGenerated.mockResolvedValue([
+      { client_id: 'c1', month, generated_at: new Date().toISOString(), report_type: 'seo' }
+    ]);
+    render(<ReportsModule sub="Monthly Report" />);
+    await waitFor(() => expect(screen.getByText(/Generated — awaiting send/)).toBeInTheDocument());
+    expect(screen.queryByText(/had only been saved on this device/)).not.toBeInTheDocument();
   });
 
   test('clicking a pending client card calls select(client.id) and shows Monthly Report', async () => {
