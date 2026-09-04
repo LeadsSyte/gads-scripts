@@ -44,6 +44,9 @@ import { ensureToken, SCOPES, getToken, switchAccount, silentRefresh, getCurrent
 import { serverAuthEnabled } from '../../lib/googleServerAuth.js';
 import { fetchReportData } from './reportData.js';
 import { evaluateGscReadiness } from './gscGuard.js';
+import { REPORT_DATA_VERSION } from './reportDataVersion.js';
+import { preserveImportedGsc, GSC_IMPORT_SOURCE } from './gscImport.js';
+import GscCsvImport from './GscCsvImport.jsx';
 import ReportDashboard from './ReportDashboard.jsx';
 
 const ACCENT = '#a78bfa';
@@ -292,12 +295,6 @@ export default function MonthlyReport({ initialMonth }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [client?.id, month, fetchStatus]);
 
-  // Bump this whenever the report data shape changes in a way that
-  // makes old cache entries stale (e.g. keyword pull went 50 → 500,
-  // pagination added at v3). Cache entries without a matching version
-  // are treated as a miss and refetched.
-  const REPORT_DATA_VERSION = 3;
-
   // Pull all report data (GA4 traffic + conversions + GSC keywords) via reportData.js.
   // Re-entrancy guard wrapper: a single fetch/auth cycle can dispatch several
   // TOKEN_EVENTs (each persisted token fires one). Without this guard the
@@ -326,10 +323,18 @@ export default function MonthlyReport({ initialMonth }) {
     const ga4Email = c.ga4_account_email || c.google_account_email || null;
     const gscEmail = c.gsc_account_email || c.google_account_email || null;
 
+    // Whatever is already on file for this client/month. Read even on a
+    // forced refresh: if it is a Search Console CSV import (gscImport.js) and
+    // the live pull comes back without GSC rows, the import is merged back in
+    // rather than silently thrown away.
+    let cachedRow = null;
+    try { cachedRow = await getCachedReportData(c.id, m); } catch {}
+    const cachedBlob = cachedRow?.data || null;
+
     // Check cache first (unless forced refresh).
     if (!forceRefresh) {
       try {
-        const cached = await getCachedReportData(c.id, m);
+        const cached = cachedRow;
         const isCurrentVersion = cached?.data?.version === REPORT_DATA_VERSION;
         // Cache is also stale if the client's GA4/GSC properties OR the
         // Google account they're bound to have changed since the cached
@@ -343,7 +348,9 @@ export default function MonthlyReport({ initialMonth }) {
           && (cached.data.gsc_account_email ?? null) === gscEmail;
         if (cached?.data && isCurrentVersion && propsMatch) {
           setReportData(cached.data);
-          setFetchStatus('Loaded from cache (fetched ' + new Date(cached.fetched_at).toLocaleDateString() + ') · Click Refresh Data to re-fetch');
+          setFetchStatus(cached.data.source === GSC_IMPORT_SOURCE
+            ? 'Search Console data imported from CSV (' + new Date(cached.data.imported_at || cached.fetched_at).toLocaleDateString() + ') · no GA4 in an import'
+            : 'Loaded from cache (fetched ' + new Date(cached.fetched_at).toLocaleDateString() + ') · Click Refresh Data to re-fetch');
           return;
         }
         if (cached?.data && isCurrentVersion && !propsMatch) {
@@ -446,7 +453,7 @@ export default function MonthlyReport({ initialMonth }) {
     const [year, mo] = m.split('-').map(Number);
     setFetchStatus('Pulling GA4 + GSC data for ' + monthLabel(m) + '…');
     try {
-      const data = await fetchReportData(c, year, mo);
+      const data = preserveImportedGsc(await fetchReportData(c, year, mo), cachedBlob);
       data.version = REPORT_DATA_VERSION;
       data.ga4_property_id = c.ga4_property_id || null;
       data.gsc_property = c.gsc_property || null;
@@ -503,7 +510,9 @@ export default function MonthlyReport({ initialMonth }) {
 
       const parts = [];
       if (data.traffic?.current) parts.push('GA4 ✓');
-      if (data.keywords?.length > 0) parts.push('GSC ✓ (' + data.keywords.length + ' keywords)');
+      if (data.keywords?.length > 0) {
+        parts.push((data.source === GSC_IMPORT_SOURCE ? 'GSC (imported CSV) ✓ (' : 'GSC ✓ (') + data.keywords.length + ' keywords)');
+      }
       if (data.errors?.length > 0) parts.push(data.errors.join(' · '));
       setFetchStatus(parts.join(' · ') || 'No data available');
     } catch (e) {
@@ -1259,7 +1268,27 @@ export default function MonthlyReport({ initialMonth }) {
                 fontSize: 12, color: 'var(--text-muted)'
               }}>
                 Runs a live probe against the client's AEO queries — independent of Google Search Console.
+                {reportData?.keywords?.length
+                  ? ' Probe grid grounded on ' + reportData.keywords.length + ' Search Console head-terms' +
+                    (reportData.source === GSC_IMPORT_SOURCE ? ' (imported CSV).' : '.')
+                  : ' No Search Console head-terms on file for this month, so the probe grid is built from the website and industry alone.'}
               </div>
+
+              {/* Clients we don't have Search Console access to still have a
+                  Performance export. Feeding it in grounds the probe grid the
+                  same way a live connection would, without connecting
+                  anything or loosening the SEO report's gate. */}
+              {!reportData?.keywords?.length && (
+                <GscCsvImport
+                  client={client}
+                  month={month}
+                  onImported={(data) => {
+                    setReportData(data);
+                    setFetchStatus('Search Console data imported from CSV · ' + (data.keywords?.length || 0) + ' keywords');
+                  }}
+                />
+              )}
+
               <button
                 onClick={generateAeoOnly}
                 disabled={phase !== 'idle' && phase !== 'review'}
