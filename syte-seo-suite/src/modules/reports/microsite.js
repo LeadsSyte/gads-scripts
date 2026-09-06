@@ -7,6 +7,39 @@ function esc(s = '') {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+// The PPC equivalent ("what your organic traffic would have cost in Google
+// Ads") is only a compelling slide when the number is big. Below R30,000 it
+// undersells the work, so the section, and any PPC highlight tile, is dropped
+// rather than shown small. Kept in one place because the microsite renderer
+// and the Claude prompt both need the same bar.
+export const PPC_MIN_VALUE = 30000;
+
+// Parse a rand amount as Claude writes it: "R48,200", "R48 200", "R48.2k",
+// "R1.2m", or a plain number. Returns null when there is no number to read,
+// which counts as "cannot prove it clears the bar" and hides the value.
+export function parseRandAmount(value) {
+  if (value == null || value === '') return null;
+  if (typeof value === 'number') return isFinite(value) ? value : null;
+  const cleaned = String(value).toLowerCase().replace(/[\s\u00a0,]/g, '');
+  const m = cleaned.match(/(-?\d+(?:\.\d+)?)\s*([km])?/);
+  if (!m) return null;
+  const n = parseFloat(m[1]);
+  if (isNaN(n)) return null;
+  if (m[2] === 'k') return n * 1000;
+  if (m[2] === 'm') return n * 1000000;
+  return n;
+}
+
+// True when a value is worth putting in front of the client.
+export function meetsPpcThreshold(value) {
+  const amount = parseRandAmount(value);
+  return amount != null && amount >= PPC_MIN_VALUE;
+}
+
+function isPpcHighlight(h) {
+  return /ppc|google ads|paid (search|equivalent)|ad spend/i.test(String(h?.label || ''));
+}
+
 function scoreColor(s) {
   const v = typeof s === 'string' ? parseFloat(s) : s;
   if (v == null || isNaN(v)) return '#8b8b96';
@@ -165,7 +198,9 @@ export function buildMicrositeHtml({ micro, client, monthLabel, previousMonthLab
   const aeo = seoOnly ? {} : (micro?.aeoSection || {});
   const showAeo = !!aeo.show && !aeoOnly;
   const ppc = micro?.ppcEquivalent || {};
-  const showPpc = !!ppc.show && !aeoOnly;
+  // Small PPC numbers are worse than none: only render the section when the
+  // estimate clears PPC_MIN_VALUE (and when we can actually read the number).
+  const showPpc = !!ppc.show && !aeoOnly && meetsPpcThreshold(ppc.value);
   const work = micro?.workDone || {};
   const showWork = !!work.show && (work.items || []).length > 0 && !aeoOnly;
   const rd = aeoOnly ? {} : (reportData || {});
@@ -182,7 +217,11 @@ export function buildMicrositeHtml({ micro, client, monthLabel, previousMonthLab
   // report for the SEO one (or vice versa).
   const reportKind = seoOnly ? 'SEO Performance' : aeoOnly ? 'AEO Performance' : 'Performance';
 
-  const highlights = (micro?.highlights || []).map(h => `
+  // A PPC highlight tile carries the same rand value as the section, so it
+  // lives or dies by the same threshold, judged on its own value.
+  const highlights = (micro?.highlights || [])
+    .filter(h => !isPpcHighlight(h) || (!aeoOnly && meetsPpcThreshold(h.value)))
+    .map(h => `
     <div class="metric">
       <div class="metric-val">${esc(h.value)}</div>
       <div class="metric-label">${esc(h.label)}</div>

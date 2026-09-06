@@ -4,6 +4,11 @@
 
 import { SYTE_DESIGN_SYSTEM, SEO_REASONING_MODULE } from './designSystem.js';
 import { isDelivered } from '../../lib/deliveryStatus.js';
+import { PPC_MIN_VALUE } from './microsite.js';
+
+// Rands, formatted the way the prompts talk about money (R30,000). en-US
+// rather than en-ZA: the reports write thousands with a comma, not a space.
+const PPC_MIN_LABEL = 'R' + PPC_MIN_VALUE.toLocaleString('en-US');
 
 export const ALICE_SYSTEM = `${SYTE_DESIGN_SYSTEM}
 
@@ -15,7 +20,7 @@ CRITICAL TONE RULES (NEVER BREAK):
 - If both comparisons are down, lead with non-metric wins: "We published X articles", "We fixed Y critical technical issues", "Your AI visibility score jumped to Z".
 - Be honest about dips — acknowledge briefly in ONE sentence, then immediately follow with what Syte is doing about it.
 - NEVER send a doom report. Every report must have more positive framing than negative.
-- Frame PPC equivalent value prominently: "Your organic traffic this month would have cost approximately RX,XXX in Google Ads."
+- Frame PPC equivalent value prominently: "Your organic traffic this month would have cost approximately RX,XXX in Google Ads." ONLY when that figure is ${PPC_MIN_LABEL} or more. Below that it undersells the work: leave the PPC equivalent out of the email entirely, no rand figure, no "would have cost" line, no softened version of it.
 
 AEO TONE RULES:
 - Lead with COVERAGE growth: the headline is "now named in X of Y buyer prompts" and how that moved month-on-month, plus the number of new prompt themes we discovered this month. Coverage and new themes come before any single-metric story.
@@ -44,7 +49,7 @@ SECTION COVERAGE (only include sections for services the client actually has):
 - SEO Content: mention articles published, topics covered, any that are already ranking
 - Technical SEO: mention fixes completed, verified on site, critical issues resolved
 - AEO: mention AI visibility score, which engines feature the brand, improvement trend
-- Always include the PPC equivalent value if click data is available
+- Always include the PPC equivalent value if click data is available AND the estimate is at least ${PPC_MIN_LABEL}. If it comes in under that, omit it silently.
 
 FORMAT:
 SUBJECT: [compelling subject line — specific, not generic like "Monthly Update"]
@@ -97,6 +102,7 @@ Rules:
 - aeoMomNarrative + aeoCompetitiveNarrative are short stories the microsite renders alongside auto-built tables. The tables get built from raw probe data — you only write the prose.
 - If no AEO data, omit aeoMomNarrative and aeoCompetitiveNarrative.
 - If no click data for PPC estimate, set ppcEquivalent.show = false.
+- PPC MINIMUM: if the estimated equivalent comes to less than ${PPC_MIN_LABEL}, set ppcEquivalent.show = false, drop any "PPC Equivalent" entry from highlights, and do not mention the rand figure in narrative, subheadline or headline either. A small number reads as the work being worth little, so it is left out completely rather than shown. Above ${PPC_MIN_LABEL}, lead with it.
 - workDone: ONLY populate items from the explicit "=== WHAT SYTE DID THIS MONTH ===" section in the user payload. If that section says "NO WORK DATA AVAILABLE" or contains no concrete numbers (articles, fixes, optimizations, verified changes), set workDone.show = false and workDone.items = []. NEVER invent generic strategy items like "Complete site assessment" or "SEO roadmap development". Each card must correspond to a specific line in the payload, no inferences from the brand or industry.
 - Highlights: 3-6 metrics. Prefer coverage-led metrics FIRST: "named in X of Y prompts", coverage rate + MoM delta, share of voice, then the AEO Index. Use citations/sentiment as secondary.
 - citationGapsNarrative: frame the top competitor source domains as the growth plan, never as a failure. Omit if no gaps in the payload.
@@ -443,6 +449,7 @@ export function buildAlicePayload(form, aeo, workSummary) {
     lines.push(`Organic clicks this month: ${form.gscClicksThis || '—'}`);
     lines.push(`Location: South Africa (ZAR currency)`);
     lines.push('INSTRUCTION: Estimate the equivalent Google Ads cost for these organic clicks based on typical CPC for this industry in South Africa. Show as "Your organic traffic would have cost approximately RX,XXX in Google Ads this month." Use reasonable industry-specific CPCs (e.g. legal R25-40/click, ecommerce R8-15/click, B2B services R15-25/click, medical R20-35/click, general R10-20/click).');
+    lines.push(`THRESHOLD: only report this if the estimate is ${PPC_MIN_LABEL} or more. If it works out to less, omit the PPC equivalent entirely (ppcEquivalent.show = false, no PPC highlight, no rand figure in any prose).`);
   }
 
   // --- AEO data ---
