@@ -6,6 +6,17 @@ one of them. **Nothing here changes the Search Console requirement** — the SEO
 report is still gated on a live connection (`gscGuard.js`), and this does not
 connect an account.
 
+## The rule
+
+**An AEO report needs Search Console data on file — live or imported — or it will
+not generate.** The button is disabled without it (`aeoGuard.js`), because a probe
+grid with nothing to ground on collapses to a handful of guessed prompts, and the
+report that comes out reads "this brand is invisible in AI search" when it actually
+means "we never asked a real question".
+
+So for a client we don't have connected, the export below is not an optional
+nicety — it is what makes the report possible at all.
+
 ## What the AEO side actually needs Search Console for
 
 The AEO report never required a connection to *run* — only the SEO report does.
@@ -50,7 +61,11 @@ them exactly the same input a live pull would.
 * GA4 traffic is **not** part of the import (an export has none), so the
   traffic figures stay empty.
 * The SEO report stays blocked for the client: its gate checks the connection
-  itself, not the data on file.
+  itself, not the data on file. The two gates ask different questions on purpose —
+  `gscGuard.js` asks "is Google connected?", `aeoGuard.js` asks "is there data to
+  ground the grid?".
+* Fewer than 5 head-terms with impressions counts as no grounding, and the AEO
+  report stays blocked (`MIN_GROUNDING_KEYWORDS` in `aeoGuard.js`).
 * Pressing **Refresh Data** does not lose the import — if the live pull comes
   back without Search Console rows (the usual case for an unconnected client),
   the imported keywords are merged back in (`preserveImportedGsc`). If a real
@@ -63,4 +78,6 @@ them exactly the same input a live pull would.
 | --- | --- |
 | `src/modules/reports/gscImport.js` | Pure parsing + blob building (`parseGscSheet`, `readGscExport`, `buildImportedReportData`, `preserveImportedGsc`). Node-testable. |
 | `src/modules/reports/GscCsvImport.jsx` | The import card: file/zip reading and the cache write. |
+| `src/modules/reports/aeoGuard.js` | The AEO report's data gate (`evaluateAeoReadiness`). Node-testable. |
 | `test/gscImport.test.mjs` | Parser and merge-behaviour tests. |
+| `test/aeoGuard.test.mjs` | Gate tests: live passes, import passes, nothing and thin data block. |

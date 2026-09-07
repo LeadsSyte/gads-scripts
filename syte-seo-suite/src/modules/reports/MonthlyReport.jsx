@@ -44,6 +44,7 @@ import { ensureToken, SCOPES, getToken, switchAccount, silentRefresh, getCurrent
 import { serverAuthEnabled } from '../../lib/googleServerAuth.js';
 import { fetchReportData } from './reportData.js';
 import { evaluateGscReadiness } from './gscGuard.js';
+import { evaluateAeoReadiness } from './aeoGuard.js';
 import { REPORT_DATA_VERSION } from './reportDataVersion.js';
 import { preserveImportedGsc, GSC_IMPORT_SOURCE } from './gscImport.js';
 import GscCsvImport from './GscCsvImport.jsx';
@@ -83,7 +84,7 @@ function summarizeProbeIssues(probe) {
   // fell back to a thin set. Flag it up front, independent of engine health.
   const qCount = probe?.per_query?.length || 0;
   if (qCount > 0 && qCount < 12) {
-    out.push(`Only ${qCount} probe queries ran — the strategic grid likely did not build. Check the client website URL and Search Console connection, then re-run (expected 20+ queries).`);
+    out.push(`Only ${qCount} probe queries ran — the strategic grid likely did not build. Check the client website URL and the Search Console data backing this month (a live pull or an imported export), then re-run (expected 20+ queries).`);
   }
   // Engine coverage: which of the core engines actually returned data. A run
   // that only covers Claude (the built-in key) — because ChatGPT/Gemini keys
@@ -535,6 +536,18 @@ export default function MonthlyReport({ initialMonth }) {
     [client, reportData, month, tokenVersion]
   );
 
+  // Search Console gate for the AEO report. Different question to the SEO
+  // gate above: the AEO report carries no Google figures, but its probe grid
+  // is BUILT from Search Console head-terms, so it needs the data on file —
+  // from a live pull or an imported export, either grounds it identically.
+  // Without them the grid collapses to a handful of guessed prompts and the
+  // report reads "invisible in AI search" when it means "we never asked a
+  // real question".
+  const aeoReady = useMemo(
+    () => evaluateAeoReadiness({ client, reportData, month }),
+    [client, reportData, month]
+  );
+
   const micrositeHtml = useMemo(() => {
     if (!microJson || !client) return '';
     // Only weave AEO into the report when the client is actually on AEO
@@ -603,6 +616,15 @@ export default function MonthlyReport({ initialMonth }) {
 
   async function generateAeoOnly() {
     if (!client) return;
+    // Hard gate: never build an AEO report without Search Console head-terms
+    // to ground the probe grid on. Live or imported both count — see
+    // aeoGuard.js for why a thin grid is worse than no report.
+    if (!aeoReady.ok) {
+      setErr('Search Console data check failed: ' + aeoReady.blocker.message);
+      setPhase('idle');
+      return;
+    }
+
     setErr(''); setEmail({ subject: '', body: '' }); setMicroJson(null); setQa(null); setSent(false); setLiveAeoProbe(null);
     setAeoOnly(true); setProbeWarnings([]);
 
@@ -971,9 +993,11 @@ export default function MonthlyReport({ initialMonth }) {
               : <span className="badge red">SEO report: blocked — {gscReady.blocker.code.replace(/-/g, ' ')}</span>
           )}
           {doesAeo && (
-            hasSnapshot
-              ? <span className="badge green">AEO report: snapshot {aeoSnap.overall_score}/100</span>
-              : <span className="badge orange">AEO report: no snapshot for {month} yet</span>
+            !aeoReady.ok
+              ? <span className="badge red">AEO report: blocked — {aeoReady.blocker.code.replace(/-/g, ' ')}</span>
+              : hasSnapshot
+                ? <span className="badge green">AEO report: snapshot {aeoSnap.overall_score}/100</span>
+                : <span className="badge orange">AEO report: no snapshot for {month} yet</span>
           )}
         </div>
       </div>
@@ -1267,18 +1291,50 @@ export default function MonthlyReport({ initialMonth }) {
                 background: 'rgba(167,139,250,.06)', border: '1px solid rgba(167,139,250,.25)',
                 fontSize: 12, color: 'var(--text-muted)'
               }}>
-                Runs a live probe against the client's AEO queries — independent of Google Search Console.
-                {reportData?.keywords?.length
-                  ? ' Probe grid grounded on ' + reportData.keywords.length + ' Search Console head-terms' +
-                    (reportData.source === GSC_IMPORT_SOURCE ? ' (imported CSV).' : '.')
-                  : ' No Search Console head-terms on file for this month, so the probe grid is built from the website and industry alone.'}
+                Probes the answer engines against the client's AEO queries. Carries no Google
+                figures — but the probe grid is built from Search Console head-terms, so it needs
+                that data on file, live or imported.
+              </div>
+
+              {/* Search Console data gate. Mirrors the SEO card's gate in
+                  shape, not in question: this one accepts an imported export
+                  as readily as a live pull. */}
+              <div style={{
+                padding: 12, borderRadius: 10, marginBottom: 12,
+                background: aeoReady.ok ? 'rgba(52,211,153,.06)' : 'rgba(255,77,77,.06)',
+                border: '1px solid ' + (aeoReady.ok ? 'rgba(52,211,153,.3)' : 'rgba(255,77,77,.3)')
+              }}>
+                <div className="row" style={{ gap: 8, alignItems: 'center', marginBottom: aeoReady.ok ? 0 : 8 }}>
+                  <span style={{ color: aeoReady.ok ? 'var(--green)' : 'var(--red)', fontWeight: 600, fontSize: 12 }}>
+                    {aeoReady.ok
+                      ? (aeoReady.source === 'import'
+                          ? '✓ Grounded on imported Search Console data'
+                          : '✓ Grounded on live Search Console data')
+                      : '✗ No Search Console data to ground the probe grid'}
+                  </span>
+                </div>
+                {!aeoReady.ok && (
+                  <>
+                    <div style={{ fontSize: 12, marginBottom: 8 }}>{aeoReady.blocker.message}</div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                      {aeoReady.checks.map(c => (
+                        <div key={c.key} className="row" style={{ gap: 6, fontSize: 11 }}>
+                          <span style={{ color: c.pass ? 'var(--green)' : 'var(--red)' }}>{c.pass ? '✓' : '✗'}</span>
+                          <span style={{ color: c.pass ? 'var(--text-muted)' : 'var(--text)' }}>{c.label}</span>
+                          {c.note && <span className="muted" style={{ fontSize: 10 }}>— {c.note}</span>}
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                )}
               </div>
 
               {/* Clients we don't have Search Console access to still have a
                   Performance export. Feeding it in grounds the probe grid the
-                  same way a live connection would, without connecting
-                  anything or loosening the SEO report's gate. */}
-              {!reportData?.keywords?.length && (
+                  same way a live connection would, and clears the gate above,
+                  without connecting anything or loosening the SEO report's own
+                  gate. */}
+              {!aeoReady.ok && (
                 <GscCsvImport
                   client={client}
                   month={month}
@@ -1291,13 +1347,18 @@ export default function MonthlyReport({ initialMonth }) {
 
               <button
                 onClick={generateAeoOnly}
-                disabled={phase !== 'idle' && phase !== 'review'}
+                disabled={!aeoReady.ok || (phase !== 'idle' && phase !== 'review')}
+                title={aeoReady.ok ? '' : aeoReady.blocker.message}
                 style={{
-                  borderColor: 'var(--mod-aeo)', color: 'var(--mod-aeo)',
+                  borderColor: aeoReady.ok ? 'var(--mod-aeo)' : 'var(--border)',
+                  color: aeoReady.ok ? 'var(--mod-aeo)' : 'var(--text-muted)',
+                  cursor: aeoReady.ok ? 'pointer' : 'not-allowed',
                   padding: '12px 22px', fontSize: 14, fontWeight: 600, width: '100%'
                 }}
               >
-                {phase === 'idle' || phase === 'review' ? '▶ Generate AEO Report' : 'Working…'}
+                {phase !== 'idle' && phase !== 'review' ? 'Working…'
+                  : aeoReady.ok ? '▶ Generate AEO Report'
+                  : 'Blocked — no Search Console data'}
               </button>
             </div>
           )}

@@ -47,7 +47,7 @@ export function probeSetHealth(probes) {
   const degenerate = active.length < MIN_HEALTHY_GOLD || types.length < MIN_HEALTHY_TYPES;
   let summary;
   if (!active.length) summary = 'No active probes — add or generate a probe set.';
-  else if (degenerate) summary = `Thin probe set: ${active.length} active across ${types.length} type(s). The strategic grid did not build — check the website URL and Search Console connection.`;
+  else if (degenerate) summary = `Thin probe set: ${active.length} active across ${types.length} type(s). The strategic grid did not build — check the website URL and the Search Console data for this month (live or imported).`;
   else summary = `${onGoldGrid ? 'Strategic grid' : 'Probe set'}: ${active.length} active probes across ${types.length} types (${types.join(', ')}).`;
   return { activeCount: active.length, types, typeCount: types.length, onGoldGrid, hasComparison, degenerate, summary };
 }
