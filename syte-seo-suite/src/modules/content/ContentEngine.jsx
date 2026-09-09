@@ -158,7 +158,11 @@ function SectionCard({ title, content, accent, mono }) {
   );
 }
 
-function ParsedOutput({ output, topic, pushItem, exportTxt, exportDocx, systemPrompt, userPrompt, onOutputUpdate, pageUrl: pageUrlProp, onVerified }) {
+// pushClient: the client this output was actually generated FOR. It must be
+// passed explicitly — the quick flow picks its own client, and the dropdown
+// selection can change after generating, so falling back to the current
+// selection would push the article to the wrong site.
+function ParsedOutput({ output, topic, pushItem, pushClient, exportTxt, exportDocx, systemPrompt, userPrompt, onOutputUpdate, pageUrl: pageUrlProp, onVerified }) {
   const sections = React.useMemo(() => parseOutputSections(output), [output]);
   const [showRaw, setShowRaw] = React.useState(false);
   const [revision, setRevision] = React.useState('');
@@ -214,7 +218,7 @@ function ParsedOutput({ output, topic, pushItem, exportTxt, exportDocx, systemPr
           <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
             <button onClick={() => exportTxt(output, topic || 'article')}>Export .txt</button>
             <button onClick={() => exportDocx(output, topic || 'article')}>Export .docx</button>
-            {pushItem && <PushToCmsButton item={pushItem} onSuccess={r => { if (r?.live_url) setPushedLiveUrl(r.live_url); }} />}
+            {pushItem && <PushToCmsButton item={pushItem} client={pushClient} onSuccess={r => { if (r?.live_url) setPushedLiveUrl(r.live_url); }} />}
             <button onClick={() => setShowRaw(v => !v)} style={{ fontSize: 11 }}>
               {showRaw ? 'Parsed view' : 'Raw output'}
             </button>
@@ -327,6 +331,10 @@ export default function ContentEngine({ sub, setSub }) {
   const [existing, setExisting] = useState('');
   const [url, setUrl] = useState('');
   const [output, setOutput] = useState('');
+  // The client the current output was generated for. Pinned at generation
+  // time: the dropdown can be changed afterwards while the article stays on
+  // screen, and pushing must follow the article, not the dropdown.
+  const [outputClient, setOutputClient] = useState(null);
   const [running, setRunning] = useState(false);
   const [err, setErr] = useState('');
   const [history, setHistory] = useState(loadHistory());
@@ -457,6 +465,13 @@ export default function ContentEngine({ sub, setSub }) {
     setQuickErr('');
   }
 
+  // The quick flow picks its own client, independent of the dropdown at the
+  // top of the app. The push button must be told about it explicitly.
+  const quickClient = useMemo(
+    () => allClients.find(c => c.id === quickClientId) || null,
+    [allClients, quickClientId]
+  );
+
   // Push item for the quick-blog output (reuses the same shape as the main form).
   const quickPushItem = useMemo(() => {
     if (!quickOutput) return null;
@@ -509,7 +524,7 @@ export default function ContentEngine({ sub, setSub }) {
 
   async function run() {
     if (!client) { setErr('Select a client first.'); return; }
-    setErr(''); setOutput(''); setRunning(true);
+    setErr(''); setOutput(''); setOutputClient(client); setRunning(true);
 
     const system = buildSystemPrompt(client, '', researchContext);
     let userPromptText;
@@ -850,6 +865,7 @@ export default function ContentEngine({ sub, setSub }) {
                   output={quickOutput}
                   topic={quickTopic}
                   pushItem={quickPushItem}
+                  pushClient={quickClient}
                   exportTxt={exportTxt}
                   exportDocx={exportDocx}
                   systemPrompt={quickSystem}
@@ -997,6 +1013,7 @@ export default function ContentEngine({ sub, setSub }) {
         output={output}
         topic={topic}
         pushItem={pushItem}
+        pushClient={outputClient || client}
         exportTxt={exportTxt}
         exportDocx={exportDocx}
         systemPrompt={lastSystem}

@@ -353,7 +353,9 @@ function OptPageCard({ result: r, onDelete, onVerified, optClient, rejectedOptKe
           </button>
           {opts.length > 0 && (
             <span onClick={(e) => e.stopPropagation()}>
-              <PushToCmsButton item={combinedPushItem} label="Push all to CMS" />
+              {/* Rendered per client row — pass the row's own client so the
+                  push cannot land on whoever the dropdown has selected. */}
+              <PushToCmsButton item={combinedPushItem} client={optClient} label="Push all to CMS" />
             </span>
           )}
           {opts.length > 0 && (
@@ -429,6 +431,7 @@ function OptPageCard({ result: r, onDelete, onVerified, optClient, rejectedOptKe
                   change_type: o.type || 'aeo_optimization',
                   payload: { code: code, placement: o.where, reason: o.description }
                 }}
+                client={optClient}
                 label="Push to CMS"
               />
               <MarkImplementedButton

@@ -5,3 +5,6 @@ secrets.*
 
 # Internal planning and client-access notes — never commit to a public repo
 docs/
+
+# Local Netlify folder
+.netlify

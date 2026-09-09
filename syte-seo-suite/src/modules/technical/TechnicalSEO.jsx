@@ -324,7 +324,10 @@ function TaskCard({ task: t, onUpdate, onMarkDone, onVerify, onReject, busy, bui
           <div className="row" style={{ gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
             {t.status === 'open' && <button onClick={() => onMarkDone(t)} style={{ fontSize: 11, padding: '4px 10px' }}>Mark Done</button>}
             {t.status === 'done' && <button onClick={() => onVerify(t)} disabled={busy} style={{ fontSize: 11, padding: '4px 10px' }}>Verify</button>}
-            {t.copy_paste_fix && <PushToCmsButton item={buildPushItem(t)} label="Push to CMS" />}
+            {/* This list is rendered per client row, so the button must be
+                told which client the task belongs to. Without it, it falls
+                back to the dropdown selection and pushes to the wrong site. */}
+            {t.copy_paste_fix && <PushToCmsButton item={buildPushItem(t)} client={taskClient} label="Push to CMS" />}
             <MarkImplementedButton
               module="technical"
               changeType={t.fix_type || 'fix'}
@@ -923,7 +926,7 @@ export default function TechnicalSEO({ sub }) {
                     {status === 'open' && <button onClick={() => markDone(t)}>Mark Done</button>}
                     {status === 'done' && <button onClick={() => handleVerify(t)} disabled={busy}>Verify</button>}
                     {t.copy_paste_fix && (
-                      <PushToCmsButton item={buildPushItem(t)} label="Push to CMS" />
+                      <PushToCmsButton item={buildPushItem(t)} client={client} label="Push to CMS" />
                     )}
                     {status === 'open' && (
                       <button

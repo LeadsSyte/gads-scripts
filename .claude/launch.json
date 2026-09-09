@@ -1,0 +1,19 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "syte-seo-suite",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["netlify", "dev", "--offline", "--port", "8888", "--target-port", "5173"],
+      "cwd": "syte-seo-suite",
+      "port": 8888
+    },
+    {
+      "name": "syte-seo-suite-vite-only",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "cwd": "syte-seo-suite",
+      "port": 5173
+    }
+  ]
+}
