@@ -1,7 +1,8 @@
 // Weekly progress summary email — sends every Monday at 08:00 SAST (06:00 UTC).
 // Queries all implementation records from the past 7 days + all outstanding
 // (pending/failed) items, groups by client, and sends a formatted HTML email
-// to the leadership team via Resend.
+// to the leadership team via Resend. Changes handed to a client's developer
+// count as delivered — see DELIVERED_STATUSES below.
 //
 // Env vars required:
 //   RESEND_API_KEY  — from resend.com
@@ -18,6 +19,14 @@ export const config = {
 
 const RECIPIENTS = ['michaelh@syte.co.za', 'chrisf@syte.co.za'];
 const FROM = 'Syte SEO Suite <noreply@syte.co.za>';
+
+// Statuses that mean the work is done. A change handed to the client's
+// developer by email is delivered work, so it is neither chased in the
+// outstanding list nor left out of the completion counts. Mirrors
+// src/lib/deliveryStatus.js — inlined because Netlify functions bundle
+// separately from the app source. Keep the two in step.
+const DELIVERED_STATUSES = ['verified', 'sent_to_developer'];
+const isDelivered = (status) => DELIVERED_STATUSES.includes(status);
 
 export default async function handler() {
   const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
@@ -51,7 +60,9 @@ export default async function handler() {
     supabase
       .from('syte_suite_implementations')
       .select(IMPL_COLS)
-      .in('verification_status', ['pending', 'failed', 'sent_to_developer', 'inconclusive'])
+      // 'sent_to_developer' is deliberately NOT here: a handover is finished
+      // work, not an outstanding item to chase every Monday.
+      .in('verification_status', ['pending', 'failed', 'inconclusive'])
       .order('created_at', { ascending: false }),
     supabase
       .from('syte_suite_clients')
@@ -81,7 +92,7 @@ export default async function handler() {
   }
 
   // 3. Compute stats.
-  const totalVerified = all.filter(r => r.verification_status === 'verified').length;
+  const totalVerified = all.filter(r => isDelivered(r.verification_status)).length;
   const totalFailed = all.filter(r => r.verification_status === 'failed').length;
   const totalPending = all.filter(r => r.verification_status === 'pending').length;
   const totalSentToDev = all.filter(r => r.verification_status === 'sent_to_developer').length;
@@ -99,7 +110,7 @@ export default async function handler() {
   const clientRows = Object.values(grouped)
     .sort((a, b) => b.items.length - a.items.length)
     .map(g => {
-      const v = g.items.filter(r => r.verification_status === 'verified').length;
+      const v = g.items.filter(r => isDelivered(r.verification_status)).length;
       const f = g.items.filter(r => r.verification_status === 'failed').length;
       const p = g.items.filter(r => r.verification_status === 'pending').length;
       const s = g.items.filter(r => r.verification_status === 'sent_to_developer').length;
@@ -125,7 +136,7 @@ export default async function handler() {
           <td colspan="5" style="padding:12px 10px;font-weight:700;font-size:14px;border-bottom:1px solid #2a2a32">
             ${esc(g.client.name || '?')}
             <span style="color:#8b8b96;font-weight:400;font-size:12px;margin-left:10px">
-              ${v} verified${s > 0 ? ` · ${s} sent to dev` : ''} · ${f} failed · ${p} pending
+              ${v} verified${s > 0 ? ` (incl. ${s} sent to dev)` : ''} · ${f} failed · ${p} pending
             </span>
           </td>
         </tr>

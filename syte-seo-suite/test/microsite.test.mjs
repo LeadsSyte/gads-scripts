@@ -4,7 +4,7 @@
 //
 // Run: npm test  (from syte-seo-suite/)
 
-import { buildMicrositeHtml } from '../src/modules/reports/microsite.js';
+import { buildMicrositeHtml, parseRandAmount, meetsPpcThreshold, PPC_MIN_VALUE } from '../src/modules/reports/microsite.js';
 
 let pass = 0, fail = 0;
 async function t(name, fn) {
@@ -119,6 +119,70 @@ const FULL_RANKING = [
   { name: 'Acme Hotels', isBrand: true, visibility: 42, mentions: 12, citations: 5, top3_rate: 20, avg_position: 2 },
   { name: 'Rival Co', isBrand: false, visibility: 30, mentions: 8, citations: 2, top3_rate: 10, avg_position: 4 }
 ];
+// --- PPC equivalent threshold -------------------------------------------
+// A small rand figure undersells the organic work, so anything under
+// PPC_MIN_VALUE (R30,000) is dropped from the report entirely.
+function ppcMicro(value, extraHighlights = []) {
+  return {
+    ...MICRO_BASE,
+    highlights: [
+      { label: 'Organic Clicks', value: '651', delta: '+28%', positive: true },
+      { label: 'PPC Equivalent', value, delta: '', positive: true },
+      ...extraHighlights
+    ],
+    ppcEquivalent: { show: true, value, clicks: '2,410', avgCpc: 'R20', narrative: 'Would have cost ' + value + ' in Google Ads.' }
+  };
+}
+
+await t('parses rand amounts the way Claude writes them', () => {
+  const cases = [['R48,200', 48200], ['R48 200', 48200], ['R48\u00a0200', 48200], ['48200', 48200],
+    ['R48.2k', 48200], ['R1.2m', 1200000], ['R30,000.50', 30000.5], [30000, 30000]];
+  for (const [input, expected] of cases) {
+    const got = parseRandAmount(input);
+    if (got !== expected) throw new Error('parseRandAmount(' + JSON.stringify(input) + ') = ' + got + ', expected ' + expected);
+  }
+  for (const input of [null, '', '  ', 'not a number', undefined, NaN]) {
+    if (parseRandAmount(input) !== null) throw new Error('expected null for ' + JSON.stringify(input));
+  }
+  if (PPC_MIN_VALUE !== 30000) throw new Error('threshold moved: ' + PPC_MIN_VALUE);
+  if (meetsPpcThreshold('R29,999') || !meetsPpcThreshold('R30,000')) throw new Error('threshold boundary wrong');
+});
+
+await t('shows the PPC section when the value clears R30,000', () => {
+  const html = buildMicrositeHtml({ micro: ppcMicro('R48,200'), client: CLIENT, monthLabel: 'April 2026' });
+  assertContains(html, 'PPC Equivalent Value', 'ppc section');
+  assertContains(html, 'R48,200', 'ppc value');
+});
+
+await t('hides the PPC section and tile when the value is under R30,000', () => {
+  const html = buildMicrositeHtml({ micro: ppcMicro('R12,400'), client: CLIENT, monthLabel: 'April 2026' });
+  assertNotContains(html, 'PPC Equivalent Value', 'ppc section');
+  assertNotContains(html, 'R12,400', 'ppc value anywhere');
+  assertNotContains(html, 'PPC Equivalent', 'ppc highlight tile');
+  assertContains(html, 'Organic Clicks', 'other highlights survive');
+});
+
+await t('hides the PPC value when it sits exactly under the bar, keeps it at the bar', () => {
+  const under = buildMicrositeHtml({ micro: ppcMicro('R29,999'), client: CLIENT, monthLabel: 'April 2026' });
+  assertNotContains(under, 'PPC Equivalent Value', 'under-bar section');
+  const at = buildMicrositeHtml({ micro: ppcMicro('R30,000'), client: CLIENT, monthLabel: 'April 2026' });
+  assertContains(at, 'PPC Equivalent Value', 'at-bar section');
+});
+
+await t('hides the PPC value when the amount cannot be read', () => {
+  const html = buildMicrositeHtml({ micro: ppcMicro('n/a'), client: CLIENT, monthLabel: 'April 2026' });
+  assertNotContains(html, 'PPC Equivalent Value', 'unreadable ppc section');
+  assertNotContains(html, 'PPC Equivalent', 'unreadable ppc tile');
+});
+
+await t('drops a small Google Ads highlight even when ppcEquivalent is absent', () => {
+  const html = buildMicrositeHtml({
+    micro: { ...MICRO_BASE, highlights: [{ label: 'Google Ads equivalent', value: 'R9,100', delta: '', positive: true }] },
+    client: CLIENT, monthLabel: 'April 2026'
+  });
+  assertNotContains(html, 'R9,100', 'small ads-equivalent tile');
+});
+
 const MICRO_WITH_AEO = {
   ...MICRO_BASE,
   aeoSection: { show: true, score: 42, byEngine: { ChatGPT: 50 }, topQueries: [], competitors: [] },
@@ -229,6 +293,36 @@ await t('does not crash with completely minimal input', () => {
   const html = buildMicrositeHtml({ client: { name: 'X' }, monthLabel: 'April 2026' });
   assertContains(html, '<!DOCTYPE html>');
   assertContains(html, '</html>');
+});
+
+// The report covers the month that has happened — it carries no plan for
+// the next one. The model can still emit the old forward-looking keys from a
+// cached generation; the renderer must drop them rather than print a plan.
+await t('never renders next-month plans, even if the payload carries them', () => {
+  const html = buildMicrositeHtml({
+    micro: {
+      ...MICRO_BASE,
+      whatNext: 'Next month we will attack pallet racking queries.',
+      aeoStrategy: {
+        show: true,
+        priorities: [{ tier: 'Quick Win', title: 'Pallet Racking South Africa', rationale: 'Close to winning.', tags: ['FAQ Schema'] }],
+        zeroOpportunity: 'The 0% terms are the foundation play.'
+      }
+    },
+    client: CLIENT,
+    monthLabel: 'April 2026',
+    aeoProbe: {
+      per_query: [{ query: 'pallet racking', engine: 'chatgpt', mentioned: true, visibility: 80 }],
+      keyword_wins: { zero: [{ query: 'industrial shelving', engine: 'chatgpt', visibility: 0 }] }
+    }
+  });
+  assertNotContains(html, "What's Next", 'what-next heading');
+  assertNotContains(html, "Next Month's Strategy", 'strategy heading');
+  assertNotContains(html, 'Next month we will attack', 'whatNext prose');
+  assertNotContains(html, 'Pallet Racking South Africa', 'strategy priority');
+  assertNotContains(html, 'foundation play', 'zero-opportunity prose');
+  // The zero-visibility callout used to point at the strategy section below it.
+  assertNotContains(html, "next month's strategy", 'dangling pointer to the removed section');
 });
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');

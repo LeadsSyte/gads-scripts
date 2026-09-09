@@ -11,29 +11,14 @@ import { querySearchAnalytics } from '../technical/gsc.js';
 import { buildKeywordBuckets, classifyKeywords } from './keywordBuckets.js';
 import { fetchWithTimeout } from '../../lib/http.js';
 import { serverAuthEnabled, proxyGoogleFetch } from '../../lib/googleServerAuth.js';
+// Month ranges live in their own module: they must be built in UTC (see the
+// note there) and they're the one piece of this file plain-node tests can load.
+import { getReportPeriods } from './reportPeriods.js';
 
 // Cap GA4 calls so a stalled Analytics endpoint surfaces as an error in the
 // report's errors[] instead of hanging the whole fetch behind Promise.all.
 const GA4_TIMEOUT_MS = 30000;
 
-// ─── Date helpers ────────────────────────────────────────────
-function monthRange(year, month) {
-  // month is 0-based
-  const start = new Date(year, month, 1);
-  const end = new Date(year, month + 1, 0); // last day
-  return {
-    startDate: start.toISOString().slice(0, 10),
-    endDate: end.toISOString().slice(0, 10)
-  };
-}
-
-function getReportPeriods(year, month) {
-  // month is 0-based (0=Jan)
-  const current = monthRange(year, month);
-  const prev = monthRange(month === 0 ? year - 1 : year, month === 0 ? 11 : month - 1);
-  const yoy = monthRange(year - 1, month);
-  return { current, prev, yoy };
-}
 
 // ─── GA4 Organic Traffic + Conversions ───────────────────────
 // `expectedEmail` pins which cached Google-account token gets used —
@@ -192,7 +177,14 @@ export async function fetchReportData(client, year, month1Based) {
     try {
       // Silent-only: a popup here (deep in the async fetch) has no user gesture,
       // so the browser blocks it and Google returns popup_failed_to_open.
-      await ensureToken([SCOPES.gsc], { expectedEmail: gscEmail, interactive: false });
+      //
+      // Skipped entirely under server auth — the proxy holds the tokens and
+      // the browser never has one, so this preflight threw requiresInteraction
+      // on every client and took the whole GSC pull down with it. That is what
+      // made every client look like its Search Console had disconnected.
+      if (!serverAuthEnabled()) {
+        await ensureToken([SCOPES.gsc], { expectedEmail: gscEmail, interactive: false });
+      }
       const [curKw, prevKw, pages] = await Promise.all([
         fetchKeywordRankings(client.gsc_property, periods.current, gscEmail),
         fetchKeywordRankings(client.gsc_property, periods.prev, gscEmail),

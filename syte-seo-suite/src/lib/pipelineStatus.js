@@ -3,6 +3,7 @@
 // to determine which of the four sections a client belongs in.
 
 import { readinessFor } from './clientReadiness.js';
+import { isDelivered, isHandoverStatus } from './deliveryStatus.js';
 
 const BLOGS_KEY = 'syte-suite-content_blogs';
 
@@ -38,6 +39,8 @@ function loadContentHistoryLocal() {
 
 // ─── Content Engine ───────────────────────────────────────────────
 // Sections: verified-on-site | articles-written | no-articles | credentials-missing
+// "verified-on-site" counts DELIVERED work — an article verified on the live
+// page and one handed to the client's developer by email both count.
 // `contentHistory` is the shared Supabase-backed article list (optional;
 // falls back to localStorage cache when undefined).
 export function contentPipelineStatus(client, implementations, month, contentHistory) {
@@ -54,8 +57,12 @@ export function contentPipelineStatus(client, implementations, month, contentHis
     i => i.client_id === client.id && i.module === 'content' &&
       (i.implemented_at || i.created_at || '').slice(0, 7) === m
   );
-  const verified = monthImpls.filter(i => i.verification_status === 'verified');
-  const sentToDev = monthImpls.filter(i => i.verification_status === 'sent_to_developer');
+  // "Verified" here means DELIVERED — verified on the live page, or handed
+  // to the client's developer by email. See deliveryStatus.js: on accounts
+  // where the developer publishes, the handover is our deliverable, so it
+  // moves the client exactly like an on-page verification does.
+  const verified = monthImpls.filter(i => isDelivered(i.verification_status));
+  const sentToDev = monthImpls.filter(i => isHandoverStatus(i.verification_status));
 
   const history = contentHistory || loadContentHistoryLocal();
   const monthArticles = history.filter(
@@ -68,7 +75,8 @@ export function contentPipelineStatus(client, implementations, month, contentHis
   const quotaMet = written >= required;
   const allVerified = verifiedCount >= required;
 
-  // "Verified on Site" = ALL required articles are verified on the live site.
+  // "Verified on Site" = ALL required articles are delivered (verified on the
+  // live site, or handed to the developer).
   if (allVerified) {
     const extra = verifiedCount - required;
     return {
@@ -89,7 +97,9 @@ export function contentPipelineStatus(client, implementations, month, contentHis
     // moved on quota (required) or completion (written).
     const parts = [written + ' written'];
     parts.push(verifiedCount + ' verified');
-    if (sentToDev.length > 0) parts.push(sentToDev.length + ' sent to dev');
+    // Handovers are already inside verifiedCount — this is a breakdown of it,
+    // not an addition to it, so it reads "incl." rather than as a third total.
+    if (sentToDev.length > 0) parts.push('incl. ' + sentToDev.length + ' handed to dev');
     // We only reach here if allVerified was false above, so verifiedCount
     // < required. remainingForQuota is always >= 1 in this branch.
     const remainingForQuota = required - verifiedCount;
@@ -111,7 +121,7 @@ export function contentPipelineStatus(client, implementations, month, contentHis
   if (written > 0) {
     const parts = [written + '/' + required + ' articles'];
     if (verifiedCount > 0) parts.push(verifiedCount + ' verified');
-    if (sentToDev.length > 0) parts.push(sentToDev.length + ' sent to dev');
+    if (sentToDev.length > 0) parts.push('incl. ' + sentToDev.length + ' handed to dev');
     return {
       section: 'articles-written',
       summary: parts.join(' · '),
@@ -139,8 +149,10 @@ export function technicalPipelineStatus(client, implementations, tasks, month) {
     i => i.client_id === client.id && i.module === 'technical' &&
       (i.implemented_at || i.created_at || '').slice(0, 7) === m
   );
-  const verifiedImpls = monthImpls.filter(i => i.verification_status === 'verified');
-  const sentToDev = monthImpls.filter(i => i.verification_status === 'sent_to_developer');
+  // Delivered = verified on the page OR handed to the client's developer
+  // (see deliveryStatus.js) — both count the fix as done for the month.
+  const verifiedImpls = monthImpls.filter(i => isDelivered(i.verification_status));
+  const sentToDev = monthImpls.filter(i => isHandoverStatus(i.verification_status));
 
   const clientTasks = (tasks || []).filter(
     t => t.client_id === client.id && (t.created_at || '').slice(0, 7) === m
@@ -159,11 +171,12 @@ export function technicalPipelineStatus(client, implementations, tasks, month) {
   // take the larger count rather than summing to avoid double-counting.
   const verifiedCount = Math.max(verifiedImpls.length, verifiedTasks.length);
 
-  // "Verified on Site" when at least 1 fix is verified on the live site.
+  // "Verified on Site" when at least 1 fix is delivered (verified on the live
+  // site, or handed to the developer).
   if (verifiedCount > 0) {
     const parts = [clientTasks.length + ' tasks'];
     parts.push(verifiedCount + ' verified');
-    if (sentToDev.length > 0) parts.push(sentToDev.length + ' sent to dev');
+    if (sentToDev.length > 0) parts.push('incl. ' + sentToDev.length + ' handed to dev');
     if (open > 0) parts.push(open + ' open');
     return {
       section: 'verified-on-site',
@@ -177,7 +190,7 @@ export function technicalPipelineStatus(client, implementations, tasks, month) {
   if (clientTasks.length > 0) {
     const parts = [clientTasks.length + ' tasks'];
     if (done > 0) parts.push(done + ' done');
-    if (sentToDev.length > 0) parts.push(sentToDev.length + ' sent to dev');
+    if (sentToDev.length > 0) parts.push(sentToDev.length + ' handed to dev');
     if (open > 0) parts.push(open + ' open');
     return {
       // "fixes-generated" = a scan was run and tasks exist (regardless of
@@ -213,8 +226,10 @@ export function aeoPipelineStatus(client, implementations, aeoResults, month, de
     i => i.client_id === client.id && i.module === 'aeo' &&
       (i.implemented_at || i.created_at || '').slice(0, 7) === m
   );
-  const verified = monthImpls.filter(i => i.verification_status === 'verified');
-  const sentToDev = monthImpls.filter(i => i.verification_status === 'sent_to_developer');
+  // Delivered = verified on the page OR handed to the client's developer
+  // (see deliveryStatus.js) — both count the optimization as done.
+  const verified = monthImpls.filter(i => isDelivered(i.verification_status));
+  const sentToDev = monthImpls.filter(i => isHandoverStatus(i.verification_status));
 
   // Check if AEO optimizations were generated this month.
   const monthResults = Object.values(aeoResults || {}).filter(
@@ -246,7 +261,8 @@ export function aeoPipelineStatus(client, implementations, aeoResults, month, de
   const allImplemented = totalWork > 0 && verified.length >= totalWork;
   const isStale = monthResults.length === 0 && monthDeep.length === 0 && (priorResults.length > 0 || priorDeep.length > 0);
 
-  // Only "verified-on-site" when all optimizations are implemented + verified.
+  // Only "verified-on-site" when all optimizations are implemented and
+  // delivered (verified on the page, or handed to the developer).
   if (allImplemented && verified.length > 0) {
     return {
       section: 'verified-on-site',
@@ -260,7 +276,7 @@ export function aeoPipelineStatus(client, implementations, aeoResults, month, de
     if (totalOpts > 0) parts.push(totalOpts + ' quick-win optimizations');
     if (deepCount > 0) parts.push(deepCount + ' deep rewrite' + (deepCount > 1 ? 's' : ''));
     if (verified.length > 0) parts.push(verified.length + ' verified');
-    if (sentToDev.length > 0) parts.push(sentToDev.length + ' sent to dev');
+    if (sentToDev.length > 0) parts.push('incl. ' + sentToDev.length + ' handed to dev');
     const remaining = totalWork - verified.length;
     if (remaining > 0) parts.push(remaining + ' awaiting implementation');
     if (isStale) parts.push('from prior month — re-run for ' + m);

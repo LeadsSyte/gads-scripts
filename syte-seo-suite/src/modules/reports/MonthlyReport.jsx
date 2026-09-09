@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useClients } from '../../store/useClients.js';
 import { claudeComplete, extractJSON } from '../../lib/anthropic.js';
+import { previousMonthKey, monthKeyLabel } from './reportMonths.js';
 import { listAeoSnapshots, logReportSent, logReportGenerated, getGeneratedReport, getCachedReportData, setCachedReportData, persistAeoRuns, saveAeoSnapshot } from '../../lib/supabase.js';
 import {
   ALICE_SEO_SYSTEM, MICROSITE_SEO_SYSTEM, QA_SEO_SYSTEM,
@@ -43,6 +44,9 @@ import { ensureToken, SCOPES, getToken, switchAccount, silentRefresh, getCurrent
 import { serverAuthEnabled } from '../../lib/googleServerAuth.js';
 import { fetchReportData } from './reportData.js';
 import { evaluateGscReadiness } from './gscGuard.js';
+import { REPORT_DATA_VERSION } from './reportDataVersion.js';
+import { preserveImportedGsc, GSC_IMPORT_SOURCE } from './gscImport.js';
+import GscCsvImport from './GscCsvImport.jsx';
 import ReportDashboard from './ReportDashboard.jsx';
 
 const ACCENT = '#a78bfa';
@@ -62,18 +66,11 @@ const LIVE_PROBE_MAX_QUERIES = 25;
 // Above this size we don't inline it; we offer download / rebuild instead.
 const MAX_INLINE_REPORT_HTML = 1_800_000;
 
-// Reports always default to the PREVIOUS month (you're reporting on last month's work).
-function previousMonth() {
-  const d = new Date();
-  d.setMonth(d.getMonth() - 1);
-  return d.toISOString().slice(0, 7);
-}
-function monthLabel(m) {
-  if (!m) return '';
-  const [y, mo] = m.split('-');
-  const d = new Date(parseInt(y), parseInt(mo) - 1, 1);
-  return d.toLocaleString('en-US', { month: 'long', year: 'numeric' });
-}
+// Reports always default to the PREVIOUS month (you're reporting on last
+// month's work). Shared with the Reports dashboard so the month a report is
+// logged under is always the month the dashboard looks for.
+const previousMonth = previousMonthKey;
+const monthLabel = monthKeyLabel;
 
 // Turn a probe result's per-engine health into human-readable warning lines
 // so a timed-out / rate-limited / bad-key engine is visible in the UI instead
@@ -143,10 +140,12 @@ function parseAliceOutput(text) {
   return { subject, body: body || text };
 }
 
-export default function MonthlyReport() {
+export default function MonthlyReport({ initialMonth }) {
   const client = useClients(s => s.current());
   const saveClient = useClients(s => s.save);
-  const [month, setMonth] = useState(previousMonth());
+  // Opens on the month the dashboard was showing, so a report generated from
+  // a card is logged under the month the operator was looking at.
+  const [month, setMonth] = useState(initialMonth || previousMonth());
   const [form, setForm] = useState({});
   const [algContext, setAlgContext] = useState('');
   const [aeoSnap, setAeoSnap] = useState(null);
@@ -168,6 +167,10 @@ export default function MonthlyReport() {
   // re-evaluates after a silent refresh or an explicit sign-in.
   const [tokenVersion, setTokenVersion] = useState(0);
   const [probeWarnings, setProbeWarnings] = useState([]);
+  // Set when a generated report could not be written to the shared database.
+  // It used to fail silently, so a report the operator had just watched being
+  // built simply never appeared on the Reports board.
+  const [saveWarning, setSaveWarning] = useState('');
   // Bumped when suite settings change (e.g. remote key hydration lands after
   // this view is already open) so the pre-run engine-coverage notice, which
   // reads engine isConfigured() inline, re-evaluates.
@@ -201,7 +204,7 @@ export default function MonthlyReport() {
     setMicroJson(null); setQa(null); setSent(false); setPhase('idle'); setErr('');
     setAeoOnly(false);
     setSavedReportLoaded(false);
-    setLiveAeoProbe(null); setProbeWarnings([]);
+    setLiveAeoProbe(null); setProbeWarnings([]); setSaveWarning('');
     setHtmlOverride(null); setEditingMicro(false);
     const hasSeo = client?.does_content !== false || client?.does_technical !== false;
     const hasAeo = client?.does_aeo !== false;
@@ -292,12 +295,6 @@ export default function MonthlyReport() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [client?.id, month, fetchStatus]);
 
-  // Bump this whenever the report data shape changes in a way that
-  // makes old cache entries stale (e.g. keyword pull went 50 → 500,
-  // pagination added at v3). Cache entries without a matching version
-  // are treated as a miss and refetched.
-  const REPORT_DATA_VERSION = 3;
-
   // Pull all report data (GA4 traffic + conversions + GSC keywords) via reportData.js.
   // Re-entrancy guard wrapper: a single fetch/auth cycle can dispatch several
   // TOKEN_EVENTs (each persisted token fires one). Without this guard the
@@ -326,10 +323,18 @@ export default function MonthlyReport() {
     const ga4Email = c.ga4_account_email || c.google_account_email || null;
     const gscEmail = c.gsc_account_email || c.google_account_email || null;
 
+    // Whatever is already on file for this client/month. Read even on a
+    // forced refresh: if it is a Search Console CSV import (gscImport.js) and
+    // the live pull comes back without GSC rows, the import is merged back in
+    // rather than silently thrown away.
+    let cachedRow = null;
+    try { cachedRow = await getCachedReportData(c.id, m); } catch {}
+    const cachedBlob = cachedRow?.data || null;
+
     // Check cache first (unless forced refresh).
     if (!forceRefresh) {
       try {
-        const cached = await getCachedReportData(c.id, m);
+        const cached = cachedRow;
         const isCurrentVersion = cached?.data?.version === REPORT_DATA_VERSION;
         // Cache is also stale if the client's GA4/GSC properties OR the
         // Google account they're bound to have changed since the cached
@@ -343,7 +348,9 @@ export default function MonthlyReport() {
           && (cached.data.gsc_account_email ?? null) === gscEmail;
         if (cached?.data && isCurrentVersion && propsMatch) {
           setReportData(cached.data);
-          setFetchStatus('Loaded from cache (fetched ' + new Date(cached.fetched_at).toLocaleDateString() + ') · Click Refresh Data to re-fetch');
+          setFetchStatus(cached.data.source === GSC_IMPORT_SOURCE
+            ? 'Search Console data imported from CSV (' + new Date(cached.data.imported_at || cached.fetched_at).toLocaleDateString() + ') · no GA4 in an import'
+            : 'Loaded from cache (fetched ' + new Date(cached.fetched_at).toLocaleDateString() + ') · Click Refresh Data to re-fetch');
           return;
         }
         if (cached?.data && isCurrentVersion && !propsMatch) {
@@ -357,7 +364,7 @@ export default function MonthlyReport() {
           // ONLY if a token is already present (no popup).
           setReportData(cached.data);
           setFetchStatus('Loaded older cache · Refreshing with new keyword depth…');
-          if (!getToken()?.access_token) {
+          if (!serverAuthEnabled() && !getToken()?.access_token) {
             setFetchStatus('Loaded older cache · Click Refresh Data to pull the latest keyword set');
             return;
           }
@@ -446,7 +453,7 @@ export default function MonthlyReport() {
     const [year, mo] = m.split('-').map(Number);
     setFetchStatus('Pulling GA4 + GSC data for ' + monthLabel(m) + '…');
     try {
-      const data = await fetchReportData(c, year, mo);
+      const data = preserveImportedGsc(await fetchReportData(c, year, mo), cachedBlob);
       data.version = REPORT_DATA_VERSION;
       data.ga4_property_id = c.ga4_property_id || null;
       data.gsc_property = c.gsc_property || null;
@@ -503,7 +510,9 @@ export default function MonthlyReport() {
 
       const parts = [];
       if (data.traffic?.current) parts.push('GA4 ✓');
-      if (data.keywords?.length > 0) parts.push('GSC ✓ (' + data.keywords.length + ' keywords)');
+      if (data.keywords?.length > 0) {
+        parts.push((data.source === GSC_IMPORT_SOURCE ? 'GSC (imported CSV) ✓ (' : 'GSC ✓ (') + data.keywords.length + ' keywords)');
+      }
       if (data.errors?.length > 0) parts.push(data.errors.join(' · '));
       setFetchStatus(parts.join(' · ') || 'No data available');
     } catch (e) {
@@ -518,7 +527,11 @@ export default function MonthlyReport() {
   // position and click figure in it comes from Search Console, so a report
   // built on a broken feed is worse than no report at all.
   const gscReady = useMemo(
-    () => evaluateGscReadiness({ client, reportData, month, token: getToken() }),
+    () => evaluateGscReadiness({
+      client, reportData, month,
+      token: getToken(),
+      serverAuth: serverAuthEnabled()
+    }),
     [client, reportData, month, tokenVersion]
   );
 
@@ -659,19 +672,26 @@ export default function MonthlyReport() {
       if (!microObj.clientName) microObj.clientName = client.name;
       setMicroJson(microObj);
 
-      // Step 4: QA (AEO-specific checks: no SEO talk, no doom framing)
+      // Step 4: QA (AEO-specific checks: no SEO talk, no doom framing).
+      // Advisory only — the report exists at this point, so a failed QA call
+      // must not throw past the save below and lose it.
       setPhase('qa');
-      const qaText = await claudeComplete({
-        system: QA_AEO_SYSTEM,
-        messages: [{ role: 'user', content: 'Alice email to review:\n\n' + aliceText }],
-        model: 'claude-sonnet-4-6',
-        max_tokens: 500,
-        temperature: 0
-      });
-      const qaObj = extractJSON(qaText);
-      if (qaObj) setQa(qaObj);
+      let qaObj = null;
+      try {
+        const qaText = await claudeComplete({
+          system: QA_AEO_SYSTEM,
+          messages: [{ role: 'user', content: 'Alice email to review:\n\n' + aliceText }],
+          model: 'claude-sonnet-4-6',
+          max_tokens: 500,
+          temperature: 0
+        });
+        qaObj = extractJSON(qaText);
+        if (qaObj) setQa(qaObj);
+      } catch (e) {
+        console.warn('[Report] AEO QA pass failed, keeping the report:', e.message);
+      }
 
-      logReportGenerated({
+      await persistGenerated({
         client_id: client.id,
         month,
         report_type: 'aeo',
@@ -684,7 +704,7 @@ export default function MonthlyReport() {
         qa: qaObj || null,
         aeo_probe: probeResult,
         report_data: null
-      }).catch(() => {});
+      });
 
       setPhase('review');
     } catch (e) {
@@ -757,19 +777,25 @@ export default function MonthlyReport() {
       if (!microObj.clientName) microObj.clientName = client.name;
       setMicroJson(microObj);
 
-      // 3. QA
+      // 3. QA — advisory only. The report is already built here, so a
+      // failing QA call must not throw past the save and lose it.
       setPhase('qa');
-      const qaText = await claudeComplete({
-        system: QA_SEO_SYSTEM,
-        messages: [{ role: 'user', content: 'Alice email to review:\n\n' + aliceText }],
-        model: 'claude-sonnet-4-6',
-        max_tokens: 500,
-        temperature: 0
-      });
-      const qaObj = extractJSON(qaText);
-      if (qaObj) setQa(qaObj);
+      let qaObj = null;
+      try {
+        const qaText = await claudeComplete({
+          system: QA_SEO_SYSTEM,
+          messages: [{ role: 'user', content: 'Alice email to review:\n\n' + aliceText }],
+          model: 'claude-sonnet-4-6',
+          max_tokens: 500,
+          temperature: 0
+        });
+        qaObj = extractJSON(qaText);
+        if (qaObj) setQa(qaObj);
+      } catch (e) {
+        console.warn('[Report] SEO QA pass failed, keeping the report:', e.message);
+      }
 
-      logReportGenerated({
+      await persistGenerated({
         client_id: client.id,
         month,
         report_type: 'seo',
@@ -781,7 +807,7 @@ export default function MonthlyReport() {
         microsite_json: microObj,
         qa: qaObj || null,
         report_data: reportData
-      }).catch(() => {});
+      });
 
       setPhase('review');
     } catch (e) {
@@ -851,6 +877,19 @@ export default function MonthlyReport() {
     }
   }
 
+  // Persist a generated report and surface where it actually landed.
+  // logReportGenerated never throws: it reports back instead.
+  async function persistGenerated(payload) {
+    try {
+      const res = await logReportGenerated(payload);
+      setSaveWarning(res?.save_warning || '');
+      return res;
+    } catch (e) {
+      setSaveWarning('This report could not be saved: ' + (e?.message || String(e)));
+      return null;
+    }
+  }
+
   async function applyMicroEdits() {
     const iframe = microIframeRef.current;
     const doc = iframe?.contentDocument;
@@ -861,21 +900,19 @@ export default function MonthlyReport() {
     const html = '<!DOCTYPE html>\n' + doc.documentElement.outerHTML;
     setHtmlOverride(html);
     // Persist immediately so a tab close or refresh keeps the edits.
-    try {
-      await logReportGenerated({
-        client_id: client.id,
-        month,
-        report_type: aeoOnly ? 'aeo' : 'seo',
-        qa_score: qa?.overallScore || null,
-        email_subject: email.subject || '',
-        email_body: email.body || '',
-        microsite_json: microJson,
-        microsite_html_override: html,
-        qa: qa || null,
-        aeo_probe: liveAeoProbe,
-        report_data: aeoOnly ? null : reportData
-      });
-    } catch {}
+    await persistGenerated({
+      client_id: client.id,
+      month,
+      report_type: aeoOnly ? 'aeo' : 'seo',
+      qa_score: qa?.overallScore || null,
+      email_subject: email.subject || '',
+      email_body: email.body || '',
+      microsite_json: microJson,
+      microsite_html_override: html,
+      qa: qa || null,
+      aeo_probe: liveAeoProbe,
+      report_data: aeoOnly ? null : reportData
+    });
     // Exit edit mode — the iframe will reload from the new srcDoc.
     if (doc.body) {
       doc.body.contentEditable = 'false';
@@ -1231,7 +1268,27 @@ export default function MonthlyReport() {
                 fontSize: 12, color: 'var(--text-muted)'
               }}>
                 Runs a live probe against the client's AEO queries — independent of Google Search Console.
+                {reportData?.keywords?.length
+                  ? ' Probe grid grounded on ' + reportData.keywords.length + ' Search Console head-terms' +
+                    (reportData.source === GSC_IMPORT_SOURCE ? ' (imported CSV).' : '.')
+                  : ' No Search Console head-terms on file for this month, so the probe grid is built from the website and industry alone.'}
               </div>
+
+              {/* Clients we don't have Search Console access to still have a
+                  Performance export. Feeding it in grounds the probe grid the
+                  same way a live connection would, without connecting
+                  anything or loosening the SEO report's gate. */}
+              {!reportData?.keywords?.length && (
+                <GscCsvImport
+                  client={client}
+                  month={month}
+                  onImported={(data) => {
+                    setReportData(data);
+                    setFetchStatus('Search Console data imported from CSV · ' + (data.keywords?.length || 0) + ' keywords');
+                  }}
+                />
+              )}
+
               <button
                 onClick={generateAeoOnly}
                 disabled={phase !== 'idle' && phase !== 'review'}
@@ -1339,6 +1396,19 @@ export default function MonthlyReport() {
                 : 'Organic performance only. Generate the AEO report separately for AI visibility.'}
             </div>
           </div>
+
+          {saveWarning && (
+            <div className="card" style={{ marginBottom: 14, padding: '10px 16px', borderColor: 'var(--orange)', background: 'rgba(255,159,67,.06)' }}>
+              <div style={{ fontSize: 13 }}>
+                <strong style={{ color: 'var(--orange)' }}>Not saved to the shared database.</strong>{' '}
+                <span className="muted">{saveWarning}</span>
+              </div>
+              <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
+                The report still opens on this device, but it will not appear under
+                “Generated” for anyone else until this is fixed.
+              </div>
+            </div>
+          )}
 
           {savedReportLoaded && (
             <div className="card" style={{ marginBottom: 14, padding: '10px 16px', borderColor: 'rgba(167,139,250,.4)', background: 'rgba(167,139,250,.06)' }}>

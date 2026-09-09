@@ -163,7 +163,9 @@ async function verifyGscOwnership(client) {
     return { ok: false, manual: true, detail: 'No GSC property is linked to this client. Open Settings → Connect GSC, then verify in Search Console.' };
   }
   try {
-    const data = await listSites();
+    const data = await listSites(
+      client?.gsc_account_email || client?.google_account_email || null
+    );
     const sites = data?.siteEntry || [];
     const match = sites.find(s => s.siteUrl === property);
     if (match) {

@@ -13,6 +13,8 @@ import { groundClientForAeo, probeSetHealth } from './grounding.js';
 import { parseCensus, intentCoverage, INTENT_BUCKETS } from './aeoCensus.js';
 import { generateFanout } from './aeoFanout.js';
 import { parseProbes, migrateClientProbes, addProbes, probesToProbeList } from './aeoProbes.js';
+import { previousMonthKey } from './reportMonths.js';
+import GscCsvImport from './GscCsvImport.jsx';
 
 const ACCENT = '#a78bfa';
 
@@ -620,6 +622,20 @@ export default function AEOSnapshot() {
               {expandBusy ? 'Adding…' : `Add ${gscCandidates.length} GSC queries`}
             </button>
           </div>
+        )}
+
+        {/* No Search Console on file — let the operator feed the downloaded
+            export in instead, so grounding works for clients we don't have
+            connected. */}
+        {gscCandidates.length === 0 && (
+          <GscCsvImport
+            client={client}
+            month={previousMonthKey()}
+            onImported={(data) => {
+              setGscCandidates(probeCandidatesFromGSC(data.keywords || [], client.name, { limit: 50 }));
+              setMsg('Search Console CSV imported — head-term grounding is now available for this client.');
+            }}
+          />
         )}
 
         {/* Discovery — find queries the brand is actually cited for */}

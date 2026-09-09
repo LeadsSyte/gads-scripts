@@ -56,9 +56,12 @@ create table if not exists syte_suite_report_generated_log (
   generated_at timestamptz default now(),
   qa_score int,
   email_subject text,
-  report_type text,                     -- 'full' | 'aeo'
+  report_type text not null default 'full',  -- 'seo' | 'aeo' | 'full' (pre-split)
   created_at timestamptz default now(),
-  unique (client_id, month)
+  -- Keyed by type: the SEO and AEO reports are separate deliverables and
+  -- coexist for a month. Databases created before this carry the old
+  -- (client_id, month) key — supabase-schema-report-type.sql migrates them.
+  unique (client_id, month, report_type)
 );
 
 create index if not exists syte_suite_report_generated_log_client_month_idx

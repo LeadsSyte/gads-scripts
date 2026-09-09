@@ -183,7 +183,12 @@ export default function GoogleConnectionsPicker({
   }
 
   // --- GA4 manual entry handler with validation on blur ------------------
+  // The blur handler only writes when the text actually changed. Focusing a
+  // field and tabbing straight back out is not an edit, and letting it write
+  // an empty value put a saved property one stray click away from being
+  // cleared on the next Save.
   function commitGa4Manual() {
+    if (ga4Local.trim() === String(ga4Value || '').trim()) return;
     if (!ga4Local.trim()) { onChangeGa4(''); return; }
     const res = normalizeGa4Id(ga4Local);
     if (res.ok) {
@@ -198,7 +203,9 @@ export default function GoogleConnectionsPicker({
   }, [ga4Local]);
 
   // --- GSC manual entry handler with validation on blur -----------------
+  // Same no-op-on-untouched rule as GA4 above.
   function commitGscManual() {
+    if (gscLocal.trim() === String(gscValue || '').trim()) return;
     if (!gscLocal.trim()) { onChangeGsc(''); return; }
     const res = normalizeGscProperty(gscLocal);
     if (res.ok) {
@@ -228,6 +235,17 @@ export default function GoogleConnectionsPicker({
   // option (and a warning) so it stays preserved + obvious.
   const ga4SavedMissing = !!ga4Value && !ga4Props.some(p => p.id === ga4Value);
   const gscSavedMissing = !!gscValue && !gscSites.some(s => s.siteUrl === gscValue);
+
+  // Whether this client can be picked from a dropdown at all. Under server
+  // auth nobody signs into Google in this browser, so gating the dropdowns on
+  // `signedIn` left them permanently hidden: the properties were fetched
+  // through the proxy and thrown away, and the "Use dropdown / Enter manually"
+  // toggle did nothing when clicked. What matters is whether we have an
+  // account to read properties from.
+  const canPick = serverAuth ? !!boundAccount : signedIn;
+  // The account the property lists actually came from — used in the labels
+  // and the "not visible to…" warnings.
+  const sourceAccount = (serverAuth ? boundAccount : email) || 'this account';
 
   return (
     <div className="card" style={{ marginTop: 14 }}>
@@ -273,9 +291,19 @@ export default function GoogleConnectionsPicker({
           </select>
           <div className="muted" style={{ fontSize: 11, marginTop: 6 }}>
             Reports pull this client's GA4 + GSC through the account selected here. Connect accounts once
-            under <strong>Suite Settings → Connected Google Accounts</strong>. Enter the GA4 property ID and
-            Search Console URL manually below.
+            under <strong>Suite Settings → Connected Google Accounts</strong>. Pick the property and the
+            Search Console site from the dropdowns below — or enter either by hand.
           </div>
+          {boundAccount && (
+            <div className="row" style={{ gap: 8, marginTop: 8, alignItems: 'center' }}>
+              <button onClick={() => loadProperties({ bypassCache: true })} disabled={loading} style={{ fontSize: 11, padding: '4px 10px' }}>
+                {loading ? 'Loading…' : 'Refresh properties'}
+              </button>
+              <span className="muted" style={{ fontSize: 11 }}>
+                {loading ? '' : `${ga4Props.length} GA4 · ${gscSites.length} Search Console loaded from ${boundAccount}`}
+              </span>
+            </div>
+          )}
         </div>
       ) : (
         <div className="muted" style={{ fontSize: 12, marginBottom: 12 }}>
@@ -357,7 +385,7 @@ export default function GoogleConnectionsPicker({
         <div className="row" style={{ justifyContent: 'space-between', alignItems: 'baseline' }}>
           <label style={{ margin: 0 }}>
             GA4 Property
-            {signedIn && !loading && (
+            {canPick && !loading && (
               <span className="muted" style={{ fontSize: 10, textTransform: 'none', letterSpacing: 0, marginLeft: 8 }}>
                 {ga4Props.length} loaded across {Object.keys(ga4Groups).length} account(s)
               </span>
@@ -370,12 +398,12 @@ export default function GoogleConnectionsPicker({
             {manualGa4 ? 'Use dropdown' : 'Enter manually'}
           </button>
         </div>
-        {signedIn && !manualGa4 && ga4Props.length > 0 ? (
+        {canPick && !manualGa4 && ga4Props.length > 0 ? (
           <>
-            <select value={ga4Value || ''} onChange={e => onChangeGa4(e.target.value, e.target.value ? email : null)}>
+            <select value={ga4Value || ''} onChange={e => onChangeGa4(e.target.value, e.target.value ? (serverAuth ? boundAccount : email) : null)}>
               <option value="">— pick a property —</option>
               {ga4SavedMissing && (
-                <option value={ga4Value}>Saved · {ga4Value} (not visible to {email || 'this account'})</option>
+                <option value={ga4Value}>Saved · {ga4Value} (not visible to {sourceAccount})</option>
               )}
               {Object.entries(ga4Groups).map(([account, props]) => (
                 <optgroup key={account} label={account}>
@@ -389,7 +417,7 @@ export default function GoogleConnectionsPicker({
             </select>
             {ga4SavedMissing && (
               <div style={{ color: 'var(--orange)', fontSize: 11, marginTop: 4 }}>
-                The saved property <span className="mono">{ga4Value}</span> isn't in this Google account's list. It's still preserved — Switch account if you need to repick.
+                The saved property <span className="mono">{ga4Value}</span> isn't in {sourceAccount}'s list. It's still preserved — repick it, or bind the client to the account that owns it.
               </div>
             )}
             {savedGa4Email && (
@@ -417,9 +445,9 @@ export default function GoogleConnectionsPicker({
             )}
           </>
         )}
-        {signedIn && !manualGa4 && ga4Props.length === 0 && !loading && (
+        {canPick && !manualGa4 && ga4Props.length === 0 && !loading && (
           <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>
-            No GA4 properties visible to {email || 'this account'}. Try Switch account.
+            No GA4 properties visible to {sourceAccount}.{serverAuth ? ' Check the account binding above, or enter the ID manually.' : ' Try Switch account.'}
           </div>
         )}
       </div>
@@ -429,7 +457,7 @@ export default function GoogleConnectionsPicker({
         <div className="row" style={{ justifyContent: 'space-between', alignItems: 'baseline' }}>
           <label style={{ margin: 0 }}>
             Search Console Property
-            {signedIn && !loading && (
+            {canPick && !loading && (
               <span className="muted" style={{ fontSize: 10, textTransform: 'none', letterSpacing: 0, marginLeft: 8 }}>
                 {gscSites.length} loaded
               </span>
@@ -442,11 +470,11 @@ export default function GoogleConnectionsPicker({
             {manualGsc ? 'Use dropdown' : 'Enter manually'}
           </button>
         </div>
-        {signedIn && !manualGsc && gscSites.length > 0 ? (
-          <select value={gscValue || ''} onChange={e => onChangeGsc(e.target.value, e.target.value ? email : null)}>
+        {canPick && !manualGsc && gscSites.length > 0 ? (
+          <select value={gscValue || ''} onChange={e => onChangeGsc(e.target.value, e.target.value ? (serverAuth ? boundAccount : email) : null)}>
             <option value="">— pick a property —</option>
             {gscSavedMissing && (
-              <option value={gscValue}>Saved · {gscValue} (not visible to {email || 'this account'})</option>
+              <option value={gscValue}>Saved · {gscValue} (not visible to {sourceAccount})</option>
             )}
             {gscSites.map(s => (
               <option key={s.siteUrl} value={s.siteUrl}>
@@ -455,9 +483,9 @@ export default function GoogleConnectionsPicker({
             ))}
           </select>
         ) : null}
-        {signedIn && !manualGsc && gscSites.length > 0 && gscSavedMissing && (
+        {canPick && !manualGsc && gscSites.length > 0 && gscSavedMissing && (
           <div style={{ color: 'var(--orange)', fontSize: 11, marginTop: 4 }}>
-            The saved property <span className="mono">{gscValue}</span> isn't in this Google account's list. It's still preserved — Switch account if you need to repick.
+            The saved property <span className="mono">{gscValue}</span> isn't in {sourceAccount}'s list. It's still preserved — repick it, or bind the client to the account that owns it.
           </div>
         )}
         {savedGscEmail && (
@@ -465,7 +493,7 @@ export default function GoogleConnectionsPicker({
             Search Console fetches use <span className="mono">{savedGscEmail}</span>
           </div>
         )}
-        {!(signedIn && !manualGsc && gscSites.length > 0) && (
+        {!(canPick && !manualGsc && gscSites.length > 0) && (
           <>
             <input
               value={gscLocal}
@@ -484,9 +512,9 @@ export default function GoogleConnectionsPicker({
             )}
           </>
         )}
-        {signedIn && !manualGsc && gscSites.length === 0 && !loading && (
+        {canPick && !manualGsc && gscSites.length === 0 && !loading && (
           <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>
-            No Search Console sites visible to {email || 'this account'}. Try Switch account.
+            No Search Console sites visible to {sourceAccount}.{serverAuth ? ' Check the account binding above, or enter the property manually.' : ' Try Switch account.'}
           </div>
         )}
       </div>

@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { useClients } from '../../store/useClients.js';
 import { listAllImplementations, updateImplementation, getImplementationDetail } from '../../lib/supabase.js';
 import { verifyImplementation, isDeveloperHandover, displayVerificationDetail } from '../../lib/verification.js';
+import { isDelivered } from '../../lib/deliveryStatus.js';
 
 // In-app view of the same data the weekly email shows. Lets Michael and
 // Chris see implementation progress across all clients in real time
@@ -12,6 +13,9 @@ const STATUS_STYLES = {
   failed:          { color: 'var(--red)',    label: '✗ Failed',           badge: 'red' },
   pending:         { color: 'var(--orange)', label: '⏳ Pending',          badge: 'orange' },
   manual_required: { color: 'var(--orange)', label: '⚑ Manual required',  badge: 'orange' },
+  // A handover counts as delivered work everywhere the suite asks "is this
+  // done?" (see deliveryStatus.js). It keeps its own blue 📧 badge so you can
+  // still tell it from a change verified on the live page.
   sent_to_developer: { color: 'var(--blue)', label: '📧 Sent to Developer', badge: 'blue' },
   // Verifier couldn't reach the page (transient network/proxy). NOT a
   // failure — the prior result, if any, was preserved.
@@ -205,7 +209,9 @@ export default function ImplementationProgress() {
 
       {/* Grouped by client */}
       {grouped.map(g => {
-        const v = g.items.filter(r => r.verification_status === 'verified').length;
+        // Completion counts delivered work: verified on the page OR handed
+        // to the developer. The 📧 breakdown is part of `v`, not extra to it.
+        const v = g.items.filter(r => isDelivered(r.verification_status)).length;
         const f = g.items.filter(r => r.verification_status === 'failed').length;
         const p = g.items.filter(r => r.verification_status === 'pending').length;
         const s = g.items.filter(r => r.verification_status === 'sent_to_developer').length;
@@ -217,7 +223,7 @@ export default function ImplementationProgress() {
               <div className="row" style={{ justifyContent: 'space-between' }}>
                 <strong>{g.client.name || '?'}</strong>
                 <span className="muted" style={{ fontSize: 12 }}>
-                  {v} verified{s > 0 ? ` · ${s} sent to dev` : ''} · {f} failed · {p} pending · {pct}% complete
+                  {v} verified{s > 0 ? ` (incl. ${s} sent to dev)` : ''} · {f} failed · {p} pending · {pct}% complete
                 </span>
               </div>
               <div style={{ height: 4, background: 'var(--surface)', borderRadius: 2, marginTop: 8, overflow: 'hidden' }}>

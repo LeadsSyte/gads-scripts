@@ -7,6 +7,39 @@ function esc(s = '') {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+// The PPC equivalent ("what your organic traffic would have cost in Google
+// Ads") is only a compelling slide when the number is big. Below R30,000 it
+// undersells the work, so the section, and any PPC highlight tile, is dropped
+// rather than shown small. Kept in one place because the microsite renderer
+// and the Claude prompt both need the same bar.
+export const PPC_MIN_VALUE = 30000;
+
+// Parse a rand amount as Claude writes it: "R48,200", "R48 200", "R48.2k",
+// "R1.2m", or a plain number. Returns null when there is no number to read,
+// which counts as "cannot prove it clears the bar" and hides the value.
+export function parseRandAmount(value) {
+  if (value == null || value === '') return null;
+  if (typeof value === 'number') return isFinite(value) ? value : null;
+  const cleaned = String(value).toLowerCase().replace(/[\s\u00a0,]/g, '');
+  const m = cleaned.match(/(-?\d+(?:\.\d+)?)\s*([km])?/);
+  if (!m) return null;
+  const n = parseFloat(m[1]);
+  if (isNaN(n)) return null;
+  if (m[2] === 'k') return n * 1000;
+  if (m[2] === 'm') return n * 1000000;
+  return n;
+}
+
+// True when a value is worth putting in front of the client.
+export function meetsPpcThreshold(value) {
+  const amount = parseRandAmount(value);
+  return amount != null && amount >= PPC_MIN_VALUE;
+}
+
+function isPpcHighlight(h) {
+  return /ppc|google ads|paid (search|equivalent)|ad spend/i.test(String(h?.label || ''));
+}
+
 function scoreColor(s) {
   const v = typeof s === 'string' ? parseFloat(s) : s;
   if (v == null || isNaN(v)) return '#8b8b96';
@@ -165,7 +198,9 @@ export function buildMicrositeHtml({ micro, client, monthLabel, previousMonthLab
   const aeo = seoOnly ? {} : (micro?.aeoSection || {});
   const showAeo = !!aeo.show && !aeoOnly;
   const ppc = micro?.ppcEquivalent || {};
-  const showPpc = !!ppc.show && !aeoOnly;
+  // Small PPC numbers are worse than none: only render the section when the
+  // estimate clears PPC_MIN_VALUE (and when we can actually read the number).
+  const showPpc = !!ppc.show && !aeoOnly && meetsPpcThreshold(ppc.value);
   const work = micro?.workDone || {};
   const showWork = !!work.show && (work.items || []).length > 0 && !aeoOnly;
   const rd = aeoOnly ? {} : (reportData || {});
@@ -174,7 +209,6 @@ export function buildMicrositeHtml({ micro, client, monthLabel, previousMonthLab
   const probe = seoOnly ? {} : (aeoProbe || {});
   const cmp = seoOnly ? null : (aeoCompare || null);
   const ranking = seoOnly ? null : (aeoRanking || null);
-  const aeoStrategy = seoOnly ? null : (micro?.aeoStrategy || null);
   const aeoMomNarrative = seoOnly ? '' : (micro?.aeoMomNarrative || '');
   const aeoCompetitiveNarrative = seoOnly ? '' : (micro?.aeoCompetitiveNarrative || '');
   const brandRank = ranking ? ranking.findIndex(r => r.isBrand) + 1 : null;
@@ -183,7 +217,11 @@ export function buildMicrositeHtml({ micro, client, monthLabel, previousMonthLab
   // report for the SEO one (or vice versa).
   const reportKind = seoOnly ? 'SEO Performance' : aeoOnly ? 'AEO Performance' : 'Performance';
 
-  const highlights = (micro?.highlights || []).map(h => `
+  // A PPC highlight tile carries the same rand value as the section, so it
+  // lives or dies by the same threshold, judged on its own value.
+  const highlights = (micro?.highlights || [])
+    .filter(h => !isPpcHighlight(h) || (!aeoOnly && meetsPpcThreshold(h.value)))
+    .map(h => `
     <div class="metric">
       <div class="metric-val">${esc(h.value)}</div>
       <div class="metric-label">${esc(h.label)}</div>
@@ -376,12 +414,6 @@ export function buildMicrositeHtml({ micro, client, monthLabel, previousMonthLab
   .ppc-value { font-family: 'DM Serif Display', serif; font-size: 48px; color: var(--green); line-height: 1; }
   .ppc-label { color: var(--muted); font-size: 13px; margin-top: 8px; }
   .ppc-detail { color: var(--muted); font-size: 12px; margin-top: 4px; }
-
-  .next {
-    background: var(--surface); border: 1px solid var(--border);
-    border-left: 4px solid var(--accent); padding: 20px 24px; border-radius: 10px;
-    font-size: 16px; max-width: 700px;
-  }
 
   footer { padding: 40px 0 0; color: var(--muted); font-size: 12px; text-align: center; }
   footer .logo { font-size: 18px; color: var(--muted); }
@@ -635,34 +667,8 @@ export function buildMicrositeHtml({ micro, client, monthLabel, previousMonthLab
       ${probe.keyword_wins?.zero?.length ? `
         <p style="color:var(--muted);font-size:12px;margin-top:16px;">
           <strong style="color:var(--text);">${probe.keyword_wins.zero.length} zero-visibility queries</strong>
-          — biggest opportunity. Listed in next month's strategy below.
+          — the biggest open opportunity in the set.
         </p>
-      ` : ''}
-    </section>` : ''}
-
-    ${aeoStrategy?.show && (aeoStrategy?.priorities?.length || aeoStrategy?.zeroOpportunity) ? `
-    <section>
-      <h2>Next Month's Strategy</h2>
-      <p style="color:var(--muted);font-size:13px;margin-bottom:14px;">Based on emerging wins and zero-visibility category terms — these are the queries we're attacking next.</p>
-      ${(aeoStrategy.priorities || []).map((p, i) => `
-        <div style="padding:18px;background:var(--surface);border:1px solid var(--border);border-left:4px solid ${p.tier === 'Quick Win' ? 'var(--green)' : p.tier === 'Grow Share' ? 'var(--orange)' : 'var(--accent)'};border-radius:10px;margin-bottom:12px;">
-          <div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:6px;">
-            Priority ${i + 1} — ${esc(p.tier || 'Strategy')}
-          </div>
-          <div style="font-size:18px;font-weight:600;margin-bottom:8px;">${esc(p.title || '')}</div>
-          <p style="font-size:14px;color:var(--muted);margin-bottom:10px;">${esc(p.rationale || '')}</p>
-          ${(p.tags || []).length ? `
-            <div style="display:flex;gap:8px;flex-wrap:wrap;">
-              ${p.tags.map(t => `<span style="padding:3px 10px;background:var(--surface-2);border:1px solid var(--border);border-radius:999px;font-size:11px;color:var(--muted);">${esc(t)}</span>`).join('')}
-            </div>
-          ` : ''}
-        </div>
-      `).join('')}
-      ${aeoStrategy.zeroOpportunity ? `
-        <div style="padding:16px 20px;background:linear-gradient(135deg,rgba(200,240,96,.08),rgba(167,139,250,.04));border:1px solid rgba(200,240,96,.25);border-radius:10px;margin-top:14px;">
-          <div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--accent);margin-bottom:6px;">The 0% Terms — Biggest Opportunity</div>
-          <p style="font-size:14px;">${esc(aeoStrategy.zeroOpportunity)}</p>
-        </div>
       ` : ''}
     </section>` : ''}
 
@@ -773,12 +779,6 @@ export function buildMicrositeHtml({ micro, client, monthLabel, previousMonthLab
       ${hidden > 0 ? `<p style="color:var(--muted);font-size:12px;margin-top:10px;">+${hidden} more query × engine rows — see the full AEO Snapshot for the complete set.</p>` : ''}
     </section>`;
     })() : ''}
-
-    ${micro?.whatNext ? `
-    <section>
-      <h2>What's Next</h2>
-      <div class="next">${esc(micro.whatNext)}</div>
-    </section>` : ''}
 
     ${(() => {
       // Hide the detailed traffic comparison when both MoM and YoY for
@@ -907,7 +907,7 @@ export function downloadMicrositePdf(html, filename) {
 
       /* Page-break behaviour — keep cards / table rows together where
          possible so the document reads cleanly. */
-      section, .card, .metric, .work-card, .ppc-card, .next, .engine-tile,
+      section, .card, .metric, .work-card, .ppc-card, .engine-tile,
       .comp-row, footer { break-inside: avoid; page-break-inside: avoid; }
       h1, h2, h3 { break-after: avoid-page; page-break-after: avoid; }
       table { break-inside: auto; }

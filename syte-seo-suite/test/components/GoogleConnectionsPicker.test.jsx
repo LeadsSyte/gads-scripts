@@ -28,10 +28,23 @@ vi.mock('../../src/modules/technical/googleAuth.js', async () => {
   };
 });
 
+// Server-auth mode flag the tests control.
+let serverAuth = false;
+vi.mock('../../src/lib/googleServerAuth.js', () => ({
+  serverAuthEnabled: () => serverAuth,
+  listConnectedAccounts: async () => [{ email: 'admin@syte.co.za', revoked: false }]
+}));
+
 // Property fetchers — avoid network entirely.
 vi.mock('../../src/lib/googleProperties.js', () => ({
   fetchGa4Properties: async () => [],
   fetchGscSites: async () => [],
+  fetchGa4PropertiesForAccount: async () => [
+    { id: '496943428', name: 'Acme Web', account: 'Acme' }
+  ],
+  fetchGscSitesForAccount: async () => [
+    { siteUrl: 'sc-domain:acme.co.za', permissionLevel: 'siteOwner' }
+  ],
   normalizeGa4Id: (v) => ({ ok: true, value: v }),
   normalizeGscProperty: (v) => ({ ok: true, value: v }),
   clearPropertyCache: vi.fn()
@@ -39,7 +52,7 @@ vi.mock('../../src/lib/googleProperties.js', () => ({
 
 import GoogleConnectionsPicker from '../../src/components/GoogleConnectionsPicker.jsx';
 
-beforeEach(() => { storedToken = null; });
+beforeEach(() => { storedToken = null; serverAuth = false; });
 
 describe('GoogleConnectionsPicker', () => {
   test('shows "Sign in with Google" when no token is present at mount', () => {
@@ -90,6 +103,75 @@ describe('GoogleConnectionsPicker', () => {
       expect(screen.queryByRole('button', { name: /Sign in with Google/i })).not.toBeInTheDocument();
     });
     expect(screen.getByRole('button', { name: /Sign out/i })).toBeInTheDocument();
+  });
+
+  // ── REGRESSION ─────────────────────────────────────────────────────
+  // With server-managed Google accounts nobody signs into Google in this
+  // browser, so getToken() is always null. The GA4/GSC dropdowns were gated
+  // on that browser sign-in state, so they never rendered: the properties
+  // were fetched through the proxy and thrown away, both fields were stuck
+  // as manual text boxes, and the "Use dropdown / Enter manually" toggle did
+  // nothing when clicked. The gate is now "do we have an account to read
+  // properties from", which is what actually decides whether a list exists.
+  describe('server-managed accounts (no browser token)', () => {
+    const renderBound = (props = {}) => render(
+      <GoogleConnectionsPicker
+        ga4Value="" onChangeGa4={() => {}}
+        gscValue="" onChangeGsc={() => {}}
+        savedGscEmail="admin@syte.co.za"
+        savedGa4Email="admin@syte.co.za"
+        onBindAccount={() => {}}
+        {...props}
+      />
+    );
+
+    test('renders the GA4 + Search Console dropdowns for the bound account', async () => {
+      serverAuth = true;
+      renderBound();
+      expect(storedToken).toBe(null); // no browser sign-in anywhere in this flow
+      await waitFor(() => {
+        expect(screen.getByRole('option', { name: /sc-domain:acme\.co\.za/ })).toBeInTheDocument();
+      });
+      expect(screen.getByRole('option', { name: /Acme Web · 496943428/ })).toBeInTheDocument();
+    });
+
+    test('picking a Search Console property reports the bound account', async () => {
+      serverAuth = true;
+      const onChangeGsc = vi.fn();
+      renderBound({ onChangeGsc });
+      const option = await screen.findByRole('option', { name: /sc-domain:acme\.co\.za/ });
+      const select = option.closest('select');
+      act(() => {
+        select.value = 'sc-domain:acme.co.za';
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+      });
+      await waitFor(() => expect(onChangeGsc).toHaveBeenCalled());
+      expect(onChangeGsc).toHaveBeenCalledWith('sc-domain:acme.co.za', 'admin@syte.co.za');
+    });
+
+    test('a saved property that the account cannot see is preserved, not dropped', async () => {
+      serverAuth = true;
+      renderBound({ gscValue: 'https://other.example.com/' });
+      await waitFor(() => {
+        expect(screen.getByRole('option', { name: /Saved · https:\/\/other\.example\.com\// }))
+          .toBeInTheDocument();
+      });
+    });
+
+    test('falls back to manual entry when no account is bound yet', async () => {
+      serverAuth = true;
+      render(
+        <GoogleConnectionsPicker
+          ga4Value="" onChangeGa4={() => {}}
+          gscValue="" onChangeGsc={() => {}}
+          onBindAccount={() => {}}
+        />
+      );
+      await waitFor(() => {
+        expect(screen.getByPlaceholderText(/sc-domain:example\.com/)).toBeInTheDocument();
+      });
+      expect(screen.queryByRole('option', { name: /sc-domain:acme\.co\.za/ })).not.toBeInTheDocument();
+    });
   });
 
   test('also reacts to cross-tab storage events (covers "open in two tabs")', async () => {

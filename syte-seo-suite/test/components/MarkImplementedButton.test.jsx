@@ -135,6 +135,31 @@ describe('MarkImplementedButton — Sent to Developer', () => {
     expect(screen.getByText('📧 Upload a screenshot of the email')).toBeInTheDocument();
   });
 
+  // A handover with no usable screenshot still stays 'sent_to_developer' —
+  // there's no proof to promote it to 'verified'. It is still DELIVERED work
+  // (deliveryStatus.js), so the parent must be told: that's what moves the row
+  // out of its list and flips the Technical SEO task off OPEN. Before this it
+  // silently did nothing and the task sat there as if we'd never sent it.
+  test('an unreadable attachment still records the handover and tells the parent', async () => {
+    class FailingFileReader {
+      readAsDataURL() { setTimeout(() => this.onerror?.(new Error('unreadable')), 0); }
+    }
+    vi.stubGlobal('FileReader', FailingFileReader);
+    const onVerified = vi.fn();
+    const { container } = await openSentPanel(onVerified);
+
+    attachEmail(container); // read fails → the manual override appears
+
+    const override = await screen.findByRole('button', { name: /I definitely sent it/i });
+    fireEvent.click(override);
+
+    await waitFor(() => expect(updateImplementation).toHaveBeenCalled());
+    const [, patch] = updateImplementation.mock.calls[0];
+    expect(patch.verification_status).toBe('sent_to_developer');
+    expect(patch.verification_detail).not.toContain('[SCREENSHOT]');
+    await waitFor(() => expect(onVerified).toHaveBeenCalled());
+  });
+
   test('an image Claude reads as "not an email" is still rejected', async () => {
     claudeComplete.mockResolvedValue(
       '{"is_email": false, "recipient": "", "subject": "", "relates": false, "evidence": "A photo of a cat."}'

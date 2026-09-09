@@ -4,6 +4,7 @@ import { fetchReportData } from './reportData.js';
 import ReportDashboard from './ReportDashboard.jsx';
 import { ensureToken, SCOPES, getToken, switchAccount } from '../technical/googleAuth.js';
 import { getBaseline, saveBaseline, deleteBaseline, listBaselines } from '../../lib/supabase.js';
+import { serverAuthEnabled } from '../../lib/googleServerAuth.js';
 
 const ACCENT = '#a78bfa';
 
@@ -64,8 +65,10 @@ function BaselineDetail() {
       return;
     }
 
-    let token = getToken();
-    if ((forceReauth || !token?.access_token)) {
+    // Server auth: the proxy holds the tokens, so there is nothing to sign
+    // into here — the browser-token gate below would block every baseline.
+    let token = serverAuthEnabled() ? { access_token: 'server' } : getToken();
+    if (!serverAuthEnabled() && (forceReauth || !token?.access_token)) {
       setStatus('Connecting to Google — please sign in if prompted…');
       try {
         token = forceReauth
@@ -153,7 +156,7 @@ function BaselineDetail() {
                 disabled={status.includes('Pulling')}
                 style={{ background: ACCENT, borderColor: ACCENT, color: '#0a0a0c' }}
               >
-                {getToken()?.access_token ? 'Fetch Baseline Data' : 'Connect Google & Fetch'}
+                {serverAuthEnabled() || getToken()?.access_token ? 'Fetch Baseline Data' : 'Connect Google & Fetch'}
               </button>
             )}
             {preview && (

@@ -231,5 +231,99 @@ await t('content: verified detail also uses actual written count', async () => {
   if (!/of 3/.test(r.detail)) throw new Error('verified detail should reference 3 (the written count): ' + r.detail);
 });
 
+// =========================================================================
+// Developer handovers count as delivered work.
+//
+// On accounts where the client's own developer publishes our changes, the
+// handover IS the deliverable — we can't put it on the page ourselves. These
+// clients used to sit in "Fixes Generated" / "Articles Written" all month
+// with the work finished and the email as proof, because every completion
+// count looked for verification_status === 'verified' only.
+// =========================================================================
+
+await t('technical: a sent_to_developer fix moves the client to verified-on-site', async () => {
+  const c = { ...C_CRAWLER_READY, id: 'th1' };
+  const month = '2026-05';
+  const impls = [
+    { client_id: 'th1', module: 'technical', verification_status: 'sent_to_developer',
+      title: 'Meta title', created_at: month + '-04T00:00:00Z' }
+  ];
+  const tasks = [
+    { client_id: 'th1', status: 'done', created_at: month + '-01T00:00:00Z' }
+  ];
+  const r = technicalPipelineStatus(c, impls, tasks, month);
+  assertEq(r.section, 'verified-on-site', 'section');
+  if (!/handed to dev/.test(r.summary)) {
+    throw new Error('summary should show the handover breakdown: ' + r.summary);
+  }
+});
+
+await t('content: handovers count toward the monthly quota', async () => {
+  const c = { ...C_FULL_CONTENT, id: 'ch1', pages_per_month: 2 };
+  const month = '2026-05';
+  const history = [
+    { client_id: 'ch1', generated_at: month + '-01T00:00:00Z' },
+    { client_id: 'ch1', generated_at: month + '-02T00:00:00Z' }
+  ];
+  const impls = [
+    { client_id: 'ch1', module: 'content', verification_status: 'sent_to_developer',
+      title: 'A', implemented_at: month + '-03T00:00:00Z' },
+    { client_id: 'ch1', module: 'content', verification_status: 'verified',
+      title: 'B', implemented_at: month + '-03T00:00:00Z' }
+  ];
+  const r = contentPipelineStatus(c, impls, month, history);
+  assertEq(r.section, 'verified-on-site', 'section');
+  assertEq(r.summary, '2 verified', 'summary');
+});
+
+await t('content: a handover short of quota still reads as one verified article', async () => {
+  const c = { ...C_FULL_CONTENT, id: 'ch2', pages_per_month: 2 };
+  const month = '2026-05';
+  const history = [
+    { client_id: 'ch2', generated_at: month + '-01T00:00:00Z' },
+    { client_id: 'ch2', generated_at: month + '-02T00:00:00Z' }
+  ];
+  const impls = [
+    { client_id: 'ch2', module: 'content', verification_status: 'sent_to_developer',
+      title: 'A', implemented_at: month + '-03T00:00:00Z' }
+  ];
+  const r = contentPipelineStatus(c, impls, month, history);
+  assertEq(r.section, 'articles-written', 'section');
+  if (!/1 verified/.test(r.summary)) throw new Error('handover should count as verified: ' + r.summary);
+  // The 📧 count is a breakdown of the verified count, never added on top.
+  if (/· 1 sent to dev/.test(r.summary)) throw new Error('handover double-counted: ' + r.summary);
+});
+
+await t('aeo: handovers complete the month\'s optimizations', async () => {
+  const c = { ...C_FULL_AEO, id: 'ah1' };
+  const month = '2026-05';
+  const aeoResults = {
+    p1: { client_id: 'ah1', generated_at: month + '-01T00:00:00Z',
+          optimizations: [{ name: 'FAQ' }, { name: 'Schema' }] }
+  };
+  const impls = [
+    { client_id: 'ah1', module: 'aeo', verification_status: 'sent_to_developer',
+      title: 'FAQ', created_at: month + '-02T00:00:00Z' },
+    { client_id: 'ah1', module: 'aeo', verification_status: 'verified',
+      title: 'Schema', created_at: month + '-02T00:00:00Z' }
+  ];
+  const r = aeoPipelineStatus(c, impls, aeoResults, month, []);
+  assertEq(r.section, 'verified-on-site', 'section');
+});
+
+await t('pending/failed/inconclusive still do NOT count as delivered', async () => {
+  const c = { ...C_CRAWLER_READY, id: 'th2' };
+  const month = '2026-05';
+  const tasks = [{ client_id: 'th2', status: 'done', created_at: month + '-01T00:00:00Z' }];
+  for (const status of ['pending', 'failed', 'inconclusive', 'manual_required']) {
+    const impls = [
+      { client_id: 'th2', module: 'technical', verification_status: status,
+        title: 'x', created_at: month + '-04T00:00:00Z' }
+    ];
+    const r = technicalPipelineStatus(c, impls, tasks, month);
+    assertEq(r.section, 'fixes-generated', status + ' section');
+  }
+});
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 if (fail > 0) process.exit(1);

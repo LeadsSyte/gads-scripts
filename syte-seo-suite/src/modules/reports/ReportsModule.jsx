@@ -6,61 +6,53 @@ import Baseline from './Baseline.jsx';
 import ReportsHistory from './ReportsHistory.jsx';
 import MarkEmailedModal from './MarkEmailedModal.jsx';
 import DevExport from './DevExport.jsx';
-import { listSentReports, listGeneratedReports } from '../../lib/supabase.js';
+import { listSentReports, listGeneratedReports, syncGeneratedLocal } from '../../lib/supabase.js';
+import { previousMonthKey, monthKeyLabel, selectableMonthKeys } from './reportMonths.js';
 
 const ACCENT = '#a78bfa';
 const GREEN = 'var(--green)';
 const ORANGE = 'var(--orange)';
-
-function previousMonth() {
-  const d = new Date();
-  d.setMonth(d.getMonth() - 1);
-  return d.toLocaleString('en-US', { month: 'long', year: 'numeric' });
-}
-
-function previousMonthKey() {
-  const d = new Date();
-  d.setMonth(d.getMonth() - 1);
-  return d.toISOString().slice(0, 7); // YYYY-MM
-}
 
 // Router for the Reports sidebar module.
 export default function ReportsModule({ sub }) {
   const allClients = useClients(s => s.clients);
   const select = useClients(s => s.select);
   const [showReport, setShowReport] = useState(false);
-  const [sentReports, setSentReports] = useState({});
-  const [generatedReports, setGeneratedReports] = useState({});
-  // Full lists as well as the newest-per-client maps: SEO and AEO are
-  // separate deliverables, so each card shows both statuses.
+  // Full lists; the per-client / per-month row is picked below. SEO and AEO
+  // are separate deliverables, so each card shows both statuses.
   const [allSent, setAllSent] = useState([]);
   const [allGenerated, setAllGenerated] = useState([]);
   const [emailModal, setEmailModal] = useState(null); // { client } | null
+  const [loadErr, setLoadErr] = useState('');
+  // How many device-only reports were just pushed up to the shared database.
+  const [recovered, setRecovered] = useState(0);
+  // Which month the board is showing. Defaults to the month just finished —
+  // what the generator defaults to — but is selectable, so a report logged
+  // under a different month is findable instead of silently absent.
+  const [monthKey, setMonthKey] = useState(() => previousMonthKey());
 
   // Load sent + generated report status for all clients. Extracted so it can
   // be re-run after marking a client emailed, and whenever the operator
   // returns from the report generator (so a just-generated report shows).
   const loadStatus = React.useCallback(async () => {
     try {
+      // Reports that only reached this device — a DB write that failed while
+      // the log still allowed one report per client per month — go up first,
+      // so they show for everyone instead of needing to be regenerated.
+      const sync = await syncGeneratedLocal();
+      setRecovered(sync?.pushed || 0);
       const [sent, generated] = await Promise.all([
         listSentReports(),
         listGeneratedReports()
       ]);
-      // Both lists come back newest-first, so the first row per client is the
-      // latest one for that client.
-      const sentByClient = {};
-      for (const r of sent) {
-        if (!sentByClient[r.client_id]) sentByClient[r.client_id] = r;
-      }
-      const genByClient = {};
-      for (const r of generated) {
-        if (!genByClient[r.client_id]) genByClient[r.client_id] = r;
-      }
-      setSentReports(sentByClient);
-      setGeneratedReports(genByClient);
-      setAllSent(sent);
-      setAllGenerated(generated);
-    } catch {}
+      setAllSent(sent || []);
+      setAllGenerated(generated || []);
+      setLoadErr('');
+    } catch (e) {
+      // A silent catch here left the board showing every client as Pending
+      // with no hint that the read had failed.
+      setLoadErr('Could not load report status: ' + (e?.message || String(e)));
+    }
   }, []);
 
   React.useEffect(() => { loadStatus(); }, [loadStatus]);
@@ -94,26 +86,38 @@ export default function ReportsModule({ sub }) {
         <button onClick={() => setShowReport(false)} style={{ marginBottom: 14, fontSize: 12 }}>
           ← Back to all clients
         </button>
-        <MonthlyReport />
+        <MonthlyReport initialMonth={monthKey} />
       </div>
     );
   }
 
-  const month = previousMonth();
-  const monthKey = previousMonthKey();
+  const month = monthKeyLabel(monthKey);
 
-  // Bucket clients by status for the current report month. Sent always wins
+  // Newest row per client FOR THE MONTH ON SCREEN. Picking the client's
+  // globally-newest row instead (what this did before) meant a report
+  // generated for a later month hid the one for the month being viewed, and
+  // that client dropped to Pending.
+  const newestFor = (rows, clientId, dateKey) =>
+    rows
+      .filter(r => r.client_id === clientId && r.month === monthKey)
+      .sort((a, b) => String(b[dateKey] || '').localeCompare(String(a[dateKey] || '')))[0] || null;
+
+  // Bucket clients by status for the selected report month. Sent always wins
   // over Generated; a regenerated-then-sent report stays in the Sent bucket.
   const buckets = { sent: [], generated: [], pending: [] };
   for (const c of allClients) {
-    const sent = sentReports[c.id];
-    const gen = generatedReports[c.id];
-    const sentThisMonth = sent && sent.month === monthKey;
-    const genThisMonth = gen && gen.month === monthKey;
-    if (sentThisMonth) buckets.sent.push({ client: c, sent, gen });
-    else if (genThisMonth) buckets.generated.push({ client: c, sent, gen });
+    const sent = newestFor(allSent, c.id, 'sent_date');
+    const gen = newestFor(allGenerated, c.id, 'generated_at');
+    if (sent) buckets.sent.push({ client: c, sent, gen });
+    else if (gen) buckets.generated.push({ client: c, sent, gen });
     else buckets.pending.push({ client: c, sent, gen });
   }
+
+  // Reports logged under a month other than the one on screen. Without this,
+  // "I generated these and they're not here" has no visible explanation.
+  const otherMonths = [...new Set(
+    allGenerated.filter(r => r.month && r.month !== monthKey).map(r => r.month)
+  )].sort().reverse();
 
   // A client on both services needs both reports produced, so each card
   // tracks them independently. Rows logged before the split carry
@@ -264,14 +268,53 @@ export default function ReportsModule({ sub }) {
 
   return (
     <div className="content-area">
-      <div className="row" style={{ justifyContent: 'space-between', marginBottom: 18 }}>
+      <div className="row" style={{ justifyContent: 'space-between', marginBottom: 18, alignItems: 'flex-start' }}>
         <div>
           <h2 style={{ margin: 0 }}>Monthly Reports — {month}</h2>
           <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
             {allClients.length} clients · {buckets.sent.length} sent · {buckets.generated.length} generated · {buckets.pending.length} pending
           </div>
         </div>
+        <label className="row" style={{ gap: 6, fontSize: 12 }}>
+          <span className="muted">Report month</span>
+          <select value={monthKey} onChange={e => setMonthKey(e.target.value)} style={{ fontSize: 12 }}>
+            {[...new Set([...selectableMonthKeys(13), ...allGenerated.map(r => r.month), ...allSent.map(r => r.month)])]
+              .filter(Boolean)
+              .sort()
+              .reverse()
+              .map(m => <option key={m} value={m}>{monthKeyLabel(m)}</option>)}
+          </select>
+        </label>
       </div>
+
+      {recovered > 0 && (
+        <div className="muted" style={{ fontSize: 12, marginBottom: 14 }}>
+          Uploaded {recovered} report{recovered === 1 ? '' : 's'} that had only been saved on this device.
+          {' '}They now show for everyone.
+        </div>
+      )}
+
+      {loadErr && (
+        <div className="card" style={{ marginBottom: 14, borderColor: 'var(--red)', color: 'var(--red)', fontSize: 12 }}>
+          {loadErr}
+        </div>
+      )}
+
+      {buckets.generated.length === 0 && buckets.sent.length === 0 && otherMonths.length > 0 && (
+        <div className="muted" style={{ fontSize: 12, marginBottom: 14 }}>
+          No reports generated for {month}. There are generated reports for{' '}
+          {otherMonths.slice(0, 4).map((m, i) => (
+            <React.Fragment key={m}>
+              {i > 0 && ', '}
+              <a
+                href="#"
+                onClick={e => { e.preventDefault(); setMonthKey(m); }}
+                style={{ color: ORANGE }}
+              >{monthKeyLabel(m)}</a>
+            </React.Fragment>
+          ))}.
+        </div>
+      )}
 
       {renderSection('Generated — awaiting send', buckets.generated, 'generated', 'Microsite built but not yet marked sent')}
       {renderSection('Sent', buckets.sent, 'sent', 'Logged in report history')}
