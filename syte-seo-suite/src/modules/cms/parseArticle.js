@@ -26,20 +26,42 @@ export function parseArticleBody(raw, { stripH1 = true } = {}) {
     if (lastFence > 0) text = text.slice(0, lastFence);
   }
 
+  // Some prompt versions mark sections with HTML comments (<!-- META TITLE -->).
+  // They're invisible in a browser but they pushed the metadata off index 0,
+  // which the cut below mistook for trailing metadata — keeping only the
+  // comment and dropping the entire article.
+  text = text.replace(/<!--[\s\S]*?-->/g, '').replace(/^\s+/, '');
+
   const metaTitleMatch = text.match(/\*?\*?Meta Title\*?\*?:?\s*(.+)/i);
   const metaDescMatch  = text.match(/\*?\*?Meta Description\*?\*?:?\s*(.+)/i);
 
   // Where the metadata sits varies by prompt. Older output puts it AFTER
-  // the article, so cutting there works. Newer output puts it at the very
-  // TOP (index 0) — cutting there would keep the whole document, which is
-  // how "Meta Title:" ended up as a visible paragraph on a client's blog.
-  // So: cut only when it trails, and strip the lines wherever they appear.
+  // the article, so cutting there works. Newer output puts it at the TOP —
+  // cutting there would keep only what precedes it, and not cutting at all
+  // is how "Meta Title:" once ended up as a visible paragraph on a client's
+  // blog. So: cut only when it genuinely trails (past the first 40% of the
+  // document), and strip the lines wherever they appear.
   const bodyEnd = text.search(/\*?\*?Meta Title\*?\*?:|```json/i);
-  let body = bodyEnd > 0 ? text.slice(0, bodyEnd) : text;
+  let body = bodyEnd > text.length * 0.4 ? text.slice(0, bodyEnd) : text;
 
   body = body
     .replace(/```json[\s\S]*?```/gi, '')
-    .replace(/^[ \t]*\*{0,2}Meta (?:Title|Description)\*{0,2}[ \t]*:.*$/gim, '');
+    .replace(/^[ \t]*\*{0,2}Meta (?:Title|Description)\*{0,2}[ \t]*:.*$/gim, '')
+    // The writer's own length check under each meta line: "*(52 chars — within 50–58 ✅)*"
+    .replace(/^[ \t]*\*?\(\s*\d+\s*char(?:acter)?s?\b[^)\n]*\)\*?[ \t]*$/gim, '');
+
+  // The generator opens with a direct-answer paragraph (what AI engines and
+  // featured snippets quote) and labels it "**AEO Summary Block:**" for the
+  // writer's benefit. The paragraph belongs in the article; the label never
+  // does — it was in ~85% of articles and on 8 of 9 pushed drafts, and was
+  // being deleted by hand before every post went live. Strip only the label,
+  // only at the start of a line or as a leading bold tag, so a sentence that
+  // merely mentions the phrase is left alone.
+  body = body
+    // (optionally inside a "> " blockquote, which keeps its quote styling)
+    .replace(/^([ \t]*(?:>[ \t]*)?)\*{0,2}(?:AEO Summary(?: Block)?|Answer Block)\*{0,2}[ \t]*:[ \t]*\*{0,2}[ \t]*/gim, '$1')
+    .replace(/^[ \t]*#{1,6}[ \t]*(?:AEO Summary(?: Block)?|Answer Block)[ \t]*:?[ \t]*$/gim, '')
+    .replace(/<(strong|b)>\s*(?:AEO Summary(?: Block)?|Answer Block)\s*:?\s*<\/\1>\s*:?\s*/gi, '');
 
   // Strip any remaining code fences inside the body.
   body = body.replace(/```(?:html)?\s*\n?/gi, '').replace(/\n?```/g, '');

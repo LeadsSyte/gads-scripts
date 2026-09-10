@@ -142,5 +142,58 @@ await t('slugifyTitle matches WP-style slugs', () => {
   assertEq(slugifyTitle(''), '');
 });
 
+// The generator labels its opening answer paragraph for the writer. The label
+// reached client drafts on 8 of 9 pushes; the sentence after it must survive.
+await t('strips the "AEO Summary Block:" label and keeps the answer', () => {
+  const raw = '# Choosing Drawers\n\n**AEO Summary Block:** The right chest of drawers balances size and storage.\n\n## Measure first\n\nText.';
+  const { body, articleTitle } = parseArticleBody(raw);
+  assertEq(articleTitle, 'Choosing Drawers');
+  assertNotMatch(body, /AEO Summary/i, 'label');
+  assertMatch(body, /^The right chest of drawers balances size and storage\./, 'answer paragraph kept, now first');
+});
+
+await t('strips the label in the other shapes it comes in', () => {
+  for (const line of ['AEO Summary Block: Answer.', '**AEO Summary Block**: Answer.', '**AEO Summary:** Answer.', 'Answer Block: Answer.']) {
+    const { body } = parseArticleBody('# T\n\n' + line + '\n\nMore.');
+    assertMatch(body, /^Answer\./, JSON.stringify(line));
+  }
+  const quoted = parseArticleBody('# T\n\n> **AEO Summary Block:** Answer.\n\nMore.').body;
+  assertMatch(quoted, /^> Answer\./, 'blockquote form keeps the quote, loses the label');
+  const heading = parseArticleBody('# T\n\n## AEO Summary Block\n\nAnswer.\n\nMore.').body;
+  assertNotMatch(heading, /AEO Summary/i, 'heading form');
+  const html = parseArticleBody('<h1>T</h1><p><strong>AEO Summary Block:</strong> Answer.</p>').body;
+  assertEq(html, '<p>Answer.</p>', 'HTML form');
+});
+
+// A prompt version that marked sections with HTML comments: the comment put
+// the metadata at index 20 instead of 0, and the parser kept only the comment.
+await t('an article whose metadata sits under HTML comment markers is kept whole', () => {
+  const raw = '<!-- META TITLE -->\n**Meta Title:** Retail Shops in Containers | FS\n*(52 chars — within 50–58 ✅)*\n\n'
+    + '<!-- META DESCRIPTION -->\n**Meta Description:** Containers are reshaping retail.\n*(152 chars ✅)*\n\n---\n\n'
+    + '# Containers Are Redefining Retail\n\n> **AEO Summary Block:** Open-side containers are affordable shops.\n\n---\n\n'
+    + '## Why Retailers Are Turning to Containers\n\n' + 'Rent is high. '.repeat(40)
+    + '\n\n```json\n{ "overall": 88, "suggestions": ["x"] }\n```';
+  const { body, articleTitle, metaTitle, metaDesc } = parseArticleBody(raw);
+  assertEq(articleTitle, 'Containers Are Redefining Retail');
+  assertEq(metaTitle, 'Retail Shops in Containers | FS');
+  assertEq(metaDesc, 'Containers are reshaping retail.');
+  assertMatch(body, /## Why Retailers Are Turning to Containers/, 'article body kept');
+  assertMatch(body, /^> Open-side containers are affordable shops\./, 'answer first, label gone');
+  assertNotMatch(body, /<!--|Meta Title|Meta Description|chars — within|152 chars|"overall"/, 'no markers, meta, length notes or QA');
+});
+
+await t('metadata trailing the article is still cut off', () => {
+  const raw = '# Title\n\n' + 'Real article text. '.repeat(60) + '\n\n**Meta Title:** T\n**Meta Description:** D\n\nSchema notes that must not ship.';
+  const { body, metaTitle } = parseArticleBody(raw);
+  assertEq(metaTitle, 'T');
+  assertNotMatch(body, /Schema notes|Meta Title/, 'trailing block removed');
+  assertMatch(body, /Real article text\./, 'article kept');
+});
+
+await t('leaves a sentence that merely mentions the phrase alone', () => {
+  const { body } = parseArticleBody('# T\n\nWe add an AEO Summary Block: it helps AI engines quote you.');
+  assertMatch(body, /We add an AEO Summary Block: it helps/, 'mid-sentence mention kept');
+});
+
 console.log(`\ncmsParse: ${pass} passed, ${fail} failed`);
 if (fail > 0) process.exit(1);

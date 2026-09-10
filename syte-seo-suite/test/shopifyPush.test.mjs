@@ -122,6 +122,18 @@ await t('articles are ALWAYS created unpublished', async () => {
   assertEq(sentArticle().published, false, 'published');
 });
 
+// The first real draft (BAM DIY) was bylined "Shopify API" because no author
+// was sent. The team's hand-published posts use "Admin Syte".
+await t('articles carry the generic team byline, not "Shopify API"', async () => {
+  await mod.pushToShopify(CLIENT, item());
+  assertEq(sentArticle().author, 'Admin Syte', 'default author');
+});
+
+await t('a client can have its own byline', async () => {
+  await mod.pushToShopify({ ...CLIENT, publishing_profile: { shopify_author: 'BAM! Team' } }, item());
+  assertEq(sentArticle().author, 'BAM! Team', 'profile author');
+});
+
 // --- formatting parity with WordPress -----------------------------------
 
 await t('markdown is converted to HTML, no raw markers left', async () => {

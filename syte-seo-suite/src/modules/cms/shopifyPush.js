@@ -71,6 +71,8 @@ export async function pushArticleToShopify(client, item) {
   const articleFields = {
     title,
     body_html: bodyHtml,
+    // Without this Shopify bylines the post "Shopify API". See publishingProfile.
+    author: profile.shopify_author || 'Admin Syte',
     published: false, // HARD CONSTRAINT — never publish here; publish-approved flips it after approval
     tags: 'syte-draft',
     metafields: [
