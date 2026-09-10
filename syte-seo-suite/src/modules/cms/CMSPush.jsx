@@ -3,6 +3,9 @@ import { useClients } from '../../store/useClients.js';
 import { listCmsQueue, updateCmsQueueItem, updateClientFields } from '../../lib/supabase.js';
 import { detectCms, testWordPress, testShopify } from './cmsDetect.js';
 import { getPublishingProfile } from './publishingProfile.js';
+// Static, not lazy: connectShopify must open its popup inside the click, and
+// an await on a dynamic import would spend the click and get it blocked.
+import { connectShopify, shopifyCallbackUrl } from './shopifyConnect.js';
 
 const ACCENT = '#4dabff';
 
@@ -42,6 +45,14 @@ export default function CMSPush({ sub }) {
 
   const [form, setForm] = useState({});
   useEffect(() => { if (client) setForm(client); }, [client?.id]);
+
+  // "Connect with Shopify" inputs. Kept out of `form` on purpose: the client
+  // secret is used once to connect and must never be saved on the client.
+  const [shopifyApp, setShopifyApp] = useState({ shop: '', appClientId: '', appClientSecret: '' });
+  const [shopifyConnecting, setShopifyConnecting] = useState(null);
+  useEffect(() => {
+    setShopifyApp({ shop: client?.shopify_store || '', appClientId: '', appClientSecret: '' });
+  }, [client?.id]);
 
   const [showAllAttempts, setShowAllAttempts] = useState(false);
 
@@ -165,6 +176,51 @@ export default function CMSPush({ sub }) {
       setErr(e.message + ' — your details were kept, try Test Connection again.');
     }
     finally { setBusy(false); }
+  }
+
+  // Deliberately not async: connectShopify has to open its popup before
+  // anything is awaited, or the browser treats it as an unrequested popup.
+  function handleConnectShopify() {
+    if (!client) return;
+    setMsgFor('shopify'); setErr(''); setMsg('');
+    const shop = (shopifyApp.shop || form.shopify_store || '').trim();
+    const appClientId = shopifyApp.appClientId.trim();
+    const appClientSecret = shopifyApp.appClientSecret.trim();
+    if (!shop || !appClientId || !appClientSecret) {
+      setErr('Fill in the store address, Client ID and Client secret first.');
+      return;
+    }
+    const forClient = client.id;
+    const attempt = connectShopify({ clientId: forClient, shop, appClientId, appClientSecret });
+    setShopifyConnecting(attempt);
+    setBusy(true);
+    attempt
+      .then(async result => {
+        // The callback saved the token server-side; pull it back in, since
+        // `form` only reloads when the selected client changes.
+        await load();
+        const fresh = useClients.getState().clients.find(c => c.id === forClient);
+        if (fresh) {
+          setForm(f => ({ ...f, cms_type: fresh.cms_type, shopify_store: fresh.shopify_store, shopify_token: fresh.shopify_token }));
+        }
+        setMsgFor('shopify');
+        // connectShopify only accepts the signal for its own attempt, so ok
+        // means this client was saved; the token check is a last sanity net.
+        if (result.ok && fresh?.shopify_token) {
+          setShopifyApp(s => ({ ...s, appClientSecret: '' }));
+          setMsg('Connected to Shopify and saved. Press Load Blogs to choose which blog the articles go to.');
+        } else if (result.ok) {
+          setErr('Shopify reported a connection, but no new token reached this client. Press Test Connection, or Connect again.');
+        } else if (result.cancelled) {
+          setMsg('Stopped waiting for Shopify. Nothing was changed.');
+        } else if (result.timedOut) {
+          setErr('Shopify took longer than 15 minutes, so the connection expired. Press Connect again.');
+        } else {
+          setErr('Shopify did not finish connecting. The Shopify window explains why.');
+        }
+      })
+      .catch(e => { setMsgFor('shopify'); setErr(e.message); })
+      .finally(() => { setShopifyConnecting(null); setBusy(false); });
   }
 
   const [blogs, setBlogs] = useState([]);
@@ -304,10 +360,71 @@ export default function CMSPush({ sub }) {
 
             <div className="card" style={{ marginBottom: 14 }}>
               <strong>Shopify Connection</strong>
-              <div className="grid-2" style={{ marginTop: 10 }}>
-                <div><label>Store URL</label><input placeholder="mystore.myshopify.com" value={form.shopify_store || ''} onChange={e => setForm(f => ({ ...f, shopify_store: e.target.value }))} /></div>
-                <div><label>Admin API Token</label><input type="password" value={form.shopify_token || ''} onChange={e => setForm(f => ({ ...f, shopify_token: e.target.value }))} /></div>
+              {form.shopify_store && form.shopify_token && (
+                <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+                  Connected to <strong>{form.shopify_store}</strong>. Only reconnect if this store's app is replaced.
+                </div>
+              )}
+
+              <div style={{ marginTop: 10 }}>
+                <div style={{ fontSize: 12, fontWeight: 600 }}>Connect with Shopify</div>
+                <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
+                  Each store needs its own app from the Shopify Dev Dashboard. It only asks
+                  to read and write blog content. Nothing about orders, customers or products.
+                </div>
+                <details style={{ marginTop: 6, fontSize: 12 }}>
+                  <summary style={{ cursor: 'pointer' }}>How to set up the app for this store</summary>
+                  <ol style={{ margin: '6px 0 0', paddingLeft: 18, lineHeight: 1.6 }}>
+                    <li>In the Shopify Dev Dashboard, choose the Syte organisation and create an app named after this client.</li>
+                    <li>Set its access scopes to <code>read_content, write_content</code>.</li>
+                    <li>
+                      Add this redirect URL: <code>{shopifyCallbackUrl()}</code>{' '}
+                      <button style={{ fontSize: 10, padding: '1px 6px' }}
+                        onClick={() => navigator.clipboard?.writeText(shopifyCallbackUrl())}>Copy</button>
+                    </li>
+                    <li>Set the App URL to <code>{window.location.origin}</code> and release the version.</li>
+                    <li>Under Distribution choose <em>Custom distribution</em>, enter this store's myshopify address, then open the install link and approve it.</li>
+                    <li>Copy the app's Client ID and Client secret into the boxes below and press Connect.</li>
+                  </ol>
+                </details>
+                <div className="grid-3" style={{ marginTop: 8 }}>
+                  <div>
+                    <label>Store address</label>
+                    <input placeholder="yourstore.myshopify.com" value={shopifyApp.shop}
+                      onChange={e => setShopifyApp(s => ({ ...s, shop: e.target.value }))} />
+                  </div>
+                  <div>
+                    <label>Client ID</label>
+                    <input value={shopifyApp.appClientId} autoComplete="off"
+                      onChange={e => setShopifyApp(s => ({ ...s, appClientId: e.target.value }))} />
+                  </div>
+                  <div>
+                    <label>Client secret</label>
+                    <input type="password" value={shopifyApp.appClientSecret} autoComplete="new-password"
+                      onChange={e => setShopifyApp(s => ({ ...s, appClientSecret: e.target.value }))} />
+                  </div>
+                </div>
+                <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>
+                  Use the store's myshopify address, not its public website. The Client secret is used once to connect and is not saved.
+                </div>
+                <div className="row" style={{ marginTop: 8, gap: 8, alignItems: 'center' }}>
+                  <button onClick={handleConnectShopify} disabled={busy}>Connect with Shopify</button>
+                  {shopifyConnecting && (
+                    <>
+                      <button onClick={() => shopifyConnecting.cancel()}>Cancel</button>
+                      <span className="muted" style={{ fontSize: 11 }}>Waiting for you to approve in the Shopify window…</span>
+                    </>
+                  )}
+                </div>
               </div>
+
+              <details style={{ marginTop: 12, fontSize: 12 }}>
+                <summary style={{ cursor: 'pointer' }}>Already have an access token? (apps made before 2026)</summary>
+                <div className="grid-2" style={{ marginTop: 8 }}>
+                  <div><label>Store URL</label><input placeholder="mystore.myshopify.com" value={form.shopify_store || ''} onChange={e => setForm(f => ({ ...f, shopify_store: e.target.value }))} /></div>
+                  <div><label>Admin API Token</label><input type="password" value={form.shopify_token || ''} onChange={e => setForm(f => ({ ...f, shopify_token: e.target.value }))} /></div>
+                </div>
+              </details>
               <div className="row" style={{ marginTop: 10 }}>
                 <button onClick={handleTestShopify} disabled={busy}>Test Connection</button>
                 <button onClick={handleLoadBlogs} disabled={busy || !form.shopify_store || !form.shopify_token}>Load Blogs</button>

@@ -52,6 +52,18 @@ reviewer or the client → approval sets status `approved` → the scheduled
 - All CMS traffic goes through `netlify/functions/wp-proxy` and `shopify-proxy`, gated by
   `WP_PROXY_AUTH` (SHA-256 of the suite key, sent as `X-Suite-Auth` via `proxyAuth.js`).
   Shopify's Admin API rejects browser-origin calls, so it *must* use the proxy.
+- **Connecting a Shopify store** ("Connect with Shopify" on the CMS page) uses
+  `netlify/functions/shopify-oauth-{start,callback}` + `lib/shopifyOAuth.js`. Since
+  2026-01-01 Shopify no longer allows admin-created apps that show a token, and a
+  custom-distribution Dev Dashboard app installs on one store only — so **each client
+  store needs its own app**, and the token comes from the OAuth code grant (custom apps
+  still get a non-expiring offline token, so the proxy/push/publisher read `shopify_token`
+  unchanged). The app's client secret is sealed into `state` and never stored. Shopify
+  sends `Cross-Origin-Opener-Policy: same-origin`, which severs the popup: the outcome
+  comes back over the `syte-shopify` BroadcastChannel tagged with a per-attempt id, not
+  via `window.opener` or `popup.closed`. Tests: `test/shopifyOAuth{,Flow}.test.mjs`.
+- Every `<PushToCmsButton>` must pass `client=` explicitly (list views render rows for
+  clients other than the dropdown selection); `test/pushButtonClient.test.mjs` enforces it.
 - Pure, node-testable logic is split out deliberately: `parseArticle.js`,
   `publishingProfile.js`, `verifyDraft.js` (`checkDraftContent`). Tests:
   `test/{cmsParse,publishingProfile,approvalFlow,verifyDraft,shopifyPush}.test.mjs`.
