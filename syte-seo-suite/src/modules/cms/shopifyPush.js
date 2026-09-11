@@ -21,6 +21,20 @@ async function resolveBlog(client, profile) {
   return blogs[0];
 }
 
+// The byline. The store's own name as Shopify has it ("BAM DIY") matches how
+// clients sign their own posts; the suite's client name is often just a
+// domain ("bamdiy.com"), so it isn't used. Never the agency's name — see
+// publishingProfile.shopify_author.
+async function resolveAuthor(client, profile) {
+  if (profile.shopify_author) return profile.shopify_author;
+  try {
+    const j = await shopifyRequest(client, { path: 'shop.json' });
+    const name = String((j && j.shop && j.shop.name) || '').trim();
+    if (name) return name;
+  } catch { /* fall back below */ }
+  return 'Admin';
+}
+
 export async function pushMetaToShopify(client, item) {
   // SEO title/description on Shopify are the global title_tag /
   // description_tag metafields on the resource. Without a target article
@@ -68,11 +82,13 @@ export async function pushArticleToShopify(client, item) {
   let existing = null;
   try { existing = await findArticleByHandle(client, blogId, handle); } catch { /* best effort */ }
 
+  const author = await resolveAuthor(client, profile);
+
   const articleFields = {
     title,
     body_html: bodyHtml,
-    // Without this Shopify bylines the post "Shopify API". See publishingProfile.
-    author: profile.shopify_author || 'Admin Syte',
+    // Without this Shopify bylines the post "Shopify API".
+    author,
     published: false, // HARD CONSTRAINT — never publish here; publish-approved flips it after approval
     tags: 'syte-draft',
     metafields: [

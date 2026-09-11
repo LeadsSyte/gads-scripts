@@ -64,9 +64,13 @@ function resetShopify(overrides = {}) {
     existing: null,
     image: { dataUrl: 'data:image/png;base64,AAAA' },
     settings: {},
+    shopName: 'Widget Co',
     request: async (client, opts) => {
       calls.push(opts);
       const body = opts.body || {};
+      if (opts.path === 'shop.json') {
+        return globalThis.__shopify.shopName ? { shop: { name: globalThis.__shopify.shopName } } : {};
+      }
       if (/articles/.test(opts.path) && (opts.method === 'POST' || opts.method === 'PUT')) {
         const a = body.article || {};
         return {
@@ -123,10 +127,17 @@ await t('articles are ALWAYS created unpublished', async () => {
 });
 
 // The first real draft (BAM DIY) was bylined "Shopify API" because no author
-// was sent. The team's hand-published posts use "Admin Syte".
-await t('articles carry the generic team byline, not "Shopify API"', async () => {
+// was sent. Chris: the business's name or plain "Admin" — never the agency's.
+await t('articles are bylined with the store\'s own name, not "Shopify API"', async () => {
   await mod.pushToShopify(CLIENT, item());
-  assertEq(sentArticle().author, 'Admin Syte', 'default author');
+  assertEq(sentArticle().author, 'Widget Co', 'store name as Shopify has it');
+  assertNoMatch(sentArticle().author, /syte|shopify api/i, 'no agency or API byline');
+});
+
+await t('the byline falls back to "Admin" when the store name can\'t be read', async () => {
+  globalThis.__shopify.shopName = '';
+  await mod.pushToShopify(CLIENT, item());
+  assertEq(sentArticle().author, 'Admin', 'fallback author');
 });
 
 await t('a client can have its own byline', async () => {

@@ -37,12 +37,13 @@ export const PROFILE_DEFAULTS = {
   // Shopify: which blog articles go to. null = first blog on the store.
   shopify_blog_id: null,
 
-  // Shopify: the byline on the article. Shopify's article author is free
-  // text, and when the API omits it Shopify writes "Shopify API" — which is
-  // what the first real BAM DIY draft showed. "Admin Syte" is the byline the
-  // team already uses on the posts they publish by hand, and is generic
-  // rather than a named person (Chris asked for exactly that on 2026-09).
-  shopify_author: 'Admin Syte',
+  // Shopify: the byline on the article. null = the store's own name as
+  // Shopify has it (e.g. "BAM DIY"), falling back to "Admin". Shopify's
+  // author is free text, and when the API omits it Shopify writes "Shopify
+  // API" — which is what the first real BAM DIY draft showed. Chris was
+  // explicit that drafts must not carry the agency's name ("Admin Syte"):
+  // the business name or plain "Admin" only. Set a value here to override.
+  shopify_author: null,
 
   // Who signs off on drafts before they go live:
   //   'internal' — the team reviews in the suite (Chris clicks Approve)
