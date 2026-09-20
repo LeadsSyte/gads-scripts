@@ -57,6 +57,108 @@ function findAboutUrl(html, baseUrl) {
   return null;
 }
 
+// ---------------------------------------------------------------------------
+// Brand-scan block format.
+//
+// The website scan is the ground truth for WHAT THE BUSINESS ACTUALLY IS —
+// it is the only field in the client record derived from the client's own
+// site rather than typed by a human or inferred from Search Console. It
+// therefore has to be readable, not just writable: the Content Engine needs
+// to know whether a client has been scanned, when, and against which URL,
+// so it can refuse to write from guesswork.
+//
+// Format (stored inside brand_docs, alongside any uploaded docs):
+//
+//   === Website Brand Scan (2026/09/20) ===
+//   Source: https://example.co.za
+//   Scanned: 2026-09-20
+//   Voice: ...
+//   Audience: ...
+//
+//   - bullet
+//
+// `Scanned:` is an explicit ISO date. Older blocks predate it and only carry
+// the locale-formatted date in the header, so parsing falls back to that.
+// ---------------------------------------------------------------------------
+
+const SCAN_BLOCK_RE = /=== Website Brand Scan[\s\S]*?(?=\n=== |$)/;
+
+// Pull the scan block out of a brand_docs value. Returns null when the client
+// has never been scanned.
+export function parseScanBlock(brandDocs) {
+  const text = (brandDocs || '').trim();
+  if (!text) return null;
+  const match = text.match(SCAN_BLOCK_RE);
+  if (!match) return null;
+  const block = match[0].trim();
+
+  const sourceUrl = (block.match(/^Source:\s*(.+)$/m) || [])[1]?.trim() || '';
+
+  // Prefer the explicit ISO line; fall back to the date in the header, which
+  // is locale-formatted (en-ZA renders as YYYY/MM/DD).
+  let scannedAt = (block.match(/^Scanned:\s*(\d{4}-\d{2}-\d{2})\s*$/m) || [])[1] || '';
+  if (!scannedAt) {
+    const headerDate = (block.match(/=== Website Brand Scan \(([^)]+)\) ===/) || [])[1] || '';
+    const ymd = headerDate.match(/(\d{4})[/-](\d{1,2})[/-](\d{1,2})/);
+    if (ymd) {
+      scannedAt = `${ymd[1]}-${String(ymd[2]).padStart(2, '0')}-${String(ymd[3]).padStart(2, '0')}`;
+    }
+  }
+
+  return { block, sourceUrl, scannedAt };
+}
+
+// Compare two URLs by host only — a scan of https://example.co.za still
+// covers the client whose record says http://www.example.co.za/.
+function sameHost(a, b) {
+  const host = (u) => {
+    try {
+      const withScheme = /^https?:\/\//.test(u) ? u : 'https://' + u;
+      return new URL(withScheme).hostname.replace(/^www\./, '').toLowerCase();
+    } catch { return ''; }
+  };
+  const ha = host(a), hb = host(b);
+  return !!ha && ha === hb;
+}
+
+// Decide whether the client needs a (re)scan before we write for them.
+// Stale means: never scanned, scanned against a different website than the
+// record now points at, or older than maxAgeDays.
+export function isScanStale(client, { maxAgeDays = 90, now = new Date() } = {}) {
+  const url = client?.url || '';
+  if (!url) return false; // nothing to scan against — caller handles this
+  const parsed = parseScanBlock(client?.brand_docs);
+  if (!parsed) return true;
+  if (parsed.sourceUrl && !sameHost(parsed.sourceUrl, url)) return true;
+  if (!parsed.scannedAt) return true;
+  const then = new Date(parsed.scannedAt + 'T00:00:00Z');
+  if (Number.isNaN(then.getTime())) return true;
+  const ageDays = (now.getTime() - then.getTime()) / 86400000;
+  return ageDays > maxAgeDays;
+}
+
+// Render a brief into the stored block format.
+export function formatScanBlock(brief, { now = new Date() } = {}) {
+  const iso = now.toISOString().slice(0, 10);
+  return [
+    `=== Website Brand Scan (${now.toLocaleDateString('en-ZA')}) ===`,
+    `Source: ${brief.sourceUrl || ''}`,
+    `Scanned: ${iso}`,
+    brief.voice ? `Voice: ${brief.voice}` : '',
+    brief.audience ? `Audience: ${brief.audience}` : '',
+    '',
+    brief.brief || ''
+  ].filter(Boolean).join('\n');
+}
+
+// Merge a fresh scan into brand_docs, replacing any previous scan block so
+// re-scanning never stacks duplicates. Uploaded docs are preserved.
+export function mergeScanIntoBrandDocs(brandDocs, brief, { now = new Date() } = {}) {
+  const existing = (brandDocs || '').trim();
+  const withoutOld = existing.replace(SCAN_BLOCK_RE, '').trim();
+  return [withoutOld, formatScanBlock(brief, { now })].filter(Boolean).join('\n\n');
+}
+
 // Scan the client's website and return a structured brand brief.
 // onProgress(message) is called with human-readable status updates.
 export async function scanBrandFromWebsite(client, { onProgress } = {}) {

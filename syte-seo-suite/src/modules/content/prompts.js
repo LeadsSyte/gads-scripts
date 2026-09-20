@@ -91,12 +91,24 @@ ${(client.internal_links || '').split('\n').filter(Boolean).map(l => '  - ' + l.
   // Capped so a large paste can't blow the context window.
   const brandDocs = (client?.brand_docs || '').trim();
   const brandDocsBlock = brandDocs ? `
-CLIENT BRAND REFERENCE MATERIAL (uploaded docs + website scan — write in line with this):
+CLIENT BRAND REFERENCE MATERIAL (uploaded docs + website scan — GROUND TRUTH):
 """
 ${brandDocs.slice(0, 12000)}
 """
-Use this material to match the brand's real voice, terminology, product/service names, positioning, and factual details. Prefer wording and framing consistent with it, and never contradict it. Only treat facts stated here (or in the research context) as true — do not invent details that aren't supported.
-`.trim() : '';
+This material is drawn from the brand's OWN WEBSITE and documents. It is the authoritative statement of what this business actually is, sells, and serves — outranking every other input below, including the Search Console research context.
+
+Use it to match the brand's real voice, terminology, product/service names, positioning, and factual details. Prefer wording and framing consistent with it, and never contradict it. Only treat facts stated here (or in the research context) as true — do not invent details that aren't supported.
+
+SUBJECT-MATTER GUARD (HARD RULE):
+- The article's subject MUST be something this brand actually does, sells, or serves according to the material above.
+- If the requested topic or primary keyword is about an industry, product, or service this brand has no connection to, DO NOT write the article. Instead return ONLY:
+  "TOPIC MISMATCH: <topic> does not match <brand name>, which is <one line on what the brand actually does per the reference material>. Confirm the topic before generating."
+- A location mentioned in the topic is only usable if it is plausibly in this brand's service area per the material above.
+- Being given a keyword is NOT evidence the brand operates in that field. Ranking data can be misattributed; the reference material cannot.
+`.trim() : `
+NO BRAND REFERENCE MATERIAL AVAILABLE.
+This client has no website scan or uploaded brand documents, so there is no independent record of what the business actually does. Write only from the brand context fields above, stay strictly within the stated industry and location, and do not assume the topic is in scope if it conflicts with them.
+`.trim();
 
   // Content rules — always-enforced restrictions. These are hard constraints
   // the client has (e.g. gambling compliance, factual accuracy). They NEVER
@@ -139,6 +151,7 @@ SEARCH CONSOLE RESEARCH CONTEXT:
 ${(researchContext.related_queries || []).map(q => '  - "' + q.query + '" (pos ' + q.position + ', ' + q.impressions + ' impressions)').join('\n')}
 
 RANKING-AWARE WRITING RULES:
+- This research context supplies the ANGLE, the keyword framing, and the ranking numbers. It does NOT define what the business is. Where it conflicts with the brand reference material above, the reference material wins and the SUBJECT-MATTER GUARD applies.
 - If this is a "refresh existing" opportunity, the article should expand on the existing page's angle without cannibalizing it. Mention in the meta that this is an updated/fresher take.
 - If this is "low-hanging-fruit" (pos 5-20), the article must clearly differentiate from whatever is currently in positions 1-4. Go deeper, use more recent data, add comparison tables, and target the "suggested angle" above directly.
 - If this is a "content-gap" (pos 21+), assume the brand has weak or no coverage. Go comprehensive and be the canonical answer.

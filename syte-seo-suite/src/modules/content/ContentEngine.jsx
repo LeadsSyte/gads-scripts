@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useClients } from '../../store/useClients.js';
 import { claudeStream, extractJSON } from '../../lib/anthropic.js';
 import { buildSystemPrompt, TAB_PROMPTS, clampLength, MIN_WORDS, MAX_WORDS } from './prompts.js';
@@ -10,6 +10,8 @@ import GenerateImageButton from '../../components/GenerateImageButton.jsx';
 import MarkImplementedButton from '../../components/MarkImplementedButton.jsx';
 import { saveBlogResult, listBlogResults, deleteBlogResult, loadContentHistory } from '../../lib/supabase.js';
 import { parseOutputSections, markdownToHtml } from './articleParser.js';
+import { researchContextForClient } from './topicResearch.js';
+import { scanBrandFromWebsite, isScanStale, mergeScanIntoBrandDocs } from '../../lib/brandScan.js';
 
 const ACCENT = '#c8ff00';
 const HISTORY_KEY = 'syte-suite-content-history';
@@ -325,6 +327,7 @@ function ParsedOutput({ output, topic, pushItem, pushClient, exportTxt, exportDo
 export default function ContentEngine({ sub, setSub }) {
   const client = useClients(s => s.current());
   const allClients = useClients(s => s.clients);
+  const saveClient = useClients(s => s.save);
   const [topic, setTopic] = useState('');
   const [keyword, setKeyword] = useState('');
   const [length, setLength] = useState(1500);
@@ -342,6 +345,13 @@ export default function ContentEngine({ sub, setSub }) {
   // research context here and the next generation uses it in the system
   // prompt. Stays alive across tab switches inside Content Engine.
   const [researchContext, setResearchContext] = useState(null);
+  // What Topic Research last wrote into the form. Lets a client switch clear
+  // the fields it prefilled without discarding anything the operator typed.
+  // A ref, not state: nothing renders it, and the client-switch effect must
+  // read the current value without re-subscribing to it.
+  const researchPrefill = useRef(null);
+  // Set while the client's website is being analysed ahead of generation.
+  const [groundingMsg, setGroundingMsg] = useState('');
   // Store the last generation's system + user prompts so the revision chat
   // can send them as conversation context to Claude.
   const [lastSystem, setLastSystem] = useState('');
@@ -366,6 +376,27 @@ export default function ContentEngine({ sub, setSub }) {
   // Default the quick-blog client to the top-bar client and load history.
   useEffect(() => {
     if (!quickClientId && client?.id) setQuickClientId(client.id);
+  }, [client?.id]);
+
+  // Drop another client's research when the top-bar selection changes.
+  //
+  // Topic Research resets its own state on a client switch, but the context
+  // it hands up lives here and used to survive indefinitely — so generating
+  // after switching clients wrote the previous client's Search Console
+  // keyword, angle and long-tail queries under the new client's brand. The
+  // fields Topic Research prefilled are cleared too, but only while they
+  // still hold exactly what it put there: anything the operator has since
+  // typed is theirs and is left alone.
+  useEffect(() => {
+    setResearchContext(null);
+    setGroundingMsg('');
+    const prev = researchPrefill.current;
+    if (prev) {
+      setTopic(t => (t === prev.topic ? '' : t));
+      setKeyword(k => (k === prev.keyword ? '' : k));
+      setUrl(u => (u === prev.url ? '' : u));
+    }
+    researchPrefill.current = null;
   }, [client?.id]);
 
   useEffect(() => {
@@ -522,11 +553,45 @@ export default function ContentEngine({ sub, setSub }) {
     };
   }, [output, url, client, topic, keyword]);
 
+  // Ground the article in the client's OWN website before writing.
+  //
+  // The website scan is the only part of the brand context derived from the
+  // client's actual site rather than typed by a human or inferred from
+  // Search Console, so it is what the prompt treats as ground truth for what
+  // the business is. Rescans when it is missing, older than the staleness
+  // window, or was taken against a different site than the record now points
+  // at. Never throws: a failed scan degrades to the stored client record.
+  async function groundInWebsite(c) {
+    if (!c?.url || !isScanStale(c)) return c;
+    setGroundingMsg('Analysing ' + c.url + ' to ground the article…');
+    try {
+      const brief = await scanBrandFromWebsite(c, { onProgress: setGroundingMsg });
+      const grounded = { ...c, brand_docs: mergeScanIntoBrandDocs(c.brand_docs, brief) };
+      if (!grounded.audience && brief.audience) grounded.audience = brief.audience;
+      setGroundingMsg('Grounded in ' + c.url + ' ✓');
+      // Persist so later runs reuse the scan instead of re-fetching the site.
+      saveClient(grounded).catch(() => {});
+      return grounded;
+    } catch (e) {
+      setGroundingMsg('Could not analyse ' + c.url + ' (' + e.message + ') — writing from the client record only.');
+      return c;
+    }
+  }
+
   async function run() {
     if (!client) { setErr('Select a client first.'); return; }
     setErr(''); setOutput(''); setOutputClient(client); setRunning(true);
 
-    const system = buildSystemPrompt(client, '', researchContext);
+    // Ranking context is only usable for the client it was researched for.
+    // Anything left over from another client is dropped rather than folded
+    // into this brand's article.
+    const ctx = researchContextForClient(researchContext, client);
+    if (researchContext && !ctx) { setResearchContext(null); researchPrefill.current = null; }
+
+    const grounded = await groundInWebsite(client);
+    setOutputClient(grounded);
+
+    const system = buildSystemPrompt(grounded, '', ctx);
     let userPromptText;
     switch (tab) {
       case 'Rewrite & Expand':    userPromptText = TAB_PROMPTS['Rewrite & Expand'](existing, keyword, length); break;
@@ -599,12 +664,16 @@ export default function ContentEngine({ sub, setSub }) {
             // Pre-fill the New Article form from the selected opportunity
             // and stash the full ranking context so buildSystemPrompt can
             // reference it during generation.
-            setTopic(opp.topic_title || '');
-            setKeyword(opp.primary_keyword || '');
+            const prefill = {
+              topic: opp.topic_title || '',
+              keyword: opp.primary_keyword || '',
+              url: (opp.target_page && opp.target_page !== 'NEW') ? opp.target_page : ''
+            };
+            setTopic(prefill.topic);
+            setKeyword(prefill.keyword);
             setLength(clampLength(opp.recommended_length));
-            if (opp.target_page && opp.target_page !== 'NEW') {
-              setUrl(opp.target_page);
-            }
+            if (prefill.url) setUrl(prefill.url);
+            researchPrefill.current = prefill;
             setResearchContext(ctx);
             if (typeof setSub === 'function') setSub('New Article');
           }}
@@ -983,8 +1052,11 @@ export default function ContentEngine({ sub, setSub }) {
             fontSize: 12
           }}>
             <div className="row" style={{ justifyContent: 'space-between', marginBottom: 4 }}>
-              <strong style={{ color: ACCENT }}>Ranking-aware generation enabled</strong>
-              <button onClick={() => setResearchContext(null)} style={{ fontSize: 10, padding: '3px 8px' }}>
+              <strong style={{ color: ACCENT }}>
+                Ranking-aware generation enabled
+                {researchContext.client_name ? ' — ' + researchContext.client_name : ''}
+              </strong>
+              <button onClick={() => { setResearchContext(null); researchPrefill.current = null; }} style={{ fontSize: 10, padding: '3px 8px' }}>
                 Drop context
               </button>
             </div>
@@ -995,6 +1067,14 @@ export default function ContentEngine({ sub, setSub }) {
               {researchContext.opportunity_type}
               {researchContext.related_queries?.length > 0 && ` · ${researchContext.related_queries.length} related queries folded in`}
             </div>
+          </div>
+        )}
+
+        {/* Website grounding status — the article is written against a scan
+            of the client's own site, so say which site that is. */}
+        {groundingMsg && (
+          <div className="muted" style={{ fontSize: 11, marginTop: 8 }}>
+            {groundingMsg}
           </div>
         )}
 

@@ -4,8 +4,10 @@ import { claudeStream } from '../../lib/anthropic.js';
 import {
   collectResearchData,
   generateTopicRecommendations,
-  buildArticleResearchContext
+  buildArticleResearchContext,
+  researchContextForClient
 } from './topicResearch.js';
+import { scanBrandFromWebsite, isScanStale, mergeScanIntoBrandDocs } from '../../lib/brandScan.js';
 import { buildSystemPrompt, TAB_PROMPTS, clampLength } from './prompts.js';
 import GenerateImageButton from '../../components/GenerateImageButton.jsx';
 import PushToCmsButton from '../../components/PushToCmsButton.jsx';
@@ -122,6 +124,7 @@ function CopyFormattedBtn({ markdown, label = 'Copy formatted' }) {
 
 export default function AutoWrite() {
   const allClients = useClients(s => s.clients);
+  const saveClient = useClients(s => s.save);
 
   // Active client: the one we're currently working on.
   const [activeId, setActiveId] = useState(null);
@@ -130,6 +133,10 @@ export default function AutoWrite() {
   const [plan, setPlan] = useState(null);
   const [researchBusy, setResearchBusy] = useState(false);
   const [researchErr, setResearchErr] = useState('');
+  // The active client with a current website scan folded in. Bulk runs write
+  // up to 50 articles off one research pass, so the pass itself is grounded
+  // in the client's own site rather than the typed fields alone.
+  const [groundedClient, setGroundedClient] = useState(null);
   // Per-article state: Map<opportunityIndex, { status, output, error, words }>
   const [articleStates, setArticleStates] = useState({});
   // Currently writing index (only one at a time).
@@ -275,15 +282,36 @@ export default function AutoWrite() {
   }
 
   // ─── Phase 1: Research ───────────────────────────────
+  // Refresh the website scan when it is missing, stale, or points at a
+  // different site than the record does. Never throws — a failed scan just
+  // means we research from the stored record.
+  async function groundInWebsite(c) {
+    if (!c?.url || !isScanStale(c)) return c;
+    try {
+      const brief = await scanBrandFromWebsite(c, { onProgress: () => {} });
+      const grounded = { ...c, brand_docs: mergeScanIntoBrandDocs(c.brand_docs, brief) };
+      if (!grounded.audience && brief.audience) grounded.audience = brief.audience;
+      saveClient(grounded).catch(() => {});
+      return grounded;
+    } catch {
+      return c;
+    }
+  }
+
   async function startResearch(client) {
     setActiveId(client.id);
     setResearch(null); setPlan(null); setArticleStates({}); setResearchErr('');
     setResearchBusy(true); setBatchMode(false); setWritingIdx(null);
+    setGroundedClient(null);
     try {
+      // Everything below researches against the grounded record, so the
+      // topic plan is shaped by the client's own website.
+      const grounded = await groundInWebsite(client);
+      setGroundedClient(grounded);
       let data;
       let gscFailed = false;
       try {
-        data = await collectResearchData(client, { days: 90 });
+        data = await collectResearchData(grounded, { days: 90 });
       } catch (gscErr) {
         // GSC unavailable (permission, not connected, etc.) — fall back to
         // generating topics from client context alone. Don't block the flow.
@@ -295,8 +323,8 @@ export default function AutoWrite() {
         setResearchErr('GSC unavailable — ' + (gscErr.message || '').slice(0, 120) + '. Generating topics from client context instead.');
       }
       setResearch(data);
-      const targetArticles = Math.max(1, Math.min(client.pages_per_month || 4, 50));
-      const result = await generateTopicRecommendations(client, data, { targetArticles });
+      const targetArticles = Math.max(1, Math.min(grounded.pages_per_month || 4, 50));
+      const result = await generateTopicRecommendations(grounded, data, { targetArticles });
       const sorted = (result.opportunities || [])
         .slice()
         .sort((a, b) => (a.priority || 99) - (b.priority || 99));
@@ -328,8 +356,14 @@ export default function AutoWrite() {
     // research step suggested.
     const targetLength = clampLength(opp.recommended_length);
 
-    const ctx = buildArticleResearchContext(opp, research);
-    const system = buildSystemPrompt(activeClient, '', ctx);
+    // Prefer the website-grounded copy of this client; fall back to the store
+    // record if grounding was skipped or the save did not round-trip.
+    const writeClient = (groundedClient && groundedClient.id === activeClient.id)
+      ? groundedClient
+      : activeClient;
+    const ctx = researchContextForClient(
+      buildArticleResearchContext(opp, research, writeClient), writeClient);
+    const system = buildSystemPrompt(writeClient, '', ctx);
     const userPrompt = TAB_PROMPTS['New Article'](
       opp.topic_title,
       opp.primary_keyword,
