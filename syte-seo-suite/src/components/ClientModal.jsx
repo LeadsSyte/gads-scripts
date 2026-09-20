@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { useClients } from '../store/useClients.js';
-import { scanBrandFromWebsite } from '../lib/brandScan.js';
+import { scanBrandFromWebsite, mergeScanIntoBrandDocs } from '../lib/brandScan.js';
 import { normalizeGa4Id, normalizeGscProperty } from '../lib/googleProperties.js';
 import GoogleConnectionsPicker from './GoogleConnectionsPicker.jsx';
 import {
@@ -222,24 +222,12 @@ export default function ClientModal({ initial, onClose }) {
     setScanBusy(true); setScanMsg('Starting…'); setErr('');
     try {
       const brief = await scanBrandFromWebsite({ ...f }, { onProgress: setScanMsg });
-      const dateLabel = new Date().toLocaleDateString('en-ZA');
-      const scanSection = [
-        `=== Website Brand Scan (${dateLabel}) ===`,
-        `Source: ${brief.sourceUrl}`,
-        brief.voice ? `Voice: ${brief.voice}` : '',
-        brief.audience ? `Audience: ${brief.audience}` : '',
-        '',
-        brief.brief
-      ].filter(Boolean).join('\n');
       setF(prev => {
-        const existing = (prev.brand_docs || '').trim();
-        // Drop any earlier scan block so re-scanning doesn't duplicate it.
-        const withoutOld = existing
-          .replace(/=== Website Brand Scan[\s\S]*?(?=\n=== |$)/, '')
-          .trim();
+        // Block format (and the drop-the-old-block rule) lives in brandScan.js
+        // so the Content Engine's auto-scan writes exactly the same shape.
         const next = {
           ...prev,
-          brand_docs: [withoutOld, scanSection].filter(Boolean).join('\n\n')
+          brand_docs: mergeScanIntoBrandDocs(prev.brand_docs, brief)
         };
         // Fill audience only if it's empty — don't clobber a human's wording.
         if (!prev.audience && brief.audience) next.audience = brief.audience;

@@ -5,6 +5,7 @@
 
 import { topQueriesByImpression, topPagesWithQueries } from '../technical/gsc.js';
 import { claudeComplete, extractJSON } from '../../lib/anthropic.js';
+import { parseScanBlock } from '../../lib/brandScan.js';
 
 // ---------------------------------------------------------------------------
 // Opportunity scoring — heuristics only, used to prefilter + rank signals
@@ -154,6 +155,9 @@ Rules:
 - Use REAL numbers from the provided data — don't invent positions or impressions.
 - "recommended_length" MUST be between 1000 and 2000 words. Never suggest a length above 2000. Pick a value inside this band based on topic depth (simpler topics ~1100-1300, comprehensive guides ~1600-1900).
 - Consider the brand's industry, location, and audience when framing angles.
+- GROUNDING (HARD RULE): every opportunity must be about something this brand actually does, sells, or serves according to BRAND_REFERENCE (and the brand context) in the user message. Search Console data can contain queries the site never meant to rank for, and a property can be misconfigured so that another site's queries appear here. A query in the data is NOT evidence the brand operates in that field.
+- DISCARD any query whose subject is inconsistent with the brand, however high its impressions, and say so in the "summary" (e.g. "ignored N queries about X, which this brand does not do"). Never build an opportunity on one.
+- If BRAND_REFERENCE is absent, stay strictly inside the stated industry and location and do not stray into adjacent fields.
 - Return THE EXACT NUMBER of opportunities requested by the user (see TARGET_ARTICLES below). Quality over quantity — but hit the target count. If there aren't enough strong GSC signals, use your SEO expertise to suggest topical gaps based on the brand's industry.
 - Priority field: 1 = highest urgency, N = lowest.
 
@@ -164,6 +168,12 @@ YEAR-AWARENESS (HARD RULE — never violate):
 
 export async function generateTopicRecommendations(client, research, { targetArticles } = {}) {
   const target = targetArticles || client.pages_per_month || 4;
+  // The website scan is the only description of the business drawn from its
+  // own site. Topic selection used to run on the typed fields alone, so a
+  // misconfigured Search Console property had nothing to contradict it.
+  const scanBlock = parseScanBlock(client.brand_docs);
+  const brandReference = (scanBlock?.block || (client.brand_docs || '')).trim();
+
   const summary = {
     client: client.name,
     industry: client.industry || '',
@@ -210,6 +220,9 @@ Return exactly ${target} content opportunities. Any topic with a year MUST use $
 BRAND CONTEXT:
 ${JSON.stringify(summary, null, 2)}
 
+BRAND_REFERENCE (from the brand's own website — authoritative on what this business actually is):
+${brandReference ? '"""\n' + brandReference.slice(0, 6000) + '\n"""' : '(none available — no website scan on file for this client)'}
+
 SEARCH CONSOLE DATA (top 40 scored opportunities from last ${research.days} days):
 ${JSON.stringify(opportunities, null, 2)}${directionBlock}
 
@@ -254,9 +267,18 @@ Analyze the data and return the JSON structure described in the system prompt. R
 // Pass-through helper: given a specific opportunity the user wants to write,
 // pull together the ranking context that the article-generation prompt
 // should use.
+//
+// The context is STAMPED with the client it was derived from. It used to be
+// anonymous, which meant nothing downstream could tell that a context built
+// from one client's Search Console data had been carried over to another
+// client — the Content Engine holds it in component state that outlives a
+// change of the top-bar client selection. Search Console queries are the
+// single strongest signal in the article prompt, so an unstamped carry-over
+// produced articles about one client's subject matter under another client's
+// brand. Always pass the client.
 // ---------------------------------------------------------------------------
 
-export function buildArticleResearchContext(opportunity, research) {
+export function buildArticleResearchContext(opportunity, research, client) {
   const page = research.pageByQuery[opportunity.primary_keyword];
   const relatedQueries = research.queries
     .filter(q => q.query !== opportunity.primary_keyword &&
@@ -264,6 +286,8 @@ export function buildArticleResearchContext(opportunity, research) {
     .slice(0, 10);
 
   return {
+    client_id: client?.id ?? null,
+    client_name: client?.name || '',
     primary_keyword: opportunity.primary_keyword,
     current_position: opportunity.current_position,
     current_impressions: opportunity.current_impressions,
@@ -278,4 +302,18 @@ export function buildArticleResearchContext(opportunity, research) {
     suggested_angle: opportunity.suggested_angle,
     rationale: opportunity.rationale
   };
+}
+
+// Gate a stored research context against the client we are about to write
+// for. Returns the context when it genuinely belongs to that client, and
+// null otherwise so the caller falls back to writing from the brand's own
+// website scan rather than another client's ranking data.
+//
+// A context with no client_id is legacy (or hand-built) and cannot be proven
+// to belong to this client, so it is refused too — failing closed here only
+// costs a ranking hint, while failing open costs an off-brand article.
+export function researchContextForClient(context, client) {
+  if (!context || !client?.id) return null;
+  if (!context.client_id) return null;
+  return context.client_id === client.id ? context : null;
 }

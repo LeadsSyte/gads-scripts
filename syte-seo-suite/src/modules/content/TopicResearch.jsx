@@ -124,7 +124,9 @@ export default function TopicResearch({ onWriteArticle }) {
   }, [plan]);
 
   function writeArticle(opp) {
-    const ctx = buildArticleResearchContext(opp, research);
+    // Stamp the context with the client it was researched for — the parent
+    // holds it in state that survives a change of the top-bar selection.
+    const ctx = buildArticleResearchContext(opp, research, client);
     onWriteArticle(opp, ctx);
   }
 

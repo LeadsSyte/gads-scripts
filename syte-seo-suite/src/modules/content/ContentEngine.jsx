@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useClients } from '../../store/useClients.js';
 import { claudeStream, extractJSON } from '../../lib/anthropic.js';
 import { buildSystemPrompt, TAB_PROMPTS, clampLength, MIN_WORDS, MAX_WORDS } from './prompts.js';
@@ -10,6 +10,9 @@ import GenerateImageButton from '../../components/GenerateImageButton.jsx';
 import MarkImplementedButton from '../../components/MarkImplementedButton.jsx';
 import { saveBlogResult, listBlogResults, deleteBlogResult, loadContentHistory } from '../../lib/supabase.js';
 import { parseOutputSections, markdownToHtml } from './articleParser.js';
+import { researchContextForClient } from './topicResearch.js';
+import { verifyArticleRelevance, relevanceHeadline } from './articleRelevance.js';
+import { scanBrandFromWebsite, isScanStale, mergeScanIntoBrandDocs } from '../../lib/brandScan.js';
 
 const ACCENT = '#c8ff00';
 const HISTORY_KEY = 'syte-suite-content-history';
@@ -162,7 +165,7 @@ function SectionCard({ title, content, accent, mono }) {
 // passed explicitly — the quick flow picks its own client, and the dropdown
 // selection can change after generating, so falling back to the current
 // selection would push the article to the wrong site.
-function ParsedOutput({ output, topic, pushItem, pushClient, exportTxt, exportDocx, systemPrompt, userPrompt, onOutputUpdate, pageUrl: pageUrlProp, onVerified }) {
+function ParsedOutput({ output, topic, pushItem, pushClient, relevance, exportTxt, exportDocx, systemPrompt, userPrompt, onOutputUpdate, pageUrl: pageUrlProp, onVerified }) {
   const sections = React.useMemo(() => parseOutputSections(output), [output]);
   const [showRaw, setShowRaw] = React.useState(false);
   const [revision, setRevision] = React.useState('');
@@ -171,6 +174,10 @@ function ParsedOutput({ output, topic, pushItem, pushClient, exportTxt, exportDo
   // Track the real WordPress permalink returned after a CMS push so the
   // Mark Implemented verifier checks the right URL, not a re-derived slug.
   const [pushedLiveUrl, setPushedLiveUrl] = React.useState('');
+  // Set when the operator has been shown the off-topic warning and chosen to
+  // push anyway. Reset whenever a new article is generated.
+  const [relevanceOverride, setRelevanceOverride] = React.useState(false);
+  React.useEffect(() => { setRelevanceOverride(false); }, [relevance]);
 
   if (!sections) return null;
 
@@ -210,15 +217,60 @@ function ParsedOutput({ output, topic, pushItem, pushClient, exportTxt, exportDo
     setRevisionHistory(rest);
   }
 
+  const relColor = relevance
+    ? (relevance.verdict === 'relevant' ? 'var(--green)'
+      : relevance.verdict === 'mismatch' ? 'var(--red)' : 'var(--orange)')
+    : 'var(--border)';
+
   return (
     <>
+      {/* Relevance verdict — the article is checked against a scan of the
+          client's own website before anyone is offered a push button. */}
+      {relevance && relevance.verdict !== 'relevant' && (
+        <div className="card" style={{ marginBottom: 12, borderLeft: '3px solid ' + relColor }}>
+          <div className="row" style={{ justifyContent: 'space-between', marginBottom: 6 }}>
+            <strong style={{ color: relColor }}>
+              {relevance.verdict === 'mismatch' ? 'Off topic for this client' : 'Relevance not confirmed'}
+            </strong>
+            <span className="muted" style={{ fontSize: 11 }}>
+              {relevance.adjudicated ? 'checked against the website scan + reviewed' : 'checked against the website scan'}
+            </span>
+          </div>
+          <div style={{ fontSize: 12, marginBottom: 6 }}>{relevanceHeadline(relevance, pushClient)}</div>
+          {relevance.findings?.map((f, i) => (
+            <div key={i} className="muted" style={{ fontSize: 11, marginTop: 2 }}>
+              {f.ok ? '✓' : (f.severity === 'error' ? '✗' : '!')} {f.detail}
+            </div>
+          ))}
+        </div>
+      )}
+
       <div className="card" style={{ marginBottom: 16 }}>
         <div className="row" style={{ justifyContent: 'space-between', marginBottom: 12 }}>
-          <strong>Generated Content</strong>
+          <strong>
+            Generated Content
+            {relevance?.verdict === 'relevant' && (
+              <span className="muted" style={{ fontSize: 11, fontWeight: 400, marginLeft: 8 }}>
+                ✓ on topic for {pushClient?.name || 'this client'}
+              </span>
+            )}
+          </strong>
           <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
             <button onClick={() => exportTxt(output, topic || 'article')}>Export .txt</button>
             <button onClick={() => exportDocx(output, topic || 'article')}>Export .docx</button>
-            {pushItem && <PushToCmsButton item={pushItem} client={pushClient} onSuccess={r => { if (r?.live_url) setPushedLiveUrl(r.live_url); }} />}
+            {pushItem && (
+              relevance?.verdict === 'mismatch' && !relevanceOverride ? (
+                <button
+                  onClick={() => { if (confirm('This article looks off topic for ' + (pushClient?.name || 'this client') + '.\n\n' + relevanceHeadline(relevance, pushClient) + '\n\nPush it to their CMS anyway?')) setRelevanceOverride(true); }}
+                  style={{ fontSize: 11, color: 'var(--red)', borderColor: 'rgba(255,77,77,.4)' }}
+                  title="Blocked by the relevance check"
+                >
+                  Push blocked — off topic
+                </button>
+              ) : (
+                <PushToCmsButton item={pushItem} client={pushClient} onSuccess={r => { if (r?.live_url) setPushedLiveUrl(r.live_url); }} />
+              )
+            )}
             <button onClick={() => setShowRaw(v => !v)} style={{ fontSize: 11 }}>
               {showRaw ? 'Parsed view' : 'Raw output'}
             </button>
@@ -325,6 +377,7 @@ function ParsedOutput({ output, topic, pushItem, pushClient, exportTxt, exportDo
 export default function ContentEngine({ sub, setSub }) {
   const client = useClients(s => s.current());
   const allClients = useClients(s => s.clients);
+  const saveClient = useClients(s => s.save);
   const [topic, setTopic] = useState('');
   const [keyword, setKeyword] = useState('');
   const [length, setLength] = useState(1500);
@@ -342,6 +395,16 @@ export default function ContentEngine({ sub, setSub }) {
   // research context here and the next generation uses it in the system
   // prompt. Stays alive across tab switches inside Content Engine.
   const [researchContext, setResearchContext] = useState(null);
+  // What Topic Research last wrote into the form. Lets a client switch clear
+  // the fields it prefilled without discarding anything the operator typed.
+  // A ref, not state: nothing renders it, and the client-switch effect must
+  // read the current value without re-subscribing to it.
+  const researchPrefill = useRef(null);
+  // Set while the client's website is being analysed ahead of generation.
+  const [groundingMsg, setGroundingMsg] = useState('');
+  // Relevance verdict for the article currently on screen.
+  const [relevance, setRelevance] = useState(null);
+  const [relevanceBusy, setRelevanceBusy] = useState(false);
   // Store the last generation's system + user prompts so the revision chat
   // can send them as conversation context to Claude.
   const [lastSystem, setLastSystem] = useState('');
@@ -366,6 +429,28 @@ export default function ContentEngine({ sub, setSub }) {
   // Default the quick-blog client to the top-bar client and load history.
   useEffect(() => {
     if (!quickClientId && client?.id) setQuickClientId(client.id);
+  }, [client?.id]);
+
+  // Drop another client's research when the top-bar selection changes.
+  //
+  // Topic Research resets its own state on a client switch, but the context
+  // it hands up lives here and used to survive indefinitely — so generating
+  // after switching clients wrote the previous client's Search Console
+  // keyword, angle and long-tail queries under the new client's brand. The
+  // fields Topic Research prefilled are cleared too, but only while they
+  // still hold exactly what it put there: anything the operator has since
+  // typed is theirs and is left alone.
+  useEffect(() => {
+    setResearchContext(null);
+    setGroundingMsg('');
+    setRelevance(null);
+    const prev = researchPrefill.current;
+    if (prev) {
+      setTopic(t => (t === prev.topic ? '' : t));
+      setKeyword(k => (k === prev.keyword ? '' : k));
+      setUrl(u => (u === prev.url ? '' : u));
+    }
+    researchPrefill.current = null;
   }, [client?.id]);
 
   useEffect(() => {
@@ -522,11 +607,45 @@ export default function ContentEngine({ sub, setSub }) {
     };
   }, [output, url, client, topic, keyword]);
 
+  // Ground the article in the client's OWN website before writing.
+  //
+  // The website scan is the only part of the brand context derived from the
+  // client's actual site rather than typed by a human or inferred from
+  // Search Console, so it is what the prompt treats as ground truth for what
+  // the business is. Rescans when it is missing, older than the staleness
+  // window, or was taken against a different site than the record now points
+  // at. Never throws: a failed scan degrades to the stored client record.
+  async function groundInWebsite(c) {
+    if (!c?.url || !isScanStale(c)) return c;
+    setGroundingMsg('Analysing ' + c.url + ' to ground the article…');
+    try {
+      const brief = await scanBrandFromWebsite(c, { onProgress: setGroundingMsg });
+      const grounded = { ...c, brand_docs: mergeScanIntoBrandDocs(c.brand_docs, brief) };
+      if (!grounded.audience && brief.audience) grounded.audience = brief.audience;
+      setGroundingMsg('Grounded in ' + c.url + ' ✓');
+      // Persist so later runs reuse the scan instead of re-fetching the site.
+      saveClient(grounded).catch(() => {});
+      return grounded;
+    } catch (e) {
+      setGroundingMsg('Could not analyse ' + c.url + ' (' + e.message + ') — writing from the client record only.');
+      return c;
+    }
+  }
+
   async function run() {
     if (!client) { setErr('Select a client first.'); return; }
-    setErr(''); setOutput(''); setOutputClient(client); setRunning(true);
+    setErr(''); setOutput(''); setOutputClient(client); setRelevance(null); setRunning(true);
 
-    const system = buildSystemPrompt(client, '', researchContext);
+    // Ranking context is only usable for the client it was researched for.
+    // Anything left over from another client is dropped rather than folded
+    // into this brand's article.
+    const ctx = researchContextForClient(researchContext, client);
+    if (researchContext && !ctx) { setResearchContext(null); researchPrefill.current = null; }
+
+    const grounded = await groundInWebsite(client);
+    setOutputClient(grounded);
+
+    const system = buildSystemPrompt(grounded, '', ctx);
     let userPromptText;
     switch (tab) {
       case 'Rewrite & Expand':    userPromptText = TAB_PROMPTS['Rewrite & Expand'](existing, keyword, length); break;
@@ -548,6 +667,22 @@ export default function ContentEngine({ sub, setSub }) {
         temperature: 0.7,
         onDelta: (t) => { buf += t; setOutput(buf); }
       });
+      // Verify the finished article against the client's own website before
+      // it is offered for push. Only for tabs that produce a full article —
+      // Editorial Feedback and Metadata & Schema have no subject to check.
+      if (tab === 'New Article' || tab === 'Rewrite & Expand') {
+        setRelevanceBusy(true);
+        try {
+          setRelevance(await verifyArticleRelevance({
+            output: buf, client: grounded, topic, keyword
+          }));
+        } catch (relErr) {
+          console.warn('[Content] relevance check failed:', relErr.message);
+        } finally {
+          setRelevanceBusy(false);
+        }
+      }
+
       const entry = {
         id: crypto.randomUUID(),
         client_id: client.id,
@@ -599,12 +734,16 @@ export default function ContentEngine({ sub, setSub }) {
             // Pre-fill the New Article form from the selected opportunity
             // and stash the full ranking context so buildSystemPrompt can
             // reference it during generation.
-            setTopic(opp.topic_title || '');
-            setKeyword(opp.primary_keyword || '');
+            const prefill = {
+              topic: opp.topic_title || '',
+              keyword: opp.primary_keyword || '',
+              url: (opp.target_page && opp.target_page !== 'NEW') ? opp.target_page : ''
+            };
+            setTopic(prefill.topic);
+            setKeyword(prefill.keyword);
             setLength(clampLength(opp.recommended_length));
-            if (opp.target_page && opp.target_page !== 'NEW') {
-              setUrl(opp.target_page);
-            }
+            if (prefill.url) setUrl(prefill.url);
+            researchPrefill.current = prefill;
             setResearchContext(ctx);
             if (typeof setSub === 'function') setSub('New Article');
           }}
@@ -983,8 +1122,11 @@ export default function ContentEngine({ sub, setSub }) {
             fontSize: 12
           }}>
             <div className="row" style={{ justifyContent: 'space-between', marginBottom: 4 }}>
-              <strong style={{ color: ACCENT }}>Ranking-aware generation enabled</strong>
-              <button onClick={() => setResearchContext(null)} style={{ fontSize: 10, padding: '3px 8px' }}>
+              <strong style={{ color: ACCENT }}>
+                Ranking-aware generation enabled
+                {researchContext.client_name ? ' — ' + researchContext.client_name : ''}
+              </strong>
+              <button onClick={() => { setResearchContext(null); researchPrefill.current = null; }} style={{ fontSize: 10, padding: '3px 8px' }}>
                 Drop context
               </button>
             </div>
@@ -995,6 +1137,19 @@ export default function ContentEngine({ sub, setSub }) {
               {researchContext.opportunity_type}
               {researchContext.related_queries?.length > 0 && ` · ${researchContext.related_queries.length} related queries folded in`}
             </div>
+          </div>
+        )}
+
+        {/* Website grounding status — the article is written against a scan
+            of the client's own site, so say which site that is. */}
+        {groundingMsg && (
+          <div className="muted" style={{ fontSize: 11, marginTop: 8 }}>
+            {groundingMsg}
+          </div>
+        )}
+        {relevanceBusy && (
+          <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>
+            Checking the article is relevant to {client?.name || 'this client'}…
           </div>
         )}
 
@@ -1014,6 +1169,7 @@ export default function ContentEngine({ sub, setSub }) {
         topic={topic}
         pushItem={pushItem}
         pushClient={outputClient || client}
+        relevance={relevance}
         exportTxt={exportTxt}
         exportDocx={exportDocx}
         systemPrompt={lastSystem}
