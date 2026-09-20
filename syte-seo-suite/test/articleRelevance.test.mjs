@@ -22,8 +22,17 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 let pass = 0, fail = 0;
 function t(name, fn) {
-  try { fn(); console.log('PASS', name); pass++; }
-  catch (e) { console.log('FAIL', name, '->', e.message); fail++; }
+  try {
+    const r = fn();
+    // An async body would be counted as a pass the moment it returned its
+    // promise, and its assertions would land as an unhandled rejection after
+    // process.exit() had already been called — a test that can never fail.
+    // Await async work at the top level and keep bodies synchronous.
+    if (r && typeof r.then === 'function') {
+      throw new Error('test body must be synchronous — await the work at the top level instead');
+    }
+    console.log('PASS', name); pass++;
+  } catch (e) { console.log('FAIL', name, '->', e.message); fail++; }
 }
 
 // articleRelevance.js imports the browser-coupled Claude client, so stub it
@@ -164,12 +173,13 @@ t('the reviewer is shown the brand reference and the subject, not the body', () 
   assert.ok(/Sharing a town, city or service area with the brand is NOT relevance/.test(call.system));
 });
 
-t('a clearly relevant article is never sent for adjudication', async () => {
-  const before = globalThis.__adjudications.length;
-  const r = await rel.verifyArticleRelevance({ output: ON_TOPIC, client: JGS });
-  assert.equal(r.verdict, 'relevant');
-  assert.equal(r.adjudicated, false);
-  assert.equal(globalThis.__adjudications.length, before, 'no Claude call for a clear pass');
+const adjudicationsBeforeClearPass = globalThis.__adjudications.length;
+const clearPass = await rel.verifyArticleRelevance({ output: ON_TOPIC, client: JGS });
+t('a clearly relevant article is never sent for adjudication', () => {
+  assert.equal(clearPass.verdict, 'relevant');
+  assert.equal(clearPass.adjudicated, false);
+  assert.equal(globalThis.__adjudications.length, adjudicationsBeforeClearPass,
+    'no Claude call for a clear pass');
 });
 
 globalThis.__nextVerdict = { relevant: true, confidence: 'high', article_subject: 'lifting gear', reason: 'Core service.' };
