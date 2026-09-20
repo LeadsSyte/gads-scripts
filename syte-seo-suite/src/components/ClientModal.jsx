@@ -549,12 +549,22 @@ export default function ClientModal({ initial, onClose }) {
           onChangeEmail={v => update('google_account_email', v)}
           savedGa4Email={f.ga4_account_email}
           savedGscEmail={f.gsc_account_email}
+          onBindGa4Account={email => {
+            // Bind GA4 only. Search Console keeps whatever account it has —
+            // the two APIs routinely live in different Google accounts.
+            update('ga4_account_email', email);
+            // Keep the legacy single field meaningful for readers that still
+            // fall back to it, but only when it would otherwise be empty.
+            if (email && !f.google_account_email) update('google_account_email', email);
+          }}
+          onBindGscAccount={email => {
+            update('gsc_account_email', email);
+            if (email && !f.google_account_email) update('google_account_email', email);
+          }}
           onBindAccount={email => {
-            // Server-auth: bind the whole client to one connected account.
-            // Set all three fields so the report's per-API lookup
-            // (ga4_account_email / gsc_account_email, falling back to
-            // google_account_email) resolves to this account, and any earlier
-            // wrong per-API binding is overwritten.
+            // "Use one account for both" — sets all three so the per-API
+            // lookup resolves to this account and any earlier split binding
+            // is overwritten deliberately.
             update('google_account_email', email);
             update('ga4_account_email', email);
             update('gsc_account_email', email);

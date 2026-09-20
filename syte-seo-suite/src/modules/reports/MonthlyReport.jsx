@@ -1016,12 +1016,19 @@ export default function MonthlyReport({ initialMonth }) {
                     try {
                       const email = await getCurrentEmail();
                       if (email && email !== client.google_account_email) {
-                        await saveClient({
-                          ...client,
-                          google_account_email: email,
-                          ga4_account_email: email,
-                          gsc_account_email: email
-                        });
+                        // Move only the APIs that were following the old
+                        // binding. A client whose GA4 and Search Console are
+                        // deliberately bound to different accounts must not
+                        // have that collapsed by a generic re-auth.
+                        const prev = client.google_account_email || '';
+                        const patch = { ...client, google_account_email: email };
+                        if (!client.ga4_account_email || client.ga4_account_email === prev) {
+                          patch.ga4_account_email = email;
+                        }
+                        if (!client.gsc_account_email || client.gsc_account_email === prev) {
+                          patch.gsc_account_email = email;
+                        }
+                        await saveClient(patch);
                       }
                     } catch {}
                     autoFetchMetrics(client, month, true);
