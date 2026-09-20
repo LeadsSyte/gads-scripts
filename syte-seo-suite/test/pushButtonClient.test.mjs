@@ -47,16 +47,16 @@ function stripComments(text) {
     .replace(/(^|[^:'"`\\])\/\/[^\n]*/g, (m, p1) => p1 + ' '.repeat(m.length - p1.length));
 }
 
-// Returns the source text of each <PushToCmsButton ...> element, from the
-// opening tag to its closing "/>" or "</PushToCmsButton>".
-function pushButtonElements(text) {
+// Returns the source text of each <Name ...> element, from the opening tag to
+// its closing "/>" or "</Name>".
+function elementsNamed(text, name) {
   const els = [];
-  const re = /<PushToCmsButton\b/g;
+  const re = new RegExp('<' + name + '\\b', 'g');
   let m;
   while ((m = re.exec(text)) !== null) {
     const rest = text.slice(m.index);
     const selfClose = rest.indexOf('/>');
-    const pairClose = rest.indexOf('</PushToCmsButton>');
+    const pairClose = rest.indexOf('</' + name + '>');
     const ends = [selfClose, pairClose].filter(i => i !== -1);
     if (!ends.length) { els.push({ index: m.index, src: rest }); continue; }
     const end = Math.min(...ends);
@@ -69,38 +69,59 @@ function lineOf(text, index) {
   return text.slice(0, index).split('\n').length;
 }
 
-t('every <PushToCmsButton> sets an explicit client prop', () => {
-  const offenders = [];
-  let found = 0;
-  for (const file of walk(SRC)) {
-    const text = stripComments(fs.readFileSync(file, 'utf8'));
-    if (!text.includes('<PushToCmsButton')) continue;
-    for (const el of pushButtonElements(text)) {
-      found++;
-      if (!/\bclient=\{/.test(el.src)) {
-        offenders.push(path.relative(SRC, file) + ':' + lineOf(text, el.index));
+// Every component here acts ON a client: it publishes to their site, writes a
+// delivery record against them, or generates artwork from their brand. Each
+// one falls back to the dropdown selection when given no `client` prop, and
+// each is rendered on screens that show rows for a client who is NOT the
+// selection — so a missing prop silently acts on the wrong client.
+//
+// PushToCmsButton was fixed twice (12d9e5c, 796ca18) before this test existed.
+// MarkImplementedButton and GenerateImageButton were never covered, and both
+// had live instances of the same fault when they were added here.
+const CLIENT_ACTING_COMPONENTS = [
+  'PushToCmsButton',
+  'MarkImplementedButton',
+  'GenerateImageButton'
+];
+
+for (const name of CLIENT_ACTING_COMPONENTS) {
+  t('every <' + name + '> sets an explicit client prop', () => {
+    const offenders = [];
+    let found = 0;
+    for (const file of walk(SRC)) {
+      const text = stripComments(fs.readFileSync(file, 'utf8'));
+      if (!text.includes('<' + name)) continue;
+      for (const el of elementsNamed(text, name)) {
+        found++;
+        if (!/\bclient=\{/.test(el.src)) {
+          offenders.push(path.relative(SRC, file) + ':' + lineOf(text, el.index));
+        }
       }
     }
-  }
-  if (found === 0) throw new Error('no <PushToCmsButton> usages found — has it been renamed?');
-  if (offenders.length) {
-    throw new Error(
-      'push button(s) with no client prop, so they would push to whatever the ' +
-      'dropdown has selected: ' + offenders.join(', ')
-    );
-  }
-});
+    if (found === 0) throw new Error('no <' + name + '> usages found — has it been renamed?');
+    if (offenders.length) {
+      throw new Error(
+        name + ' with no client prop, so it would act on whatever the ' +
+        'dropdown has selected: ' + offenders.join(', ')
+      );
+    }
+  });
+}
 
 // The fallback itself is deliberate (single-client screens rely on it), but it
 // must stay the fallback and never the only source of truth.
-t('PushToCmsButton still prefers an explicit client over the selection', () => {
-  const src = fs.readFileSync(
-    path.join(SRC, 'components', 'PushToCmsButton.jsx'), 'utf8'
-  );
-  if (!/clientProp\s*\|\|\s*selected/.test(src)) {
-    throw new Error('expected `clientProp || selected` precedence in PushToCmsButton');
-  }
-});
+for (const name of CLIENT_ACTING_COMPONENTS) {
+  t(name + ' still prefers an explicit client over the selection', () => {
+    const src = fs.readFileSync(path.join(SRC, 'components', name + '.jsx'), 'utf8');
+    // The prop must be read, and must win over the store selection.
+    if (!/client:\s*clientProp/.test(src)) {
+      throw new Error(name + ' does not accept a `client` prop at all — it can only ever act on the dropdown selection');
+    }
+    if (!/clientProp\s*\|\|\s*(selected|topbarClient)/.test(src)) {
+      throw new Error('expected `clientProp || <selection>` precedence in ' + name);
+    }
+  });
+}
 
 console.log('pushButtonClient: ' + pass + ' passed, ' + fail + ' failed');
 if (fail) process.exit(1);

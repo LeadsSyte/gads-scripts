@@ -111,11 +111,33 @@ export default function AEOSnapshot() {
   }, [client]);
 
   useEffect(() => {
-    if (!client) { setPreflight(null); setSnapshot(null); setLastSnapshot(null); setGscCandidates([]); return; }
+    if (!client) {
+      setPreflight(null); setSnapshot(null); setLastSnapshot(null); setGscCandidates([]);
+      setDiscoveryResult(null); setDiscoverySelected(new Set()); setFanoutProposals([]);
+      return;
+    }
     setPreflight(snapshotPreflight(client));
     setSnapshot(null);
+    // Discovered / fanned-out prompts belong to the client they were
+    // discovered FOR. They used to survive a client switch while their
+    // "Add selected to probe" and "Approve all" buttons wrote against the
+    // LIVE client — so one brand's discovered queries were saved as
+    // another brand's active probes, and every later snapshot measured that
+    // brand against a competitor's search terms.
+    setDiscoveryResult(null);
+    setDiscoverySelected(new Set());
+    setFanoutProposals([]);
+
+    // Both async bodies below outlive a fast client switch (the GSC sniff is
+    // up to three sequential round-trips). Without this guard the previous
+    // client's results land after the switch and become THIS client's
+    // candidates and delta baseline.
+    const cid = client.id;
+    const stillCurrent = () => useClients.getState().selectedId === cid;
+
     // Load the most recent saved snapshot for delta comparison.
     listAeoSnapshots(client.id).then(rows => {
+      if (!stillCurrent()) return;
       setLastSnapshot(rows[0] || null);
     }).catch(() => {});
 
@@ -141,6 +163,7 @@ export default function AEOSnapshot() {
           }
         } catch {}
       }
+      if (!stillCurrent()) return;
       setGscCandidates(candidates);
     })();
   }, [client?.id]);

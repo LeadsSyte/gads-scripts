@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useClients } from '../../store/useClients.js';
-import { listCmsQueue, updateCmsQueueItem, updateClientFields } from '../../lib/supabase.js';
+import { listCmsQueue, updateCmsQueueItem, updateClientFields, upsertClient } from '../../lib/supabase.js';
 import { detectCms, testWordPress, testShopify } from './cmsDetect.js';
 import { getPublishingProfile } from './publishingProfile.js';
 // Static, not lazy: connectShopify must open its popup inside the click, and
@@ -44,7 +44,17 @@ export default function CMSPush({ sub }) {
   const [msgFor, setMsgFor] = useState('general');
 
   const [form, setForm] = useState({});
-  useEffect(() => { if (client) setForm(client); }, [client?.id]);
+  useEffect(() => {
+    if (client) setForm(client);
+    // Everything below describes the PREVIOUS client and must not survive
+    // the switch: `blogs` still listed the old store's blogs, and picking
+    // one wrote that store's blog id into this client's publishing profile;
+    // `health` kept showing the old client's readiness checklist and, being
+    // truthy, suppressed this client's own stored readiness line.
+    setBlogs([]);
+    setHealth(null);
+    setMsg(''); setErr(''); setMsgFor('general');
+  }, [client?.id]);
 
   // "Connect with Shopify" inputs. Kept out of `form` on purpose: the client
   // secret is used once to connect and must never be saved on the client.

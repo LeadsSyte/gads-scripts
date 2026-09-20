@@ -313,12 +313,13 @@ function ParsedOutput({ output, topic, pushItem, pushClient, relevance, exportTx
               </details>
 
               {/* Hero image generator — opt-in, only renders if an image API key is configured */}
-              <GenerateImageButton title={topic} keyword={sections.metaTitle || topic} />
+              <GenerateImageButton title={topic} keyword={sections.metaTitle || topic} client={pushClient} />
 
               {/* Mark as implemented + AI verification */}
               <div style={{ marginTop: 10 }}>
                 <MarkImplementedButton
                   module="content"
+                  client={pushClient}
                   changeType="article"
                   pageUrl={pushedLiveUrl || pageUrlProp || undefined}
                   title={sections.metaTitle || topic || 'Article'}

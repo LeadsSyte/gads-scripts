@@ -721,9 +721,30 @@ export default function AEOEngine({ sub }) {
   const [deepProgress, setDeepProgress] = useState(0); // 0–100 for the bar
   const [deepHistory, setDeepHistory] = useState([]);  // persisted list of past runs
 
-  // Default the deep-opt client to the top-bar selected client when one is set.
+  // Reset per-run state when the top-bar client changes.
+  //
+  // None of this was cleared before, so one client's work carried into the
+  // next: the URL box still held the previous client's pages (it is also
+  // filled as a side effect of a batch run, so it went stale without anyone
+  // touching it), and generating from it fetched THAT client's pages while
+  // prompting with THIS client's brand — then saved the rows under this
+  // client's id and offered them for push to this client's site.
+  //
+  // deepClientId must be set unconditionally: the old `!deepClientId` guard
+  // made this fire exactly once per mount despite the client dependency, so
+  // a deep optimization run after a switch was prompted, costed and saved
+  // against whichever client happened to be selected when the tab opened.
   useEffect(() => {
-    if (!deepClientId && client?.id) setDeepClientId(client.id);
+    setUrls('');
+    setDeepUrl('');
+    setDeepResult(null);
+    setDeepErr('');
+    setDeepPhase('');
+    setDeepProgress(0);
+    setProperties([]);
+    setProgress('');
+    setErr('');
+    setDeepClientId(client?.id || '');
   }, [client?.id]);
 
   // Load deep optimization history from Supabase on mount.
@@ -1316,25 +1337,40 @@ export default function AEOEngine({ sub }) {
     finally { setBusy(false); }
   }
 
+  // Field names must match what the generator actually produces — see
+  // OptPageCard, which reads name / implementation / where / description.
+  // This read title / code / placement / reason, none of which exist on a
+  // generated optimization, so every batch-pushed draft was "Untitled" with
+  // an empty body.
   function buildOptItem(pageUrl, opt) {
     return {
       module: 'aeo',
       page_url: pageUrl,
-      page_title: opt.title,
-      change_type: opt.type,
-      payload: { code: opt.code, placement: opt.placement, reason: opt.reason }
+      page_title: opt.name || opt.title || 'AEO Optimization',
+      change_type: opt.type || 'aeo_optimization',
+      payload: {
+        code: opt.implementation || opt.code || '',
+        placement: opt.where || opt.placement || '',
+        reason: opt.description || opt.reason || ''
+      }
     };
   }
 
-  async function pushAllForClient() {
-    if (!client) return;
+  // targetClient is passed explicitly. This used to read the dropdown
+  // selection from its closure while the button called select() immediately
+  // before invoking it — select() only mutates the store, it cannot change
+  // an already-created closure, so the FIRST click on each group pushed the
+  // previously-selected client's optimizations to that client's site.
+  async function pushAllForClient(targetClient) {
+    const pushClient = targetClient || client;
+    if (!pushClient) return;
     setBusy(true); setErr(''); setProgress('');
-    const mine = Object.values(results).filter(r => r.client_id === client.id);
+    const mine = Object.values(results).filter(r => r.client_id === pushClient.id);
     let ok = 0, fail = 0;
     for (const r of mine) {
       for (const opt of r.optimizations || []) {
         try {
-          await pushItemInline(client, buildOptItem(r.url, opt));
+          await pushItemInline(pushClient, buildOptItem(r.url, opt));
           ok++;
         } catch (e) {
           fail++;
@@ -1757,7 +1793,7 @@ export default function AEOEngine({ sub }) {
                       onClick={(e) => {
                         e.stopPropagation();
                         useClients.getState().select(g.client_id);
-                        pushAllForClient();
+                        pushAllForClient(g.client);
                       }}
                       disabled={busy}
                       style={{ fontSize: 11, padding: '4px 10px', borderColor: 'var(--mod-cms)', color: 'var(--mod-cms)' }}

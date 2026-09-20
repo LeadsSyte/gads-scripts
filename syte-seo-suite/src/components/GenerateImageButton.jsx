@@ -10,8 +10,15 @@ import { loadSettings } from '../lib/settings.js';
 //   title: article title (used to build the image prompt)
 //   keyword: primary keyword
 //   disabled?: boolean
-export default function GenerateImageButton({ title, keyword, disabled }) {
-  const client = useClients(s => s.current());
+// client: the client this image is being generated FOR. Pass it explicitly —
+// hero images are built from the client's brand context, and every render
+// site here is per-article, for a client that need not be the top-bar
+// selection (the dropdown can also be changed while an article is on
+// screen). Falling back to the selection branded one client's image with
+// another's context. Same contract, and same reason, as PushToCmsButton.
+export default function GenerateImageButton({ title, keyword, disabled, client: clientProp }) {
+  const selected = useClients(s => s.current());
+  const client = clientProp || selected;
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null);
   const [err, setErr] = useState('');
