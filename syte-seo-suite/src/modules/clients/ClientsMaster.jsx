@@ -139,14 +139,39 @@ export default function ClientsMaster() {
 
   // Per-client Google-account binding status (server-auth only).
   // Returns null when there's nothing to flag.
+  // Checks GA4 and Search Console SEPARATELY. This used to take the first
+  // non-empty of the three account fields and check only that one, so a
+  // client whose GA4 was fine but whose Search Console account was missing
+  // or revoked showed no warning at all. Now that the two APIs can be bound
+  // to different accounts, each property must be checked against the account
+  // that actually serves it.
   function accountStatus(c) {
     if (!serverAuth) return null;
-    const needsGoogle = !!(c.ga4_property_id || c.gsc_property);
-    if (!needsGoogle) return null;
-    const bound = (c.ga4_account_email || c.gsc_account_email || c.google_account_email || '').toLowerCase();
-    if (!bound) return { text: 'No Google account', color: 'var(--orange)' };
-    if (connectedAccounts.length && !connectedAccounts.includes(bound)) {
-      return { text: 'Account not connected', color: 'var(--red)' };
+    const apis = [
+      c.ga4_property_id ? { label: 'GA4', email: (c.ga4_account_email || c.google_account_email || '').toLowerCase() } : null,
+      c.gsc_property ? { label: 'Search Console', email: (c.gsc_account_email || c.google_account_email || '').toLowerCase() } : null
+    ].filter(Boolean);
+    if (!apis.length) return null;
+
+    const unbound = apis.filter(a => !a.email);
+    if (unbound.length) {
+      return {
+        text: unbound.length === apis.length
+          ? 'No Google account'
+          : 'No ' + unbound.map(a => a.label).join(' / ') + ' account',
+        color: 'var(--orange)'
+      };
+    }
+    if (connectedAccounts.length) {
+      const missing = apis.filter(a => !connectedAccounts.includes(a.email));
+      if (missing.length) {
+        return {
+          text: missing.length === apis.length
+            ? 'Account not connected'
+            : missing.map(a => a.label).join(' / ') + ' account not connected',
+          color: 'var(--red)'
+        };
+      }
     }
     return null;
   }

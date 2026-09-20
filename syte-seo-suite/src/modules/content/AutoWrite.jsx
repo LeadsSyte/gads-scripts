@@ -1040,7 +1040,7 @@ export default function AutoWrite() {
                         }}
                         dangerouslySetInnerHTML={{ __html: bodyHtml }}
                       />
-                      <GenerateImageButton title={opp.topic_title} keyword={opp.primary_keyword} />
+                      <GenerateImageButton title={opp.topic_title} keyword={opp.primary_keyword} client={activeClient} />
                     </details>
                   );
                 })()}
