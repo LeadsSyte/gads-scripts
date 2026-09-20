@@ -8,6 +8,7 @@ import {
   researchContextForClient
 } from './topicResearch.js';
 import { scanBrandFromWebsite, isScanStale, mergeScanIntoBrandDocs } from '../../lib/brandScan.js';
+import { verifyArticleRelevance, relevanceHeadline } from './articleRelevance.js';
 import { buildSystemPrompt, TAB_PROMPTS, clampLength } from './prompts.js';
 import GenerateImageButton from '../../components/GenerateImageButton.jsx';
 import PushToCmsButton from '../../components/PushToCmsButton.jsx';
@@ -247,12 +248,49 @@ export default function AutoWrite() {
       setBatchState(s => ({ ...s, [client.id]: { busy: false, summary: 'Nothing to push — all articles are already in the CMS.' } }));
       return;
     }
-    if (!confirm('Push ' + todo.length + ' article(s) to ' + client.name + "'s CMS as drafts? Notifications will go out per your approval settings.")) return;
-
-    let ok = 0, warned = 0, failed = 0;
+    // Relevance gate. A batch push sends a month of articles to a live client
+    // site in one click, so it is the last and most expensive place an
+    // off-topic article can slip through. The verdict is recomputed here
+    // rather than read off article state: these rows come from shared
+    // content history and may have been written in another session.
+    setBatchState(s => ({ ...s, [client.id]: { busy: true, progress: 'Checking relevance…' } }));
+    const offTopic = [];
+    const cleared = [];
     for (let i = 0; i < todo.length; i++) {
       const a = todo[i];
-      setBatchState(s => ({ ...s, [client.id]: { busy: true, progress: (i + 1) + '/' + todo.length + ': ' + (a.topic || a.keyword) } }));
+      setBatchState(s => ({ ...s, [client.id]: { busy: true, progress: 'Checking relevance ' + (i + 1) + '/' + todo.length } }));
+      try {
+        const rel = await verifyArticleRelevance({
+          output: a.output, client, topic: a.topic, keyword: a.keyword
+        });
+        if (rel.verdict === 'mismatch') offTopic.push({ a, rel }); else cleared.push(a);
+      } catch {
+        // A check that could not run must not silently block a good article.
+        cleared.push(a);
+      }
+    }
+    setBatchState(s => ({ ...s, [client.id]: { busy: false, progress: '' } }));
+
+    if (offTopic.length) {
+      const list = offTopic.map(({ a, rel }) =>
+        '\u2022 ' + (a.topic || a.keyword || 'Article') + ' — ' + relevanceHeadline(rel, client)).join('\n');
+      if (cleared.length === 0) {
+        setBatchState(s => ({
+          ...s,
+          [client.id]: { busy: false, summary: 'Nothing pushed — all ' + offTopic.length + ' article(s) look off topic for ' + client.name + ':\n' + list }
+        }));
+        return;
+      }
+      if (!confirm(offTopic.length + ' of ' + todo.length + ' article(s) look off topic for ' + client.name
+        + ' and will be SKIPPED:\n\n' + list + '\n\nPush the remaining ' + cleared.length + '?')) return;
+    } else if (!confirm('Push ' + cleared.length + ' article(s) to ' + client.name + "'s CMS as drafts? Notifications will go out per your approval settings.")) {
+      return;
+    }
+
+    let ok = 0, warned = 0, failed = 0;
+    for (let i = 0; i < cleared.length; i++) {
+      const a = cleared[i];
+      setBatchState(s => ({ ...s, [client.id]: { busy: true, progress: (i + 1) + '/' + cleared.length + ': ' + (a.topic || a.keyword) } }));
       try {
         const r = await pushItemInline(client, {
           module: 'content',
@@ -271,7 +309,7 @@ export default function AutoWrite() {
       ...s,
       [client.id]: {
         busy: false,
-        summary: 'Done: ' + ok + ' pushed' + (warned ? ', ' + warned + ' with warnings' : '') + (failed ? ', ' + failed + ' FAILED (see CMS → Push History)' : '') + '.'
+        summary: 'Done: ' + ok + ' pushed' + (warned ? ', ' + warned + ' with warnings' : '') + (failed ? ', ' + failed + ' FAILED (see CMS → Push History)' : '') + (offTopic.length ? ', ' + offTopic.length + ' skipped as off topic' : '') + '.'
       }
     }));
   }
@@ -386,6 +424,21 @@ export default function AutoWrite() {
         }
       });
       updateArticle(idx, { status: 'done', output: buf, words: Math.round(buf.length / 5) });
+
+      // Verify the article is about something this brand actually does.
+      // A bulk run writes up to 50 articles unattended, so an off-topic one
+      // would otherwise sit in the queue looking exactly like the rest.
+      updateArticle(idx, { relevanceBusy: true });
+      try {
+        const rel = await verifyArticleRelevance({
+          output: buf, client: writeClient,
+          topic: opp.topic_title, keyword: opp.primary_keyword
+        });
+        updateArticle(idx, { relevance: rel, relevanceBusy: false });
+      } catch (relErr) {
+        console.warn('[AutoWrite] relevance check failed:', relErr.message);
+        updateArticle(idx, { relevanceBusy: false });
+      }
 
       // Persist (saveBlogResult ALWAYS writes to localStorage first, then
       // tries Supabase). Even if the Supabase write fails, the article
@@ -933,6 +986,24 @@ export default function AutoWrite() {
 
                 {isError && state.error && (
                   <div style={{ marginTop: 6, fontSize: 11, color: 'var(--red)' }}>{state.error}</div>
+                )}
+
+                {state.relevanceBusy && (
+                  <div className="muted" style={{ marginTop: 6, fontSize: 11 }}>
+                    Checking relevance to {activeClient?.name || 'this client'}…
+                  </div>
+                )}
+                {state.relevance && state.relevance.verdict !== 'relevant' && (
+                  <div style={{
+                    marginTop: 6, padding: '6px 10px', fontSize: 11,
+                    color: state.relevance.verdict === 'mismatch' ? 'var(--red)' : 'var(--orange)',
+                    background: 'color-mix(in srgb, ' + (state.relevance.verdict === 'mismatch' ? 'var(--red)' : 'var(--orange)') + ' 10%, transparent)',
+                    border: '1px solid color-mix(in srgb, ' + (state.relevance.verdict === 'mismatch' ? 'var(--red)' : 'var(--orange)') + ' 30%, var(--border))',
+                    borderRadius: 6
+                  }}>
+                    <strong>{state.relevance.verdict === 'mismatch' ? 'Off topic — excluded from batch push' : 'Relevance not confirmed'}</strong>
+                    <div style={{ marginTop: 2 }}>{relevanceHeadline(state.relevance, activeClient)}</div>
+                  </div>
                 )}
                 {state.saveWarning && (
                   <div style={{
