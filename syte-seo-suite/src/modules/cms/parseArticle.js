@@ -70,6 +70,13 @@ export function parseArticleBody(raw, { stripH1 = true } = {}) {
   // the article's own H1 is genuinely first and gets recognised as the title.
   body = body.replace(/^(?:\s*(?:-{3,}|\*{3,}|_{3,})\s*)+/, '').trim();
 
+  // The writer puts a --- divider between every section. On a client's blog
+  // each one renders as a horizontal line (12 on the first BAM DIY draft; the
+  // team's hand-published posts have none), and the blank lines around it
+  // became empty paragraphs. Section headings already separate the article.
+  // Only whole-line rules go — table separator rows contain pipes.
+  body = body.replace(/^[ \t]*(?:-{3,}|\*{3,}|_{3,})[ \t]*$/gm, '').replace(/\n{3,}/g, '\n\n').trim();
+
   // Pull the leading H1 out of the body (markdown `# ...` or `<h1>...</h1>`)
   // and hand it back separately as the post title.
   let articleTitle = '';
@@ -91,6 +98,15 @@ export function parseArticleBody(raw, { stripH1 = true } = {}) {
     metaTitle: metaTitleMatch ? metaTitleMatch[1].replace(/\*+/g, '').trim() : '',
     metaDesc:  metaDescMatch  ? metaDescMatch[1].replace(/\*+/g, '').trim() : '',
   };
+}
+
+// Final tidy of the HTML that goes to a client's site: empty paragraphs
+// (<p></p>, <p>&nbsp;</p>) render as stray gaps between sections.
+export function cleanPushHtml(html) {
+  return String(html || '')
+    .replace(/<p>(?:\s|&nbsp;|<br\s*\/?>)*<\/p>/gi, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
 
 // Approximation of WordPress's sanitize_title(): what slug a post titled

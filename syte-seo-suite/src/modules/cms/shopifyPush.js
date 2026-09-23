@@ -5,7 +5,7 @@
 // CRITICAL: articles are always created with published=false.
 
 import { shopifyRequest, listBlogs, findArticleByHandle, storeHandle } from './shopifyApi.js';
-import { parseArticleBody, slugifyTitle } from './parseArticle.js';
+import { parseArticleBody, slugifyTitle, cleanPushHtml } from './parseArticle.js';
 import { getPublishingProfile } from './publishingProfile.js';
 import { markdownToHtml } from '../content/articleParser.js';
 import { generateHeroImage } from '../content/imageGen.js';
@@ -49,7 +49,7 @@ export async function pushArticleToShopify(client, item) {
 
   const rawContent = p.html || p.code || p.fix || '';
   const parsed = parseArticleBody(rawContent, { stripH1: profile.strip_leading_h1 });
-  let bodyHtml = markdownToHtml(parsed.body);
+  let bodyHtml = cleanPushHtml(markdownToHtml(parsed.body));
 
   const title = parsed.articleTitle || parsed.metaTitle || item.page_title || 'Syte draft article';
   const metaTitle = parsed.metaTitle || p.meta_title || title;
@@ -90,7 +90,8 @@ export async function pushArticleToShopify(client, item) {
     // Without this Shopify bylines the post "Shopify API".
     author,
     published: false, // HARD CONSTRAINT — never publish here; publish-approved flips it after approval
-    tags: 'syte-draft',
+    // No internal tags: BAM DIY's theme (like many) lists an article's tags as
+    // public links, so a "syte-draft" tag would have gone live with the post.
     metafields: [
       { namespace: 'global', key: 'title_tag', value: metaTitle, type: 'single_line_text_field' },
       ...(metaDesc ? [{ namespace: 'global', key: 'description_tag', value: metaDesc, type: 'single_line_text_field' }] : [])

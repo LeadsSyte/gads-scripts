@@ -6,7 +6,7 @@ import { wpRequest, findBySlug, findEditablePostByTitle, updatePostMeta, createD
 import { generateHeroImage } from '../content/imageGen.js';
 import { loadSettings } from '../../lib/settings.js';
 import { markdownToHtml } from '../content/articleParser.js';
-import { parseArticleBody, slugifyTitle } from './parseArticle.js';
+import { parseArticleBody, slugifyTitle, cleanPushHtml } from './parseArticle.js';
 import { getPublishingProfile } from './publishingProfile.js';
 
 function slugFromUrl(pageUrl) {
@@ -59,7 +59,7 @@ export async function pushContentToWordPress(client, item) {
   // and convert from markdown to clean HTML.
   const rawContent = p.html || p.code || p.fix || '';
   const parsed = parseArticleBody(rawContent, { stripH1: profile.strip_leading_h1 });
-  let cleanHtml = markdownToHtml(parsed.body);
+  let cleanHtml = cleanPushHtml(markdownToHtml(parsed.body));
 
   // Post title: the article's own H1 (now stripped from the body so themes
   // don't render a double title). Meta title is the SEO <title>, which is

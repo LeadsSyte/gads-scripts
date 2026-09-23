@@ -2,7 +2,7 @@
 // The H1 extraction here is what prevents the "double title" bug where a
 // theme renders the post title AND the body's own <h1>.
 
-import { parseArticleBody, slugifyTitle } from '../src/modules/cms/parseArticle.js';
+import { parseArticleBody, slugifyTitle, cleanPushHtml } from '../src/modules/cms/parseArticle.js';
 
 let pass = 0, fail = 0;
 async function t(name, fn) {
@@ -188,6 +188,21 @@ await t('metadata trailing the article is still cut off', () => {
   assertEq(metaTitle, 'T');
   assertNotMatch(body, /Schema notes|Meta Title/, 'trailing block removed');
   assertMatch(body, /Real article text\./, 'article kept');
+});
+
+// First BAM DIY draft: 12 visible horizontal lines and 32 empty paragraphs;
+// the team's own posts on that blog had no rules at all.
+await t('section dividers are removed but table separator rows survive', () => {
+  const raw = '# T\n\nIntro.\n\n---\n\n## One\n\nText.\n\n***\n\n## Two\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\n___\n\nEnd.';
+  const { body } = parseArticleBody(raw);
+  assertNotMatch(body, /^[ \t]*(?:-{3,}|\*{3,}|_{3,})[ \t]*$/m, 'divider line left');
+  assertMatch(body, /\|---\|---\|/, 'table separator kept');
+  assertNotMatch(body, /\n{3,}/, 'runs of blank lines collapsed');
+});
+
+await t('empty paragraphs are removed from pushed HTML', () => {
+  assertEq(cleanPushHtml('<p>A</p><p></p><p> </p><p>&nbsp;</p><p><br></p><p>B</p>'), '<p>A</p><p>B</p>');
+  assertEq(cleanPushHtml('<p>Real text</p>'), '<p>Real text</p>', 'content untouched');
 });
 
 await t('leaves a sentence that merely mentions the phrase alone', () => {

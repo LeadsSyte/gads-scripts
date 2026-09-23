@@ -140,6 +140,11 @@ await t('the byline falls back to "Admin" when the store name can\'t be read', a
   assertEq(sentArticle().author, 'Admin', 'fallback author');
 });
 
+await t('drafts carry no internal tag that a theme would show publicly', async () => {
+  await mod.pushToShopify(CLIENT, item());
+  assertEq(sentArticle().tags, undefined, 'tags');
+});
+
 await t('a client can have its own byline', async () => {
   await mod.pushToShopify({ ...CLIENT, publishing_profile: { shopify_author: 'BAM! Team' } }, item());
   assertEq(sentArticle().author, 'BAM! Team', 'profile author');

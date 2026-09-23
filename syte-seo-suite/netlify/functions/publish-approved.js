@@ -114,14 +114,22 @@ async function publishOne(client, row) {
     if (!client.shopify_store || !client.shopify_token) throw new Error('Shopify credentials missing on client');
 
     const store = client.shopify_store.replace(/^https?:\/\//, '').replace(/\/+$/, '');
-    const res = await fetch('https://' + store + '/admin/api/2024-01/blogs/' + p.shopify_blog_id + '/articles/' + p.shopify_article_id + '.json', {
-      method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Shopify-Access-Token': client.shopify_token
-      },
-      body: JSON.stringify({ article: { id: p.shopify_article_id, published: true } })
-    });
+    const articleUrl = 'https://' + store + '/admin/api/2024-01/blogs/' + p.shopify_blog_id + '/articles/' + p.shopify_article_id + '.json';
+    const headers = { 'Content-Type': 'application/json', 'X-Shopify-Access-Token': client.shopify_token };
+
+    // Drafts pushed before 2026-09-23 were tagged "syte-draft", and many
+    // themes list tags as public links — strip it as the post goes live.
+    const update = { id: p.shopify_article_id, published: true };
+    try {
+      const cur = await fetch(articleUrl, { headers });
+      if (cur.ok) {
+        const tags = String((await cur.json()).article?.tags || '');
+        const kept = tags.split(',').map(t => t.trim()).filter(t => t && t !== 'syte-draft');
+        if (kept.join(', ') !== tags) update.tags = kept.join(', ');
+      }
+    } catch { /* publish anyway; a leftover tag is cosmetic */ }
+
+    const res = await fetch(articleUrl, { method: 'PUT', headers, body: JSON.stringify({ article: update }) });
     const text = await res.text();
     if (!res.ok) throw new Error('Shopify publish ' + res.status + ': ' + text.slice(0, 300));
     return p.live_url || '';
