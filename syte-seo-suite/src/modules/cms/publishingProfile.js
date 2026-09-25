@@ -70,6 +70,10 @@ export const PROFILE_DEFAULTS = {
   // (e.g. it needs a VPN, or it's white-labelled through another agency).
   // The text is the reason, shown on CMS → Connections. null = in scope.
   cms_skip_reason: null,
+
+  // Autopilot: the server writes this client's articles on the 1st of each
+  // month (netlify/functions/autopilot-monthly.js). Off until switched on.
+  autopilot_enabled: false,
 };
 
 export function getPublishingProfile(client) {

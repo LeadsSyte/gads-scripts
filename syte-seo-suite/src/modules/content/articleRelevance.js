@@ -211,7 +211,8 @@ Judge SUBJECT only. Rules:
 // Claude. Never throws — if adjudication fails, the pure verdict stands and
 // the failure is recorded, because a verifier that errors open is worse than
 // one that says "unclear".
-export async function verifyArticleRelevance({ output, client, topic = '', keyword = '' } = {}) {
+// `complete` is the Claude call — the server-side Autopilot passes its own.
+export async function verifyArticleRelevance({ output, client, topic = '', keyword = '', complete = claudeComplete } = {}) {
   const base = checkArticleRelevance({ output, client, topic, keyword });
   if (!base.needsAdjudication) return { ...base, adjudicated: false };
 
@@ -237,7 +238,7 @@ DRAFTED ARTICLE — subject only:
 Does this article belong to this brand?`;
 
   try {
-    const raw = await claudeComplete({
+    const raw = await complete({
       system: ADJUDICATOR_SYSTEM,
       messages: [{ role: 'user', content: userMessage }],
       max_tokens: 400,

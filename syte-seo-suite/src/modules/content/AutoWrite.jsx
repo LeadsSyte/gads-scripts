@@ -17,7 +17,8 @@ import PipelineView from '../../components/PipelineView.jsx';
 import LogExternalWork from '../../components/LogExternalWork.jsx';
 import { contentPipelineStatus, monthOptions } from '../../lib/pipelineStatus.js';
 import { isDelivered, isHandoverStatus } from '../../lib/deliveryStatus.js';
-import { listAllImplementations, saveBlogResult, loadContentHistory, deleteBlogResult, listCmsQueue } from '../../lib/supabase.js';
+import { listAllImplementations, saveBlogResult, loadContentHistory, deleteBlogResult, listCmsQueue, supabase } from '../../lib/supabase.js';
+import AutopilotPanel from './AutopilotPanel.jsx';
 import { pushItemInline } from '../cms/pushAction.js';
 import { parseOutputSections, markdownToHtml } from './articleParser.js';
 
@@ -242,9 +243,24 @@ export default function AutoWrite() {
       const rows = await listCmsQueue(client.id);
       existingTitles = new Set(rows.filter(r => r.status !== 'failed').map(r => (r.page_title || '').toLowerCase()));
     } catch { /* if history is unreadable, push everything and rely on duplicate protection */ }
-    const todo = withContent.filter(a => !existingTitles.has((a.topic || a.keyword || 'Article').toLowerCase()));
+    // Articles the Autopilot's independent reviewer rejected are never batch
+    // pushed — the reviewer is a gate, not advice. One can still be pushed on
+    // its own after a person has read it.
+    const heldBack = new Set();
+    try {
+      const { data } = await supabase.from('syte_suite_settings').select('data').eq('id', 'autopilot:' + client.id).maybeSingle();
+      const run = data?.data;
+      for (const a of Object.values(run?.articles || {})) if (a.status === 'blocked' && a.blog_id) heldBack.add(a.blog_id);
+    } catch { /* no Autopilot run for this client */ }
+    const candidates = withContent.filter(a => !existingTitles.has((a.topic || a.keyword || 'Article').toLowerCase()));
+    const todo = candidates.filter(a => !heldBack.has(a.id));
+    const heldCount = candidates.length - todo.length;
 
     if (todo.length === 0) {
+      if (heldCount) {
+        setBatchState(s => ({ ...s, [client.id]: { busy: false, summary: 'Nothing pushed — ' + heldCount + ' article(s) were held back by the Autopilot reviewer and the rest are already in the CMS.' } }));
+        return;
+      }
       setBatchState(s => ({ ...s, [client.id]: { busy: false, summary: 'Nothing to push — all articles are already in the CMS.' } }));
       return;
     }
@@ -309,7 +325,7 @@ export default function AutoWrite() {
       ...s,
       [client.id]: {
         busy: false,
-        summary: 'Done: ' + ok + ' pushed' + (warned ? ', ' + warned + ' with warnings' : '') + (failed ? ', ' + failed + ' FAILED (see CMS → Push History)' : '') + (offTopic.length ? ', ' + offTopic.length + ' skipped as off topic' : '') + '.'
+        summary: 'Done: ' + ok + ' pushed' + (warned ? ', ' + warned + ' with warnings' : '') + (failed ? ', ' + failed + ' FAILED (see CMS → Push History)' : '') + (offTopic.length ? ', ' + offTopic.length + ' skipped as off topic' : '') + (heldCount ? ', ' + heldCount + ' held back by the Autopilot reviewer' : '') + '.'
       }
     }));
   }
@@ -774,6 +790,10 @@ export default function AutoWrite() {
           setSharedHistory(fresh);
         }}
       />
+
+      <AutopilotPanel accent={ACCENT} onFinished={async () => {
+        try { setSharedHistory(await loadContentHistory()); } catch { /* list refreshes on next load */ }
+      }} />
 
       {/* Research status banner — shown at the TOP so it's always visible
           regardless of how many pipeline cards are below */}

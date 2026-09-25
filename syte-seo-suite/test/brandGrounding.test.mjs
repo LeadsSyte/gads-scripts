@@ -36,11 +36,11 @@ function t(name, fn) {
 const scan = await import('../src/lib/brandScan.js');
 const prompts = await import('../src/modules/content/prompts.js');
 
-const TR_SRC = fs.readFileSync(path.join(__dirname, '../src/modules/content/topicResearch.js'), 'utf8');
+// The research logic lives in topicResearchCore.js (topicResearch.js only
+// adds the browser-side Search Console fetch).
+const TR_SRC = fs.readFileSync(path.join(__dirname, '../src/modules/content/topicResearchCore.js'), 'utf8');
 globalThis.__claudeCalls = [];
 const TR_PATCHED = TR_SRC
-  .replace("import { topQueriesByImpression, topPagesWithQueries } from '../technical/gsc.js';",
-           "const topQueriesByImpression = async () => [];\nconst topPagesWithQueries = async () => [];")
   .replace("import { claudeComplete, extractJSON } from '../../lib/anthropic.js';",
            "const claudeComplete = async (args) => { globalThis.__claudeCalls.push(args); return 'stubbed'; };\n"
            + "const extractJSON = () => ({ opportunities: [], summary: '' });");
