@@ -65,6 +65,11 @@ export const PROFILE_DEFAULTS = {
 
   // Who gets the internal "draft ready" notification for this client.
   notify_email: null,
+
+  // Set when the team has decided not to publish to this client's site
+  // (e.g. it needs a VPN, or it's white-labelled through another agency).
+  // The text is the reason, shown on CMS → Connections. null = in scope.
+  cms_skip_reason: null,
 };
 
 export function getPublishingProfile(client) {

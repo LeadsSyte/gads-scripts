@@ -6,6 +6,7 @@ import { getPublishingProfile } from './publishingProfile.js';
 // Static, not lazy: connectShopify must open its popup inside the click, and
 // an await on a dynamic import would spend the click and get it blocked.
 import { connectShopify, shopifyCallbackUrl } from './shopifyConnect.js';
+import { buildConnectionRows, summarizeConnections } from './connectionStatus.js';
 
 const ACCENT = '#4dabff';
 
@@ -34,10 +35,20 @@ function statusBadge(s) {
 // read-only push history. The actual "Push Now" action lives inline on
 // each generated output in Content Engine, Technical SEO, and AEO Engine
 // via <PushToCmsButton />.
-export default function CMSPush({ sub }) {
+export default function CMSPush({ sub, setSub }) {
   const client = useClients(s => s.current());
+  const allClients = useClients(s => s.clients);
+  const selectClient = useClients(s => s.select);
   const load = useClients(s => s.load);
-  const [history, setHistory] = useState([]);
+  // Every client's pushes. History used to load only the dropdown client's,
+  // so with most clients never pushed to, the page read "No pushes yet".
+  const [allHistory, setAllHistory] = useState([]);
+  const [historyScope, setHistoryScope] = useState('all'); // 'all' | 'client'
+  const history = React.useMemo(() => historyScope === 'client'
+    ? allHistory.filter(r => client && r.client_id === client.id)
+    : allHistory, [allHistory, historyScope, client?.id]);
+  const clientName = React.useMemo(
+    () => Object.fromEntries(allClients.map(c => [c.id, c.name])), [allClients]);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
   const [err, setErr] = useState('');
@@ -67,8 +78,7 @@ export default function CMSPush({ sub }) {
   const [showAllAttempts, setShowAllAttempts] = useState(false);
 
   async function refreshHistory() {
-    if (!client) { setHistory([]); return; }
-    try { setHistory(await listCmsQueue(client.id)); }
+    try { setAllHistory(await listCmsQueue()); }
     catch (e) { setErr(e.message); }
   }
 
@@ -81,7 +91,7 @@ export default function CMSPush({ sub }) {
       new Date(b.pushed_at || b.created_at) - new Date(a.pushed_at || a.created_at));
     const seen = new Map();
     for (const row of sorted) {
-      const key = (row.page_title || '').trim().toLowerCase();
+      const key = row.client_id + '|' + (row.page_title || '').trim().toLowerCase();
       if (!seen.has(key)) seen.set(key, { row, earlier: 0 });
       else seen.get(key).earlier++;
     }
@@ -92,7 +102,20 @@ export default function CMSPush({ sub }) {
   const visibleRows = showAllAttempts
     ? history.map(row => ({ row, earlier: 0 }))
     : latestPerArticle;
-  useEffect(() => { refreshHistory(); }, [client?.id]);
+  useEffect(() => { refreshHistory(); }, [client?.id, sub]);
+
+  const connectionRows = React.useMemo(
+    () => buildConnectionRows(allClients, allHistory), [allClients, allHistory]);
+
+  async function setSkipReason(c, reason) {
+    setBusy(true); setErr('');
+    try {
+      const profile = { ...getPublishingProfile(c), cms_skip_reason: reason || null };
+      await updateClientFields(c.id, { publishing_profile: profile });
+      await load();
+    } catch (e) { setErr(e.message); }
+    finally { setBusy(false); }
+  }
 
   // successMsg/scope let callers keep their own result visible — this used
   // to hardcode 'Saved.', which silently clobbered "connected as ..." so a
@@ -311,6 +334,70 @@ export default function CMSPush({ sub }) {
   }
 
   // -------- Subviews --------
+  if (sub === 'Connections') {
+    const counts = summarizeConnections(connectionRows);
+    const stateBadge = { connected: 'green', incomplete: 'orange', not_connected: 'red', custom: '', skipped: '' };
+    const stateLabel = { connected: 'connected', incomplete: 'incomplete', not_connected: 'not connected', custom: 'ZIP only', skipped: 'skipped' };
+    return (
+      <div className="content-area">
+        <h2 style={{ marginTop: 0 }}>Connections</h2>
+        <div className="muted" style={{ fontSize: 13, marginBottom: 12 }}>
+          Every client, and whether the suite can push drafts to its site.{' '}
+          <b style={{ color: 'var(--green)' }}>{counts.connected} connected</b>
+          {' · '}{counts.incomplete} incomplete · {counts.not_connected} not connected
+          {counts.custom ? ' · ' + counts.custom + ' ZIP only' : ''}
+          {counts.skipped ? ' · ' + counts.skipped + ' skipped' : ''}
+        </div>
+        {err && <div style={{ color: 'var(--red)', marginBottom: 10 }}>{err}</div>}
+        <div className="card">
+          <table>
+            <thead>
+              <tr><th>Client</th><th>Status</th><th>Site</th><th>Pushes</th><th>Last push</th><th></th></tr>
+            </thead>
+            <tbody>
+              {connectionRows.map(r => {
+                const c = allClients.find(x => x.id === r.id);
+                return (
+                  <tr key={r.id}>
+                    <td style={{ fontWeight: 600 }}>{r.name}</td>
+                    <td>
+                      <span className={'badge ' + stateBadge[r.state]}>{stateLabel[r.state]}</span>
+                      <div className="muted" style={{ fontSize: 11 }}>{r.detail}</div>
+                    </td>
+                    <td className="muted" style={{ fontSize: 12, maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.url}</td>
+                    <td style={{ fontSize: 12 }}>
+                      {r.pushes || '–'}
+                      {r.published ? <span className="muted"> · {r.published} live</span> : null}
+                      {r.failed ? <span style={{ color: 'var(--red)' }}> · {r.failed} failed</span> : null}
+                    </td>
+                    <td className="muted" style={{ fontSize: 12 }}>{r.last ? new Date(r.last).toLocaleDateString() : '–'}</td>
+                    <td>
+                      <div className="row" style={{ gap: 6 }}>
+                        <button className="ghost" onClick={() => { selectClient(r.id); setSub && setSub('Connector'); }}>
+                          {r.state === 'connected' ? 'Settings' : 'Connect'}
+                        </button>
+                        {r.state === 'skipped'
+                          ? <button className="ghost" disabled={busy} onClick={() => setSkipReason(c, null)}>Un-skip</button>
+                          : <button className="ghost" disabled={busy} title="Leave this client out of CMS publishing"
+                              onClick={() => {
+                                const reason = window.prompt('Why is ' + r.name + ' being left out of CMS publishing? (e.g. needs a VPN)');
+                                if (reason && reason.trim()) setSkipReason(c, reason.trim());
+                              }}>Skip</button>}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+              {connectionRows.length === 0 && (
+                <tr><td colSpan={6} className="muted" style={{ textAlign: 'center', padding: 24 }}>No clients loaded.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    );
+  }
+
   if (sub === 'Connector') {
     return (
       <div className="content-area">
@@ -607,6 +694,15 @@ export default function CMSPush({ sub }) {
         <div className="muted" style={{ fontSize: 13, marginBottom: 12 }}>
           Every inline push from Content Engine, Technical SEO, and AEO Engine is logged here.
         </div>
+        <div className="row" style={{ gap: 6, marginBottom: 10 }}>
+          <button className={historyScope === 'all' ? '' : 'ghost'} onClick={() => setHistoryScope('all')}>
+            All clients ({allHistory.length})
+          </button>
+          <button className={historyScope === 'client' ? '' : 'ghost'} disabled={!client}
+            onClick={() => setHistoryScope('client')}>
+            {client ? client.name + ' only' : 'Selected client only'}
+          </button>
+        </div>
         {supersededCount > 0 && (
           <div className="muted" style={{ fontSize: 12, marginBottom: 10 }}>
             Showing the latest push per article. {supersededCount} earlier attempt{supersededCount > 1 ? 's are' : ' is'} hidden.{' '}
@@ -618,7 +714,7 @@ export default function CMSPush({ sub }) {
         <div className="card">
           <table>
             <thead>
-              <tr><th>Date</th><th>Module</th><th>Page</th><th>Type</th><th>Status</th><th>Review</th></tr>
+              <tr><th>Date</th><th>Client</th><th>Module</th><th>Page</th><th>Type</th><th>Status</th><th>Review</th></tr>
             </thead>
             <tbody>
               {visibleRows.map(({ row: item, earlier }) => (
@@ -626,6 +722,7 @@ export default function CMSPush({ sub }) {
                   <td className="muted" style={{ fontSize: 12 }}>
                     {item.pushed_at ? new Date(item.pushed_at).toLocaleString() : new Date(item.created_at).toLocaleString()}
                   </td>
+                  <td style={{ fontSize: 12 }}>{clientName[item.client_id] || '(deleted client)'}</td>
                   <td className="muted" style={{ fontSize: 12 }}>{item.module}</td>
                   <td style={{ maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis' }}>
                     <div style={{ fontWeight: 600 }}>{item.page_title}</div>
@@ -714,7 +811,11 @@ export default function CMSPush({ sub }) {
                 </tr>
               ))}
               {history.length === 0 && (
-                <tr><td colSpan={6} className="muted" style={{ textAlign: 'center', padding: 24 }}>No pushes yet.</td></tr>
+                <tr><td colSpan={7} className="muted" style={{ textAlign: 'center', padding: 24 }}>
+                  {historyScope === 'client' && allHistory.length
+                    ? 'Nothing pushed for ' + (client?.name || 'this client') + ' yet. Switch to All clients to see the rest.'
+                    : 'No pushes yet.'}
+                </td></tr>
               )}
             </tbody>
           </table>

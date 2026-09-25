@@ -144,7 +144,7 @@ export default function App() {
           {module === 'technical' && <TechnicalSEO sub={sub} />}
           {module === 'aeo'       && <AEOEngine sub={sub} />}
           {module === 'reports'   && <ReportsModule sub={sub} />}
-          {module === 'cms'       && <CMSPush sub={sub} />}
+          {module === 'cms'       && <CMSPush sub={sub} setSub={setSub} />}
         </ErrorBoundary>
       </main>
     </div>
