@@ -7,6 +7,7 @@
 // URL or a hosted URL depending on the provider.
 
 import { loadSettings } from '../../lib/settings.js';
+import { fnUrl } from '../../lib/fnUrl.js';
 
 // ---------------------------------------------------------------------------
 // Prompt builder — turns an article title into a good image prompt.
@@ -80,7 +81,7 @@ export async function generateWithDalle(prompt) {
   // OpenAI doesn't allow browser-direct CORS, so route through our
   // Netlify proxy. The proxy adds the Authorization header server-side
   // and returns the upstream response verbatim.
-  const res = await fetch('/.netlify/functions/openai-proxy', {
+  const res = await fetch(fnUrl('openai-proxy'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({

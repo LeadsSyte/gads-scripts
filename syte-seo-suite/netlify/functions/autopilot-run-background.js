@@ -15,6 +15,8 @@ import { fetchGscForClient } from './lib/serverGsc.js';
 import { loadClient, loadRunState, saveRunState, existingTopics, saveArticle, saveClientFields } from './lib/autopilotStore.js';
 import { scanBrandFromWebsite } from '../../src/lib/brandScan.js';
 import { fetchHtmlServer, htmlToTextServer, findAboutUrlServer } from './lib/serverBrandScan.js';
+import { prepareServerPush, canPushTo, pushArticleServer, loadArticleOutput, pushedTitles } from './lib/serverPush.js';
+import { getPublishingProfile } from '../../src/modules/cms/publishingProfile.js';
 
 const BUDGET_MS = 14 * 60 * 1000;
 const MAX_HOPS = 12;           // self re-invocations per run — a runaway guard
@@ -64,27 +66,52 @@ export async function handler(event) {
     });
     return { statusCode: 202 };
   }
+  const pushOnly = body.mode === 'push';
   let state = null;
   try {
     const client = await loadClient(supabase, clientId);
     state = await loadRunState(supabase, clientId);
 
-    const running = state && ['queued', 'researching', 'writing'].includes(state.status);
+    const running = state && ['queued', 'researching', 'writing', 'pushing'].includes(state.status);
     const fresh = state && Date.now() - new Date(state.updated_at).getTime() < STALE_MS;
     if (hop === 0 && running && fresh) {
       console.log('[autopilot] run already in progress for', client.name);
       return { statusCode: 202 };
     }
-    if (!state || state.month !== monthKey() || (hop === 0 && (restart || state.status === 'failed'))) {
+    if (pushOnly) {
+      // "Push ready articles" from the panel: only this month's finished run.
+      if (!state || state.month !== monthKey() || !state.plan) {
+        console.log('[autopilot] nothing to push for', client.name);
+        return { statusCode: 202 };
+      }
+    } else if (!state || state.month !== monthKey() || (hop === 0 && (restart || state.status === 'failed'))) {
       state = newRunState(client);
     } else if (hop === 0 && state.status === 'done') {
       console.log('[autopilot] already done this month for', client.name);
       return { statusCode: 202 };
     }
     state.hops = hop;
+    state.error = null;
     await saveRunState(supabase, state);
 
+    // Pushing is per client: publishing_profile.autopilot_push, or an
+    // explicit "Push ready articles" click. Drafts only, and only to a
+    // connected WordPress / Shopify site.
+    const wantPush = pushOnly || getPublishingProfile(client).autopilot_push;
+    let pushDeps = {};
+    if (wantPush && canPushTo(client)) {
+      prepareServerPush();
+      pushDeps = {
+        pushArticle: a => pushArticleServer(supabase, client, a),
+        loadOutput: id => loadArticleOutput(supabase, id),
+        pushedTitles: () => pushedTitles(supabase, client.id)
+      };
+    } else if (wantPush) {
+      state.push_note = 'Not pushed: ' + client.name + ' has no working WordPress or Shopify connection. The articles are in Auto Write.';
+    }
+
     const { more } = await runAutopilotStep(client, state, {
+      ...pushDeps,
       complete: claudeCompleteServer,
       checkArticle: ({ system, user }) => openaiJson({ system, user }),
       fetchGsc: c => fetchGscForClient(supabase, c),
@@ -104,7 +131,7 @@ export async function handler(event) {
       await fetch(base + '/.netlify/functions/autopilot-run-background', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Suite-Auth': required },
-        body: JSON.stringify({ clientId, hop: hop + 1 })
+        body: JSON.stringify({ clientId, hop: hop + 1, mode: pushOnly ? 'push' : undefined })
       });
     }
   } catch (e) {

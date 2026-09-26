@@ -130,6 +130,8 @@ export function normalizeCheck(raw) {
 //   saveState(state)          persists the state
 //   scanBrand(client)         → { voice, audience, brief, sourceUrl } website scan (optional)
 //   saveClientFields(id, fields) persists a refreshed scan (optional)
+//   pushArticle / loadOutput / pushedTitles  push ready articles as drafts
+//                             (optional — omitted when pushing is off)
 //   now()                     → Date (tests)
 //   timeLeftMs()              → ms left before the function is cut off
 export async function runAutopilotStep(clientIn, state, deps) {
@@ -256,11 +258,62 @@ export async function runAutopilotStep(clientIn, state, deps) {
     await save();
   }
 
+  // 3. Push the ready articles to the site as drafts, when this client has
+  //    that switched on. Held-back and failed articles are never pushed.
+  if (deps.pushArticle) {
+    const paused = await pushReadyArticles(client, state, deps, { now, save, PER_ARTICLE_MS });
+    if (paused) return { state, more: true };
+  }
+
   state.status = 'done';
   state.finished_at = now().toISOString();
   log(state, 'Run complete', now());
   await save();
   return { state, more: false };
+}
+
+// deps: pushArticle({title, keyword, output}) → pushItemInline result,
+//       loadOutput(blogId) → article text, pushedTitles() → Set of lowercased
+//       titles already in the CMS queue. Returns true when it paused for time.
+export async function pushReadyArticles(client, state, deps, { now, save, PER_ARTICLE_MS = 4 * 60 * 1000 }) {
+  const plan = state.plan || [];
+  const todo = plan.map((opp, idx) => ({ opp, idx, a: state.articles[idx] }))
+    .filter(x => x.a && x.a.status === 'ready' && !x.a.push);
+  if (!todo.length) return false;
+
+  state.status = 'pushing';
+  const already = await deps.pushedTitles();
+  for (const { opp, a } of todo) {
+    const key = (opp.topic_title || '').trim().toLowerCase();
+    if (already.has(key)) {
+      a.push = { status: 'skipped', reason: 'Already in the CMS' };
+      await save();
+      continue;
+    }
+    if (deps.timeLeftMs && deps.timeLeftMs() < PER_ARTICLE_MS) {
+      log(state, 'Pausing — pushing continues in a fresh run', now());
+      await save();
+      return true;
+    }
+    log(state, 'Pushing draft: ' + opp.topic_title, now());
+    await save();
+    try {
+      const output = await deps.loadOutput(a.blog_id);
+      if (!output.trim()) throw new Error('The saved article is empty');
+      const r = await deps.pushArticle({ title: opp.topic_title, keyword: opp.primary_keyword, output });
+      a.push = {
+        status: 'pushed', queue_id: r.id || null, admin_url: r.admin_url || '',
+        verification: r.verification || 'unchecked', warnings: (r.warnings || []).slice(0, 6)
+      };
+      already.add(key);
+      log(state, 'Draft created: ' + opp.topic_title, now());
+    } catch (e) {
+      a.push = { status: 'failed', error: String(e.message || e).slice(0, 300) };
+      log(state, 'Push failed: ' + opp.topic_title + ' — ' + a.push.error, now());
+    }
+    await save();
+  }
+  return false;
 }
 
 export function summarizeRun(state) {

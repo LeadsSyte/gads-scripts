@@ -6,8 +6,23 @@
 import { queueCmsChange, updateCmsQueueItem } from '../../lib/supabase.js';
 import { pushToWordPress } from './wordpressPush.js';
 import { pushToShopify } from './shopifyPush.js';
-import { buildAndDownloadZip } from './customZip.js';
 import { verifyPushedDraft } from './verifyDraft.js';
+import { fnUrl } from '../../lib/fnUrl.js';
+
+// Browser default: the queue lives in Supabase via the browser client, and
+// the draft-ready email is a fire-and-forget call. The server-side
+// Autopilot passes its own `deps` (netlify/functions/lib/serverPush.js).
+const BROWSER_DEPS = {
+  queue: queueCmsChange,
+  update: updateCmsQueueItem,
+  notify: (queueId) => {
+    fetch(fnUrl('notify-draft'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ queueId })
+    }).catch(() => {});
+  }
+};
 
 export function clientIsConnected(client) {
   if (!client) return false;
@@ -21,12 +36,12 @@ export function clientIsConnected(client) {
 //  1. insert into syte_suite_cms_queue as pending (so there's a history row)
 //  2. dispatch to WP / Shopify / Custom
 //  3. update the row with status=pushed|failed + admin_url
-export async function pushItemInline(client, item) {
+export async function pushItemInline(client, item, deps = BROWSER_DEPS) {
   if (!client) throw new Error('No client selected.');
   if (!item)   throw new Error('Nothing to push.');
 
   // Step 1 — log the pending row.
-  const row = await queueCmsChange({
+  const row = await deps.queue({
     client_id: client.id,
     module: item.module || 'unknown',
     page_url: item.page_url || client.url || '',
@@ -42,6 +57,8 @@ export async function pushItemInline(client, item) {
     if (client.cms_type === 'WordPress')      result = await pushToWordPress(client, row);
     else if (client.cms_type === 'Shopify')   result = await pushToShopify(client, row);
     else if (client.cms_type === 'Custom Site') {
+      // Loaded on demand: the ZIP download is browser-only (file-saver).
+      const { buildAndDownloadZip } = await import('./customZip.js');
       await buildAndDownloadZip(client, [row]);
       result = { ok: true, admin_url: '' };
     } else {
@@ -59,7 +76,7 @@ export async function pushItemInline(client, item) {
     }
     const allWarnings = [...(result.warnings || []), ...(verification.problems || [])];
 
-    await updateCmsQueueItem(row.id, {
+    await deps.update(row.id, {
       status: 'pushed',
       pushed_at: new Date().toISOString(),
       // Store BOTH the admin edit URL and the actual public permalink so
@@ -84,13 +101,7 @@ export async function pushItemInline(client, item) {
     // Fire-and-forget draft-ready notification (internal email, or the
     // client approval email when the profile says approval_mode 'client').
     // A notification failure must never fail the push itself.
-    try {
-      fetch('/.netlify/functions/notify-draft', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ queueId: row.id })
-      }).catch(() => {});
-    } catch { /* ignore */ }
+    try { await deps.notify(row.id); } catch { /* ignore */ }
 
     return {
       ok: true,
@@ -101,7 +112,7 @@ export async function pushItemInline(client, item) {
       warnings: allWarnings
     };
   } catch (e) {
-    await updateCmsQueueItem(row.id, { status: 'failed', error_msg: e.message });
+    await deps.update(row.id, { status: 'failed', error_msg: e.message });
     throw e;
   }
 }

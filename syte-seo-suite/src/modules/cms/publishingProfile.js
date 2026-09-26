@@ -74,6 +74,10 @@ export const PROFILE_DEFAULTS = {
   // Autopilot: the server writes this client's articles on the 1st of each
   // month (netlify/functions/autopilot-monthly.js). Off until switched on.
   autopilot_enabled: false,
+
+  // Autopilot: also push the articles that passed both checks to the site
+  // as DRAFTS at the end of each run. Publishing still waits for approval.
+  autopilot_push: false,
 };
 
 export function getPublishingProfile(client) {

@@ -168,6 +168,59 @@ await t('a fresh scan is not redone, and a failed scan does not stop the run', a
   if (!/Website scan failed/.test(state.scan_note)) throw new Error('scan failure not noted');
 });
 
+function withPush(deps, { pushed = new Set(), failTitle = null } = {}) {
+  const sent = [];
+  deps.pushedTitles = async () => new Set(pushed);
+  deps.loadOutput = async (id) => 'article body for ' + id;
+  deps.pushArticle = async (a) => {
+    if (a.title === failTitle) throw new Error('WordPress 401: bad password');
+    sent.push(a);
+    return { id: 'q' + sent.length, admin_url: 'https://wp.example/wp-admin/post.php?post=' + sent.length, verification: 'verified', warnings: [] };
+  };
+  return sent;
+}
+
+await t('with pushing on, only articles that passed both checks become drafts', async () => {
+  const { deps } = fakeDeps({ checkVerdicts: { 'Eczema Triggers at Home': { verdict: 'fail', problems: [{ severity: 'error', issue: 'x' }] } } });
+  const sent = withPush(deps);
+  const state = newRunState(CLIENT);
+  await runAutopilotStep(CLIENT, state, deps);
+  assertEq(sent.map(a => a.title).join('|'), 'Hay Fever Season Guide|Food Allergy Labels Explained', 'held-back article not pushed');
+  assertEq(state.articles[0].push.status, 'pushed');
+  assertEq(state.articles[1].push, undefined, 'blocked article has no push');
+  assertEq(state.status, 'done');
+  if (!/^article body for b/.test(sent[0].output)) throw new Error('pushed the saved article text');
+});
+
+await t('an article already in the CMS is not pushed again, and a failed push is recorded', async () => {
+  const { deps } = fakeDeps();
+  const sent = withPush(deps, { pushed: new Set(['hay fever season guide']), failTitle: 'Eczema Triggers at Home' });
+  const state = newRunState(CLIENT);
+  await runAutopilotStep(CLIENT, state, deps);
+  assertEq(state.articles[0].push.status, 'skipped');
+  assertEq(state.articles[1].push.status, 'failed');
+  if (!/401/.test(state.articles[1].push.error)) throw new Error('error kept');
+  assertEq(sent.length, 1);
+});
+
+await t('with pushing off, nothing is pushed', async () => {
+  const { deps } = fakeDeps();
+  const state = newRunState(CLIENT);
+  await runAutopilotStep(CLIENT, state, deps);
+  if (Object.values(state.articles).some(a => a.push)) throw new Error('pushed without push deps');
+});
+
+await t('a push-only pass on a finished run pushes without rewriting', async () => {
+  const { deps, calls } = fakeDeps();
+  const state = newRunState(CLIENT);
+  await runAutopilotStep(CLIENT, state, deps);
+  const writes = calls.complete.length;
+  const sent = withPush(deps);
+  await runAutopilotStep(CLIENT, state, deps);
+  assertEq(calls.complete.length, writes, 'no new AI calls');
+  assertEq(sent.length, 3);
+});
+
 await t('checker verdicts are normalised strictly', () => {
   assertEq(normalizeCheck({ verdict: 'pass', problems: [] }).verdict, 'pass');
   assertEq(normalizeCheck({ verdict: 'pass', problems: [{ severity: 'error', issue: 'x' }] }).verdict, 'fail', 'pass with an error');

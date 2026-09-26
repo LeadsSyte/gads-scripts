@@ -13,11 +13,14 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SRC = fs.readFileSync(path.join(__dirname, '../src/modules/content/imageGen.js'), 'utf8');
 
-// Patch: replace the settings import with a global stub.
+// Patch: replace the settings import with a global stub. The module is
+// written to tmpdir, so its other relative import (fnUrl) is inlined too.
 globalThis.__settings = {};
 const PATCHED = SRC
   .replace("import { loadSettings } from '../../lib/settings.js';",
-           "const loadSettings = () => globalThis.__settings;");
+           "const loadSettings = () => globalThis.__settings;")
+  .replace("import { fnUrl } from '../../lib/fnUrl.js';",
+           "const fnUrl = (name) => '/.netlify/functions/' + name;");
 
 const tmp = path.join(os.tmpdir(), 'imageGen-' + Date.now() + '.mjs');
 fs.writeFileSync(tmp, PATCHED);

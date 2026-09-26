@@ -4,13 +4,12 @@
 // CORS, and hosting-level Authorization header stripping.
 
 import { proxyAuthHash } from './proxyAuth.js';
-
-const PROXY_URL = '/.netlify/functions/wp-proxy';
+import { fnUrl } from '../../lib/fnUrl.js';
 
 export async function wpRequest(client, { method = 'GET', path, body } = {}) {
   if (!client.wp_url) throw new Error('Client has no WP Site URL set.');
 
-  const res = await fetch(PROXY_URL, {
+  const res = await fetch(fnUrl('wp-proxy'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-Suite-Auth': await proxyAuthHash() },
     body: JSON.stringify({
@@ -134,7 +133,7 @@ export async function uploadMedia(client, imageData, filename) {
   // We need to send the image as binary through our proxy.
   // The proxy handles JSON, so we send the base64 data and let
   // the proxy decode and forward it.
-  const res = await fetch(PROXY_URL, {
+  const res = await fetch(fnUrl('wp-proxy'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-Suite-Auth': await proxyAuthHash() },
     body: JSON.stringify({

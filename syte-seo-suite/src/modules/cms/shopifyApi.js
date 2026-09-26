@@ -3,14 +3,13 @@
 // should never appear in a browser call to a third-party host.
 
 import { proxyAuthHash } from './proxyAuth.js';
-
-const PROXY_URL = '/.netlify/functions/shopify-proxy';
+import { fnUrl } from '../../lib/fnUrl.js';
 
 export async function shopifyRequest(client, { method = 'GET', path, body } = {}) {
   if (!client.shopify_store) throw new Error('Client has no Shopify store set.');
   if (!client.shopify_token) throw new Error('Client has no Shopify token set.');
 
-  const res = await fetch(PROXY_URL, {
+  const res = await fetch(fnUrl('shopify-proxy'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-Suite-Auth': await proxyAuthHash() },
     body: JSON.stringify({

@@ -7,6 +7,9 @@
 let _authHashPromise = null;
 
 export async function proxyAuthHash() {
+  // The server-side Autopilot already holds the expected value (the
+  // WP_PROXY_AUTH env var) and has no suite key to hash.
+  if (globalThis.__SYTE_PROXY_AUTH) return globalThis.__SYTE_PROXY_AUTH;
   if (_authHashPromise) return _authHashPromise;
   _authHashPromise = (async () => {
     try {
