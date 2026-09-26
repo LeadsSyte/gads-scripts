@@ -117,5 +117,21 @@ await t('page evidence is read from the real markup', () => {
   if (!/could not be fetched/.test(buildTechCheckInput(CLIENT, TRIAGE.tasks[0], null))) throw new Error('missing-evidence note');
 });
 
+await t('one template problem on many pages becomes one site-wide task (real Krost case)', async () => {
+  const { mergeSharedFixes } = await import('../src/modules/technical/triage.js');
+  const post = (slug, name) => ({
+    title: 'Fix duplicate H1 tags on the ' + name + ' blog post', fix_type: 'h1', page_url: 'https://krost.example/' + slug + '/',
+    copy_paste_fix: "Remove or change the 'Latest News' element from an <h1> to an <h2> or <p> tag in the page template/theme. The single remaining H1 should be: <h1>" + name + '</h1>'
+  });
+  const tasks = [post('flooring', 'Industrial Flooring Tips'), post('rivet', 'Rivet Shelving'), post('bolted', 'Bolted Shelving'),
+    { title: 'Add alt text on News', fix_type: 'image_alt', page_url: 'https://krost.example/news/', copy_paste_fix: 'alt="Long shelves with boxes"' }];
+  const merged = mergeSharedFixes(tasks);
+  assertEq(merged.length, 2);
+  const site = merged.find(x => /Site-wide/.test(x.title));
+  assertEq(site.title, 'Site-wide fix (3 pages): Fix duplicate H1 tags');
+  if (!/krost\.example\/rivet\//.test(site.description)) throw new Error('affected pages not listed');
+  assertEq(mergeSharedFixes(tasks.slice(0, 2)).length, 2, 'two alike are left alone');
+});
+
 console.log(`\ntechScan: ${pass} passed, ${fail} failed`);
 if (fail > 0) process.exit(1);

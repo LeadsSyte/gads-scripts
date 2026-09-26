@@ -50,6 +50,7 @@ RULES:
 - Every page_url must be a real, complete URL found in the audit data. NEVER use wildcards (*), generic paths, or invented URLs.
 - Every copy_paste_fix must be FINISHED — ready to paste. No [PLACEHOLDER] values. Use the actual page title, product name, or content from the audit data. For alt text, describe what the image shows based on the filename/context.
 - If the audit shows the same issue on many pages, pick the MOST IMPORTANT pages (homepage, high-traffic pages, key service/product pages) and create individual tasks for each.
+- EXCEPTION — ONE FIX, MANY PAGES: when the same problem on many pages comes from ONE shared cause (a theme/template element, a header or footer, a plugin setting — e.g. every blog post has a second H1 because the post template renders a section heading as <h1>), create ONE task for the shared cause, not one per page. Title it as a site-wide fix, put the most important affected page in page_url, and list the other affected URLs in the description. One developer change fixes them all; separate tasks would brief the same change again and again.
 - COVER THE WHOLE SITE. The audit data spans every page we could crawl, not just the homepage. Spread the task list across as many DISTINCT page URLs as the findings support — never hand back a list where most tasks point at the same URL. Cap any single page at 2 tasks while other pages still have unaddressed issues; only stack more on one page when the rest of the site is genuinely clean.
 - For image alt text issues: include the specific image URL and the specific page where it's found, with a real descriptive alt text based on the image filename and page context.
 - For missing meta titles/descriptions: write the actual title/description for that specific page.
@@ -101,7 +102,47 @@ Create one task per MEANINGFUL issue on a SPECIFIC page that is NOT in the alrea
     temperature: 0.3
   });
   const parsed = extractJSON(text);
-  return parsed?.tasks || [];
+  return mergeSharedFixes(parsed?.tasks || []);
+}
+
+// Backstop for the ONE FIX, MANY PAGES rule: tasks of the same fix type
+// whose fix opens with the same instruction (ignoring page-specific names,
+// URLs and quoted text) are one change — merge them into a single site-wide
+// task that lists every affected page.
+function fixSignature(t) {
+  const first = String(t.copy_paste_fix || '').split(/(?<=[.!?])\s|\n/)[0] || '';
+  return String(t.fix_type || '').toLowerCase() + '|' + first
+    .toLowerCase()
+    .replace(/https?:\/\/\S+/g, '')
+    .replace(/(["'“‘]).*?(["'”’])/g, '')
+    .replace(/[^a-z<>/ ]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 120);
+}
+
+export function mergeSharedFixes(tasks) {
+  const groups = new Map();
+  let solo = 0;
+  for (const t of Array.isArray(tasks) ? tasks : []) {
+    const sig = fixSignature(t);
+    // Too short a first line to prove two fixes are the same change.
+    const key = sig.split('|')[1].length >= 25 ? sig : 'solo|' + (solo++);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(t);
+  }
+  const out = [];
+  for (const group of groups.values()) {
+    if (group.length < 3) { out.push(...group); continue; }
+    const [lead] = group;
+    const pages = [...new Set(group.map(t => t.page_url).filter(Boolean))];
+    out.push({
+      ...lead,
+      title: 'Site-wide fix (' + pages.length + ' pages): ' + String(lead.title || '').replace(/\s+on (the )?.+$/i, ''),
+      description: (lead.description || '') + '\n\nThe same fix applies to ' + pages.length + ' pages — it comes from one shared cause (template/theme), so it is one change:\n' + pages.map(p => '- ' + p).join('\n')
+    });
+  }
+  return out;
 }
 
 // Triage that will not hand back work this client has already had.
