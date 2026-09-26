@@ -30,17 +30,85 @@ function log(state, line, now) {
   state.log = [...(state.log || []), (now || new Date()).toISOString().slice(11, 19) + ' ' + line].slice(-30);
 }
 
-export const REPORT_CHECK_SYSTEM = `You are an independent reviewer at an SEO agency. Another AI wrote a client's monthly SEO report email and report page from the DATA below. Before an account manager sends it to the client, check that it is accurate.
+export const REPORT_CHECK_SYSTEM = `You are an independent reviewer at an SEO agency. Another AI wrote a client's monthly SEO report email and report page from the DATA below. Before an account manager sends it to the client, check that it is accurate and fair.
 
-Return JSON only: {"verdict": "accurate" | "issues", "issues": [{"severity": "error" | "warning", "issue": "one sentence, quoting the wrong statement and the correct figure"}], "summary": "one sentence"}
+The figures have ALREADY been checked by code:
+- NUMBERS VERIFIED BY CODE are correct (exact, normally rounded, or a simple sum of data values). NEVER flag them, whatever you think the arithmetic is.
+- NUMBERS NOT FOUND IN THE DATA need your judgement: fine when they aren't data claims (e.g. "60 to 90 days", "four articles", "positions 1 to 3"), an ERROR when they're presented as this client's statistics.
 
-ERROR (verdict "issues"):
-- any number, percentage or direction (up/down) that contradicts the DATA — e.g. "traffic grew 20%" when users fell, or a keyword position that isn't in the data;
-- a claim about work done that the WORK DONE section doesn't support;
-- the wrong client name or the wrong month;
-- figures presented as facts that appear nowhere in the data (invented statistics).
-WARNING: rounding that changes the meaning, vague or misleading comparisons, a missing obvious headline (e.g. a large drop not mentioned).
-Rounding within normal reporting (e.g. 1,234 → "about 1,200", 12.4% → "12%") is fine. Judge only against the DATA.`;
+Return JSON only: {"verdict": "accurate" | "issues", "issues": [{"severity": "error" | "warning", "issue": "one sentence, quoting the statement"}], "summary": "one sentence"}
+
+ERROR: an unverified number presented as a statistic; a direction that contradicts the DATA (e.g. "traffic grew" when users fell); a claim about work done that WORK DONE doesn't support; the wrong client or month.
+WARNING: a change listed under NOTABLE CHANGES that the email doesn't mention or honestly reflect (e.g. conversions dropping to zero, a large fall called "modest"); misleading comparisons.
+Rounding (76,808 → "76,800", 12.4% → "12%") is always fine.`;
+
+// ---------------------------------------------------------------------------
+// Figure checking in code: every number in the text must match a data value,
+// allowing normal rounding and sums of up to two values (e.g. two pages'
+// clicks combined). An AI doing this from memory flagged correct figures
+// (76,800 vs 76,808; 17 + 12 = 29) as errors in the first live run.
+// ---------------------------------------------------------------------------
+export function dataNumbers(data, form) {
+  const vals = [];
+  const add = v => { const n = Number(v); if (Number.isFinite(n)) vals.push(n); };
+  const t = data?.traffic || {};
+  for (const p of [t.current, t.previous, t.yoy]) if (p) Object.values(p).forEach(add);
+  for (const c of [t.momChange, t.yoyChange]) if (c) Object.values(c).forEach(v => { add(v); add(Math.abs(v)); });
+  ['gscClicksThis', 'gscImpressionsThis'].forEach(k => add(form?.[k]));
+  add(String(form?.gscCtrThis || '').replace('%', ''));
+  const kw = (data?.keywords || []).slice(0, 50);
+  kw.forEach(k => { add(k.position); add(k.prevPosition); add(k.clicks); add(k.impressions); add(k.change); add(Math.abs(k.change || 0)); });
+  const pages = (data?.topPages || []).slice(0, 20);
+  pages.forEach(p => { add(p.clicks); add(p.impressions); add(p.position); });
+  // Pairwise sums of page / keyword clicks ("these two pages combined for 29 clicks").
+  const clicks = [...pages.map(p => p.clicks), ...kw.slice(0, 20).map(k => k.clicks)].filter(n => n > 0);
+  for (let i = 0; i < clicks.length; i++) for (let j = i + 1; j < clicks.length; j++) vals.push(clicks[i] + clicks[j]);
+  // Differences between this and last month (e.g. "62 fewer users").
+  if (t.current && t.previous) for (const k of Object.keys(t.current)) add(Math.abs((t.current[k] || 0) - (t.previous[k] || 0)));
+  return vals;
+}
+
+function matches(stated, isPct, values) {
+  const decimals = (String(stated).split('.')[1] || '').length;
+  return values.some(v => {
+    if (Math.abs(v - stated) < 1e-9) return true;
+    if (isPct || decimals) return Math.abs(v - stated) <= (decimals ? 0.5 * Math.pow(10, -decimals) + 1e-9 : 0.5);
+    // Whole numbers: allow rounding to the stated precision (76,800 ← 76,808).
+    const zeros = (String(Math.round(stated)).match(/0+$/) || [''])[0].length;
+    const unit = Math.pow(10, zeros);
+    return unit > 1 && Math.round(v / unit) * unit === stated;
+  });
+}
+
+// → { verified: ['1,200', '20%', …], unmatched: ['60', …] } for the email + report text.
+export function checkFigures(text, values) {
+  const verified = [], unmatched = [];
+  const seen = new Set();
+  for (const m of String(text || '').matchAll(/(?<![\w.])(\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?)(\s*%|k\b)?/gi)) {
+    const raw = m[0].trim();
+    if (seen.has(raw)) continue;
+    seen.add(raw);
+    let n = Number(m[1].replace(/,/g, ''));
+    if (/k/i.test(m[2] || '')) n *= 1000;
+    if (n >= 1990 && n <= 2035 && !m[2]) continue;   // years
+    if (n < 10 && !m[2] && !m[1].includes('.')) continue; // small counts / ordinals — left to the reviewer
+    (matches(n, /%/.test(m[2] || ''), values) ? verified : unmatched).push(raw);
+  }
+  return { verified, unmatched };
+}
+
+// Changes big enough that the email must reflect them honestly.
+export function notableChanges(data) {
+  const out = [];
+  const t = data?.traffic || {};
+  const label = { users: 'organic users', sessions: 'organic sessions', conversions: 'conversions', revenue: 'revenue' };
+  for (const [k, pct] of Object.entries(t.momChange || {})) {
+    if (!label[k] || !t.previous?.[k]) continue;
+    if ((t.current?.[k] || 0) === 0) out.push(label[k] + ' fell to zero this month (from ' + t.previous[k] + ')');
+    else if (Math.abs(pct) >= 25) out.push(label[k] + ' ' + (pct > 0 ? 'up ' : 'down ') + Math.abs(pct) + '% vs last month');
+  }
+  return out;
+}
 
 export function buildReportCheckInput({ client, month, data, form, work, email, micro }) {
   const facts = {
@@ -55,8 +123,15 @@ export function buildReportCheckInput({ client, month, data, form, work, email, 
     top_keywords: (data.keywords || []).slice(0, 25).map(k => ({ query: k.query, position: k.position, previous_position: k.prevPosition, clicks: k.clicks })),
     top_pages: (data.topPages || []).slice(0, 10)
   };
+  const text = (email.subject || '') + '\n' + (email.body || '') + '\n' + JSON.stringify(micro || {});
+  const figures = checkFigures(text, dataNumbers(data, form));
+  const notable = notableChanges(data);
   return `DATA (authoritative):
 ${JSON.stringify(facts, null, 2)}
+
+NUMBERS VERIFIED BY CODE (correct — do not flag): ${figures.verified.join(', ') || '(none)'}
+NUMBERS NOT FOUND IN THE DATA (judge these): ${figures.unmatched.join(', ') || '(none)'}
+NOTABLE CHANGES (the email must reflect these honestly): ${notable.join('; ') || '(none)'}
 
 WORK DONE THIS MONTH (from the agency's records):
 ${JSON.stringify(work, null, 2)}

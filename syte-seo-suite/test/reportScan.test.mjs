@@ -98,5 +98,22 @@ await t('work summary from database rows (server) counts only this client and mo
   assertEq(w.content.count, 1); assertEq(w.technical.done, 1); assertEq(w.aeo.optimizations, 2); assertEq(w.implementations.verified, 1);
 });
 
+await t('figures are checked in code — the real Krost email (the AI got two of these wrong)', async () => {
+  const { checkFigures, dataNumbers, notableChanges } = await import('../netlify/functions/lib/reportScan.js');
+  const data = {
+    traffic: { current: { users: 541, sessions: 700, conversions: 0, revenue: 0 }, previous: { users: 603, sessions: 777, conversions: 4, revenue: 0 },
+      momChange: { users: -10.3, sessions: -9.9, conversions: -100, revenue: 0 } },
+    keywords: [{ query: 'gondola shelving', position: 4.2, clicks: 12, impressions: 76000 }, { query: 'racking prices', position: 6, clicks: 17, impressions: 808 }],
+    topPages: [{ page: 'https://k/', clicks: 168 }, { page: 'https://k/racking-prices/', clicks: 17 }, { page: 'https://k/gondola/', clicks: 12 }]
+  };
+  const form = { gscClicksThis: '177', gscImpressionsThis: '76808', gscCtrThis: '0.2%' };
+  const email = 'the racking prices guide and gondola shelving cost page, combining for 29 clicks. 76,800 impressions. Organic users came in at 541 against 603 last month, down 10%. Expect movement over 60 to 90 days. We published 4 articles in 2026. Users grew 35%.';
+  const f = checkFigures(email, dataNumbers(data, form));
+  for (const ok of ['29', '76,800', '541', '603', '10%']) if (!f.verified.includes(ok)) throw new Error(ok + ' should verify; got ' + JSON.stringify(f));
+  if (!f.unmatched.includes('35%')) throw new Error('an invented percentage must be unmatched');
+  if (f.verified.includes('2026') || f.unmatched.includes('2026')) throw new Error('years are ignored');
+  if (!notableChanges(data).some(n => /conversions fell to zero/.test(n))) throw new Error('conversions to zero must be notable');
+});
+
 console.log(`\nreportScan: ${pass} passed, ${fail} failed`);
 if (fail > 0) process.exit(1);
