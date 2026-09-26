@@ -14,6 +14,7 @@
 //   SUPABASE_URL, SUPABASE_SERVICE_KEY (falls back to SUPABASE_KEY)
 
 import { createClient } from '@supabase/supabase-js';
+import { reportRecipients, sendReport, buildPublishedEmail } from './lib/reportEmail.js';
 
 export const config = {
   schedule: '*/15 * * * *'
@@ -54,10 +55,12 @@ export default async function handler() {
   const byId = Object.fromEntries((clients || []).map(c => [c.id, c]));
 
   let published = 0, failed = 0;
+  const results = [];
   for (const row of rows) {
     const client = byId[row.client_id];
     try {
       const liveUrl = await publishOne(client, row);
+      results.push({ client: client?.name || 'Unknown client', title: row.page_title, liveUrl: liveUrl || row.payload?.live_url || '' });
       await supabase.from('syte_suite_cms_queue').update({
         status: 'published',
         payload: { ...(row.payload || {}), published_at: new Date().toISOString(), live_url: liveUrl || row.payload?.live_url || '' }
@@ -70,8 +73,21 @@ export default async function handler() {
         error_msg: e.message
       }).eq('id', row.id);
       failed++;
+      results.push({ client: client?.name || 'Unknown client', title: row.page_title, error: e.message });
       console.error('[publish-approved] FAILED:', client?.name, '-', row.page_title, '->', e.message);
     }
+  }
+
+  // One team email per pass: what went live, and anything that failed.
+  // Only when a report address is set (see lib/reportEmail.js).
+  try {
+    const to = await reportRecipients(supabase);
+    if (to.length && results.length) {
+      const siteUrl = (process.env.URL || 'https://syte-seo-suite.netlify.app').replace(/\/+$/, '');
+      await sendReport({ to, ...buildPublishedEmail(results, siteUrl) });
+    }
+  } catch (e) {
+    console.error('[publish-approved] report email failed:', e.message);
   }
 
   return new Response(`Published ${published}, failed ${failed}`, { status: 200 });

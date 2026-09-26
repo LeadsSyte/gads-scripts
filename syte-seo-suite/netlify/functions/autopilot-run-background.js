@@ -17,6 +17,7 @@ import { scanBrandFromWebsite } from '../../src/lib/brandScan.js';
 import { fetchHtmlServer, htmlToTextServer, findAboutUrlServer } from './lib/serverBrandScan.js';
 import { prepareServerPush, canPushTo, pushArticleServer, loadArticleOutput, pushedTitles } from './lib/serverPush.js';
 import { getPublishingProfile } from '../../src/modules/cms/publishingProfile.js';
+import { reportRecipients, sendReport, buildRunSummaryEmail } from './lib/reportEmail.js';
 
 const BUDGET_MS = 14 * 60 * 1000;
 const MAX_HOPS = 12;           // self re-invocations per run — a runaway guard
@@ -125,6 +126,7 @@ export async function handler(event) {
       timeLeftMs: () => BUDGET_MS - (Date.now() - started)
     });
 
+    if (!more) await emailRunSummary(supabase, client, state);
     if (more) {
       if (hop + 1 > MAX_HOPS) throw new Error('Stopped after ' + MAX_HOPS + ' continuations');
       const base = process.env.URL || 'https://syte-seo-suite.netlify.app';
@@ -141,7 +143,23 @@ export async function handler(event) {
       state.error = String(e.message || e).slice(0, 400);
       state.updated_at = new Date().toISOString();
       try { await saveRunState(supabase, state); } catch { /* nothing more to do */ }
+      try { await emailRunSummary(supabase, { id: clientId, name: state.client_name || 'Client' }, state); } catch { /* recorded below */ }
     }
   }
   return { statusCode: 202 };
+}
+
+// Team email when a run ends (finished or failed). Never fails the run; the
+// outcome is kept on the state so the panel can say whether it went out.
+async function emailRunSummary(supabase, client, state) {
+  try {
+    const to = await reportRecipients(supabase);
+    if (!to.length) return;
+    const siteUrl = (process.env.URL || 'https://syte-seo-suite.netlify.app').replace(/\/+$/, '');
+    await sendReport({ to, ...buildRunSummaryEmail(client, state, siteUrl) });
+    state.report = { sent_at: new Date().toISOString(), to };
+  } catch (e) {
+    state.report = { error: String(e.message || e).slice(0, 200) };
+  }
+  try { await saveRunState(supabase, state); } catch { /* best effort */ }
 }

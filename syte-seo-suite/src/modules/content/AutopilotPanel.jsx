@@ -40,6 +40,31 @@ export default function AutopilotPanel({ accent, onFinished }) {
   // button silently do nothing. null | 'run' | 'push'.
   const [confirming, setConfirming] = useState(null);
   const wasActive = useRef(false);
+  // Suite-wide: who gets the run summaries and "went live" emails
+  // (netlify/functions/lib/reportEmail.js). Empty = no emails.
+  const [reportEmail, setReportEmail] = useState('');
+  const [savedReportEmail, setSavedReportEmail] = useState('');
+
+  useEffect(() => {
+    if (!supabase) return;
+    supabase.from('syte_suite_settings').select('data').eq('id', 'autopilot-config').maybeSingle()
+      .then(({ data }) => { const v = data?.data?.report_email || ''; setReportEmail(v); setSavedReportEmail(v); });
+  }, []);
+
+  async function saveReportEmail() {
+    setBusy(true); setErr('');
+    try {
+      const value = reportEmail.trim();
+      if (value && !value.split(/[,;\s]+/).filter(Boolean).every(s => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(s))) {
+        throw new Error('That does not look like an email address.');
+      }
+      const { error } = await supabase.from('syte_suite_settings')
+        .upsert({ id: 'autopilot-config', data: { report_email: value }, updated_at: new Date().toISOString() });
+      if (error) throw error;
+      setSavedReportEmail(value);
+    } catch (e) { setErr(e.message); }
+    finally { setBusy(false); }
+  }
 
   async function refresh() {
     if (!client || !supabase) { setState(null); return; }
@@ -168,6 +193,15 @@ export default function AutopilotPanel({ accent, onFinished }) {
         Push articles that pass to the site as drafts{connected ? '' : ' (not connected)'}
       </label>
 
+      <div className="row" style={{ gap: 8, marginTop: 10, fontSize: 12, flexWrap: 'wrap' }}>
+        <span className="muted">Run summaries and "went live" emails (all clients) go to:</span>
+        <input type="email" value={reportEmail} onChange={e => setReportEmail(e.target.value)} placeholder="nobody — no emails"
+          style={{ width: 240, fontSize: 12, padding: '4px 8px' }} />
+        {reportEmail.trim() !== savedReportEmail && (
+          <button disabled={busy} onClick={saveReportEmail} style={{ fontSize: 12 }}>Save</button>
+        )}
+      </div>
+
       {err && <div style={{ color: 'var(--red)', fontSize: 12, marginTop: 8 }}>{err}</div>}
 
       {state && (
@@ -185,6 +219,12 @@ export default function AutopilotPanel({ accent, onFinished }) {
           {[state.scan_note, state.research_note, state.push_note].filter(Boolean).map((n, i) => (
             <div key={i} className="muted" style={{ marginTop: 4 }}>{n}</div>
           ))}
+          {!active && state.report?.sent_at && (
+            <div className="muted" style={{ marginTop: 4 }}>Summary emailed to {(state.report.to || []).join(', ')}.</div>
+          )}
+          {!active && state.report?.error && (
+            <div style={{ marginTop: 4, color: 'var(--orange, #e8a33d)' }}>Summary email not sent: {state.report.error}</div>
+          )}
 
           {plan.length > 0 && (
             <table style={{ marginTop: 8 }}>
