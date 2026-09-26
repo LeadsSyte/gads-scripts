@@ -27,6 +27,10 @@ export default function AutopilotPanel({ accent, onFinished }) {
   const [state, setState] = useState(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  // Inline "are you sure" instead of window.confirm: embedded browsers (and
+  // browser-driving bots) can auto-dismiss native dialogs, which made the
+  // button silently do nothing.
+  const [confirming, setConfirming] = useState(false);
   const wasActive = useRef(false);
 
   async function refresh() {
@@ -39,7 +43,7 @@ export default function AutopilotPanel({ accent, onFinished }) {
     wasActive.current = active;
   }
 
-  useEffect(() => { setErr(''); wasActive.current = false; refresh(); }, [client?.id]);
+  useEffect(() => { setErr(''); setConfirming(false); wasActive.current = false; refresh(); }, [client?.id]);
   useEffect(() => {
     if (!state || !ACTIVE.includes(state.status)) return;
     const t = setInterval(refresh, 8000);
@@ -52,8 +56,7 @@ export default function AutopilotPanel({ accent, onFinished }) {
   const thisMonth = state && state.month === new Date().toISOString().slice(0, 7);
 
   async function start(restart) {
-    const n = client.pages_per_month || 4;
-    if (!confirm(`Run Autopilot for ${client.name}? The server researches and writes ${n} article(s) for this month and checks each one. Nothing is pushed to the website.`)) return;
+    setConfirming(false);
     setBusy(true); setErr('');
     try {
       const res = await fetch('/.netlify/functions/autopilot-run-background', {
@@ -106,8 +109,8 @@ export default function AutopilotPanel({ accent, onFinished }) {
           </div>
         </div>
         <div className="row" style={{ gap: 8 }}>
-          {!active && (
-            <button className="primary" disabled={busy} onClick={() => start(!!thisMonth)}
+          {!active && !confirming && (
+            <button className="primary" disabled={busy} onClick={() => setConfirming(true)}
               style={{ background: accent, borderColor: accent, color: '#0a0a0c', fontSize: 12 }}>
               {thisMonth ? 'Run again' : 'Run now'}
             </button>
@@ -115,9 +118,23 @@ export default function AutopilotPanel({ accent, onFinished }) {
         </div>
       </div>
 
-      <label className="row" style={{ gap: 6, fontSize: 12, marginTop: 8, cursor: 'pointer' }}>
+      {confirming && !active && (
+        <div className="row" style={{ gap: 8, marginTop: 10, flexWrap: 'wrap', fontSize: 12 }}>
+          <span>
+            Write and check {client.pages_per_month || 4} article(s) for {client.name} now?
+            {thisMonth ? ' This starts a fresh run for this month.' : ''} Nothing is pushed to the website.
+          </span>
+          <button className="primary" disabled={busy} onClick={() => start(!!thisMonth)}
+            style={{ background: accent, borderColor: accent, color: '#0a0a0c', fontSize: 12 }}>
+            Yes, start
+          </button>
+          <button className="ghost" onClick={() => setConfirming(false)} style={{ fontSize: 12 }}>Cancel</button>
+        </div>
+      )}
+
+      <label style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '10px 0 0', cursor: 'pointer', width: 'fit-content' }}>
         <input type="checkbox" checked={!!profile.autopilot_enabled} disabled={busy}
-          onChange={e => toggleMonthly(e.target.checked)} />
+          onChange={e => toggleMonthly(e.target.checked)} style={{ width: 'auto', margin: 0 }} />
         Run automatically on the 1st of every month (08:00)
       </label>
 
