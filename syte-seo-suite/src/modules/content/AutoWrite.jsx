@@ -287,22 +287,30 @@ export default function AutoWrite() {
     }
     setBatchState(s => ({ ...s, [client.id]: { busy: false, progress: '' } }));
 
-    if (offTopic.length) {
-      const list = offTopic.map(({ a, rel }) =>
-        '\u2022 ' + (a.topic || a.keyword || 'Article') + ' — ' + relevanceHeadline(rel, client)).join('\n');
-      if (cleared.length === 0) {
-        setBatchState(s => ({
-          ...s,
-          [client.id]: { busy: false, summary: 'Nothing pushed — all ' + offTopic.length + ' article(s) look off topic for ' + client.name + ':\n' + list }
-        }));
-        return;
-      }
-      if (!confirm(offTopic.length + ' of ' + todo.length + ' article(s) look off topic for ' + client.name
-        + ' and will be SKIPPED:\n\n' + list + '\n\nPush the remaining ' + cleared.length + '?')) return;
-    } else if (!confirm('Push ' + cleared.length + ' article(s) to ' + client.name + "'s CMS as drafts? Notifications will go out per your approval settings.")) {
+    const list = offTopic.map(({ a, rel }) =>
+      '\u2022 ' + (a.topic || a.keyword || 'Article') + ' — ' + relevanceHeadline(rel, client)).join('\n');
+    if (offTopic.length && cleared.length === 0) {
+      setBatchState(s => ({
+        ...s,
+        [client.id]: { busy: false, summary: 'Nothing pushed — all ' + offTopic.length + ' article(s) look off topic for ' + client.name + ':\n' + list }
+      }));
       return;
     }
+    // Ask inside the page rather than with window.confirm: embedded
+    // browsers (and browser-driving bots) auto-dismiss native dialogs,
+    // which made this button silently do nothing. The bar shows the
+    // question with Yes / Cancel and calls runMonthPush on Yes.
+    const question = offTopic.length
+      ? offTopic.length + ' of ' + todo.length + ' article(s) look off topic for ' + client.name
+        + ' and will be SKIPPED:\n' + list + '\nPush the remaining ' + cleared.length + ' as drafts?'
+      : 'Push ' + cleared.length + ' article(s) to ' + client.name + "'s CMS as drafts? Notifications go out per the client's approval settings.";
+    setBatchState(s => ({
+      ...s,
+      [client.id]: { busy: false, confirm: { question, cleared, offTopicCount: offTopic.length, heldCount } }
+    }));
+  }
 
+  async function runMonthPush(client, { cleared, offTopicCount, heldCount }) {
     let ok = 0, warned = 0, failed = 0;
     for (let i = 0; i < cleared.length; i++) {
       const a = cleared[i];
@@ -325,7 +333,7 @@ export default function AutoWrite() {
       ...s,
       [client.id]: {
         busy: false,
-        summary: 'Done: ' + ok + ' pushed' + (warned ? ', ' + warned + ' with warnings' : '') + (failed ? ', ' + failed + ' FAILED (see CMS → Push History)' : '') + (offTopic.length ? ', ' + offTopic.length + ' skipped as off topic' : '') + (heldCount ? ', ' + heldCount + ' held back by the Autopilot reviewer' : '') + '.'
+        summary: 'Done: ' + ok + ' pushed' + (warned ? ', ' + warned + ' with warnings' : '') + (failed ? ', ' + failed + ' FAILED (see CMS → Push History)' : '') + (offTopicCount ? ', ' + offTopicCount + ' skipped as off topic' : '') + (heldCount ? ', ' + heldCount + ' held back by the Autopilot reviewer' : '') + '.'
       }
     }));
   }
@@ -567,10 +575,23 @@ export default function AutoWrite() {
                       ? 'Pushing ' + batch.progress
                       : (batch.summary || writtenCount + ' written article(s) this month')}
                   </span>
-                  <button disabled={batch.busy} onClick={() => pushMonthBatch(client, articles)}
-                    title="Sends every written article that isn't already in the CMS as a draft, in one go">
-                    Push month to CMS
-                  </button>
+                  {!batch.confirm && (
+                    <button disabled={batch.busy} onClick={() => pushMonthBatch(client, articles)}
+                      title="Sends every written article that isn't already in the CMS as a draft, in one go">
+                      Push month to CMS
+                    </button>
+                  )}
+                  {batch.confirm && (
+                    <div style={{ width: '100%', display: 'flex', gap: 8, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+                      <span style={{ fontSize: 12, whiteSpace: 'pre-line', flex: '1 1 260px' }}>{batch.confirm.question}</span>
+                      <button className="primary" onClick={() => {
+                        const c = batch.confirm;
+                        setBatchState(s => ({ ...s, [client.id]: { busy: true, progress: '' } }));
+                        runMonthPush(client, c);
+                      }}>Yes, push</button>
+                      <button className="ghost" onClick={() => setBatchState(s => ({ ...s, [client.id]: { busy: false } }))}>Cancel</button>
+                    </div>
+                  )}
                 </div>
               )}
               {stubArticles.length > 0 && (

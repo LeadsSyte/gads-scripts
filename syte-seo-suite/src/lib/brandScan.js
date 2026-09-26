@@ -161,23 +161,32 @@ export function mergeScanIntoBrandDocs(brandDocs, brief, { now = new Date() } = 
 
 // Scan the client's website and return a structured brand brief.
 // onProgress(message) is called with human-readable status updates.
-export async function scanBrandFromWebsite(client, { onProgress } = {}) {
+// The page fetch, HTML-to-text, About-link finder and Claude call default to
+// the browser versions; the server-side Autopilot passes Node ones
+// (netlify/functions/lib/serverBrandScan.js) so both scan the same way.
+export async function scanBrandFromWebsite(client, {
+  onProgress,
+  fetchHtml = fetchPageHtml,
+  toText = htmlToText,
+  aboutUrlOf = findAboutUrl,
+  complete = claudeComplete
+} = {}) {
   const url = client?.url;
   if (!url) throw new Error('Add the client Website URL first, then scan.');
 
   onProgress?.('Fetching homepage…');
-  const homeHtml = await fetchPageHtml(url);
+  const homeHtml = await fetchHtml(url);
   if (!homeHtml) {
     throw new Error('Could not fetch the website (blocked, offline, or JS-only). Paste brand docs manually instead.');
   }
 
-  let text = htmlToText(homeHtml);
+  let text = toText(homeHtml);
   const home = url.replace(/\/$/, '') + '/';
 
-  const aboutUrl = findAboutUrl(homeHtml, url);
+  const aboutUrl = aboutUrlOf(homeHtml, url);
   if (aboutUrl && aboutUrl !== home) {
     onProgress?.('Reading About page…');
-    const aboutText = htmlToText(await fetchPageHtml(aboutUrl));
+    const aboutText = toText(await fetchHtml(aboutUrl));
     if (aboutText) text += '\n\n[ABOUT PAGE]\n' + aboutText;
   }
 
@@ -203,7 +212,7 @@ Return ONLY this JSON:
   "brief": "a single string of 6-12 bullet points, each prefixed with '- ', covering: what they do, key products/services (use their REAL names), differentiators, geographic focus, terminology/phrases they use, and anything a writer must get right to sound on-brand"
 }`;
 
-  const raw = await claudeComplete({
+  const raw = await complete({
     system,
     messages: [{ role: 'user', content: userMessage }],
     max_tokens: 1500,

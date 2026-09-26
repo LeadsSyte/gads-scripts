@@ -12,7 +12,9 @@ import { runAutopilotStep, newRunState, monthKey, CHECKER_SYSTEM, buildCheckerIn
 import { claudeCompleteServer, openaiJson } from './lib/serverAi.js';
 import { getServerSupabase } from './lib/serverSupabase.js';
 import { fetchGscForClient } from './lib/serverGsc.js';
-import { loadClient, loadRunState, saveRunState, existingTopics, saveArticle } from './lib/autopilotStore.js';
+import { loadClient, loadRunState, saveRunState, existingTopics, saveArticle, saveClientFields } from './lib/autopilotStore.js';
+import { scanBrandFromWebsite } from '../../src/lib/brandScan.js';
+import { fetchHtmlServer, htmlToTextServer, findAboutUrlServer } from './lib/serverBrandScan.js';
 
 const BUDGET_MS = 14 * 60 * 1000;
 const MAX_HOPS = 12;           // self re-invocations per run — a runaway guard
@@ -89,6 +91,10 @@ export async function handler(event) {
       existingTopics: (c, m) => existingTopics(supabase, c, m),
       saveArticle: row => saveArticle(supabase, row),
       saveState: s => saveRunState(supabase, s),
+      scanBrand: c => scanBrandFromWebsite(c, {
+        fetchHtml: fetchHtmlServer, toText: htmlToTextServer, aboutUrlOf: findAboutUrlServer, complete: claudeCompleteServer
+      }),
+      saveClientFields: (id, fields) => saveClientFields(supabase, id, fields),
       timeLeftMs: () => BUDGET_MS - (Date.now() - started)
     });
 

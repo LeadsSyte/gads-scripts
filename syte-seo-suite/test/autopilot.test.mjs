@@ -135,6 +135,39 @@ await t('topics already written this month are skipped', async () => {
   assertEq(calls.saved.length, 2);
 });
 
+await t('a client with no website scan is scanned first, and the scan is what the writer and reviewer see', async () => {
+  const unscanned = { ...CLIENT, brand_docs: '', audience: '' };
+  const { deps, calls } = fakeDeps();
+  let savedFields = null;
+  deps.scanBrand = async () => ({ voice: 'Calm', audience: 'SA allergy sufferers', brief: '- Publishes pollen calendars for Gauteng', sourceUrl: unscanned.url });
+  deps.saveClientFields = async (id, f) => { savedFields = { id, ...f }; };
+  let reviewed = '';
+  deps.checkArticle = async ({ user }) => { reviewed = user; return { verdict: 'pass', problems: [] }; };
+  const state = newRunState(unscanned);
+  await runAutopilotStep(unscanned, state, deps);
+  assertEq(savedFields?.id, 'c1', 'scan saved to the client');
+  if (!/Publishes pollen calendars/.test(savedFields.brand_docs)) throw new Error('scan not merged into brand_docs');
+  assertEq(savedFields.audience, 'SA allergy sufferers', 'empty audience filled');
+  if (!/Publishes pollen calendars/.test(reviewed)) throw new Error('reviewer did not see the fresh scan');
+  const write = calls.complete.find(c => c.max_tokens === 5000);
+  if (!/Publishes pollen calendars/.test(write.system)) throw new Error('writer did not see the fresh scan');
+});
+
+await t('a fresh scan is not redone, and a failed scan does not stop the run', async () => {
+  const { deps } = fakeDeps();
+  let scans = 0;
+  deps.scanBrand = async () => { scans++; throw new Error('site blocked'); };
+  const fresh = { ...CLIENT, brand_docs: '=== Website Brand Scan (2026/09/20) ===\nSource: https://allergyfacts.example\nScanned: 2026-09-20\n\n- x' };
+  deps.now = () => new Date('2026-09-26T09:00:00Z');
+  await runAutopilotStep(fresh, newRunState(fresh), deps);
+  assertEq(scans, 0, 'fresh scan skipped');
+  const stale = { ...CLIENT, brand_docs: '' };
+  const state = newRunState(stale);
+  await runAutopilotStep(stale, state, deps);
+  assertEq(scans, 1); assertEq(state.status, 'done');
+  if (!/Website scan failed/.test(state.scan_note)) throw new Error('scan failure not noted');
+});
+
 await t('checker verdicts are normalised strictly', () => {
   assertEq(normalizeCheck({ verdict: 'pass', problems: [] }).verdict, 'pass');
   assertEq(normalizeCheck({ verdict: 'pass', problems: [{ severity: 'error', issue: 'x' }] }).verdict, 'fail', 'pass with an error');
@@ -152,6 +185,16 @@ await t('the checker sees the brand reference and the article body, not the meta
 await t('the checker is told who the competitors are', () => {
   const input = buildCheckerInput({ ...CLIENT, competitors: 'allergyfoundation.co.za' }, article('X'), PLAN.opportunities[0]);
   if (!/COMPETITORS[^\n]*allergyfoundation\.co\.za/.test(input)) throw new Error('competitors missing');
+});
+
+const { htmlToTextServer, findAboutUrlServer } = await import('../netlify/functions/lib/serverBrandScan.js');
+
+await t('server scan helpers: visible text only, and the About link', () => {
+  const html = '<html><head><title>T</title><style>.a{}</style></head><body><nav><a href="/about-us/?x=1#t">About</a></nav>'
+    + '<script>var hidden=1</script><h1>Crane &amp; Hoist</h1><p>We build&nbsp;cranes.</p><!-- note --></body></html>';
+  assertEq(htmlToTextServer(html), 'About Crane & Hoist We build cranes.');
+  assertEq(findAboutUrlServer(html, 'https://jgs.example/'), 'https://jgs.example/about-us/');
+  assertEq(findAboutUrlServer('<a href="https://other.example/about">x</a>', 'https://jgs.example/'), null, 'other site ignored');
 });
 
 console.log(`\nautopilot: ${pass} passed, ${fail} failed`);

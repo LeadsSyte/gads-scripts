@@ -9,6 +9,12 @@ export async function loadClient(supabase, clientId) {
   return data;
 }
 
+export async function saveClientFields(supabase, clientId, fields) {
+  const { error } = await supabase.from('syte_suite_clients')
+    .update({ ...fields, updated_at: new Date().toISOString() }).eq('id', clientId);
+  if (error) throw new Error('Could not save client: ' + error.message);
+}
+
 export async function loadRunState(supabase, clientId) {
   const { data } = await supabase.from('syte_suite_settings').select('data').eq('id', STATE_PREFIX + clientId).maybeSingle();
   return data?.data && data.data.client_id ? data.data : null;

@@ -22,7 +22,7 @@ import {
 } from '../../../src/modules/content/topicResearchCore.js';
 import { verifyArticleRelevance } from '../../../src/modules/content/articleRelevance.js';
 import { parseArticleBody } from '../../../src/modules/cms/parseArticle.js';
-import { parseScanBlock } from '../../../src/lib/brandScan.js';
+import { parseScanBlock, isScanStale, mergeScanIntoBrandDocs } from '../../../src/lib/brandScan.js';
 
 export const STATE_PREFIX = 'autopilot:';
 export const monthKey = (d = new Date()) => d.toISOString().slice(0, 7);
@@ -128,14 +128,41 @@ export function normalizeCheck(raw) {
 //   existingTopics(client, month) → Set of lowercased topics already written this month
 //   saveArticle(row)          → { id }
 //   saveState(state)          persists the state
+//   scanBrand(client)         → { voice, audience, brief, sourceUrl } website scan (optional)
+//   saveClientFields(id, fields) persists a refreshed scan (optional)
 //   now()                     → Date (tests)
 //   timeLeftMs()              → ms left before the function is cut off
-export async function runAutopilotStep(client, state, deps) {
+export async function runAutopilotStep(clientIn, state, deps) {
   const now = () => (deps.now ? deps.now() : new Date());
+  let client = clientIn;
   // Each article is research-free but takes 1–3 minutes of AI calls; don't
   // start one that can't finish before the platform stops the function.
   const PER_ARTICLE_MS = 4 * 60 * 1000;
   const save = async () => { state.updated_at = now().toISOString(); await deps.saveState(state); };
+
+  // 0. Ground the client in its own website when the scan is missing, stale
+  //    or for another URL — exactly what Auto Write does before researching.
+  //    The scan is what the writer and both checkers treat as the truth about
+  //    the business; without it the reviewer has nothing to check claims
+  //    against. A failed scan never stops the run.
+  if (!state.plan && deps.scanBrand && isScanStale(client, { now: now() })) {
+    state.status = 'researching';
+    log(state, 'Scanning the client website', now());
+    await save();
+    try {
+      const brief = await deps.scanBrand(client);
+      const brand_docs = mergeScanIntoBrandDocs(client.brand_docs, brief, { now: now() });
+      const fields = { brand_docs };
+      if (!client.audience && brief.audience) fields.audience = brief.audience;
+      client = { ...client, ...fields };
+      if (deps.saveClientFields) await deps.saveClientFields(client.id, fields);
+      log(state, 'Website scanned', now());
+    } catch (e) {
+      state.scan_note = 'Website scan failed (' + String(e.message || e).slice(0, 160) + '). Writing from the stored client details.';
+      log(state, state.scan_note, now());
+    }
+    await save();
+  }
 
   // 1. Research + topic plan, once per run.
   if (!state.plan) {
