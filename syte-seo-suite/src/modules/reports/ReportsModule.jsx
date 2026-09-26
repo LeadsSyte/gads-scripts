@@ -123,12 +123,24 @@ export default function ReportsModule({ sub }) {
   // tracks them independently. Rows logged before the split carry
   // report_type 'full'; treat those as the SEO report, which is what they
   // led with.
+  // The sent log has no report_type column, so a sent row's type is read off
+  // the generated report it came from (same client, month and email subject).
+  // Without this every sent AEO report counted as a sent SEO report and the
+  // AEO report itself never showed as Sent.
+  function sentType(r) {
+    if (r.report_type) return r.report_type;
+    const gen = allGenerated.find(g => g.client_id === r.client_id && g.month === r.month &&
+      (g.email_subject || '') === (r.email_subject || '') && g.report_type);
+    return gen?.report_type || 'full';
+  }
+
   function typeStatus(clientId, type) {
+    const isType = t => t === type || (type === 'seo' && t === 'full');
     const matches = r =>
       r.client_id === clientId &&
       r.month === monthKey &&
-      ((r.report_type || 'full') === type || (type === 'seo' && (r.report_type || 'full') === 'full'));
-    if (allSent.some(matches)) return 'Sent';
+      isType(r.report_type || 'full');
+    if (allSent.some(r => r.client_id === clientId && r.month === monthKey && isType(sentType(r)))) return 'Sent';
     if (allGenerated.some(matches)) return 'Generated';
     return 'Pending';
   }

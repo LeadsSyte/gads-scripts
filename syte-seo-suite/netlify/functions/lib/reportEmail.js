@@ -148,6 +148,31 @@ export function buildAeoSummaryEmail(client, state, siteUrl) {
   return { subject, html };
 }
 
+// "Report ready to review" for the account manager. The client is never
+// emailed by the suite — this goes to the report address only.
+export function buildReportReadyEmail(client, state, siteUrl, viewUrl) {
+  const month = state?.month || '';
+  const check = state?.check;
+  const issues = check?.issues || [];
+  const done = state?.status === 'done';
+  const subject = (!done ? 'Report NOT built: ' : check?.verdict === 'accurate' ? 'Report ready to review: ' : 'Report ready — check the flagged figures: ')
+    + (client?.name || '') + ' (' + month + ')';
+  const html = WRAP(done ? `
+    <p>The <strong>${esc(client?.name)}</strong> SEO report for <strong>${esc(month)}</strong> is ready for you to review and send.</p>
+    <p>QA score (email tone and format): <strong>${esc(state.qa_score ?? '—')}/10</strong><br/>
+    Accuracy check (every figure against the Google data): <strong style="color:${check?.verdict === 'accurate' ? '#15803d' : '#b91c1c'}">${check?.verdict === 'accurate' ? 'all figures match' : 'issues found'}</strong></p>
+    ${issues.length ? '<ul>' + issues.map(i => `<li style="color:${i.severity === 'error' ? '#b91c1c' : '#b45309'}">${esc(i.issue)}</li>`).join('') + '</ul>' : ''}
+    ${viewUrl ? `<p>${BTN(viewUrl, 'Open the report')}</p>` : ''}
+    <p style="color:#555"><strong>Draft email to the client</strong> — Subject: ${esc(state.email_subject)}</p>
+    <div style="border:1px solid #ddd;border-radius:8px;padding:14px;background:#fafafa;white-space:pre-wrap;font-size:14px">${esc(state.email_body)}</div>
+    <p style="margin-top:18px">${BTN(siteUrl, 'Open the suite to edit and send')}</p>
+    <p style="color:#777;font-size:12px">Nothing has been sent to the client. Review, edit if needed, then send it from Reports → Monthly Report.</p>`
+    : `<p>The <strong>${esc(client?.name)}</strong> report for ${esc(month)} could not be built.</p>
+    <p style="color:#b91c1c">${esc(state?.error || 'Unknown error')}</p>
+    <p>${BTN(siteUrl, 'Open the suite')}</p>`);
+  return { subject, html };
+}
+
 // Digest from one publisher pass. results: [{ client, title, liveUrl, error }]
 export function buildPublishedEmail(results, siteUrl) {
   const ok = results.filter(r => !r.error);

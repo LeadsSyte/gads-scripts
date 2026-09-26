@@ -291,16 +291,25 @@ function loadImplementations() {
 }
 
 export function getWorkSummary(clientId, month) {
+  return workSummaryFrom({
+    articles: loadContentHistory(), tasks: loadTechTasks(),
+    aeoResults: loadAeoResults(), impls: loadImplementations()
+  }, clientId, month);
+}
+
+// The same summary from explicit lists — the server-side Report Autopilot
+// passes rows from Supabase (the browser reads its local copies above).
+export function workSummaryFrom({ articles: allArticles = [], tasks = [], aeoResults = {}, impls: allImpls = [] } = {}, clientId, month) {
   const m = month || new Date().toISOString().slice(0, 7);
 
   // Content articles written this month
-  const articles = loadContentHistory().filter(
-    h => h.client_id === clientId && (h.created_at || '').slice(0, 7) === m
+  const articles = allArticles.filter(
+    h => h.client_id === clientId && (h.created_at || h.generated_at || '').slice(0, 7) === m
   );
   const articleTopics = articles.map(a => a.topic || a.keyword || 'Untitled').slice(0, 10);
 
   // Technical SEO tasks
-  const allTasks = loadTechTasks().filter(
+  const allTasks = tasks.filter(
     t => t.client_id === clientId && (t.created_at || '').slice(0, 7) === m
   );
   const openTasks = allTasks.filter(t => t.status === 'open').length;
@@ -308,14 +317,13 @@ export function getWorkSummary(clientId, month) {
   const criticalFixed = allTasks.filter(t => t.priority === 'critical' && t.status !== 'open').length;
 
   // AEO optimizations
-  const aeoResults = loadAeoResults();
-  const aeoPages = Object.values(aeoResults).filter(
+  const aeoPages = (Array.isArray(aeoResults) ? aeoResults : Object.values(aeoResults || {})).filter(
     r => r.client_id === clientId && (r.generated_at || '').slice(0, 7) === m
   );
   const totalOpts = aeoPages.reduce((a, r) => a + (r.optimizations?.length || 0), 0);
 
   // Implementations verified
-  const impls = loadImplementations().filter(
+  const impls = allImpls.filter(
     i => i.client_id === clientId && (i.implemented_at || i.created_at || '').slice(0, 7) === m
   );
   // Delivered work — verified on the live page, or handed to the client's

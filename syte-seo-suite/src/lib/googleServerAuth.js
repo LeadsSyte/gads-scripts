@@ -16,12 +16,20 @@ const PROXY = '/.netlify/functions/google-proxy';
 const CONNECT_URL = '/.netlify/functions/google-oauth-start';
 const PROXY_TIMEOUT_MS = 60000;
 
+// import.meta.env only exists in the Vite build. The server-side Autopilots
+// import this module under Node, where it's undefined.
+const ENV = import.meta.env || {};
+
 // Optional shared secret — only sent if configured. Kept optional because the
 // link is internal / password-protected (no strict gate required).
-const GATE = import.meta.env.VITE_PROXY_SHARED_SECRET || undefined;
+const GATE = ENV.VITE_PROXY_SHARED_SECRET || undefined;
 
+// On the server (Report Autopilot), Google calls are made directly with a
+// token minted from the stored refresh token: the function sets
+// globalThis.__SYTE_GOOGLE_FETCH(url, {method, body}, accountEmail) → Response.
 export function serverAuthEnabled() {
-  const v = import.meta.env.VITE_GOOGLE_SERVER_AUTH;
+  if (globalThis.__SYTE_GOOGLE_FETCH) return true;
+  const v = ENV.VITE_GOOGLE_SERVER_AUTH;
   return v === true || v === 'true' || v === '1';
 }
 
@@ -84,6 +92,7 @@ export async function proxyGoogleFetch(url, { method = 'GET', body = null } = {}
   if (!accountEmail) {
     throw new Error('Server Google auth is on but this client has no Google account bound. Set its GA4/GSC account, then connect that account under Google accounts.');
   }
+  if (globalThis.__SYTE_GOOGLE_FETCH) return globalThis.__SYTE_GOOGLE_FETCH(url, { method, body }, accountEmail);
   const data = await callProxy({ action: 'request', accountEmail, url, method, body });
   const status = data.status;
   const text = typeof data.body === 'string' ? data.body : JSON.stringify(data.body ?? '');

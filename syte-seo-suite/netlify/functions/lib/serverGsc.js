@@ -2,7 +2,7 @@
 // refresh tokens as google-proxy (syte_suite_google_accounts), so a client
 // works here exactly when its Google account is connected in the suite.
 
-async function accessTokenFor(supabase, email) {
+export async function accessTokenFor(supabase, email) {
   const key = String(email || '').toLowerCase();
   const { data, error } = await supabase
     .from('syte_suite_google_accounts')

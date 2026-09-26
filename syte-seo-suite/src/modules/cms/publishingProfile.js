@@ -87,6 +87,11 @@ export const PROFILE_DEFAULTS = {
   // AEO Autopilot: generate and independently check this month's AEO
   // optimisations on the 3rd (netlify/functions/aeoscan-monthly.js).
   aeoscan_enabled: false,
+
+  // Report Autopilot: build last month's SEO report on the 5th, check every
+  // figure against the data, and tell the account manager it's ready
+  // (netlify/functions/report-monthly.js). The client is never emailed.
+  reports_enabled: false,
 };
 
 export function getPublishingProfile(client) {

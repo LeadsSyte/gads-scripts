@@ -44,6 +44,8 @@ import { ensureToken, SCOPES, getToken, switchAccount, silentRefresh, getCurrent
 import { serverAuthEnabled } from '../../lib/googleServerAuth.js';
 import { fetchReportData } from './reportData.js';
 import { evaluateGscReadiness } from './gscGuard.js';
+import { parseAliceOutput, formFromReportData, generateSeoReport } from './reportGenerate.js';
+import ReportAutopilotPanel from './ReportAutopilotPanel.jsx';
 import { REPORT_DATA_VERSION } from './reportDataVersion.js';
 import { preserveImportedGsc, GSC_IMPORT_SOURCE } from './gscImport.js';
 import GscCsvImport from './GscCsvImport.jsx';
@@ -126,26 +128,14 @@ function fmtEta(ms) {
   return m > 0 ? `~${m}m ${s % 60}s left` : `~${s}s left`;
 }
 
-function parseAliceOutput(text) {
-  if (!text) return { subject: '', body: '' };
-  const lines = text.split('\n');
-  let subject = '';
-  let bodyStart = 0;
-  for (let i = 0; i < lines.length; i++) {
-    const m = lines[i].match(/^SUBJECT:\s*(.+)/i);
-    if (m) { subject = m[1].trim(); continue; }
-    if (lines[i].trim() === '---') { bodyStart = i + 1; break; }
-  }
-  const body = lines.slice(bodyStart).join('\n').trim();
-  return { subject, body: body || text };
-}
-
 export default function MonthlyReport({ initialMonth }) {
   const client = useClients(s => s.current());
   const saveClient = useClients(s => s.save);
   // Opens on the month the dashboard was showing, so a report generated from
   // a card is logged under the month the operator was looking at.
   const [month, setMonth] = useState(initialMonth || previousMonth());
+  // Bumped when the Report Autopilot finishes, to load the report it saved.
+  const [reloadKey, setReloadKey] = useState(0);
   const [form, setForm] = useState({});
   const [algContext, setAlgContext] = useState('');
   const [aeoSnap, setAeoSnap] = useState(null);
@@ -243,7 +233,7 @@ export default function MonthlyReport({ initialMonth }) {
       }
     })();
     return () => { cancelled = true; };
-  }, [client?.id, month]);
+  }, [client?.id, month, reloadKey]);
 
   useEffect(() => {
     if (!client) { setAeoSnap(null); setPreviousAeoSnap(null); setWorkSummary(null); return; }
@@ -255,7 +245,7 @@ export default function MonthlyReport({ initialMonth }) {
       setAeoSnap(match);
       setPreviousAeoSnap(prev);
     }).catch(() => {});
-  }, [client?.id, month]);
+  }, [client?.id, month, reloadKey]);
 
   // Re-trigger the data fetch whenever a Google token lands — covers the
   // case where the operator signs in elsewhere (the client modal's picker,
@@ -465,48 +455,9 @@ export default function MonthlyReport({ initialMonth }) {
       // Cache for future visits.
       setCachedReportData(c.id, m, data).catch(() => {});
 
-      // Also populate form fields for the Alice email generator.
-      if (data.traffic?.current) {
-        const t = data.traffic;
-        setForm(prev => ({
-          ...prev,
-          seoOrganicThis: String(t.current.users),
-          seoOrganicLast: String(t.previous?.users || ''),
-          seoUsersYoy: String(t.yoy?.users || ''),
-          seoConvThis: String(t.current.conversions),
-          seoConvLast: String(t.previous?.conversions || ''),
-          seoSessThis: String(t.current.sessions),
-          seoSessLast: String(t.previous?.sessions || ''),
-          seoRevenueThis: String(t.current.revenue || ''),
-          seoRevenueLast: String(t.previous?.revenue || '')
-        }));
-      }
-      if (data.keywords?.length > 0) {
-        // Search Console totals, derived from the same query rows the report
-        // tables render. Alice needs these for the click narrative and the
-        // PPC equivalent estimate, which otherwise both read as "—".
-        const gscClicks = data.keywords.reduce((a, k) => a + (Number(k.clicks) || 0), 0);
-        const gscImpr = data.keywords.reduce((a, k) => a + (Number(k.impressions) || 0), 0);
-        setForm(prev => ({
-          ...prev,
-          gscClicksThis: String(gscClicks),
-          gscImpressionsThis: String(gscImpr),
-          gscCtrThis: gscImpr > 0 ? ((gscClicks / gscImpr) * 100).toFixed(1) + '%' : '',
-          topQueries: data.keywords.slice(0, 10).map(k =>
-            k.query + ' — pos ' + k.position + (k.change != null ? ' (' + (k.change > 0 ? '+' : '') + k.change + ')' : '') + ', ' + k.clicks + ' clicks'
-          ).join('\n')
-        }));
-      }
-      if (data.topPages?.length > 0) {
-        setForm(prev => ({
-          ...prev,
-          topPages: data.topPages.slice(0, 10).map(p => {
-            let path = p.page;
-            try { path = new URL(p.page).pathname; } catch {}
-            return path + ' — ' + p.clicks + ' clicks';
-          }).join('\n')
-        }));
-      }
+      // Also populate form fields for the Alice email generator (shared
+      // mapping — the Report Autopilot uses the same one).
+      setForm(prev => ({ ...prev, ...formFromReportData(data) }));
 
       const parts = [];
       if (data.traffic?.current) parts.push('GA4 ✓');
@@ -731,69 +682,16 @@ export default function MonthlyReport({ initialMonth }) {
     setErr(''); setEmail({ subject: '', body: '' }); setMicroJson(null); setQa(null); setSent(false);
     setAeoOnly(false); setProbeWarnings([]); setLiveAeoProbe(null);
 
-    const payload = buildAlicePayload({
-      clientName: client.name,
-      industry: client.industry || '',
-      goals: client.context,
-      startDate: client.start_date,
-      month: monthLabel(month),
-      algorithmContext: algContext,
-      ...form,
-      // Scope is fixed here regardless of what else the client buys: this
-      // button produces the SEO deliverable, nothing else.
-      hasSeo: true,
-      hasAeo: false,
-      seoOnly: true
-    }, null, workSummary);
-
     try {
-      // 1. Alice email
-      setPhase('alice');
-      const aliceText = await claudeComplete({
-        system: ALICE_SEO_SYSTEM,
-        messages: [{ role: 'user', content: payload }],
-        model: 'claude-sonnet-4-6',
-        max_tokens: 1000,
-        temperature: 0.7
+      // Alice email → microsite JSON → QA (advisory), shared with the
+      // server-side Report Autopilot (reportGenerate.js).
+      const { aliceText, email: parsed, micro: microObj, qa: qaObj } = await generateSeoReport({
+        client, form, workSummary, monthLabel: monthLabel(month), algorithmContext: algContext,
+        onPhase: setPhase
       });
-      const parsed = sanitizeEmail(parseAliceOutput(aliceText));
       setEmail(parsed);
-
-      // 2. Microsite JSON
-      setPhase('micro');
-      const micrositeText = await claudeComplete({
-        system: MICROSITE_SEO_SYSTEM,
-        messages: [{ role: 'user', content: payload }],
-        model: 'claude-sonnet-4-6',
-        // Was 1000 — same truncation issue as the AEO path. Bumped to 4000.
-        max_tokens: 4000,
-        temperature: 0.5
-      });
-      const microObj = extractJSON(micrositeText);
-      if (!microObj) {
-        console.error('[Report] Microsite raw output:', micrositeText);
-        throw new Error('Microsite JSON could not be parsed from model output. Raw output logged to console — usually means truncated output (raise max_tokens) or model wrapped JSON in stray prose.');
-      }
-      if (!microObj.clientName) microObj.clientName = client.name;
       setMicroJson(microObj);
-
-      // 3. QA — advisory only. The report is already built here, so a
-      // failing QA call must not throw past the save and lose it.
-      setPhase('qa');
-      let qaObj = null;
-      try {
-        const qaText = await claudeComplete({
-          system: QA_SEO_SYSTEM,
-          messages: [{ role: 'user', content: 'Alice email to review:\n\n' + aliceText }],
-          model: 'claude-sonnet-4-6',
-          max_tokens: 500,
-          temperature: 0
-        });
-        qaObj = extractJSON(qaText);
-        if (qaObj) setQa(qaObj);
-      } catch (e) {
-        console.warn('[Report] SEO QA pass failed, keeping the report:', e.message);
-      }
+      if (qaObj) setQa(qaObj);
 
       await persistGenerated({
         client_id: client.id,
@@ -948,6 +846,8 @@ export default function MonthlyReport({ initialMonth }) {
   return (
     <div>
       <h2 style={{ marginTop: 0 }}>Monthly Report</h2>
+
+      <ReportAutopilotPanel client={client} month={month} onFinished={() => setReloadKey(k => k + 1)} />
 
       {/* Step 1: client + month */}
       <div className="card" style={{ marginBottom: 14 }}>
@@ -1461,6 +1361,17 @@ export default function MonthlyReport({ initialMonth }) {
                     : <span className="badge red">Revise before sending</span>}
                 </div>
               </div>
+              {qa.independent_check && (
+                <div style={{ marginBottom: 10, padding: 10, borderRadius: 8, background: 'var(--surface-2)', fontSize: 13 }}>
+                  <strong>Accuracy check</strong> (every figure against the Google data, by a second AI):{' '}
+                  <b style={{ color: qa.independent_check.verdict === 'accurate' ? 'var(--green)' : 'var(--red)' }}>
+                    {qa.independent_check.verdict === 'accurate' ? 'all figures match' : 'issues found'}
+                  </b>
+                  {(qa.independent_check.issues || []).map((i, k) => (
+                    <div key={k} style={{ fontSize: 12, marginTop: 4, color: i.severity === 'error' ? 'var(--red)' : 'var(--orange, #e8a33d)' }}>• {i.issue}</div>
+                  ))}
+                </div>
+              )}
               {(qa.checks || []).map((c, i) => (
                 <div key={i} className="row" style={{ justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid var(--border)' }}>
                   <span style={{ fontSize: 13 }}>
