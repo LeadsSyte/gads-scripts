@@ -1,14 +1,18 @@
 // Preview or apply ONE Tech Autopilot fix on a client's WordPress site.
 // POST { clientId, taskId, action: 'plan' | 'apply' } with X-Suite-Auth.
-// Background function: the result is written onto the fix's entry in the
-// Tech Autopilot state (techscan:<clientId> → tasks[].apply) and the panel
-// polls it. 'apply' only runs for a fix that was previewed first, and only
-// changes what that preview showed. See lib/techFix.js.
+// Background function: the result is written to its own row,
+// syte_suite_settings 'techfix:<clientId>:<taskId>', which the panel polls.
+// (One row per fix: several previews run at once, and writing into the
+// shared scan state made them overwrite each other.) 'apply' only runs for
+// a fix that was previewed first, and only changes what that preview
+// showed. See lib/techFix.js.
 
 import { getServerSupabase } from './lib/serverSupabase.js';
 import { loadClient } from './lib/autopilotStore.js';
-import { loadTechState, saveTechState, fetchLiveHtml } from './lib/techStore.js';
+import { loadTechState, fetchLiveHtml } from './lib/techStore.js';
 import { planFix, applyPlan, checkLive } from './lib/techFix.js';
+
+export const fixRowId = (clientId, taskId) => 'techfix:' + clientId + ':' + taskId;
 
 function wpClient(client) {
   const base = client.wp_url.replace(/\/+$/, '') + '/wp-json/';
@@ -42,7 +46,14 @@ export async function handler(event) {
   const state = await loadTechState(supabase, clientId);
   const entry = state?.tasks?.find(e => e.task?.id === taskId);
   if (!entry) return { statusCode: 404 };
-  const save = async (apply) => { entry.apply = { ...apply, at: new Date().toISOString() }; await saveTechState(supabase, state); };
+  const rowId = fixRowId(clientId, taskId);
+  const { data: prev } = await supabase.from('syte_suite_settings').select('data').eq('id', rowId).maybeSingle();
+  entry.apply = prev?.data || null;
+  const save = async (apply) => {
+    entry.apply = { ...apply, client_id: clientId, task_id: taskId, at: new Date().toISOString() };
+    const { error } = await supabase.from('syte_suite_settings').upsert({ id: rowId, data: entry.apply, updated_at: entry.apply.at });
+    if (error) throw new Error('Could not save the fix status: ' + error.message);
+  };
 
   try {
     const client = await loadClient(supabase, clientId);

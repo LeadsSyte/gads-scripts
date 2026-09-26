@@ -81,8 +81,16 @@ export default function TechAutopilotPanel({ accent, onFinished }) {
 
   async function refresh() {
     if (!client || !supabase) { setState(null); return; }
-    const { data } = await supabase.from('syte_suite_settings').select('data').eq('id', 'techscan:' + client.id).maybeSingle();
-    const s = data?.data?.client_id === client.id ? data.data : null;
+    const [{ data }, { data: fixRows }] = await Promise.all([
+      supabase.from('syte_suite_settings').select('data').eq('id', 'techscan:' + client.id).maybeSingle(),
+      // Each fix's preview/apply status lives in its own row (techfix-background.js).
+      supabase.from('syte_suite_settings').select('data').like('id', 'techfix:' + client.id + ':%')
+    ]);
+    let s = data?.data?.client_id === client.id ? data.data : null;
+    if (s?.tasks) {
+      const byTask = new Map((fixRows || []).map(r => [r.data?.task_id, r.data]));
+      s = { ...s, tasks: s.tasks.map(e => ({ ...e, apply: byTask.get(e.task?.id) || null })) };
+    }
     setState(s);
     const active = !!s && ACTIVE.includes(s.status);
     if (wasActive.current && !active && onFinished) onFinished();
