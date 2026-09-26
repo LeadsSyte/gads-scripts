@@ -88,6 +88,7 @@ WEBSITE: ${client.url || '(none)'}
 INDUSTRY: ${client.industry || '(none)'}
 LOCATION / SERVICE AREA: ${client.location || '(none)'}
 AUDIENCE: ${client.audience || '(none)'}
+COMPETITORS (never recommend or link to these): ${client.competitors || '(none listed)'}
 CURRENT YEAR: ${new Date().getFullYear()}
 
 BRAND REFERENCE (from the business's own website — the only trusted source of facts about it):

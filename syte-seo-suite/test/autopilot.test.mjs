@@ -149,5 +149,10 @@ await t('the checker sees the brand reference and the article body, not the meta
   if (/\*\*Meta Title:\*\*/.test(input.split('ARTICLE BODY:')[1])) throw new Error('meta block leaked into body');
 });
 
+await t('the checker is told who the competitors are', () => {
+  const input = buildCheckerInput({ ...CLIENT, competitors: 'allergyfoundation.co.za' }, article('X'), PLAN.opportunities[0]);
+  if (!/COMPETITORS[^\n]*allergyfoundation\.co\.za/.test(input)) throw new Error('competitors missing');
+});
+
 console.log(`\nautopilot: ${pass} passed, ${fail} failed`);
 if (fail > 0) process.exit(1);
