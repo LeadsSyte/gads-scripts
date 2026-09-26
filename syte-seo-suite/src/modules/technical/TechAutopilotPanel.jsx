@@ -3,6 +3,7 @@ import { useClients } from '../../store/useClients.js';
 import { supabase, updateClientFields } from '../../lib/supabase.js';
 import { proxyAuthHash } from '../cms/proxyAuth.js';
 import { getPublishingProfile } from '../cms/publishingProfile.js';
+import FixSheetButtons from '../../components/FixSheetButtons.jsx';
 
 // Tech Autopilot: the server crawls the selected client's site, writes the
 // fix list, and has a second AI check every fix against the live page.
@@ -197,6 +198,8 @@ export default function TechAutopilotPanel({ accent, onFinished }) {
           onChange={e => toggleMonthly(e.target.checked)} style={{ width: 'auto', margin: 0 }} />
         Scan automatically on the 2nd of every month
       </label>
+
+      <FixSheetButtons client={client} accent={accent} />
 
       {err && <div style={{ color: 'var(--red)', fontSize: 12, marginTop: 8 }}>{err}</div>}
 

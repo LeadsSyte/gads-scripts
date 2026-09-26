@@ -3,6 +3,7 @@ import { useClients } from '../../store/useClients.js';
 import { supabase, updateClientFields } from '../../lib/supabase.js';
 import { proxyAuthHash } from '../cms/proxyAuth.js';
 import { getPublishingProfile } from '../cms/publishingProfile.js';
+import FixSheetButtons from '../../components/FixSheetButtons.jsx';
 
 // AEO Autopilot: the server picks this month's pages, generates their AEO
 // optimisations (same rules as "Run Optimizations" below), and a second AI
@@ -195,6 +196,8 @@ export default function AeoAutopilotPanel({ accent, onFinished }) {
           onChange={e => toggleMonthly(e.target.checked)} style={{ width: 'auto', margin: 0 }} />
         Run automatically on the 3rd of every month
       </label>
+
+      <FixSheetButtons client={client} accent={accent} />
 
       {err && <div style={{ color: 'var(--red)', fontSize: 12, marginTop: 8 }}>{err}</div>}
 
