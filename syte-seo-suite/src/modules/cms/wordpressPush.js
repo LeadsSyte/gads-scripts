@@ -36,14 +36,13 @@ export async function pushMetaToWordPress(client, item) {
   const { type, record } = found;
   const p = item.payload || {};
 
-  const meta = {
-    _yoast_wpseo_title:       p.meta_title || '',
-    _yoast_wpseo_metadesc:    p.meta_description || '',
-    _yoast_wpseo_focuskw:     p.primary_keyword || '',
-    rank_math_title:           p.meta_title || '',
-    rank_math_description:     p.meta_description || '',
-    rank_math_focus_keyword:   p.primary_keyword || ''
-  };
+  // Only write the fields we actually have. Sending '' for a missing value
+  // overwrites the live page's existing SEO title/description with nothing.
+  const meta = {};
+  if (p.meta_title) Object.assign(meta, { _yoast_wpseo_title: p.meta_title, rank_math_title: p.meta_title });
+  if (p.meta_description) Object.assign(meta, { _yoast_wpseo_metadesc: p.meta_description, rank_math_description: p.meta_description });
+  if (p.primary_keyword) Object.assign(meta, { _yoast_wpseo_focuskw: p.primary_keyword, rank_math_focus_keyword: p.primary_keyword });
+  if (!Object.keys(meta).length) throw new Error('Nothing to update: no SEO title, description or keyword was given.');
 
   await updatePostMeta(client, type, record.id, meta);
   const adminUrl = client.wp_url.replace(/\/+$/, '') + '/wp-admin/post.php?post=' + record.id + '&action=edit';

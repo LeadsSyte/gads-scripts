@@ -36,9 +36,24 @@ export function clientIsConnected(client) {
 //  1. insert into syte_suite_cms_queue as pending (so there's a history row)
 //  2. dispatch to WP / Shopify / Custom
 //  3. update the row with status=pushed|failed + admin_url
+// Technical SEO and AEO fixes change an EXISTING page. The CMS push only
+// knows how to create a draft post, so these used to become a separate draft
+// containing the fix text, and a meta_title / meta_description task went to
+// the SEO-meta path with no value and would have blanked the live page's
+// Yoast / RankMath fields. Refused until in-place page editing exists.
+export function unsupportedPushReason(item) {
+  if (item && (item.module === 'technical' || item.module === 'aeo')) {
+    return 'Technical and AEO fixes can\'t be applied to a page automatically yet — a push would create a separate draft post instead of changing ' +
+      (item.page_url || 'the page') + '. Copy the fix and apply it on the page by hand for now.';
+  }
+  return '';
+}
+
 export async function pushItemInline(client, item, deps = BROWSER_DEPS) {
   if (!client) throw new Error('No client selected.');
   if (!item)   throw new Error('Nothing to push.');
+  const unsupported = unsupportedPushReason(item);
+  if (unsupported) throw new Error(unsupported);
 
   // Step 1 — log the pending row.
   const row = await deps.queue({

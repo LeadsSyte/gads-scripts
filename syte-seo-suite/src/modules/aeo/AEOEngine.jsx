@@ -1374,6 +1374,7 @@ export default function AEOEngine({ sub }) {
           ok++;
         } catch (e) {
           fail++;
+          setErr(e.message);
         }
         setProgress('Pushed ' + ok + ' · failed ' + fail);
       }
