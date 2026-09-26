@@ -94,8 +94,8 @@ async function shopifyBlogId(get, profile) {
 export async function handler(event) {
   const key = process.env.WP_PROXY_AUTH;
   const qs = event.queryStringParameters || {};
-  const kind = qs.a ? 'a' : qs.q ? 'q' : '';
-  const id = String(qs.a || qs.q || '').replace(/[^a-zA-Z0-9-]/g, '');
+  const kind = qs.a ? 'a' : qs.q ? 'q' : qs.f ? 'f' : '';
+  const id = String(qs.a || qs.q || qs.f || '').replace(/[^a-zA-Z0-9-]/g, '');
   if (!key || !kind || !id) return message(400, 'Missing or invalid preview link.');
   const want = previewSig(kind, id, key);
   const got = String(qs.sig || '');
@@ -105,6 +105,7 @@ export async function handler(event) {
 
   try {
     const supabase = getServerSupabase();
+    if (kind === 'f') return await previewAeoAddition(supabase, id);
     let clientId, draftTitle, draftContent = null, draftImage = '', pushedRef = null;
 
     if (kind === 'a') {
@@ -176,6 +177,31 @@ export async function handler(event) {
     console.error('[draft-preview]', e.message);
     return message(502, 'Preview failed: ' + e.message);
   }
+}
+
+// ?f=<clientId>-<key>: a planned AEO addition (aeofix-background.js), shown
+// in the page it will be added to — the live page with its content swapped
+// for the content plus the addition.
+async function previewAeoAddition(supabase, id) {
+  const cut = id.lastIndexOf('-');
+  const clientId = id.slice(0, cut), key = id.slice(cut + 1);
+  const { data: row } = await supabase.from('syte_suite_settings').select('data').eq('id', 'aeofix:' + clientId + ':' + key).maybeSingle();
+  const fix = row?.data;
+  if (!fix?.plan?.renderedPreview) return message(404, 'There is no preview for this addition — preview it again in the suite.');
+  const { data: client } = await supabase.from('syte_suite_clients').select('*').eq('id', clientId).maybeSingle();
+  if (!client?.wp_url) return message(404, 'Client not found.');
+  const get = wp(client);
+  const [current, pageHtml] = await Promise.all([
+    get('wp/v2/' + fix.plan.target.type + '/' + fix.plan.target.id + '?_fields=content'),
+    fetchPublicHtml(fix.url)
+  ]);
+  const r = buildThemePreview({
+    pageHtml, templateContent: current?.content?.rendered || '', templateTitle: '',
+    draftContent: fix.plan.renderedPreview, draftTitle: '', pageUrl: fix.url,
+    note: 'Showing the page with the new ' + (fix.plan.position === 'top' ? 'section at the top of the content' : 'section at the end of the content') + '.'
+  });
+  if (!r.ok) return message(502, 'Could not rebuild this page for a preview (' + r.reason + '). The addition would go at the ' + fix.plan.position + ' of the page content.');
+  return page(200, r.html);
 }
 
 function render(client, profile, chosen, candidates, { draftTitle, draftContent, draftImage, pushed }) {

@@ -23,6 +23,52 @@ const VERDICT = {
   false_alarm: { label: 'removed', color: 'var(--text-dim)' }
 };
 
+// Same key as aeoOptKey in AEOEngine.jsx (type::name).
+const optKeyOf = o => (o.type || '') + '::' + (o.name || o.title || '');
+
+// Preview in the page → Add to the page → (Undo). The preview is the real
+// page in the client's design with the section in place.
+function AeoFixControls({ fix, wpConnected, accent, onAction }) {
+  const f = fix || {};
+  const btn = { fontSize: 11, padding: '3px 10px' };
+  const note = (text, color) => <div style={{ fontSize: 11, marginTop: 4, color: color || 'var(--text-muted)' }}>{text}</div>;
+  if (!wpConnected) return note('Add by hand — no working WordPress connection.');
+  if (f.status === 'planning') return note('Checking the page and building the preview…');
+  if (f.status === 'applying') return note('Adding it to the page and checking the live site…');
+  if (f.status === 'undoing') return note('Removing it from the page…');
+  if (f.status === 'manual') return note('Add by hand: ' + f.reason, 'var(--orange, #e8a33d)');
+  const row = { gap: 6, marginTop: 4, alignItems: 'center', flexWrap: 'wrap' };
+  if (f.status === 'applied') {
+    return (
+      <div className="row" style={row}>
+        <span style={{ fontSize: 11, color: f.live?.status === 'verified' ? 'var(--green)' : 'var(--orange, #e8a33d)' }}>
+          {f.live?.status === 'verified' ? '✓ Added and live on the page.' : '✓ Added in WordPress. ' + (f.live?.detail || '')}
+        </span>
+        <button className="ghost" style={btn} onClick={() => onAction('undo')}>Undo</button>
+        {f.error && note(f.error, 'var(--red)')}
+      </div>
+    );
+  }
+  return (
+    <div>
+      {f.status === 'failed' && note('Didn\'t work: ' + (f.error || ''), 'var(--red)')}
+      {f.status === 'removed' && note('Removed from the page.')}
+      {f.status === 'planned' && f.error && note(f.error, 'var(--orange, #e8a33d)')}
+      {f.status === 'planned' && note('Goes at the ' + (f.plan?.position === 'top' ? 'top of the page content' : 'end of the page content') + '.')}
+      <div className="row" style={row}>
+        {f.status !== 'planned' && <button className="ghost" style={btn} onClick={() => onAction('plan')}>Preview in the page</button>}
+        {f.status === 'planned' && (
+          <>
+            {f.preview_url && <a href={f.preview_url} target="_blank" rel="noreferrer" style={{ fontSize: 11, color: accent }}>Open preview →</a>}
+            <button className="primary" style={{ ...btn, background: accent, borderColor: accent, color: '#0a0a0c' }} onClick={() => onAction('apply')}>Add to the page</button>
+            <button className="ghost" style={btn} onClick={() => onAction('plan')}>Refresh preview</button>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function AeoAutopilotPanel({ accent, onFinished }) {
   const client = useClients(s => s.current());
   const load = useClients(s => s.load);
@@ -32,10 +78,17 @@ export default function AeoAutopilotPanel({ accent, onFinished }) {
   const [confirming, setConfirming] = useState(false);
   const wasActive = useRef(false);
 
+  const [fixes, setFixes] = useState({}); // url|optKey → aeofix status
+
   async function refresh() {
     if (!client || !supabase) { setState(null); return; }
-    const { data } = await supabase.from('syte_suite_settings').select('data').eq('id', 'aeoscan:' + client.id).maybeSingle();
+    const [{ data }, { data: fixRows }] = await Promise.all([
+      supabase.from('syte_suite_settings').select('data').eq('id', 'aeoscan:' + client.id).maybeSingle(),
+      // Each addition's preview/apply status has its own row (aeofix-background.js).
+      supabase.from('syte_suite_settings').select('data').like('id', 'aeofix:' + client.id + ':%')
+    ]);
     const s = data?.data?.client_id === client.id ? data.data : null;
+    setFixes(Object.fromEntries((fixRows || []).map(r => [r.data?.url + '|' + r.data?.opt_key, r.data])));
     setState(s);
     const active = !!s && ACTIVE.includes(s.status);
     if (wasActive.current && !active && onFinished) onFinished();
@@ -43,15 +96,32 @@ export default function AeoAutopilotPanel({ accent, onFinished }) {
   }
 
   useEffect(() => { setErr(''); setConfirming(false); wasActive.current = false; refresh(); }, [client?.id]);
+  const fixBusy = Object.values(fixes).some(f => ['planning', 'applying', 'undoing'].includes(f?.status));
   useEffect(() => {
-    if (!state || !ACTIVE.includes(state.status)) return;
-    const t = setInterval(refresh, 8000);
+    if (!state || (!ACTIVE.includes(state.status) && !fixBusy)) return;
+    const t = setInterval(refresh, fixBusy ? 3000 : 8000);
     return () => clearInterval(t);
-  }, [state?.status, client?.id]);
+  }, [state?.status, client?.id, fixBusy]);
+
+  async function fixAction(url, optKey, action) {
+    setErr('');
+    try {
+      const res = await fetch('/.netlify/functions/aeofix-background', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Suite-Auth': await proxyAuthHash() },
+        body: JSON.stringify({ clientId: client.id, url, optKey, action })
+      });
+      if (res.status !== 202) throw new Error('The server refused (' + res.status + ').');
+      const busyStatus = { plan: 'planning', apply: 'applying', undo: 'undoing' }[action];
+      setFixes(f => ({ ...f, [url + '|' + optKey]: { ...(f[url + '|' + optKey] || {}), status: busyStatus, error: '' } }));
+      setTimeout(refresh, 2500);
+    } catch (e) { setErr(e.message); }
+  }
 
   if (!client) return null;
   const profile = getPublishingProfile(client);
   const active = state && ACTIVE.includes(state.status);
+  const wpConnected = client.cms_type === 'WordPress' && !!(client.wp_url && client.wp_username && client.wp_app_password);
 
   async function start() {
     setConfirming(false); setBusy(true); setErr('');
@@ -158,6 +228,10 @@ export default function AeoAutopilotPanel({ accent, onFinished }) {
                         </div>
                         <div className="muted" style={{ fontSize: 11 }}>{x.url}</div>
                         {x.o.check?.reason && <div style={{ fontSize: 11, color: v?.color }}>{x.o.check.reason}</div>}
+                        {!active && x.o.check?.verdict === 'confirmed' && (x.o.type === 'content' || x.o.type === 'schema') && (
+                          <AeoFixControls fix={fixes[x.url + '|' + optKeyOf(x.o)]} wpConnected={wpConnected} accent={accent}
+                            onAction={a => fixAction(x.url, optKeyOf(x.o), a)} />
+                        )}
                       </td>
                     </tr>
                   );
