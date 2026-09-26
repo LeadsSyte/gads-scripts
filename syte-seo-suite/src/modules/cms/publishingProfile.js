@@ -83,6 +83,10 @@ export const PROFILE_DEFAULTS = {
   // list, have it independently checked, and refresh the Technical SEO task
   // board (netlify/functions/techscan-monthly.js). Off until switched on.
   techscan_enabled: false,
+
+  // AEO Autopilot: generate and independently check this month's AEO
+  // optimisations on the 3rd (netlify/functions/aeoscan-monthly.js).
+  aeoscan_enabled: false,
 };
 
 export function getPublishingProfile(client) {

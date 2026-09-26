@@ -122,6 +122,32 @@ export function buildTechSummaryEmail(client, state, siteUrl) {
   return { subject, html };
 }
 
+// Summary of one AEO Autopilot run.
+export function buildAeoSummaryEmail(client, state, siteUrl) {
+  const rows = state?.rows || [];
+  const items = rows.flatMap(r => (r.optimizations || []).map(o => ({ url: r.url, o })));
+  const by = v => items.filter(x => x.o.check?.verdict === v);
+  const confirmed = by('confirmed'), falseAlarms = by('false_alarm'), wrong = by('fix_wrong'), human = by('needs_human');
+  const failedRun = state?.status === 'failed';
+  const subject = (failedRun ? 'AEO run FAILED: ' : (wrong.length || human.length) ? 'AEO run — needs a look: ' : 'AEO run done: ')
+    + client.name + (items.length ? ' — ' + confirmed.length + ' confirmed optimisation' + (confirmed.length === 1 ? '' : 's') : '')
+    + (falseAlarms.length ? ', ' + falseAlarms.length + ' removed' : '');
+  const list = (xs, color) => xs.length
+    ? '<ul style="font-size:14px">' + xs.map(x => `<li style="margin-bottom:6px"><strong>${esc(x.o.name || x.o.type)}</strong> — <a href="${esc(x.url)}">${esc(x.url)}</a>`
+      + `<br/><span style="color:${color}">${esc(x.o.check?.reason || '')}</span></li>`).join('') + '</ul>'
+    : '';
+  const html = WRAP(`
+    <p><strong>${esc(client.name)}</strong> — AEO optimisations${state?.plan ? ' (' + state.plan.found + ' pages found, ' + rows.length + ' optimised)' : ''}${failedRun ? ' <strong style="color:#b91c1c">stopped with an error</strong>' : ''}.</p>
+    ${state?.error ? '<p style="color:#b91c1c">' + esc(state.error) + '</p>' : ''}
+    ${confirmed.length ? '<p><strong>Confirmed</strong> — in the AEO Engine, ready to hand over:</p>' + list(confirmed, '#15803d') : ''}
+    ${wrong.length ? '<p><strong style="color:#b91c1c">Looks wrong</strong> — in the AEO Engine, flagged; check before using:</p>' + list(wrong, '#b91c1c') : ''}
+    ${human.length ? '<p><strong style="color:#b45309">Needs a human look</strong>:</p>' + list(human, '#b45309') : ''}
+    ${falseAlarms.length ? '<p><strong>Removed</strong> — the page already has these, or they add nothing:</p>' + list(falseAlarms, '#555') : ''}
+    ${state?.repeats_skipped ? '<p style="color:#777">' + state.repeats_skipped + ' suggestion(s) skipped because they repeat work already delivered.</p>' : ''}
+    <p style="margin-top:18px">${BTN(siteUrl, 'Open the suite')}</p>`);
+  return { subject, html };
+}
+
 // Digest from one publisher pass. results: [{ client, title, liveUrl, error }]
 export function buildPublishedEmail(results, siteUrl) {
   const ok = results.filter(r => !r.error);

@@ -13,6 +13,8 @@ import { listAllImplementations, saveAeoResult, loadAeoResults as loadAeoResults
 import { AEO_TYPES, AEO_DEEP_SYSTEM, buildAeoSystem, MAX_OPTS_PER_PAGE } from './aeoTypes.js';
 import { selectTopOptimizations, aeoItemTarget, pagesForTarget } from './aeoSelect.js';
 import { priorWorkForClient, filterRepeatOptimizations, priorLabelsForPage, nextPriorKeys } from './aeoHistory.js';
+import { pageKey, generateForPage, prioritizePages, coveredPagesFrom, rotateQueue, runShortlist } from './aeoRun.js';
+import AeoAutopilotPanel from './AeoAutopilotPanel.jsx';
 import { discoverSiteUrls } from './sitemap.js';
 import QueryDiscovery from './QueryDiscovery.jsx';
 import { listAccountSummaries, runReport } from './ga4.js';
@@ -43,18 +45,6 @@ function saveResults(r) {
       try { localStorage.removeItem(RESULTS_KEY); } catch {}
       console.warn('[AEO] localStorage quota exceeded — using Supabase only.');
     }
-  }
-}
-// Identity of a page for coverage tracking — ignores the trailing-slash and
-// www differences that would otherwise make the same page look never-visited.
-function pageKey(url) {
-  try {
-    const u = new URL(url);
-    let path = u.pathname;
-    if (path.length > 1 && path.endsWith('/')) path = path.slice(0, -1);
-    return u.hostname.replace(/^www\./, '') + path.toLowerCase();
-  } catch {
-    return String(url || '').toLowerCase();
   }
 }
 
@@ -121,64 +111,6 @@ Return the JSON object as specified in the system prompt.`
   return extractJSON(text);
 }
 
-// `perPage` is the cap for THIS page — deliberately small, because the run
-// ranks every page's output into one site-wide shortlist afterwards.
-// `total` is that shortlist size, passed into the prompt so Claude knows
-// it is competing for slots rather than filling a quota.
-async function generateForPage(pageUrl, client, perPage = MAX_OPTS_PER_PAGE, total = undefined, alreadyDone = []) {
-  // Try to fetch the actual page HTML for analysis.
-  let pageHtml = '';
-  let pageTitle = '';
-  try {
-    pageHtml = (await corsFetchText(pageUrl)).slice(0, 60000);
-    // Extract the <title> tag for context.
-    const titleMatch = pageHtml.match(/<title[^>]*>([^<]+)<\/title>/i);
-    if (titleMatch) pageTitle = titleMatch[1].trim();
-  } catch {
-    // CORS blocked — that's fine, Claude will work from the URL alone.
-  }
-
-  // Extract the page slug for topic inference when HTML isn't available.
-  let slug = '';
-  try { slug = new URL(pageUrl).pathname.split('/').filter(Boolean).pop() || ''; } catch {}
-  const inferredTopic = pageTitle || slug.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
-
-  // Everything this page has already been given in an earlier run, been
-  // marked implemented, or had rejected. Naming it in the prompt is what
-  // makes the model spend the page's slots on gaps it has not filled yet;
-  // filterRepeatOptimizations afterwards is the guarantee.
-  const doneList = (alreadyDone || []).filter(Boolean);
-  const alreadyDoneBlock = doneList.length
-    ? 'ALREADY DELIVERED FOR THIS PAGE — DO NOT SUGGEST ANY OF THESE AGAIN, in any wording:\n' +
-      doneList.map(d => '- ' + d).join('\n') +
-      '\n\nThese were handed to the client in earlier months. Suggest only work that is genuinely NEW for this page. ' +
-      'If the page has no remaining gaps worth a slot, return an empty optimizations array — that is a correct answer, ' +
-      'and far better than restating work already done.\n\n'
-    : '';
-
-  const text = await claudeComplete({
-    system: buildAeoSystem(perPage, total),
-    messages: [{
-      role: 'user',
-      content: `${alreadyDoneBlock}Generate AEO optimizations for this page — at most ${perPage}, and only the ones this page genuinely lacks. Focus on CONTENT optimizations first (answer blocks, FAQs, key takeaways, snippet paragraphs), then schema.
-
-Page URL: ${pageUrl}
-Page topic: ${inferredTopic}
-Client: ${client?.name || ''}
-Industry: ${client?.industry || ''}
-Location: ${client?.location || ''}
-Organization: ${client?.org_name || client?.name || ''}
-Author: ${client?.author || ''} ${client?.author_creds ? '(' + client.author_creds + ')' : ''}
-${client?.context ? 'Business context: ' + client.context : ''}
-
-${pageHtml ? 'Page HTML (truncated — TWO uses: (1) analyse what content optimizations are MISSING; (2) READ the CSS classes, heading patterns, container structure, and component conventions so your output matches this page\'s design system. The optimization will be pasted into THIS page — make it look native, not bolted-on. Reuse the page\'s class names verbatim wherever they fit. See DESIGN-MATCHING in the system prompt.):\n' + pageHtml : 'Page HTML not available (CORS blocked) — generate optimizations based on the URL, topic, and client context. Focus on content that would make this page citable by AI engines. Use simple semantic HTML without inline styles since we cannot match the page\'s design system.'}`
-    }],
-    max_tokens: 6000,
-    temperature: 0.4
-  });
-  const parsed = extractJSON(text);
-  return parsed?.optimizations || [];
-}
 
 // Stable key for an AEO optimization. Combines type + name (or title) so
 // the same logical optimization regenerated for a page next month resolves
@@ -431,6 +363,11 @@ function OptPageCard({ result: r, onDelete, onVerified, optClient, rejectedOptKe
               <span style={{ fontWeight: 600, fontSize: 13 }}>{o.name || o.title || 'Optimization'}</span>
             </div>
             {o.description && <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>{o.description}</div>}
+            {o.check && (
+              <div style={{ fontSize: 11, marginBottom: 6, color: o.check.verdict === 'confirmed' ? 'var(--green)' : o.check.verdict === 'fix_wrong' ? 'var(--red)' : 'var(--orange, #e8a33d)' }}>
+                {o.check.verdict === 'confirmed' ? '✓ Independent check: confirmed' : o.check.verdict === 'fix_wrong' ? '⚠ Independent check: looks wrong' : '? Independent check: needs a human look'} — {o.check.reason}
+              </div>
+            )}
             {o.where && <div style={{ fontSize: 11, color: 'var(--teal)', marginBottom: 6 }}>📍 {o.where}</div>}
             {code && (
               <div>
@@ -896,15 +833,7 @@ export default function AEOEngine({ sub }) {
   // generated them. A row that only carries an error doesn't count as
   // covered, so failed pages get another go on the next run.
   function coveredPagesFor(clientId) {
-    const map = new Map();
-    for (const row of Object.values(resultsRef.current || {})) {
-      if (!row || row.client_id !== clientId || !row.url) continue;
-      if (!Array.isArray(row.optimizations) || row.optimizations.length === 0) continue;
-      const key = pageKey(row.url);
-      const at = row.generated_at || '';
-      if (!map.has(key) || at > map.get(key)) map.set(key, at);
-    }
-    return map;
+    return coveredPagesFrom(resultsRef.current, clientId);
   }
 
   // Full AEO pipeline — ported from old Syte AEO Engine v2.
@@ -1000,51 +929,9 @@ export default function AEOEngine({ sub }) {
 
       // STEP 3: Prioritize — merge sitemap with GA4, rank by traffic
       setProgress('Step 3/4 — Prioritizing pages…');
-      const baseUrl = (c.url || '').replace(/\/$/, '');
-      const ga4ByPath = new Map(ga4Rows.map(r => [r.path, r]));
-
-      const prioritized = sitemapUrls.map(url => {
-        let path;
-        try { path = new URL(url).pathname; } catch { path = url; }
-        const ga4 = ga4ByPath.get(path) || ga4ByPath.get(path + '/') || ga4ByPath.get(path.replace(/\/$/, ''));
-        return {
-          url, path,
-          sessions: ga4?.sessions || 0,
-          engagement: ga4?.engagement || '',
-          priority: (ga4?.sessions || 0) > 100 ? 'high' : (ga4?.sessions || 0) > 20 ? 'medium' : 'low'
-        };
-      }).sort((a, b) => b.sessions - a.sessions);
-
-      // Also add GA4 pages not in sitemap (they still exist on the site)
-      for (const row of ga4Rows) {
-        if (!prioritized.some(p => p.path === row.path || p.path === row.path + '/')) {
-          prioritized.push({
-            url: baseUrl + row.path,
-            path: row.path,
-            sessions: row.sessions,
-            engagement: row.engagement,
-            priority: row.sessions > 100 ? 'high' : row.sessions > 20 ? 'medium' : 'low'
-          });
-        }
-      }
-
-      // Rotate through the site instead of re-optimizing the same head pages
-      // every run. Ranking by traffic alone is deterministic, so the homepage
-      // and its neighbours won the shortlist month after month and the rest
-      // of the site was never reached. Pages we have never optimized go
-      // first (still traffic-ranked among themselves); already-covered pages
-      // come after, oldest-first, so a re-run refreshes the stalest work
-      // rather than repeating last month's.
+      const prioritized = prioritizePages(sitemapUrls, ga4Rows, c.url);
       const covered = coveredPagesFor(c.id);
-      const fresh = [];
-      const revisits = [];
-      for (const p of prioritized) {
-        const doneAt = covered.get(pageKey(p.url));
-        if (doneAt) revisits.push({ ...p, lastOptimized: doneAt });
-        else fresh.push(p);
-      }
-      revisits.sort((a, b) => (a.lastOptimized < b.lastOptimized ? -1 : 1));
-      const queue = [...fresh, ...revisits];
+      const queue = rotateQueue(prioritized, covered);
 
       // The run ships ONE shortlist for the whole site — the best
       // `itemTarget` optimizations, wherever they live — rather than a fixed
@@ -1090,46 +977,20 @@ export default function AEOEngine({ sub }) {
       // Ranking is site-wide, so every page has to be generated before
       // anything is persisted — a row saved mid-run could hold items the
       // shortlist later drops.
-      const drafts = [];
-      const attempted = [];
-      let deduped = { rows: [], removed: 0 };
-      let usable = 0;
-      // Always generate the pages the rotation selected — the ranker needs
-      // real choice — then keep going past them only while repeat suppression
-      // has left the shortlist short.
-      for (let i = 0; i < pageCeiling && (i < maxPages || usable < itemTarget); i += BATCH_SIZE) {
-        const batch = queue.slice(i, Math.min(i + BATCH_SIZE, pageCeiling));
-        if (!batch.length) break;
-        setProgress(
+      const { progress: runProgress, deduped, shortlist } = await runShortlist({
+        queue, clientId: c.id, itemTarget, maxPages, pageCeiling, priorByPage,
+        generate: t => generateForPage(t.url, c, MAX_OPTS_PER_PAGE, itemTarget, priorLabelsForPage(priorByPage, t.url)),
+        onBatch: (i, batch, usable) => setProgress(
           `Step 4/4 — ${c.name}: Optimizing pages ${i + 1}–${i + batch.length}` +
           `${usable > 0 ? ` (${usable}/${itemTarget} new items so far)` : ''}…`
-        );
-        const batchResults = await Promise.all(
-          batch.map(t => generateForPage(
-            t.url, c, MAX_OPTS_PER_PAGE, itemTarget, priorLabelsForPage(priorByPage, t.url)
-          ).catch(e => ({ error: e.message })))
-        );
-        batch.forEach((t, j) => {
-          attempted.push(t);
-          drafts.push({
-            url: t.url, path: t.path, client_id: c.id,
-            sessions: t.sessions, priority: t.priority,
-            optimizations: Array.isArray(batchResults[j]) ? batchResults[j] : [],
-            error: batchResults[j]?.error || null
-          });
-        });
-        // Re-filter and re-rank the whole accumulation each round: both are
-        // pure and cheap, and `usable` has to be what would actually ship —
-        // the ranker's per-page and schema caps trim the raw count.
-        deduped = filterRepeatOptimizations(drafts, priorByPage);
-        usable = selectTopOptimizations(deduped.rows, { limit: itemTarget }).kept;
-      }
+        )
+      });
+      const attempted = runProgress.attempted;
       setUrls(attempted.map(t => t.url).join('\n'));
 
       // Rank what survived and keep only the best `itemTarget` items across
       // all pages. Pages trimmed to nothing are not saved, so they stay
       // "uncovered" and the rotation revisits them next run.
-      const shortlist = selectTopOptimizations(deduped.rows, { limit: itemTarget });
       const additions = {};
       const stamp = new Date().toISOString();
       for (const row of shortlist.rows) {
@@ -1460,6 +1321,10 @@ export default function AEOEngine({ sub }) {
 
     return (
       <div className="content-area">
+        <AeoAutopilotPanel accent={ACCENT} onFinished={() => {
+          loadAeoResultsFromDb().then(db => setResults(prev => ({ ...prev, ...db }))).catch(() => {});
+        }} />
+
         {/* Status bar — shows progress when running from a pipeline card or batch */}
         {(busy || batchBusy || progress || batchProgress || err) && (
           <div className="card" style={{ marginBottom: 12, padding: '10px 16px', borderColor: (busy || batchBusy) ? ACCENT : err ? 'var(--red)' : 'var(--green)' }}>
