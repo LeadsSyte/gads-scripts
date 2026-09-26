@@ -66,10 +66,13 @@ Return JSON only: {"verdict": "confirmed" | "false_alarm" | "fix_wrong" | "needs
 
 Be strict: an optimisation that isn't clearly needed and correct must not be confirmed.`;
 
-export function buildAeoCheckInput(client, pageUrl, opt, evidence) {
+export function buildAeoCheckInput(client, pageUrl, opt, evidence, today = new Date()) {
   const scan = parseScanBlock(client.brand_docs);
   const reference = (scan?.block || client.brand_docs || '').trim();
-  return `BUSINESS: ${client.name} (${client.url || ''}) · ${client.industry || ''} · ${client.location || ''}
+  // The reviewer's training ends before "now": without today's date it
+  // flagged the current month as a future date.
+  return `TODAY: ${today.toISOString().slice(0, 10)} (dates up to today are not in the future)
+BUSINESS: ${client.name} (${client.url || ''}) · ${client.industry || ''} · ${client.location || ''}
 
 BRAND REFERENCE:
 ${reference ? '"""\n' + reference.slice(0, 3500) + '\n"""' : '(none on file)'}

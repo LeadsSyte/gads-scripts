@@ -73,6 +73,14 @@ await t('a run shortlists, checks every item, drops false alarms and saves to th
   if (!calls.saved.every(r => r.client_id === 'c1' && Array.isArray(r.prior_keys))) throw new Error('row shape');
 });
 
+await t('the reviewers are told today\'s date (they flagged the current month as "the future")', async () => {
+  const { buildAeoCheckInput } = await import('../netlify/functions/lib/aeoScan.js');
+  const { buildTechCheckInput } = await import('../netlify/functions/lib/techScan.js');
+  const d = new Date('2026-09-26T10:00:00Z');
+  if (!/^TODAY: 2026-09-26/.test(buildAeoCheckInput(CLIENT, 'u', { type: 'content' }, null, d))) throw new Error('AEO');
+  if (!/^TODAY: 2026-09-26/.test(buildTechCheckInput(CLIENT, { title: 'x' }, null, undefined, d))) throw new Error('tech');
+});
+
 await t('the reviewer sees what the page already has (e.g. an FAQ heading)', async () => {
   const e = aeoPageEvidence(HTML['https://af.example/eczema/']);
   assertEq(e.has_faq_heading, true);

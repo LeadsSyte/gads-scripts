@@ -86,8 +86,11 @@ Return JSON only: {"verdict": "confirmed" | "false_alarm" | "fix_wrong" | "needs
 
 Be strict: a fix that is not clearly needed must not be confirmed.`;
 
-export function buildTechCheckInput(client, task, evidence, robotsTxt) {
-  return `BUSINESS: ${client.name} (${client.url || ''})
+export function buildTechCheckInput(client, task, evidence, robotsTxt, today = new Date()) {
+  // Today's date: the reviewer's training ends before "now" and otherwise
+  // treats the current year as the future.
+  return `TODAY: ${today.toISOString().slice(0, 10)} (dates up to today are not in the future)
+BUSINESS: ${client.name} (${client.url || ''})
 
 PROPOSED TASK
 Title: ${task.title || ''}
