@@ -8,7 +8,7 @@
 // the saved state. Articles are saved as Auto Write articles; nothing is
 // pushed to a client's site by this function.
 
-import { runAutopilotStep, newRunState, monthKey } from './lib/autopilot.js';
+import { runAutopilotStep, newRunState, monthKey, CHECKER_SYSTEM, buildCheckerInput, normalizeCheck } from './lib/autopilot.js';
 import { claudeCompleteServer, openaiJson } from './lib/serverAi.js';
 import { getServerSupabase } from './lib/serverSupabase.js';
 import { fetchGscForClient } from './lib/serverGsc.js';
@@ -34,6 +34,34 @@ export async function handler(event) {
 
   const started = Date.now();
   const supabase = getServerSupabase();
+
+  // Review-only mode: run the independent reviewer on supplied articles and
+  // save the verdicts to syte_suite_settings 'autopilot-review:<reviewId>'.
+  // Used to prove the reviewer rejects bad articles, and to review articles
+  // written outside the Autopilot.
+  if (body.mode === 'review') {
+    const reviewId = String(body.reviewId || '').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64);
+    if (!reviewId || !Array.isArray(body.articles)) return { statusCode: 400 };
+    const results = [];
+    try {
+      const client = await loadClient(supabase, clientId);
+      for (const a of body.articles.slice(0, 10)) {
+        const opp = { topic_title: String(a.topic || ''), primary_keyword: String(a.keyword || '') };
+        let check;
+        try { check = normalizeCheck(await openaiJson({ system: CHECKER_SYSTEM, user: buildCheckerInput(client, String(a.output || ''), opp) })); }
+        catch (e) { check = { verdict: 'fail', problems: [{ severity: 'error', issue: 'Review did not run: ' + e.message }], summary: '' }; }
+        results.push({ label: String(a.label || opp.topic_title).slice(0, 120), ...check });
+      }
+    } catch (e) {
+      results.push({ label: 'error', verdict: 'fail', problems: [{ severity: 'error', issue: e.message }], summary: '' });
+    }
+    await supabase.from('syte_suite_settings').upsert({
+      id: 'autopilot-review:' + reviewId,
+      data: { client_id: clientId, at: new Date().toISOString(), results },
+      updated_at: new Date().toISOString()
+    });
+    return { statusCode: 202 };
+  }
   let state = null;
   try {
     const client = await loadClient(supabase, clientId);
