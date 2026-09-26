@@ -65,6 +65,19 @@ export default function AutopilotPanel({ accent, onFinished }) {
       setState({ client_id: client.id, status: 'queued', month: new Date().toISOString().slice(0, 7), log: [], articles: {} });
       wasActive.current = true;
       setTimeout(refresh, 4000);
+      // A background function answers 202 before it runs, even when it then
+      // refuses (bad auth, missing config) — so confirm the run actually
+      // wrote its state instead of trusting the 202.
+      const askedAt = Date.now();
+      setTimeout(async () => {
+        const { data } = await supabase.from('syte_suite_settings').select('data').eq('id', 'autopilot:' + client.id).maybeSingle();
+        const startedAt = new Date(data?.data?.started_at || 0).getTime();
+        const updatedAt = new Date(data?.data?.updated_at || 0).getTime();
+        if (Math.max(startedAt, updatedAt) < askedAt - 5000) {
+          setErr('The server did not start the run. Check that the suite is unlocked with the current password, then try again.');
+          refresh();
+        }
+      }, 30000);
     } catch (e) { setErr(e.message); }
     finally { setBusy(false); }
   }
