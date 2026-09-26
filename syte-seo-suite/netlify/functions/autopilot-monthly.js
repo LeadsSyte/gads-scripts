@@ -13,11 +13,12 @@ import { STATE_PREFIX, monthKey } from './lib/autopilot.js';
 export const config = { schedule: '0 6-21 1 * *' };
 export const BATCH = 4;
 
-// Pure: which enabled clients still need starting this month.
-export function clientsToStart(clients, states, month, batch = BATCH) {
+// Pure: which enabled clients still need starting this month. `flag` is the
+// publishing-profile switch (the Tech Autopilot uses techscan_enabled).
+export function clientsToStart(clients, states, month, batch = BATCH, flag = 'autopilot_enabled') {
   const startedThisMonth = new Set(states.filter(s => s?.month === month).map(s => s.client_id));
   return clients
-    .filter(c => getPublishingProfile(c).autopilot_enabled && !startedThisMonth.has(c.id))
+    .filter(c => getPublishingProfile(c)[flag] && !startedThisMonth.has(c.id))
     .slice(0, batch);
 }
 

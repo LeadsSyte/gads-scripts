@@ -92,6 +92,34 @@ export function buildRunSummaryEmail(client, state, siteUrl, previewFor = () => 
   return { subject, html };
 }
 
+// Summary of one Tech Autopilot scan: what goes on the board, what the
+// independent check threw out as a false alarm, and what needs a person.
+export function buildTechSummaryEmail(client, state, siteUrl) {
+  const entries = state?.tasks || [];
+  const by = v => entries.filter(e => e.check?.verdict === v);
+  const confirmed = by('confirmed'), falseAlarms = by('false_alarm'), wrong = by('fix_wrong'), human = by('needs_human');
+  const failedRun = state?.status === 'failed';
+  const subject = (failedRun ? 'Tech scan FAILED: ' : (wrong.length || human.length) ? 'Tech scan — needs a look: ' : 'Tech scan done: ')
+    + client.name + (entries.length ? ' — ' + confirmed.length + ' confirmed fix' + (confirmed.length === 1 ? '' : 'es') : '')
+    + (falseAlarms.length ? ', ' + falseAlarms.length + ' false alarm' + (falseAlarms.length === 1 ? '' : 's') + ' removed' : '');
+  const list = (items, color) => items.length
+    ? '<ul style="font-size:14px">' + items.map(e => `<li style="margin-bottom:6px"><strong>${esc(e.task.title)}</strong>`
+      + (e.task.page_url ? ` — <a href="${esc(e.task.page_url)}">${esc(e.task.page_url)}</a>` : '')
+      + `<br/><span style="color:${color}">${esc(e.check?.reason || '')}</span></li>`).join('') + '</ul>'
+    : '';
+  const crawl = state?.crawl;
+  const html = WRAP(`
+    <p><strong>${esc(client.name)}</strong> — Technical SEO scan${crawl ? ' of ' + crawl.pages + ' pages' : ''}${failedRun ? ' <strong style="color:#b91c1c">stopped with an error</strong>' : ''}.</p>
+    ${state?.error ? '<p style="color:#b91c1c">' + esc(state.error) + '</p>' : ''}
+    ${confirmed.length ? '<p><strong>Confirmed fixes</strong> — now on the Technical SEO task board:</p>' + list(confirmed, '#15803d') : ''}
+    ${wrong.length ? '<p><strong style="color:#b91c1c">Fix looks wrong</strong> — on the board, flagged; check before briefing:</p>' + list(wrong, '#b91c1c') : ''}
+    ${human.length ? '<p><strong style="color:#b45309">Needs a human look</strong>:</p>' + list(human, '#b45309') : ''}
+    ${falseAlarms.length ? '<p><strong>False alarms removed</strong> — the scanner flagged these, the independent check found they are fine:</p>' + list(falseAlarms, '#555') : ''}
+    ${state?.repeats_skipped ? '<p style="color:#777">' + state.repeats_skipped + ' issue(s) skipped because the fix was already done in an earlier month.</p>' : ''}
+    <p style="margin-top:18px">${BTN(siteUrl, 'Open the suite')}</p>`);
+  return { subject, html };
+}
+
 // Digest from one publisher pass. results: [{ client, title, liveUrl, error }]
 export function buildPublishedEmail(results, siteUrl) {
   const ok = results.filter(r => !r.error);

@@ -78,6 +78,11 @@ export const PROFILE_DEFAULTS = {
   // Autopilot: also push the articles that passed both checks to the site
   // as DRAFTS at the end of each run. Publishing still waits for approval.
   autopilot_push: false,
+
+  // Tech Autopilot: scan the site on the 2nd of each month, write the fix
+  // list, have it independently checked, and refresh the Technical SEO task
+  // board (netlify/functions/techscan-monthly.js). Off until switched on.
+  techscan_enabled: false,
 };
 
 export function getPublishingProfile(client) {

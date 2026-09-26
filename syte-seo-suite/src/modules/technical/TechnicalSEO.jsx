@@ -9,7 +9,14 @@ import ExternalWork from '../../components/ExternalWork.jsx';
 import { technicalPipelineStatus, monthOptions } from '../../lib/pipelineStatus.js';
 import { getAudit, syncWebceoClients, webceoDiagnose } from './webceo.js';
 import { crawlSiteForIssues, summarizeCrawlForAI } from './crawler.js';
-import { completedWorkForClient, filterRepeatTasks, completedWorkPrompt } from './taskHistory.js';
+import { completedWorkForClient } from './taskHistory.js';
+import {
+  triageWithoutRepeats, taskDedupKey, DEFAULT_CRAWL_DEPTH, DEFAULT_SUGGESTIONS, MAX_TASKS_PER_CLIENT
+} from './triage.js';
+
+import TechAutopilotPanel from './TechAutopilotPanel.jsx';
+
+export { taskDedupKey };
 import { upsertClient, listAllImplementations, replaceClientOpenTasks, loadTseoTasks, updateTseoTask, logImplementation, updateImplementation, listTseoRejections, saveTseoRejection } from '../../lib/supabase.js';
 import { checkOffPageTask, isOffPageTask } from '../../lib/verification.js';
 import { querySearchAnalytics } from './gsc.js';
@@ -25,15 +32,6 @@ const STATUS_ORDER = ['open', 'done', 'verified', 'failed'];
 const PRIORITIES   = ['critical', 'high', 'medium', 'low'];
 const STALE_DAYS = 30;
 
-// Defaults for the configurable scan depth / suggestion count (overridable
-// per-scan from the New Scan screen).
-const DEFAULT_CRAWL_DEPTH = 100;
-// The month's hand-off is a shortlist, not an inventory: 10 fixes an
-// account manager can actually brief a developer on beats 25 that sit
-// untouched. The Settings slider still allows more per scan.
-const DEFAULT_SUGGESTIONS = 10;
-// Hard ceiling regardless of what the slider or the model returns.
-const MAX_TASKS_PER_CLIENT = 25;
 
 function loadTasks() {
   // One-time migration of legacy key.
@@ -60,12 +58,6 @@ function saveTasks(t) {
   }
 }
 
-// Stable dedup key for a task. Same shape used by dedupeTasks and by the
-// rejection blocklist so a freshly-triaged task with a new UUID but the
-// same logical issue is collapsed/filtered consistently.
-export function taskDedupKey(t) {
-  return (t.client_id || '') + '|' + (t.page_url || t.url || '') + '|' + (t.action_summary || t.title || '');
-}
 
 // Dedupe tasks by (client_id, url, action_summary). Keeps the most
 // recent (highest created_at) row per logical issue and caps OPEN
@@ -100,132 +92,6 @@ function dedupeTasks(list) {
 function loadTeam() { try { return JSON.parse(localStorage.getItem(TEAM_KEY) || '[]'); } catch { return []; } }
 function saveTeam(t) {
   try { localStorage.setItem(TEAM_KEY, JSON.stringify(t)); } catch {}
-}
-
-function buildTriageSystem(limit = DEFAULT_SUGGESTIONS) {
-  return `
-You are a senior technical SEO engineer. You receive raw site-audit data (WebCEO audit JSON or Google Search Console data) and must produce a prioritised task list.
-
-CRITICAL RULE: Every task MUST reference a SPECIFIC page URL from the audit data — never wildcards like /products/* or generic paths. If the audit shows 50 product pages missing alt text, create tasks for the TOP ${limit} most important ones by name with the exact URL. Never generalize into one "fix all products" task.
-
-Return ONLY valid JSON in this shape:
-{
-  "tasks": [
-    {
-      "title": "short imperative title — include the specific page name",
-      "description": "what is wrong on THIS specific page + expected impact",
-      "priority": "critical|high|medium|low",
-      "page_url": "the EXACT full URL from the audit data (e.g. https://example.com/products/hi-tall-harness-boot, NOT https://example.com/products/*)",
-      "fix_type": "meta_title|meta_description|canonical|schema|internal_link|h1|image_alt|redirect|robots|sitemap|sitemap_submission|page_speed|structured_data|gsc_setup|domain_ownership|analytics_setup|gtm_setup|other",
-      "copy_paste_fix": "the ACTUAL finished code/text for THIS specific page — no placeholders like [PRODUCT_NAME], use the real page title/content from the audit data",
-      "impact": "high|medium|low",
-      "effort": "quick|moderate|complex"
-    }
-  ]
-}
-
-RULES:
-- Every page_url must be a real, complete URL found in the audit data. NEVER use wildcards (*), generic paths, or invented URLs.
-- Every copy_paste_fix must be FINISHED — ready to paste. No [PLACEHOLDER] values. Use the actual page title, product name, or content from the audit data. For alt text, describe what the image shows based on the filename/context.
-- If the audit shows the same issue on many pages, pick the MOST IMPORTANT pages (homepage, high-traffic pages, key service/product pages) and create individual tasks for each.
-- COVER THE WHOLE SITE. The audit data spans every page we could crawl, not just the homepage. Spread the task list across as many DISTINCT page URLs as the findings support — never hand back a list where most tasks point at the same URL. Cap any single page at 2 tasks while other pages still have unaddressed issues; only stack more on one page when the rest of the site is genuinely clean.
-- For image alt text issues: include the specific image URL and the specific page where it's found, with a real descriptive alt text based on the image filename and page context.
-- For missing meta titles/descriptions: write the actual title/description for that specific page.
-- For missing schema: write the complete JSON-LD for that specific page using real data from the audit.
-
-OFF-PAGE / BACKEND fix_types — use these when the work happens in an external admin console rather than in page HTML:
-- gsc_setup / domain_ownership: Google Search Console property creation, ownership verification (TXT record, HTML file, GSC tag).
-- sitemap_submission: submitting an XML sitemap inside Search Console (different from creating the sitemap itself, which is fix_type=sitemap).
-- analytics_setup / gtm_setup: installing GA4, Universal Analytics, or a GTM container.
-For these tasks, copy_paste_fix should describe the exact step-by-step admin actions (e.g. "1. Open search.google.com/search-console 2. Add property fleetwoodonsea.co.za 3. Choose DNS verification 4. Copy TXT record into Cloudflare DNS"). Do NOT write HTML/markup — there's nothing to paste into the page.
-
-PRIORITIZATION (biggest wins first):
-- Critical = indexing blocked, canonical loops, redirect chains, robots.txt errors, broken pages returning 4xx/5xx.
-- High = missing/duplicate H1, missing meta title on key pages, missing schema on service pages, noindex on pages that should be indexed.
-- Medium = weak meta descriptions, missing alt text on important images, thin content pages, slow pages, missing breadcrumb schema.
-- Low = minor polish, cosmetic heading issues, optional schema types.
-- Sort: critical first, then high + quick effort, then high + moderate, then medium, then low.
-- NEVER re-suggest work that is listed as ALREADY COMPLETED in the user message. That work has been briefed and shipped in an earlier month; repeating it wastes the whole hand-off and the account manager has to strip it out by hand. If a page's only remaining issues are already-completed ones, skip that page and spend the slot on a page with genuinely open issues.
-- Generate up to ${limit} tasks — the MOST IMPACTFUL issues to fix, ordered biggest-win first. Quality over quantity: only create a task for a real, fixable issue present in the audit data. If there are fewer than ${limit} meaningful issues, return only the real ones — never pad the list. Critical issues come first, then the highest-ROI quick wins.
-`.trim();
-}
-
-async function triageAudit(auditData, clientUrl, taskLimit = DEFAULT_SUGGESTIONS, completedWork = '') {
-  // auditData is now a pre-summarized string from the crawler (plus optional
-  // GSC JSON appended). When it's a string, pass it through verbatim — Claude
-  // reads the PAGE / issue / fix lines directly and creates tasks from them.
-  const dataText = typeof auditData === 'string'
-    ? auditData
-    : JSON.stringify(auditData).slice(0, 80000);
-
-  const text = await claudeComplete({
-    system: buildTriageSystem(taskLimit),
-    messages: [{
-      role: 'user',
-      content: `Client URL: ${clientUrl}
-${completedWork ? `
-ALREADY COMPLETED — work shipped for this client in earlier months, listed per page.
-DO NOT create a task for any of these again, however differently you would word it.
-The crawler may still report the underlying issue (a change can be live but not yet
-re-crawled, or only partly propagated); that is not a reason to re-brief it.
-${completedWork}
-` : ''}
-Crawler findings (each PAGE block lists specific issues found on that URL with suggested fixes):
-${dataText.slice(0, 80000)}
-
-Create one task per MEANINGFUL issue on a SPECIFIC page that is NOT in the already-completed list, up to ${taskLimit} tasks. Use the exact URLs shown. When the crawler suggests a fix, use it as the copy_paste_fix (refine if needed). Prioritize critical issues (noindex, missing titles) first, and spread the list across the different page URLs above rather than stacking it on the homepage.`
-    }],
-    max_tokens: 16000,
-    temperature: 0.3
-  });
-  const parsed = extractJSON(text);
-  return parsed?.tasks || [];
-}
-
-// Triage that will not hand back work this client has already had.
-//
-// The exclusion list in the prompt does most of the job, but models restate
-// things in new words, so the result is filtered too — and a filtered list is
-// a SHORT list, which is how a 10-fix hand-off would quietly become a 4-fix
-// one. So when suppression takes a real bite out of the shortlist, triage
-// runs once more with the repeats named explicitly, and the two passes are
-// merged into one list of genuinely open work.
-async function triageWithoutRepeats(auditData, clientUrl, taskLimit, completedByPage) {
-  const completedText = completedWorkPrompt(completedByPage);
-  const first = await triageAudit(auditData, clientUrl, taskLimit, completedText);
-  const filtered = filterRepeatTasks(first, completedByPage);
-  let tasks = filtered.tasks;
-  let removed = filtered.removed;
-
-  if (removed > 0 && tasks.length < taskLimit) {
-    const keptKeys = new Set(tasks.map(t => taskDedupKey(t)));
-    const repeats = first
-      .filter(t => !keptKeys.has(taskDedupKey(t)))
-      .map(t => '  - ' + (t.page_url || '') + ': ' + (t.title || ''))
-      .join('\n');
-    try {
-      const second = await triageAudit(
-        auditData, clientUrl, taskLimit - tasks.length,
-        completedText +
-        '\n\nAlso already covered — you proposed these moments ago and every one of them\n' +
-        'repeats completed work. Find DIFFERENT issues on other pages instead:\n' + repeats
-      );
-      const secondFiltered = filterRepeatTasks(second, completedByPage);
-      removed += secondFiltered.removed;
-      // Treat the first pass as completed work too, so the top-up can't
-      // hand back the same fix in different words.
-      const firstAsDone = completedWorkForClient({
-        tasks: tasks.map(t => ({ ...t, status: 'done' }))
-      });
-      const fresh = filterRepeatTasks(secondFiltered.tasks, firstAsDone).tasks;
-      tasks = tasks.concat(fresh).slice(0, taskLimit);
-    } catch {
-      // Top-up is best-effort — a short list of real work still beats a full
-      // list padded with repeats.
-    }
-  }
-
-  return { tasks, removed };
 }
 
 async function verifyFix(task, client) {
@@ -1067,6 +933,10 @@ export default function TechnicalSEO({ sub }) {
     return (
       <div className="content-area">
         <h2 style={{ marginTop: 0 }}>New Scan</h2>
+
+        <TechAutopilotPanel accent={ACCENT} onFinished={() => {
+          loadTseoTasks().then(t => setTasks(dedupeTasks(t))).catch(() => {});
+        }} />
 
         {/* Scan depth / suggestion count — applies to both options below. */}
         <div className="card" style={{ marginBottom: 14 }}>

@@ -57,7 +57,9 @@ async function mapLimited(items, fn) {
 // for local dev and for the rare case the function is unavailable.
 export async function fetchRemoteText(url) {
   try {
-    const res = await fetch(PAGE_PROXY, {
+    // Absolute when the server-side Autopilot sets __SYTE_FN_BASE (see
+    // src/lib/fnUrl.js; inlined because the tests load this file standalone).
+    const res = await fetch((globalThis.__SYTE_FN_BASE || '') + PAGE_PROXY, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       // raw: true keeps the served markup intact — Jina Reader rewrites

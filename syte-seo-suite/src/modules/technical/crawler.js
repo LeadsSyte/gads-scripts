@@ -229,7 +229,9 @@ async function analyzeUrl(url) {
       // pages that are actually indexed (because Jina either drops or
       // normalises the meta robots tag). Tech SEO needs the real
       // server HTML.
-      const res = await fetch('/.netlify/functions/page-proxy', {
+      // Absolute when the server-side Autopilot sets __SYTE_FN_BASE (see
+      // src/lib/fnUrl.js; inlined because the tests load this file standalone).
+      const res = await fetch((globalThis.__SYTE_FN_BASE || '') + '/.netlify/functions/page-proxy', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ url, raw: true })

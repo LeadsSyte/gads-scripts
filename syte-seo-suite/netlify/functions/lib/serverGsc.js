@@ -39,6 +39,16 @@ async function searchAnalytics(token, siteUrl, days, dimensions, rowLimit) {
   return (await res.json()).rows || [];
 }
 
+// Page-level traffic for the Technical SEO scan (same query the Technical
+// SEO page sends: last 28 days, dimension page, 100 rows).
+export async function fetchGscPages(supabase, client, days = 28) {
+  if (!client?.gsc_property) return null;
+  const email = client.gsc_account_email || client.google_account_email;
+  if (!email) return null;
+  const token = await accessTokenFor(supabase, email);
+  return searchAnalytics(token, client.gsc_property, days, ['page'], 100);
+}
+
 // Returns { queries, pageQueries } in the same row shape as gsc.js.
 export async function fetchGscForClient(supabase, client, days = 90) {
   if (!client?.gsc_property) throw new Error('No Search Console property set for this client');

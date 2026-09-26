@@ -62,6 +62,18 @@ await t('went-live digest lists live links and failures', () => {
   has(buildPublishedEmail([{ client: 'A', title: 'x', liveUrl: '' }], 'u').subject, /^1 post went live: A/);
 });
 
+await t('tech scan email: confirmed, wrong, needs-a-human and removed false alarms, each with its reason', async () => {
+  const { buildTechSummaryEmail } = await import('../netlify/functions/lib/reportEmail.js');
+  const state = { status: 'done', crawl: { pages: 40 }, tasks: [
+    { task: { title: 'Add meta description', page_url: 'https://j.example/cranes/' }, check: { verdict: 'confirmed', reason: 'Missing on the live page.' } },
+    { task: { title: 'Remove noindex', page_url: 'https://j.example/thank-you/' }, check: { verdict: 'false_alarm', reason: 'Thank-you pages should be noindex.' } },
+    { task: { title: 'Alt text', page_url: 'https://j.example/hoists/' }, check: { verdict: 'fix_wrong', reason: 'Placeholder text.' } }
+  ] };
+  const { subject, html } = buildTechSummaryEmail({ name: 'JGS Lifting' }, state, 'u');
+  has(subject, /Tech scan — needs a look: JGS Lifting — 1 confirmed fix, 1 false alarm removed/);
+  has(html, /Thank-you pages should be noindex/); has(html, /Placeholder text/); has(html, /of 40 pages/);
+});
+
 await t('monthly start: only switched-on clients not yet started this month, a few at a time', () => {
   const on = id => ({ id, publishing_profile: { autopilot_enabled: true } });
   const clients = [on('a'), on('b'), { id: 'off', publishing_profile: {} }, on('c'), on('d'), on('e'), on('f')];
