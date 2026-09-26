@@ -138,11 +138,18 @@ export async function handler(event) {
       if (draft) {
         draftTitle = draft.title?.rendered || draft.title?.raw || draftTitle;
         draftContent = draft.content?.rendered || draft.content?.raw || '';
-        draftImage = await wpMediaUrl(get, draft.featured_media);
       }
-      const chosen = await pickTemplate(candidates, fetchPublicHtml);
+      // Netlify stops a normal function at ~10s, so the page fetch and both
+      // image lookups run side by side. The first template almost always
+      // works; its image is looked up in advance.
+      const [chosen, firstImage, dImage] = await Promise.all([
+        pickTemplate(candidates, fetchPublicHtml),
+        wpMediaUrl(get, candidates[0]?.media),
+        draft ? wpMediaUrl(get, draft.featured_media) : ''
+      ]);
       if (!chosen) return message(502, 'Could not load one of ' + client.name + '\'s published posts to use as the design.');
-      chosen.image = await wpMediaUrl(get, chosen.media);
+      draftImage = dImage;
+      chosen.image = chosen.link === candidates[0]?.link ? firstImage : await wpMediaUrl(get, chosen.media);
       return render(client, profile, chosen, candidates, { draftTitle, draftContent, draftImage, pushed: !!pushedRef });
     }
 
