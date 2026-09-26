@@ -24,6 +24,52 @@ const VERDICT = {
 };
 const CHECKBOX_LABEL = { display: 'flex', alignItems: 'center', gap: 8, margin: '10px 0 0', cursor: 'pointer', width: 'fit-content' };
 
+// Fix types the suite can change on a WordPress site itself (see
+// netlify/functions/lib/techFix.js AUTO_FIX_TYPES).
+const AUTO_FIX = ['meta_title', 'meta_description', 'image_alt'];
+
+// Preview → Apply for one fix. The preview shows exactly what will change;
+// Apply changes only that, then checks the live page.
+function FixControls({ entry, wpConnected, accent, onPlan, onApply }) {
+  const a = entry.apply || {};
+  const btn = { fontSize: 11, padding: '3px 10px' };
+  if (!wpConnected) return <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>Apply by hand — no working WordPress connection.</div>;
+  if (a.status === 'planning') return <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>Reading the current value from the site…</div>;
+  if (a.status === 'applying') return <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>Applying and checking the live page…</div>;
+  if (a.status === 'manual') return <div style={{ fontSize: 11, marginTop: 4, color: 'var(--orange, #e8a33d)' }}>Apply by hand: {a.reason}</div>;
+  if (a.status === 'applied') {
+    return (
+      <div style={{ fontSize: 11, marginTop: 4, color: a.live?.status === 'verified' ? 'var(--green)' : 'var(--orange, #e8a33d)' }}>
+        {a.live?.status === 'verified' ? '✓ Applied and live on the page.' : '✓ Applied in WordPress. ' + (a.live?.detail || '')}
+      </div>
+    );
+  }
+  const changes = a.plan?.changes || [];
+  return (
+    <div style={{ marginTop: 6 }}>
+      {a.status === 'failed' && <div style={{ fontSize: 11, color: 'var(--red)' }}>Didn't apply: {a.reason || (a.results || []).filter(r => !r.ok).map(r => r.error || r.label).join('; ')}</div>}
+      {a.error && <div style={{ fontSize: 11, color: 'var(--orange, #e8a33d)' }}>{a.error}</div>}
+      {a.status === 'planned' && changes.map((c, i) => (
+        <div key={i} style={{ fontSize: 11, margin: '4px 0', padding: '6px 8px', background: 'var(--surface-2)', borderRadius: 6 }}>
+          <div className="muted">{c.label}</div>
+          <div><span className="muted">Now:</span> {c.from ? '“' + c.from + '”' : <em className="muted">(empty)</em>}</div>
+          <div><span className="muted">New:</span> <b>“{c.to}”</b></div>
+        </div>
+      ))}
+      {a.status === 'planned' && a.plan?.note && <div className="muted" style={{ fontSize: 11 }}>{a.plan.note}</div>}
+      <div className="row" style={{ gap: 6, marginTop: 4 }}>
+        {a.status !== 'planned' && <button className="ghost" style={btn} onClick={onPlan}>Preview change</button>}
+        {a.status === 'planned' && (
+          <>
+            <button className="primary" style={{ ...btn, background: accent, borderColor: accent, color: '#0a0a0c' }} onClick={onApply}>Apply on the site</button>
+            <button className="ghost" style={btn} onClick={onPlan}>Refresh preview</button>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function TechAutopilotPanel({ accent, onFinished }) {
   const client = useClients(s => s.current());
   const load = useClients(s => s.load);
@@ -44,15 +90,31 @@ export default function TechAutopilotPanel({ accent, onFinished }) {
   }
 
   useEffect(() => { setErr(''); setConfirming(false); wasActive.current = false; refresh(); }, [client?.id]);
+  const fixBusy = (state?.tasks || []).some(e => ['planning', 'applying'].includes(e.apply?.status));
   useEffect(() => {
-    if (!state || !ACTIVE.includes(state.status)) return;
-    const t = setInterval(refresh, 8000);
+    if (!state || (!ACTIVE.includes(state.status) && !fixBusy)) return;
+    const t = setInterval(refresh, fixBusy ? 3000 : 8000);
     return () => clearInterval(t);
-  }, [state?.status, client?.id]);
+  }, [state?.status, client?.id, fixBusy]);
+
+  async function fixAction(taskId, action) {
+    setErr('');
+    try {
+      const res = await fetch('/.netlify/functions/techfix-background', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Suite-Auth': await proxyAuthHash() },
+        body: JSON.stringify({ clientId: client.id, taskId, action })
+      });
+      if (res.status !== 202) throw new Error('The server refused (' + res.status + ').');
+      setState(s => ({ ...s, tasks: s.tasks.map(e => e.task.id === taskId ? { ...e, apply: { ...(e.apply || {}), status: action === 'plan' ? 'planning' : 'applying', error: '' } } : e) }));
+      setTimeout(refresh, 2500);
+    } catch (e) { setErr(e.message); }
+  }
 
   if (!client) return null;
   const profile = getPublishingProfile(client);
   const active = state && ACTIVE.includes(state.status);
+  const wpConnected = client.cms_type === 'WordPress' && !!(client.wp_url && client.wp_username && client.wp_app_password);
 
   async function start() {
     setConfirming(false); setBusy(true); setErr('');
@@ -160,6 +222,10 @@ export default function TechAutopilotPanel({ accent, onFinished }) {
                         </div>
                         <div className="muted" style={{ fontSize: 11 }}>{e.task.page_url}</div>
                         {e.check?.reason && <div style={{ fontSize: 11, color: v?.color }}>{e.check.reason}</div>}
+                        {!active && e.check?.verdict === 'confirmed' && AUTO_FIX.includes(e.task.fix_type) && (
+                          <FixControls entry={e} wpConnected={wpConnected} accent={accent}
+                            onPlan={() => fixAction(e.task.id, 'plan')} onApply={() => fixAction(e.task.id, 'apply')} />
+                        )}
                       </td>
                     </tr>
                   );
