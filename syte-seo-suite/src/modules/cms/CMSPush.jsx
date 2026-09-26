@@ -7,6 +7,7 @@ import { getPublishingProfile } from './publishingProfile.js';
 // an await on a dynamic import would spend the click and get it blocked.
 import { connectShopify, shopifyCallbackUrl } from './shopifyConnect.js';
 import { buildConnectionRows, summarizeConnections } from './connectionStatus.js';
+import { openThemePreview } from './previewLink.js';
 
 const ACCENT = '#4dabff';
 
@@ -746,6 +747,13 @@ export default function CMSPush({ sub, setSub }) {
                            style={{ color: ACCENT }} title="Opens the draft rendered in the client's theme">
                           Preview →
                         </a>
+                        {(item.payload?.wp_id || item.payload?.shopify_article_id) && (
+                          <a href="#" className="muted" style={{ fontSize: 11 }}
+                             title="The draft rebuilt in the client's site design — works without logging into their site"
+                             onClick={e => { e.preventDefault(); openThemePreview('q', item.id); }}>
+                            In theme
+                          </a>
+                        )}
                         {item.payload?.admin_url && (
                           <a href={item.payload.admin_url} target="_blank" rel="noreferrer"
                              className="muted" style={{ fontSize: 11 }} title="Open in the WordPress editor">

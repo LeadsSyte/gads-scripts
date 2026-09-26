@@ -8,6 +8,7 @@ import { loadSettings } from '../../lib/settings.js';
 import { markdownToHtml } from '../content/articleParser.js';
 import { parseArticleBody, slugifyTitle, cleanPushHtml } from './parseArticle.js';
 import { getPublishingProfile } from './publishingProfile.js';
+import { learnHouseStyle, applyHouseStyle } from './houseStyle.js';
 
 function slugFromUrl(pageUrl) {
   try {
@@ -60,6 +61,18 @@ export async function pushContentToWordPress(client, item) {
   const rawContent = p.html || p.code || p.fix || '';
   const parsed = parseArticleBody(rawContent, { stripH1: profile.strip_leading_h1 });
   let cleanHtml = cleanPushHtml(markdownToHtml(parsed.body));
+  const restBase = profile.post_type_rest_base || 'posts';
+
+  // Give our headings/paragraphs the same classes the client's team uses in
+  // their own posts, so the theme styles them alike (see houseStyle.js).
+  let houseStyle = {};
+  if (profile.house_style !== 'off') {
+    try {
+      const recent = await wpRequest(client, { path: 'wp/v2/' + restBase + '?status=publish&per_page=5&_fields=content' });
+      houseStyle = learnHouseStyle((Array.isArray(recent) ? recent : []).map(p => p?.content?.rendered || ''));
+      cleanHtml = applyHouseStyle(cleanHtml, houseStyle);
+    } catch { /* style learning is best-effort; the push goes ahead unstyled */ }
+  }
 
   // Post title: the article's own H1 (now stripped from the body so themes
   // don't render a double title). Meta title is the SEO <title>, which is
@@ -100,7 +113,6 @@ export async function pushContentToWordPress(client, item) {
 
   // Re-push protection: if a draft with this title's slug already exists,
   // update it in place instead of creating a duplicate.
-  const restBase = profile.post_type_rest_base || 'posts';
   // Match on title, not slug: WordPress leaves a draft's slug empty until it
   // is published, so a slug lookup silently found nothing and every re-push
   // created another draft.
@@ -183,6 +195,7 @@ export async function pushContentToWordPress(client, item) {
     meta_title: metaTitle,
     meta_desc: metaDesc,
     updated_existing: !!existing,
+    house_style: Object.keys(houseStyle).length ? houseStyle : null,
     meta_status: metaStatus,
     warnings
   };

@@ -7,6 +7,7 @@
 import { shopifyRequest, listBlogs, findArticleByHandle, storeHandle } from './shopifyApi.js';
 import { parseArticleBody, slugifyTitle, cleanPushHtml } from './parseArticle.js';
 import { getPublishingProfile } from './publishingProfile.js';
+import { learnHouseStyle, applyHouseStyle } from './houseStyle.js';
 import { markdownToHtml } from '../content/articleParser.js';
 import { generateHeroImage } from '../content/imageGen.js';
 import { loadSettings } from '../../lib/settings.js';
@@ -57,6 +58,14 @@ export async function pushArticleToShopify(client, item) {
 
   const blog = await resolveBlog(client, profile);
   const blogId = blog.id;
+
+  // Match the markup of the store's own published articles (houseStyle.js).
+  if (profile.house_style !== 'off') {
+    try {
+      const j = await shopifyRequest(client, { path: 'blogs/' + blogId + '/articles.json?published_status=published&limit=5&fields=body_html' });
+      bodyHtml = applyHouseStyle(bodyHtml, learnHouseStyle((j?.articles || []).map(a => a.body_html || '')));
+    } catch { /* best effort — push unstyled */ }
+  }
 
   // Hero image: generated client-side, attached base64. Shopify's article
   // `image` is its featured image; inline placement is a body <img> added

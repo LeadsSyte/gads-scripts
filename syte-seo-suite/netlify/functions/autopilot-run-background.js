@@ -18,6 +18,7 @@ import { fetchHtmlServer, htmlToTextServer, findAboutUrlServer } from './lib/ser
 import { prepareServerPush, canPushTo, pushArticleServer, loadArticleOutput, pushedTitles } from './lib/serverPush.js';
 import { getPublishingProfile } from '../../src/modules/cms/publishingProfile.js';
 import { reportRecipients, sendReport, buildRunSummaryEmail } from './lib/reportEmail.js';
+import { previewUrl } from './lib/previewSig.js';
 
 const BUDGET_MS = 14 * 60 * 1000;
 const MAX_HOPS = 12;           // self re-invocations per run — a runaway guard
@@ -156,7 +157,11 @@ async function emailRunSummary(supabase, client, state) {
     const to = await reportRecipients(supabase);
     if (!to.length) return;
     const siteUrl = (process.env.URL || 'https://syte-seo-suite.netlify.app').replace(/\/+$/, '');
-    await sendReport({ to, ...buildRunSummaryEmail(client, state, siteUrl) });
+    const canPreview = client.cms_type ? canPushTo(client) : false;
+    const previewFor = a => !canPreview ? ''
+      : a.push?.queue_id ? previewUrl('q', a.push.queue_id)
+      : a.blog_id ? previewUrl('a', a.blog_id) : '';
+    await sendReport({ to, ...buildRunSummaryEmail(client, state, siteUrl, previewFor) });
     state.report = { sent_at: new Date().toISOString(), to };
   } catch (e) {
     state.report = { error: String(e.message || e).slice(0, 200) };

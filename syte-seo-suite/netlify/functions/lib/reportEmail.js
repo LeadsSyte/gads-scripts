@@ -41,8 +41,9 @@ export async function sendReport({ to, subject, html }) {
 const WRAP = body => `<div style="font-family:Arial,sans-serif;max-width:680px;margin:0 auto;color:#222">${body}</div>`;
 const BTN = (href, label) => `<a href="${esc(href)}" style="display:inline-block;background:#111;color:#fff;padding:9px 18px;border-radius:6px;text-decoration:none;font-weight:bold">${esc(label)}</a>`;
 
-// Summary of one Autopilot run for one client.
-export function buildRunSummaryEmail(client, state, siteUrl) {
+// Summary of one Autopilot run for one client. previewFor(article) returns
+// an in-theme preview link for it ('' for none).
+export function buildRunSummaryEmail(client, state, siteUrl, previewFor = () => '') {
   const plan = state?.plan || [];
   const rows = plan.map((opp, i) => ({ opp, a: state.articles?.[i] || null }));
   const count = s => rows.filter(r => r.a?.status === s).length;
@@ -74,6 +75,8 @@ export function buildRunSummaryEmail(client, state, siteUrl) {
       if (a.push.warnings?.length) detail += a.push.warnings.slice(0, 3).map(w => '<li style="color:#b45309">' + esc(w) + '</li>').join('');
     }
     if (a?.push?.status === 'failed') { push = ' · <span style="color:#b91c1c">push failed</span>'; detail += '<li>' + esc(a.push.error) + '</li>'; }
+    const preview = a && (a.status === 'ready' || a.status === 'blocked') ? previewFor(a) : '';
+    if (preview) push += ' · <a href="' + esc(preview) + '">preview in the site\'s design</a>';
     return `<tr><td style="padding:6px 8px;vertical-align:top;white-space:nowrap;color:${color};font-weight:bold">${esc(status)}</td>`
       + `<td style="padding:6px 8px">${esc(opp.topic_title)}${push}${detail ? '<ul style="margin:4px 0 0 16px;padding:0;font-size:13px">' + detail + '</ul>' : ''}</td></tr>`;
   };

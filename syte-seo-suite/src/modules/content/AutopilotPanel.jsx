@@ -4,6 +4,7 @@ import { supabase, updateClientFields } from '../../lib/supabase.js';
 import { proxyAuthHash } from '../cms/proxyAuth.js';
 import { getPublishingProfile } from '../cms/publishingProfile.js';
 import { connectionState } from '../cms/connectionStatus.js';
+import { openThemePreview } from '../cms/previewLink.js';
 
 // Autopilot: the server writes the selected client's articles for this
 // month — website scan, research, write, relevance check, independent check
@@ -248,6 +249,13 @@ export default function AutopilotPanel({ accent, onFinished }) {
                       </td>
                       <td>
                         {opp.topic_title}
+                        {a?.blog_id && connected && (
+                          <a href="#" style={{ marginLeft: 8, fontSize: 11, color: accent }}
+                            title="See it in the client's own site design — no login needed"
+                            onClick={e => { e.preventDefault(); a.push?.queue_id ? openThemePreview('q', a.push.queue_id) : openThemePreview('a', a.blog_id); }}>
+                            preview in theme →
+                          </a>
+                        )}
                         {a?.push?.admin_url && (
                           <a href={a.push.admin_url} target="_blank" rel="noreferrer" style={{ marginLeft: 8, fontSize: 11, color: accent }}>open draft →</a>
                         )}

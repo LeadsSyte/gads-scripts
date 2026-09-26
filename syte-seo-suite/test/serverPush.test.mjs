@@ -35,6 +35,7 @@ globalThis.fetch = async (url, init = {}) => {
     const p = body.path || '';
     if (body.imageData || /wp\/v2\/media/.test(p)) return json({ id: 77, source_url: 'https://allergy.example/hero.png' });
     if (/\?search=/.test(p)) return json([]);
+    if (/status=publish/.test(p)) return json([1, 2].map(() => ({ content: { rendered: '<h2 class="wp-block-heading has-black-color">H</h2><p class="wp-block-paragraph">x</p>' } })));
     if (body.method === 'POST' && p === 'wp/v2/posts') return json({ id: 501, slug: '' });
     if (body.method === 'POST') return json({ id: 501 });
     return json({ id: 501, featured_media: 77, content: { rendered: '<p>Hay fever is common.</p><h2>Relief</h2><p>More.</p>' },
@@ -72,6 +73,7 @@ await t('a draft is created through the live proxy with the server gate value', 
   const create = wp.find(c => c.body.method === 'POST' && c.body.path === 'wp/v2/posts');
   assertEq(create.body.body.status, 'draft', 'draft only');
   if (/Meta Title|# Hay Fever Relief/.test(create.body.body.content)) throw new Error('meta block or H1 left in the body');
+  if (!/<h2 class="wp-block-heading has-black-color">Relief<\/h2>/.test(create.body.body.content)) throw new Error('house style not applied: ' + create.body.body.content.slice(0, 200));
 });
 
 await t('the hero image uses the built-in OpenAI key', () => {
