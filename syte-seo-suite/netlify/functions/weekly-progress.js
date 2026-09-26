@@ -11,6 +11,7 @@
 //
 // Schedule: every Monday 06:00 UTC (08:00 SAST)
 
+import { EMAIL_FROM } from './lib/emailFrom.js';
 import { createClient } from '@supabase/supabase-js';
 
 export const config = {
@@ -18,7 +19,7 @@ export const config = {
 };
 
 const RECIPIENTS = ['michaelh@syte.co.za', 'chrisf@syte.co.za'];
-const FROM = 'Syte SEO Suite <noreply@syte.co.za>';
+const FROM = EMAIL_FROM;
 
 // Statuses that mean the work is done. A change handed to the client's
 // developer by email is delivered work, so it is neither chased in the

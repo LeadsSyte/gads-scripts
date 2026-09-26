@@ -8,6 +8,7 @@
 // 'approved' rows are taken live by the publish-approved scheduled
 // function within 15 minutes. 'changes_requested' also notifies the team.
 
+import { EMAIL_FROM } from './lib/emailFrom.js';
 import { createClient } from '@supabase/supabase-js';
 
 export async function handler(event) {
@@ -104,7 +105,7 @@ export async function handler(event) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + resendKey },
         body: JSON.stringify({
-          from: 'Syte SEO Suite <noreply@syte.co.za>',
+          from: EMAIL_FROM,
           to: [teamEmail],
           subject: 'Changes requested: ' + (client?.name || '') + ' — ' + (row.page_title || ''),
           html: '<p>The client requested changes on "' + esc(row.page_title || '') + '".</p>'

@@ -9,8 +9,10 @@
 // editable in the Autopilot panel). No address means no email. Client-facing
 // draft emails stay opt-in per client in notify-draft.js.
 
+import { EMAIL_FROM } from './emailFrom.js';
+
 export const REPORT_CONFIG_ID = 'autopilot-config';
-const FROM = 'Syte SEO Suite <noreply@syte.co.za>';
+const FROM = EMAIL_FROM;
 
 export function esc(s) {
   return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');

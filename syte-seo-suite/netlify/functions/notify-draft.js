@@ -17,10 +17,11 @@
 // Env vars: RESEND_API_KEY, SUPABASE_URL, SUPABASE_SERVICE_KEY (or
 // SUPABASE_KEY), URL (Netlify-provided site URL, for approval links).
 
+import { EMAIL_FROM } from './lib/emailFrom.js';
 import { createClient } from '@supabase/supabase-js';
 import { randomUUID } from 'node:crypto';
 
-const FROM = 'Syte SEO Suite <noreply@syte.co.za>';
+const FROM = EMAIL_FROM;
 
 export async function handler(event) {
   if (event.httpMethod !== 'POST') return { statusCode: 405, body: 'Method Not Allowed' };
