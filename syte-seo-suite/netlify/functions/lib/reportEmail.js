@@ -9,10 +9,9 @@
 // editable in the Autopilot panel). No address means no email. Client-facing
 // draft emails stay opt-in per client in notify-draft.js.
 
-import { EMAIL_FROM } from './emailFrom.js';
+import { sendMail } from './sendMail.js';
 
 export const REPORT_CONFIG_ID = 'autopilot-config';
-const FROM = EMAIL_FROM;
 
 export function esc(s) {
   return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -28,16 +27,8 @@ export async function reportRecipients(supabase) {
 }
 
 export async function sendReport({ to, subject, html }) {
-  const key = process.env.RESEND_API_KEY;
-  if (!key) throw new Error('RESEND_API_KEY is not set in the Netlify environment');
   if (!to?.length) throw new Error('No report recipient set');
-  const res = await fetch('https://api.resend.com/emails', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key },
-    body: JSON.stringify({ from: FROM, to, subject, html }),
-    signal: AbortSignal.timeout(20000)
-  });
-  if (!res.ok) throw new Error('Resend ' + res.status + ': ' + (await res.text()).slice(0, 200));
+  await sendMail({ to, subject, html });
 }
 
 const WRAP = body => `<div style="font-family:Arial,sans-serif;max-width:680px;margin:0 auto;color:#222">${body}</div>`;

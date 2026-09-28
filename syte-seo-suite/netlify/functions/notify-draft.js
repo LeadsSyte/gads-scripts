@@ -14,14 +14,13 @@
 // publishing profile has notifications_enabled AND a recipient address.
 // There is no global default recipient by design.
 //
-// Env vars: RESEND_API_KEY, SUPABASE_URL, SUPABASE_SERVICE_KEY (or
+// Env vars: GMAIL_APP_PASSWORD (or RESEND_API_KEY), SUPABASE_URL, SUPABASE_SERVICE_KEY (or
 // SUPABASE_KEY), URL (Netlify-provided site URL, for approval links).
 
-import { EMAIL_FROM } from './lib/emailFrom.js';
+import { sendMail, mailTransport } from './lib/sendMail.js';
 import { createClient } from '@supabase/supabase-js';
 import { randomUUID } from 'node:crypto';
 
-const FROM = EMAIL_FROM;
 
 export async function handler(event) {
   if (event.httpMethod !== 'POST') return { statusCode: 405, body: 'Method Not Allowed' };
@@ -32,8 +31,7 @@ export async function handler(event) {
 
   const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
   const supabaseKey = process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_KEY || process.env.VITE_SUPABASE_ANON_KEY;
-  const resendKey = process.env.RESEND_API_KEY;
-  if (!supabaseUrl || !supabaseKey || !resendKey) {
+  if (!supabaseUrl || !supabaseKey || !mailTransport()) {
     console.error('[notify-draft] missing env vars');
     return { statusCode: 500, body: 'Missing env vars' };
   }
@@ -87,7 +85,7 @@ export async function handler(event) {
       const changesUrl = siteUrl + '/.netlify/functions/approval?id=' + row.id + '&token=' + token + '&action=changes';
       const preview = articlePreviewHtml(row.payload);
 
-      await sendEmail(resendKey, {
+      await sendEmail({
         to: [profile.client_approval_email],
         subject: 'New blog post ready for your approval: ' + title,
         html: `
@@ -117,7 +115,7 @@ export async function handler(event) {
       const adminUrl = row.payload?.admin_url || '';
       const warnings = Array.isArray(row.payload?.warnings) ? row.payload.warnings : [];
       const heldBack = verificationFailed && profile.approval_mode === 'client';
-      await sendEmail(resendKey, {
+      await sendEmail({
         to: [to],
         subject: (heldBack ? 'Needs a fix before the client sees it: ' : 'Draft ready for review: ') + client.name + ' — ' + title,
         html: `
@@ -167,11 +165,6 @@ function articlePreviewHtml(payload) {
   }).join('');
 }
 
-async function sendEmail(resendKey, { to, subject, html }) {
-  const res = await fetch('https://api.resend.com/emails', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + resendKey },
-    body: JSON.stringify({ from: FROM, to, subject, html })
-  });
-  if (!res.ok) throw new Error('Resend ' + res.status + ': ' + await res.text());
+async function sendEmail({ to, subject, html }) {
+  await sendMail({ to, subject, html });
 }

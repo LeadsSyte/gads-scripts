@@ -1,17 +1,17 @@
 // Weekly progress summary email — sends every Monday at 08:00 SAST (06:00 UTC).
 // Queries all implementation records from the past 7 days + all outstanding
 // (pending/failed) items, groups by client, and sends a formatted HTML email
-// to the leadership team via Resend. Changes handed to a client's developer
+// to the leadership team (lib/sendMail.js). Changes handed to a client's developer
 // count as delivered — see DELIVERED_STATUSES below.
 //
 // Env vars required:
-//   RESEND_API_KEY  — from resend.com
+//   GMAIL_APP_PASSWORD — App Password for automation@syte.co.za (lib/sendMail.js)
 //   SUPABASE_URL    — same as VITE_SUPABASE_URL but server-side
 //   SUPABASE_KEY    — anon or service_role key
 //
 // Schedule: every Monday 06:00 UTC (08:00 SAST)
 
-import { EMAIL_FROM } from './lib/emailFrom.js';
+import { sendMail, mailTransport } from './lib/sendMail.js';
 import { createClient } from '@supabase/supabase-js';
 
 export const config = {
@@ -19,7 +19,6 @@ export const config = {
 };
 
 const RECIPIENTS = ['michaelh@syte.co.za', 'chrisf@syte.co.za'];
-const FROM = EMAIL_FROM;
 
 // Statuses that mean the work is done. A change handed to the client's
 // developer by email is delivered work, so it is neither chased in the
@@ -32,7 +31,6 @@ const isDelivered = (status) => DELIVERED_STATUSES.includes(status);
 export default async function handler() {
   const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
   const supabaseKey = process.env.SUPABASE_KEY || process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY;
-  const resendKey = process.env.RESEND_API_KEY;
 
   if (!supabaseUrl || !supabaseKey) {
     console.error('[weekly-progress] Missing SUPABASE_URL or SUPABASE_KEY');
@@ -204,33 +202,25 @@ export default async function handler() {
 </body>
 </html>`;
 
-  // 5. Send via Resend (or log if no key).
-  if (!resendKey) {
-    console.log('[weekly-progress] No RESEND_API_KEY — email not sent. HTML preview logged.');
+  // 5. Send (or log if email is not set up).
+  if (!mailTransport()) {
+    console.log('[weekly-progress] Email not set up (GMAIL_APP_PASSWORD) — not sent. HTML preview logged.');
     console.log(html);
-    return { statusCode: 200, body: JSON.stringify({ sent: false, reason: 'no RESEND_API_KEY', totalItems: all.length }) };
+    return { statusCode: 200, body: JSON.stringify({ sent: false, reason: 'email not set up', totalItems: all.length }) };
   }
 
   try {
-    const res = await fetch('https://api.resend.com/emails', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: 'Bearer ' + resendKey
-      },
-      body: JSON.stringify({
-        from: FROM,
+    let data;
+    try {
+      data = await sendMail({
         to: RECIPIENTS,
         subject: `Syte SEO Progress — ${weekLabel} · ${totalVerified} verified, ${totalSentToDev} sent to dev, ${totalPending} pending`,
         html
-      })
-    });
-    if (!res.ok) {
-      const txt = await res.text();
-      console.error('[weekly-progress] Resend error:', txt);
-      return { statusCode: 502, body: 'Resend error: ' + txt.slice(0, 300) };
+      });
+    } catch (err) {
+      console.error('[weekly-progress] send error:', err.message);
+      return { statusCode: 502, body: 'Email error: ' + err.message.slice(0, 300) };
     }
-    const data = await res.json();
     console.log('[weekly-progress] Email sent:', data.id);
     return { statusCode: 200, body: JSON.stringify({ sent: true, emailId: data.id, totalItems: all.length }) };
   } catch (e) {
