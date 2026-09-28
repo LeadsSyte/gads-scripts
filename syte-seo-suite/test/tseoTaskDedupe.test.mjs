@@ -16,11 +16,14 @@ import vm from 'node:vm';
 const here = dirname(fileURLToPath(import.meta.url));
 const SRC_PATH = resolve(here, '../src/modules/technical/TechnicalSEO.jsx');
 const src = readFileSync(SRC_PATH, 'utf8');
+// taskDedupKey moved to triage.js (shared with the server-side Tech Autopilot);
+// TechnicalSEO.jsx imports and re-exports it.
+const triageSrc = readFileSync(resolve(here, '../src/modules/technical/triage.js'), 'utf8');
 
 // Pull dedupeTasks + the shared taskDedupKey helper out of the module by
 // regex — avoids transpiling the whole JSX file. taskDedupKey is exported
 // so it can also be used by the rejection blocklist; dedupeTasks calls it.
-const keyMatch = src.match(/export function taskDedupKey\([\s\S]*?^\}/m);
+const keyMatch = triageSrc.match(/export function taskDedupKey\([\s\S]*?^\}/m);
 const fnMatch = src.match(/function dedupeTasks\([\s\S]*?^\}/m);
 if (!keyMatch || !fnMatch) {
   console.error('FAIL tseo-task-dedupe: taskDedupKey or dedupeTasks not found in source');

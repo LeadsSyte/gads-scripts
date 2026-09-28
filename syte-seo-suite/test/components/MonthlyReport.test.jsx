@@ -17,6 +17,9 @@ vi.mock('../../src/lib/anthropic.js', () => ({
 }));
 
 vi.mock('../../src/lib/supabase.js', () => ({
+  // No database: the Report Autopilot box on this page shows nothing.
+  supabase: null,
+  updateClientFields: vi.fn().mockResolvedValue({}),
   listAeoSnapshots: vi.fn().mockResolvedValue([]),
   logReportSent: vi.fn().mockResolvedValue({}),
   logReportGenerated: vi.fn().mockResolvedValue({}),
