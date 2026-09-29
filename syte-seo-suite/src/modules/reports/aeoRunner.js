@@ -189,8 +189,22 @@ export async function runSnapshot(client, opts = {}) {
     maxExpansionDepth = 2,      // how many recursion rounds
     maxExpansionQueries = 60,   // hard cap on extra queries the expansion may add
     expandGeos = [],            // extra cities/regions to drill into
-    expandSegments             // buyer segments/industries to qualify by (defaults inside winnerExpansion)
+    expandSegments,            // buyer segments/industries to qualify by (defaults inside winnerExpansion)
+    // Server runs have a hard time limit, and a full census doesn't fit in
+    // one. timeLeftMs() is asked before each (probe, engine, mode) group
+    // starts: when it runs low, the groups not yet started are left for the
+    // next run and runSnapshot returns { partial: true, carry } instead of a
+    // snapshot. Pass that `carry` back in to continue where it stopped —
+    // nothing already asked is asked (or paid for) again.
+    timeLeftMs = null,
+    minTimeForGroupMs = 3 * 60 * 1000,
+    carry = null
   } = opts;
+  const timeUp = () => !!timeLeftMs && timeLeftMs() < minTimeForGroupMs;
+  const normQ = (s) => String(s || '').toLowerCase().replace(/\s+/g, ' ').trim();
+  // Groups are matched on the query text, not the probe id: fan-out children
+  // get their ids from a counter.
+  const groupKey = (probe, engineId, mode) => normQ(probe.query) + '|' + engineId + '|' + mode;
 
   // Recover keys from the durable Supabase copy before choosing engines. A
   // locally-lost key — a corrupted settings blob (loadSettings then silently
@@ -225,7 +239,8 @@ export async function runSnapshot(client, opts = {}) {
       total += runModesFor(probe.runMode, eng, retrievalOnly).length * N;
   let done = 0;
 
-  const runRecords = [];   // persisted per-run records
+  const runRecords = [...(carry?.runRecords || [])];   // persisted per-run records
+  const carriedRecords = runRecords.length;             // already persisted by an earlier run
   const rawEntries = [];   // { hash, engine, run_mode, raw_response }
   const enginesRan = new Set();
   const disabledEngines = new Set();  // PERMANENTLY out this sweep (bad key / config error only)
@@ -248,6 +263,7 @@ export async function runSnapshot(client, opts = {}) {
 
   // Probe one (engine, mode) N times, sequentially (rate-limit friendly).
   async function probeGroup(probe, eng, mode) {
+    if (timeUp()) return { probe, engine: eng, mode, runs: [], unfinished: true };
     const runs = [];
     for (let i = 0; i < N; i++) {
       // Skip an engine a bad key / config error took out for good.
@@ -342,43 +358,59 @@ export async function runSnapshot(client, opts = {}) {
     for (const probe of probeList) {
       for (const eng of engines) {
         for (const mode of runModesFor(probe.runMode, eng, retrievalOnly)) {
+          if (carriedKeys.has(groupKey(probe, eng.id, mode))) continue;
           const limit = perEngineLimit.get(eng.id);
           promises.push(limit(() => probeGroup(probe, eng, mode)));
         }
       }
     }
-    return Promise.all(promises);
+    const swept = await Promise.all(promises);
+    if (swept.some(g => g.unfinished)) unfinished = true;
+    return swept.filter(g => !g.unfinished);
   }
 
-  let groups = await sweep(runnableProbes);
+  // What an earlier run already collected (see `carry`).
+  const engineById = new Map(ALL_ENGINES.concat(engines).map(e => [e.id, e]));
+  const carriedGroups = (carry?.groups || []).map(g => ({
+    probe: g.probe, mode: g.mode, runs: g.runs || [],
+    engine: engineById.get(g.engineId) || { id: g.engineId, label: g.engineId }
+  }));
+  const carriedKeys = new Set(carriedGroups.map(g => groupKey(g.probe, g.engine.id, g.mode)));
+  for (const g of carriedGroups) if (g.runs.length) enginesRan.add(g.engine.id);
+  const carriedChildren = carry?.discovered || [];
+  let unfinished = false;
+
+  let groups = carriedGroups.concat(await sweep(runnableProbes.concat(carriedChildren)));
 
   // ── Winner expansion (spider web) ─────────────────────────────
   // A probe "wins" when the brand appeared in any run. Drill each winner into
   // deeper long-tail (geo + segment) and recurse on winners-of-winners until we
   // hit the volume target, run out of new winners, or exhaust the query budget.
-  const discoveredProbes = [];   // fan-out children we actually probed (for the report / approval queue)
-  if (expandWinners) {
-    const normQ = (s) => String(s || '').toLowerCase().replace(/\s+/g, ' ').trim();
+  const discoveredProbes = [...carriedChildren];   // fan-out children we actually probed (for the report / approval queue)
+  let expansionUsed = carry?.expansionUsed || 0;
+  let expansionDepth = carry?.expansionDepth || 0;
+  const expandedQueries = new Set(carry?.expandedQueries || []);
+  if (expandWinners && !unfinished) {
     const winningIds = (grps) => {
       const ids = new Set();
       for (const g of grps) if (g.runs.some(r => r.appeared)) ids.add(g.probe.id);
       return ids;
     };
-    const probedNorm = new Set(runnableProbes.map(p => normQ(p.query)));
-    const expandedIds = new Set();
-    let expansionUsed = 0;
-    let seq = 0;
-    for (let depth = 0; depth < maxExpansionDepth; depth++) {
+    const probedNorm = new Set(runnableProbes.concat(carriedChildren).map(p => normQ(p.query)));
+    let seq = carriedChildren.length;
+    while (expansionDepth < maxExpansionDepth) {
+      if (timeUp()) { unfinished = true; break; }
       const winners = [...winningIds(groups)];
       if (winners.length >= winnerTarget) break;
-      const toExpand = winners.filter(id => !expandedIds.has(id));
+      const parentOf = id => groups.find(g => g.probe.id === id)?.probe;
+      const toExpand = winners.filter(id => parentOf(id) && !expandedQueries.has(normQ(parentOf(id).query)));
       if (!toExpand.length) break;
+      expansionDepth++;
       const childProbes = [];
       for (const id of toExpand) {
-        expandedIds.add(id);
+        const parent = parentOf(id);
+        expandedQueries.add(normQ(parent.query));
         if (expansionUsed >= maxExpansionQueries) break;
-        const parent = groups.find(g => g.probe.id === id)?.probe;
-        if (!parent) continue;
         const kids = expandWinnerQuery(parent.query, {
           geos: expandGeos, segments: expandSegments,
           parentProbeId: parent.id, parentTier: parent.tier
@@ -404,11 +436,28 @@ export async function runSnapshot(client, opts = {}) {
           total += runModesFor(probe.runMode, eng, retrievalOnly).length * N;
       const childGroups = await sweep(childProbes);
       groups = groups.concat(childGroups);
+      if (unfinished) break;
     }
   }
 
-  // Hand raw runs to the caller for persistence (UI wires DB writers).
-  try { await onRuns?.(runRecords, rawEntries); } catch (e) { console.warn('[aeo] onRuns persistence failed:', e.message); }
+  // Hand raw runs to the caller for persistence (UI wires DB writers) —
+  // only the ones this run collected.
+  try { await onRuns?.(runRecords.slice(carriedRecords), rawEntries); } catch (e) { console.warn('[aeo] onRuns persistence failed:', e.message); }
+
+  // Out of time with work left: hand back what's needed to carry on.
+  if (unfinished) {
+    return {
+      partial: true,
+      groups_done: groups.length,
+      carry: {
+        groups: groups.map(g => ({ probe: g.probe, engineId: g.engine.id, mode: g.mode, runs: g.runs })),
+        runRecords,
+        discovered: discoveredProbes,
+        expansionUsed, expansionDepth,
+        expandedQueries: [...expandedQueries]
+      }
+    };
+  }
 
   // Per-engine health so the report UI can explain all-zero engines (timeout /
   // rate-limit / bad key) instead of showing them as "0% visibility".

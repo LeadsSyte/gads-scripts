@@ -107,6 +107,11 @@ export const PROFILE_DEFAULTS = {
   // figure against the data, and tell the account manager it's ready
   // (netlify/functions/report-monthly.js). The client is never emailed.
   reports_enabled: false,
+
+  // AEO Report Autopilot: on the 6th, measure the client across ChatGPT,
+  // Claude and Gemini and build last month's AEO report
+  // (netlify/functions/aeoreport-monthly.js). Costs API money on every run.
+  aeo_reports_enabled: false,
 };
 
 export function getPublishingProfile(client) {

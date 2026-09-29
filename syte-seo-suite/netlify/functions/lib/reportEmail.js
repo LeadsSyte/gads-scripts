@@ -249,26 +249,47 @@ export function buildAeoSummaryEmail(client, state, siteUrl, { fixes = new Map()
   return { subject, html };
 }
 
-// "Report ready to review" for the account manager. The client is never
-// emailed by the suite — this goes to the report address only.
-export function buildReportReadyEmail(client, state, siteUrl, viewUrl) {
+// "Report ready to review" for the account manager, for the SEO report or
+// (kind: 'aeo') the AEO report. The client is never emailed by the suite —
+// this goes to the report address only.
+export function buildReportReadyEmail(client, state, siteUrl, viewUrl, { kind = 'seo' } = {}) {
   const month = state?.month || '';
+  const label = kind === 'aeo' ? 'AEO' : 'SEO';
+  const against = kind === 'aeo' ? 'the answers collected from the AI engines' : 'the Google data';
   const check = state?.check;
   const issues = check?.issues || [];
+  const errors = issues.filter(i => i.severity === 'error');
   const done = state?.status === 'done';
-  const subject = (!done ? 'Report NOT built: ' : check?.verdict === 'accurate' ? 'Report ready to review: ' : 'Report ready — check the flagged figures: ')
-    + (client?.name || '') + ' (' + month + ')';
+  const name = client?.name || '';
+  const subject = !done ? 'Action needed — ' + name + ': ' + label + ' report for ' + month + ' was NOT built'
+    : errors.length ? 'Action needed — ' + name + ': ' + label + ' report for ' + month + ' is ready, ' + plural(errors.length, 'thing') + ' to fix first'
+    : name + ': ' + label + ' report for ' + month + ' is ready to send';
+  const where = 'Reports → Monthly Report';
+  const todo = !done ? [
+    `<strong>The report was not built.</strong> The reason is below. Fix it, then open the suite → ${where} → <em>Build on the server</em>.`
+  ] : [
+    errors.length ? `<strong>Fix ${plural(errors.length, 'point')} the accuracy check found</strong> (in red below) before it goes to the client.` : '',
+    issues.length > errors.length ? `Read the ${plural(issues.length - errors.length, 'note')} in orange below and decide whether the wording needs to change.` : '',
+    (state.engine_notes || []).length ? 'One AI engine had problems this month (below). Check the report does not present it as a real result.' : '',
+    `<strong>Read the report, then send it.</strong> Open the suite → ${where}, pick ${esc(name)}, edit if needed and send.`
+  ].filter(Boolean);
+  const sum = state?.summary;
   const html = WRAP(done ? `
-    <p>The <strong>${esc(client?.name)}</strong> SEO report for <strong>${esc(month)}</strong> is ready for you to review and send.</p>
-    <p>QA score (email tone and format): <strong>${esc(state.qa_score ?? '—')}/10</strong><br/>
-    Accuracy check (every figure against the Google data): <strong style="color:${check?.verdict === 'accurate' ? '#15803d' : '#b91c1c'}">${check?.verdict === 'accurate' ? 'all figures match' : 'issues found'}</strong></p>
-    ${issues.length ? '<ul>' + issues.map(i => `<li style="color:${i.severity === 'error' ? '#b91c1c' : '#b45309'}">${esc(i.issue)}</li>`).join('') + '</ul>' : ''}
+    <p style="font-size:15px">The <strong>${esc(name)}</strong> ${label} report for <strong>${esc(month)}</strong> is written and checked.</p>
+    ${todoBox(todo)}
+    ${sum ? `<p style="font-size:14px">Measured: ${esc(sum.prompts)} prompts across ${esc((sum.engines || []).join(', '))} (${esc(sum.answers)} answers). ${esc(name)} was named in ${esc(sum.named_in)} of them.`
+      + (sum.compared_with ? ' Compared with ' + esc(sum.compared_with) + '.' : ' No earlier month to compare with.') + '</p>' : ''}
+    ${(state.engine_notes || []).map(n => '<p style="font-size:13px;color:#b45309">' + esc(n) + '</p>').join('')}
+    <p style="font-size:14px">Accuracy check (every figure against ${against}): <strong style="color:${check?.verdict === 'accurate' ? '#15803d' : '#b91c1c'}">${check?.verdict === 'accurate' ? 'all figures match' : 'issues found'}</strong><br/>
+    Tone and format score: <strong>${esc(state.qa_score ?? '—')}/10</strong></p>
+    ${issues.length ? '<ul style="font-size:14px;padding-left:18px">' + issues.map(i => `<li style="color:${i.severity === 'error' ? '#b91c1c' : '#b45309'}">${esc(i.issue)}</li>`).join('') + '</ul>' : ''}
     ${viewUrl ? `<p>${BTN(viewUrl, 'Open the report')}</p>` : ''}
-    <p style="color:#555"><strong>Draft email to the client</strong> — Subject: ${esc(state.email_subject)}</p>
+    <p style="color:#555;font-size:14px"><strong>Draft email to the client</strong> — Subject: ${esc(state.email_subject)}</p>
     <div style="border:1px solid #ddd;border-radius:8px;padding:14px;background:#fafafa;white-space:pre-wrap;font-size:14px">${esc(state.email_body)}</div>
     <p style="margin-top:18px">${BTN(siteUrl, 'Open the suite to edit and send')}</p>
-    <p style="color:#777;font-size:12px">Nothing has been sent to the client. Review, edit if needed, then send it from Reports → Monthly Report.</p>`
-    : `<p>The <strong>${esc(client?.name)}</strong> report for ${esc(month)} could not be built.</p>
+    <p style="color:#777;font-size:12px">Nothing has been sent to the client.</p>`
+    : `<p style="font-size:15px">The <strong>${esc(name)}</strong> ${label} report for ${esc(month)} could not be built.</p>
+    ${todoBox(todo)}
     <p style="color:#b91c1c">${esc(state?.error || 'Unknown error')}</p>
     <p>${BTN(siteUrl, 'Open the suite')}</p>`);
   return { subject, html };

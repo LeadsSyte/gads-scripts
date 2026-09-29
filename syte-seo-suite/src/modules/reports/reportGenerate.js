@@ -1,11 +1,15 @@
-// The SEO monthly report's generation steps, shared by the Monthly Report
-// page (browser) and the server-side Report Autopilot
-// (netlify/functions/lib/reportScan.js), so both write the same report:
-//   report data → form fields → Alice email → microsite JSON → QA of the email.
+// The monthly reports' generation steps, shared by the Monthly Report page
+// (browser) and the server-side Report Autopilots
+// (netlify/functions/lib/reportScan.js and aeoReportScan.js), so both write
+// the same report:
+//   SEO: report data → form fields → Alice email → microsite JSON → QA
+//   AEO: snapshot (+ last month's) → Alice email → microsite JSON → QA
 // `complete` is the Claude call (the server passes its own).
 
 import { claudeComplete, extractJSON } from '../../lib/anthropic.js';
-import { ALICE_SEO_SYSTEM, MICROSITE_SEO_SYSTEM, QA_SEO_SYSTEM, buildAlicePayload } from './reportPrompts.js';
+import { ALICE_SEO_SYSTEM, MICROSITE_SEO_SYSTEM, QA_SEO_SYSTEM, buildAlicePayload,
+  ALICE_AEO_SYSTEM, MICROSITE_AEO_SYSTEM, QA_AEO_SYSTEM, buildAeoPayload } from './reportPrompts.js';
+import { compareSnapshots, rankBrandWithCompetitors } from './aeoCompare.js';
 import { sanitizeEmail } from './sanitize.js';
 
 export const REPORT_MODEL = 'claude-sonnet-4-6';
@@ -116,4 +120,53 @@ export async function generateSeoReport({ client, form, workSummary, monthLabel,
     console.warn('[Report] SEO QA pass failed, keeping the report:', e.message);
   }
   return { payload, aliceText, email, micro, qa };
+}
+
+// Build the AEO report from a snapshot (runSnapshot's result) and, when there
+// is one, the previous month's. onPhase('alice' | 'micro' | 'qa').
+// Returns { payload, aliceText, email, micro, qa, compare, ranking, brandRank }.
+export async function generateAeoReport({ client, probe, previousSnap = null, monthLabel, previousMonthLabel = null, complete = claudeComplete, onPhase }) {
+  const compare = compareSnapshots(probe, previousSnap);
+  const ranking = rankBrandWithCompetitors(probe, client.name);
+  const brandRank = ranking.findIndex(r => r.isBrand) + 1;
+  const payload = buildAeoPayload({
+    client, monthLabel, previousMonthLabel: previousSnap ? previousMonthLabel : null,
+    probe, compare, ranking, brandRank
+  });
+
+  onPhase?.('alice');
+  const aliceText = await complete({
+    system: ALICE_AEO_SYSTEM, messages: [{ role: 'user', content: payload }],
+    model: REPORT_MODEL, max_tokens: 1200, temperature: 0.7
+  });
+  const email = sanitizeEmail(parseAliceOutput(aliceText));
+
+  onPhase?.('micro');
+  const micrositeText = await complete({
+    system: MICROSITE_AEO_SYSTEM, messages: [{ role: 'user', content: payload }],
+    // The AEO microsite JSON has narratives, highlights and work items that
+    // truncate mid-JSON at lower limits, which then fails extractJSON.
+    model: REPORT_MODEL, max_tokens: 4000, temperature: 0.5
+  });
+  const micro = extractJSON(micrositeText);
+  if (!micro) {
+    console.error('[Report] Microsite (AEO) raw output:', micrositeText);
+    throw new Error('Microsite JSON could not be parsed. Raw output logged to console — usually means truncated output (raise max_tokens) or model wrapped JSON in stray prose.');
+  }
+  if (!micro.clientName) micro.clientName = client.name;
+
+  // Advisory only — the report exists at this point, so a failed QA call
+  // must not lose it.
+  onPhase?.('qa');
+  let qa = null;
+  try {
+    const qaText = await complete({
+      system: QA_AEO_SYSTEM, messages: [{ role: 'user', content: 'Alice email to review:\n\n' + aliceText }],
+      model: REPORT_MODEL, max_tokens: 500, temperature: 0
+    });
+    qa = extractJSON(qaText);
+  } catch (e) {
+    console.warn('[Report] AEO QA pass failed, keeping the report:', e.message);
+  }
+  return { payload, aliceText, email, micro, qa, compare, ranking, brandRank };
 }

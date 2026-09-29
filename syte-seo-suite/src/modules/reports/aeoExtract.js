@@ -98,8 +98,9 @@ const EXTRACT_SYSTEM =
   'specific brand appears in it. Output ONLY valid JSON, no prose, no code fences.';
 
 // Single structured extraction call. Returns the normalized object, or null on
-// failure so the caller can fall back to regex detection.
-export async function extractRun({ text, brandName, competitorNames = [] }) {
+// failure so the caller can fall back to regex detection. `complete` is the
+// Claude call (the server passes its own).
+export async function extractRun({ text, brandName, competitorNames = [] }, complete = claudeComplete) {
   if (!text) return null;
   const prompt = `BRAND: ${brandName}
 KNOWN COMPETITORS (may or may not appear): ${competitorNames.join(', ') || '(none provided)'}
@@ -125,7 +126,7 @@ Rules:
 - If BRAND is absent: appeared=false, position=null, segmentLabel=null, reasonPhrase=null, sentiment="neutral".
 - brandsInOrder is every company/supplier/product-brand the answer named, in order of first appearance.`;
   try {
-    const out = await claudeComplete({
+    const out = await complete({
       system: EXTRACT_SYSTEM,
       model: EXTRACT_MODEL,
       messages: [{ role: 'user', content: prompt }],

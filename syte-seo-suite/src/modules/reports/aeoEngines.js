@@ -5,12 +5,20 @@
 //
 // Built-in Claude uses the suite's sessionStorage key. The three others use
 // user-provided keys from localStorage (lib/settings.js).
+//
+// On the server (AEO Report Autopilot) there is no browser storage and no
+// need for the proxies: globalThis.__SYTE_AEO_KEYS = { openai, google,
+// anthropic } makes every engine call its provider directly with the
+// deployment's keys. Same requests, same parsing — so a server snapshot is
+// comparable with one run from the page.
 
 import { loadSettings, hasBuiltinEngine } from '../../lib/settings.js';
 import { getStoredApiKey } from '../../lib/auth.js';
 import { fetchWithTimeout } from '../../lib/http.js';
 
 const MAX_TOKENS = 500;
+
+const serverKeys = () => globalThis.__SYTE_AEO_KEYS || null;
 
 // Per-engine request timeout. A single stalled provider must not hang the
 // whole probe sweep — on timeout ask() returns { error } and the sweep
@@ -75,7 +83,7 @@ export const chatgpt = {
   supportsSearchOff: true,
   // A personal OpenAI key OR the deployment's built-in key (served by the
   // openai-proxy from OPENAI_API_KEY) makes ChatGPT available to everyone.
-  isConfigured: () => !!loadSettings().openaiKey || hasBuiltinEngine('chatgpt'),
+  isConfigured: () => serverKeys() ? !!serverKeys().openai : (!!loadSettings().openaiKey || hasBuiltinEngine('chatgpt')),
   // One web-search attempt at a given retrieval depth. Deeper context =
   // ChatGPT reads more pages = it names more brands (closer to what you see
   // manually on chatgpt.com), but takes longer. Returns a normalised
@@ -84,11 +92,18 @@ export const chatgpt = {
   async _searchAt(query, contextSize, openaiKey) {
     const reqBody = { model: 'gpt-4o', input: query, max_output_tokens: MAX_TOKENS };
     if (contextSize) reqBody.tools = [{ type: 'web_search_preview', search_context_size: contextSize }];
-    const res = await fetchJsonWithRetry('/.netlify/functions/openai-proxy', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ apiKey: openaiKey, endpoint: 'responses', body: reqBody })
-    });
+    const direct = serverKeys();
+    const res = direct
+      ? await fetchJsonWithRetry('https://api.openai.com/v1/responses', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + direct.openai },
+        body: JSON.stringify(reqBody)
+      })
+      : await fetchJsonWithRetry('/.netlify/functions/openai-proxy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ apiKey: openaiKey, endpoint: 'responses', body: reqBody })
+      });
     if (!res.ok) {
       const txt = await res.text().catch(() => '');
       return { error: 'OpenAI ' + res.status + ' ' + txt.slice(0, 200), status: res.status, rateLimited: res.status === 429 };
@@ -110,7 +125,7 @@ export const chatgpt = {
     return { text: parts.join('\n').trim(), raw: data };
   },
   async ask(query, { search = true } = {}) {
-    const { openaiKey } = loadSettings();
+    const { openaiKey } = serverKeys() ? {} : loadSettings();
     const searchMode = search ? 'search_on' : 'search_off';
     // A 401/403 is a bad / expired / forbidden key (or a project without
     // access to gpt-4o or the web_search tool). Retrying or falling back to a
@@ -185,11 +200,16 @@ async function geminiCall(model, body, apiKey) {
   let lastErr = null;
   for (let attempt = 0; attempt <= GEMINI_RETRY_DELAYS_MS.length; attempt++) {
     try {
-      const res = await fetchWithTimeout('/.netlify/functions/gemini-proxy', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ apiKey, model, payload: body })
-      }, ENGINE_TIMEOUT_MS);
+      const direct = serverKeys();
+      const res = direct
+        ? await fetchWithTimeout('https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent?key=' + encodeURIComponent(direct.google), {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body
+        }, ENGINE_TIMEOUT_MS)
+        : await fetchWithTimeout('/.netlify/functions/gemini-proxy', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ apiKey, model, payload: body })
+        }, ENGINE_TIMEOUT_MS);
       if (res.ok) {
         const data = await res.json();
         const text = data.candidates?.[0]?.content?.parts?.map(p => p.text).join('') || '';
@@ -227,9 +247,9 @@ export const gemini = {
   supportsSearchOff: false,
   // A personal Google AI key OR the deployment's built-in key (served by the
   // gemini-proxy from GOOGLE_AI_KEY) makes Gemini available to everyone.
-  isConfigured: () => !!loadSettings().googleAiKey || hasBuiltinEngine('gemini'),
+  isConfigured: () => serverKeys() ? !!serverKeys().google : (!!loadSettings().googleAiKey || hasBuiltinEngine('gemini')),
   async ask(query) {
-    const { googleAiKey } = loadSettings();
+    const { googleAiKey } = serverKeys() ? {} : loadSettings();
     const body = JSON.stringify({ contents: [{ parts: [{ text: query }] }] });
     const chain = [GEMINI_PRIMARY, ...GEMINI_FALLBACKS];
     let lastErr = null;
@@ -266,9 +286,9 @@ export const claude = {
   // search_off is parametric (default for Claude).
   retrievalNative: false,
   supportsSearchOff: true,
-  isConfigured: () => !!getStoredApiKey(),
+  isConfigured: () => serverKeys() ? !!serverKeys().anthropic : !!getStoredApiKey(),
   async ask(query, { search = false } = {}) {
-    const key = getStoredApiKey();
+    const key = serverKeys() ? serverKeys().anthropic : getStoredApiKey();
     const searchMode = search ? 'search_on' : 'search_off';
     const body = {
       model: 'claude-haiku-4-5-20251001',

@@ -9,13 +9,14 @@
 // produces a valid (if thinner) grid from GSC + competitors alone.
 
 import { claudeComplete, extractJSON } from '../../lib/anthropic.js';
+import { fnUrl } from '../../lib/fnUrl.js';
 import { extractSitePhrases } from './aeoDiscovery.js';
 import { buildGoldGrid, deriveGridProfile } from './goldGrid.js';
 
 async function fetchSiteHtml(url) {
   if (!url) return '';
   try {
-    const r = await fetch('/.netlify/functions/page-proxy', {
+    const r = await fetch(fnUrl('page-proxy'), {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ url })
     });
@@ -65,13 +66,13 @@ function profilePrompt({ name, geo, siteText, gscQueries }) {
 
 // Ask the LLM for a structured profile. Returns null on any failure so the
 // caller falls back to the heuristic.
-export async function extractClientProfile(client, { gscQueries = [] } = {}) {
+export async function extractClientProfile(client, { gscQueries = [], complete = claudeComplete, fetchHtml = fetchSiteHtml } = {}) {
   try {
-    const html = await fetchSiteHtml(client?.url);
+    const html = await fetchHtml(client?.url);
     const siteText = htmlToText(html);
     // Nothing to read and no search terms — let the heuristic handle it.
     if (!siteText && !gscQueries.length) return null;
-    const raw = await claudeComplete({
+    const raw = await complete({
       system: PROFILE_SYSTEM,
       messages: [{ role: 'user', content: profilePrompt({ name: client?.name, geo: client?.geo || client?.location || client?.market, siteText, gscQueries }) }],
       max_tokens: 1024,
@@ -96,12 +97,12 @@ export async function extractClientProfile(client, { gscQueries = [] } = {}) {
 // Build a gold-grid probe set for any client. Uses the LLM profile when it can,
 // heuristic derivation otherwise. Returns probe-candidate objects ready for
 // addProbes(). `sitePhrases`/`gscQueries` seed the heuristic fallback.
-export async function buildGoldProbesForClient(client, { gscQueries = [], maxProbes = 0 } = {}) {
-  const llmProfile = await extractClientProfile(client, { gscQueries });
+export async function buildGoldProbesForClient(client, { gscQueries = [], maxProbes = 0, complete, fetchHtml = fetchSiteHtml } = {}) {
+  const llmProfile = await extractClientProfile(client, { gscQueries, complete, fetchHtml });
   let sitePhrases = [];
   if (!llmProfile) {
     // Fallback needs raw site phrases; fetch once more only if the LLM missed.
-    const html = await fetchSiteHtml(client?.url);
+    const html = await fetchHtml(client?.url);
     sitePhrases = extractSitePhrases(html);
   }
   const profile = deriveGridProfile(client, { sitePhrases, gscQueries, llmProfile });

@@ -44,7 +44,7 @@ import { ensureToken, SCOPES, getToken, switchAccount, silentRefresh, getCurrent
 import { serverAuthEnabled } from '../../lib/googleServerAuth.js';
 import { fetchReportData } from './reportData.js';
 import { evaluateGscReadiness } from './gscGuard.js';
-import { parseAliceOutput, formFromReportData, generateSeoReport } from './reportGenerate.js';
+import { parseAliceOutput, formFromReportData, generateSeoReport, generateAeoReport } from './reportGenerate.js';
 import ReportAutopilotPanel from './ReportAutopilotPanel.jsx';
 import { REPORT_DATA_VERSION } from './reportDataVersion.js';
 import { preserveImportedGsc, GSC_IMPORT_SOURCE } from './gscImport.js';
@@ -578,81 +578,31 @@ export default function MonthlyReport({ initialMonth }) {
       setProbeWarnings(summarizeProbeIssues(probeResult));
       autoSaveSnapshot(probeResult);
 
-      // Step 2: Generate AEO-focused email
-      setPhase('alice');
-      const compare = compareSnapshots(probeResult, previousAeoSnap);
-      const ranking = rankBrandWithCompetitors(probeResult, client.name);
-      const brandRank = ranking.findIndex(r => r.isBrand) + 1;
-      const aeoPayload = buildAeoPayload({
+      // Steps 2-4: email, report page and QA — the same steps the server's
+      // AEO Report Autopilot runs (reportGenerate.js).
+      const gen = await generateAeoReport({
         client,
+        probe: probeResult,
+        previousSnap: previousAeoSnap,
         monthLabel: monthLabel(month),
         previousMonthLabel: previousAeoSnap ? monthLabel(previousAeoSnap.month) : null,
-        probe: probeResult,
-        compare,
-        ranking,
-        brandRank
+        onPhase: setPhase
       });
-
-      const aliceText = await claudeComplete({
-        system: ALICE_AEO_SYSTEM,
-        messages: [{ role: 'user', content: aeoPayload }],
-        model: 'claude-sonnet-4-6',
-        max_tokens: 1200,
-        temperature: 0.7
-      });
-      setEmail(sanitizeEmail(parseAliceOutput(aliceText)));
-
-      // Step 3: Generate microsite JSON (AEO-only shape)
-      setPhase('micro');
-      const micrositeText = await claudeComplete({
-        system: MICROSITE_AEO_SYSTEM,
-        messages: [{ role: 'user', content: aeoPayload }],
-        model: 'claude-sonnet-4-6',
-        // Was 1200 — the AEO microsite JSON has narratives, priorities,
-        // highlights, work items etc. that easily blow past that and
-        // truncate mid-JSON, which then fails extractJSON. 4000 leaves
-        // headroom while still being well under the model limit.
-        max_tokens: 4000,
-        temperature: 0.5
-      });
-      const microObj = extractJSON(micrositeText);
-      if (!microObj) {
-        console.error('[Report] Microsite (AEO) raw output:', micrositeText);
-        throw new Error('Microsite JSON could not be parsed. Raw output logged to console — usually means truncated output (raise max_tokens) or model wrapped JSON in stray prose.');
-      }
-      if (!microObj.clientName) microObj.clientName = client.name;
-      setMicroJson(microObj);
-
-      // Step 4: QA (AEO-specific checks: no SEO talk, no doom framing).
-      // Advisory only — the report exists at this point, so a failed QA call
-      // must not throw past the save below and lose it.
-      setPhase('qa');
-      let qaObj = null;
-      try {
-        const qaText = await claudeComplete({
-          system: QA_AEO_SYSTEM,
-          messages: [{ role: 'user', content: 'Alice email to review:\n\n' + aliceText }],
-          model: 'claude-sonnet-4-6',
-          max_tokens: 500,
-          temperature: 0
-        });
-        qaObj = extractJSON(qaText);
-        if (qaObj) setQa(qaObj);
-      } catch (e) {
-        console.warn('[Report] AEO QA pass failed, keeping the report:', e.message);
-      }
+      setEmail(gen.email);
+      setMicroJson(gen.micro);
+      if (gen.qa) setQa(gen.qa);
 
       await persistGenerated({
         client_id: client.id,
         month,
         report_type: 'aeo',
-        qa_score: qaObj?.overallScore || null,
-        email_subject: parseAliceOutput(aliceText).subject || '',
+        qa_score: gen.qa?.overallScore || null,
+        email_subject: parseAliceOutput(gen.aliceText).subject || '',
         // Full content snapshot so the report can be re-rendered on a
         // future visit without regenerating.
-        email_body: parseAliceOutput(aliceText).body || aliceText,
-        microsite_json: microObj,
-        qa: qaObj || null,
+        email_body: parseAliceOutput(gen.aliceText).body || gen.aliceText,
+        microsite_json: gen.micro,
+        qa: gen.qa || null,
         aeo_probe: probeResult,
         report_data: null
       });
@@ -848,6 +798,9 @@ export default function MonthlyReport({ initialMonth }) {
       <h2 style={{ marginTop: 0 }}>Monthly Report</h2>
 
       <ReportAutopilotPanel client={client} month={month} onFinished={() => setReloadKey(k => k + 1)} />
+      {client && client.does_aeo !== false && (
+        <ReportAutopilotPanel kind="aeo" client={client} month={month} onFinished={() => setReloadKey(k => k + 1)} />
+      )}
 
       {/* Step 1: client + month */}
       <div className="card" style={{ marginBottom: 14 }}>
