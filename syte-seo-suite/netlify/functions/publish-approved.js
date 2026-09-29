@@ -15,6 +15,7 @@
 
 import { createClient } from '@supabase/supabase-js';
 import { reportRecipients, sendReport, buildPublishedEmail } from './lib/reportEmail.js';
+import { lookAtLivePost } from './lib/livePostCheck.js';
 
 export const config = {
   schedule: '*/15 * * * *'
@@ -59,11 +60,14 @@ export default async function handler() {
   for (const row of rows) {
     const client = byId[row.client_id];
     try {
-      const liveUrl = await publishOne(client, row);
-      results.push({ client: client?.name || 'Unknown client', title: row.page_title, liveUrl: liveUrl || row.payload?.live_url || '' });
+      const liveUrl = (await publishOne(client, row)) || row.payload?.live_url || '';
+      // Look at the page now it's public; problems go in the email, the post stays live.
+      let check = null;
+      try { check = await lookAtLivePost(liveUrl, row.page_title); } catch { /* the email says it wasn't checked */ }
+      results.push({ client: client?.name || 'Unknown client', title: row.page_title, liveUrl, check, auto: row.payload?.approved_via === 'autopilot' });
       await supabase.from('syte_suite_cms_queue').update({
         status: 'published',
-        payload: { ...(row.payload || {}), published_at: new Date().toISOString(), live_url: liveUrl || row.payload?.live_url || '' }
+        payload: { ...(row.payload || {}), published_at: new Date().toISOString(), live_url: liveUrl, live_check: check }
       }).eq('id', row.id);
       published++;
       console.log('[publish-approved] published:', client?.name, '-', row.page_title);

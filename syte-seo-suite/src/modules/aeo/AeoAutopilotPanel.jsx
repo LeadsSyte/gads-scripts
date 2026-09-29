@@ -8,8 +8,10 @@ import FixSheetButtons from '../../components/FixSheetButtons.jsx';
 // AEO Autopilot: the server picks this month's pages, generates their AEO
 // optimisations (same rules as "Run Optimizations" below), and a second AI
 // checks each one against the live page. Results land in the AEO Engine;
-// ones the page already has are dropped. Nothing changes on the website.
-// See netlify/functions/lib/aeoScan.js.
+// ones the page already has are dropped. Checked sections are then added to
+// the page one by one, all at once ("Add all"), or automatically after each
+// run when the client has that switched on — and each can be undone.
+// See netlify/functions/lib/aeoScan.js and aeoFixRun.js.
 
 const ACTIVE = ['queued', 'discovering', 'generating', 'checking', 'saving'];
 const STATUS_TEXT = {
@@ -26,6 +28,13 @@ const VERDICT = {
 
 // Same key as aeoOptKey in AEOEngine.jsx (type::name).
 const optKeyOf = o => (o.type || '') + '::' + (o.name || o.title || '');
+
+// Additions still to be made: confirmed, a section or schema, and not already
+// added, taken off again by a person, or found to need a person.
+const SETTLED = ['applied', 'removed', 'manual'];
+export const additionsToMake = (items, fixes) => (items || []).filter(x =>
+  x.o.check?.verdict === 'confirmed' && (x.o.type === 'content' || x.o.type === 'schema')
+  && !SETTLED.includes(fixes?.[x.url + '|' + optKeyOf(x.o)]?.status));
 
 // Preview in the page → Add to the page → (Undo). The preview is the real
 // page in the client's design with the section in place.
@@ -54,6 +63,7 @@ function AeoFixControls({ fix, wpConnected, accent, onAction }) {
     <div>
       {f.status === 'failed' && note('Didn\'t work: ' + (f.error || ''), 'var(--red)')}
       {f.status === 'removed' && note('Removed from the page.')}
+      {f.status === 'waiting' && note(f.reason)}
       {f.status === 'planned' && f.error && note(f.error, 'var(--orange, #e8a33d)')}
       {f.status === 'planned' && note('Goes at the ' + (f.plan?.position === 'top' ? 'top of the page content' : 'end of the page content') + '.')}
       <div className="row" style={row}>
@@ -77,6 +87,7 @@ export default function AeoAutopilotPanel({ accent, onFinished }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [confirming, setConfirming] = useState(false);
+  const [confirmingAll, setConfirmingAll] = useState(false);
   const wasActive = useRef(false);
 
   const [fixes, setFixes] = useState({}); // url|optKey → aeofix status
@@ -96,8 +107,9 @@ export default function AeoAutopilotPanel({ accent, onFinished }) {
     wasActive.current = active;
   }
 
-  useEffect(() => { setErr(''); setConfirming(false); wasActive.current = false; refresh(); }, [client?.id]);
-  const fixBusy = Object.values(fixes).some(f => ['planning', 'applying', 'undoing'].includes(f?.status));
+  useEffect(() => { setErr(''); setConfirming(false); setConfirmingAll(false); wasActive.current = false; refresh(); }, [client?.id]);
+  const addingAll = state?.auto?.status === 'applying' && Date.now() - new Date(state.auto.started_at || 0).getTime() < 16 * 60 * 1000;
+  const fixBusy = addingAll || Object.values(fixes).some(f => ['planning', 'applying', 'undoing'].includes(f?.status));
   useEffect(() => {
     if (!state || (!ACTIVE.includes(state.status) && !fixBusy)) return;
     const t = setInterval(refresh, fixBusy ? 3000 : 8000);
@@ -116,6 +128,20 @@ export default function AeoAutopilotPanel({ accent, onFinished }) {
       const busyStatus = { plan: 'planning', apply: 'applying', undo: 'undoing' }[action];
       setFixes(f => ({ ...f, [url + '|' + optKey]: { ...(f[url + '|' + optKey] || {}), status: busyStatus, error: '' } }));
       setTimeout(refresh, 2500);
+    } catch (e) { setErr(e.message); }
+  }
+
+  async function addAll() {
+    setConfirmingAll(false); setErr('');
+    try {
+      const res = await fetch('/.netlify/functions/aeofix-background', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Suite-Auth': await proxyAuthHash() },
+        body: JSON.stringify({ clientId: client.id, action: 'auto_all' })
+      });
+      if (res.status !== 202) throw new Error('The server refused (' + res.status + ').');
+      setState(s => ({ ...s, auto: { status: 'applying', started_at: new Date().toISOString() } }));
+      setTimeout(refresh, 4000);
     } catch (e) { setErr(e.message); }
   }
 
@@ -150,10 +176,10 @@ export default function AeoAutopilotPanel({ accent, onFinished }) {
     finally { setBusy(false); }
   }
 
-  async function toggleMonthly(on) {
+  async function toggle(key, on) {
     setBusy(true); setErr('');
     try {
-      await updateClientFields(client.id, { publishing_profile: { ...profile, aeoscan_enabled: on } });
+      await updateClientFields(client.id, { publishing_profile: { ...profile, [key]: on } });
       await load();
     } catch (e) { setErr(e.message); }
     finally { setBusy(false); }
@@ -162,6 +188,7 @@ export default function AeoAutopilotPanel({ accent, onFinished }) {
   const rows = state?.rows || [];
   const items = rows.flatMap(r => (r.optimizations || []).map(o => ({ url: r.url, o })));
   const count = v => items.filter(x => x.o.check?.verdict === v).length;
+  const toAdd = additionsToMake(items, fixes);
 
   return (
     <div className="card" style={{ borderLeft: '4px solid ' + accent, marginBottom: 14 }}>
@@ -171,7 +198,7 @@ export default function AeoAutopilotPanel({ accent, onFinished }) {
           <div className="muted" style={{ fontSize: 12 }}>
             The server picks this month's pages, writes their AEO optimisations, and a second AI checks each one against the
             live page and the client's website. Results appear in the AEO Engine; anything the page already has is dropped.
-            Nothing is changed on the website.
+            Checked sections can then be added to the page from here, and taken off again.
           </div>
         </div>
         {!active && !confirming && (
@@ -193,9 +220,37 @@ export default function AeoAutopilotPanel({ accent, onFinished }) {
 
       <label style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '10px 0 0', cursor: 'pointer', width: 'fit-content' }}>
         <input type="checkbox" checked={!!profile.aeoscan_enabled} disabled={busy}
-          onChange={e => toggleMonthly(e.target.checked)} style={{ width: 'auto', margin: 0 }} />
+          onChange={e => toggle('aeoscan_enabled', e.target.checked)} style={{ width: 'auto', margin: 0 }} />
         Run automatically on the 3rd of every month
       </label>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '10px 0 0', cursor: 'pointer', width: 'fit-content' }}>
+        <input type="checkbox" checked={!!profile.aeofix_auto} disabled={busy || !wpConnected}
+          onChange={e => toggle('aeofix_auto', e.target.checked)} style={{ width: 'auto', margin: 0 }} />
+        After each run, add the checked sections to the website without waiting for approval
+        {!wpConnected && <span className="muted"> (needs a working WordPress connection)</span>}
+      </label>
+      {!!profile.aeofix_auto && (
+        <div className="muted" style={{ fontSize: 11, margin: '2px 0 0 24px' }}>
+          This puts new AI-written wording on the client's live pages. The summary email lists every section added, and each can be undone here.
+        </div>
+      )}
+
+      {!active && wpConnected && toAdd.length > 0 && !addingAll && !confirmingAll && (
+        <button className="primary" onClick={() => setConfirmingAll(true)}
+          style={{ background: accent, borderColor: accent, color: '#0a0a0c', fontSize: 12, marginTop: 10 }}>
+          Add all {toAdd.length} to the website
+        </button>
+      )}
+      {confirmingAll && (
+        <div className="row" style={{ gap: 8, marginTop: 10, flexWrap: 'wrap', fontSize: 12 }}>
+          <span>Add {toAdd.length} new section{toAdd.length === 1 ? '' : 's'} to {client.name}'s live pages now? Visitors will see {toAdd.length === 1 ? 'it' : 'them'}. Each one can be undone afterwards.</span>
+          <button className="primary" onClick={addAll}
+            style={{ background: accent, borderColor: accent, color: '#0a0a0c', fontSize: 12 }}>Yes, add all</button>
+          <button className="ghost" onClick={() => setConfirmingAll(false)} style={{ fontSize: 12 }}>Cancel</button>
+        </div>
+      )}
+      {addingAll && <div className="muted" style={{ fontSize: 12, marginTop: 10 }}>Adding the sections to the website and checking each live page…</div>}
+      {!addingAll && ['failed', 'skipped'].includes(state?.auto?.status) && <div style={{ color: 'var(--red)', fontSize: 12, marginTop: 8 }}>{state.auto.reason}</div>}
 
       <FixSheetButtons client={client} accent={accent} />
 

@@ -5,8 +5,9 @@
 //
 // Writes this month's articles for the client (see lib/autopilot.js). If it
 // runs short of time it calls itself again and the next run carries on from
-// the saved state. Articles are saved as Auto Write articles; nothing is
-// pushed to a client's site by this function.
+// the saved state. Articles are saved as Auto Write articles. Pushing them
+// as drafts, and approving clean drafts to go live, are per-client switches
+// (publishing_profile.autopilot_push / autopilot_publish), both off by default.
 
 import { runAutopilotStep, newRunState, monthKey, CHECKER_SYSTEM, buildCheckerInput, normalizeCheck } from './lib/autopilot.js';
 import { claudeCompleteServer, openaiJson } from './lib/serverAi.js';
@@ -15,7 +16,7 @@ import { fetchGscForClient } from './lib/serverGsc.js';
 import { loadClient, loadRunState, saveRunState, existingTopics, saveArticle, saveClientFields } from './lib/autopilotStore.js';
 import { scanBrandFromWebsite } from '../../src/lib/brandScan.js';
 import { fetchHtmlServer, htmlToTextServer, findAboutUrlServer } from './lib/serverBrandScan.js';
-import { prepareServerPush, canPushTo, pushArticleServer, loadArticleOutput, pushedTitles } from './lib/serverPush.js';
+import { prepareServerPush, canPushTo, pushArticleServer, loadArticleOutput, pushedTitles, approveQueueRow } from './lib/serverPush.js';
 import { getPublishingProfile } from '../../src/modules/cms/publishingProfile.js';
 import { reportRecipients, sendReport, buildRunSummaryEmail } from './lib/reportEmail.js';
 import { previewUrl } from './lib/previewSig.js';
@@ -106,7 +107,9 @@ export async function handler(event) {
       pushDeps = {
         pushArticle: a => pushArticleServer(supabase, client, a),
         loadOutput: id => loadArticleOutput(supabase, id),
-        pushedTitles: () => pushedTitles(supabase, client.id)
+        pushedTitles: () => pushedTitles(supabase, client.id),
+        // Go live without waiting for a person — only for clients with it on.
+        ...(getPublishingProfile(client).autopilot_publish ? { approveForPublish: id => approveQueueRow(supabase, id) } : {})
       };
     } else if (wantPush) {
       state.push_note = 'Not pushed: ' + client.name + ' has no working WordPress or Shopify connection. The articles are in Auto Write.';

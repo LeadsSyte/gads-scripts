@@ -63,3 +63,18 @@ export async function fetchPlainText(url) {
   const r = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; SyteSEOSuite/1.0)' }, signal: AbortSignal.timeout(15000) });
   return r.ok ? (await r.text()).slice(0, 20000) : '';
 }
+
+// One status row per fix: 'techfix:<clientId>:<taskId>' (see techfix-background.js).
+export const techFixRowId = (clientId, taskId) => 'techfix:' + clientId + ':' + taskId;
+
+export async function loadTechFixes(supabase, clientId) {
+  const { data } = await supabase.from('syte_suite_settings').select('data').like('id', 'techfix:' + clientId + ':%');
+  return new Map((data || []).map(r => r.data).filter(d => d?.task_id).map(d => [d.task_id, d]));
+}
+
+export async function saveTechFix(supabase, clientId, taskId, status) {
+  const row = { ...status, client_id: clientId, task_id: taskId, at: new Date().toISOString() };
+  const { error } = await supabase.from('syte_suite_settings').upsert({ id: techFixRowId(clientId, taskId), data: row, updated_at: row.at });
+  if (error) throw new Error('Could not save the fix status: ' + error.message);
+  return row;
+}

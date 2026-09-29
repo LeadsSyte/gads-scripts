@@ -1,35 +1,50 @@
-// Preview / apply / undo ONE AEO optimisation on a client's WordPress page.
-// POST { clientId, url, optKey, action: 'plan' | 'apply' | 'undo' } with
-// X-Suite-Auth. The optimisation is read from syte_suite_aeo_results (so it
-// works for suite runs and Autopilot runs alike). Status is written to its own
-// row, syte_suite_settings 'aeofix:<clientId>:<key>', which the panel polls
-// and draft-preview reads for the in-theme preview. See lib/aeoFix.js.
+// AEO additions on a client's WordPress pages.
+// POST with X-Suite-Auth:
+//   { clientId, url, optKey, action: 'plan' | 'apply' | 'undo' }   one addition
+//   { clientId, action: 'auto_all' }    every checked addition from this
+//       month's AEO Autopilot run that the suite can add itself, then the
+//       summary email. Called by the run when the client has "add
+//       automatically" on, and by "Add all" in the panel.
+// A single addition is read from syte_suite_aeo_results (so it works for
+// suite runs and Autopilot runs alike). Status is written to its own row,
+// syte_suite_settings 'aeofix:<clientId>:<key>', which the panel polls and
+// draft-preview reads for the in-theme preview. See lib/aeoFixRun.js.
 
 import { getServerSupabase } from './lib/serverSupabase.js';
 import { loadClient } from './lib/autopilotStore.js';
 import { fetchLiveHtml } from './lib/techStore.js';
-import { planAeoFix, applyAeoFix, undoAeoFix, aeoLiveCheck, fixKey } from './lib/aeoFix.js';
+import { loadAeoState, saveAeoState, loadAeoFixes, saveAeoFix, aeoFixRowId as rowId } from './lib/aeoStore.js';
+import { fixKey } from './lib/aeoFix.js';
+import { runAeoFix, runAllAeoFixes, aeoOptKey } from './lib/aeoFixRun.js';
+import { wpClient, hasWordPress } from './lib/wpClient.js';
 import { previewUrl } from './lib/previewSig.js';
+import { emailAeoSummary } from './lib/runNotify.js';
 
-export const aeoFixRowId = (clientId, key) => 'aeofix:' + clientId + ':' + key;
-const optKeyOf = o => (o.type || '') + '::' + (o.name || o.title || ''); // = aeoOptKey in AEOEngine.jsx
+export const aeoFixRowId = rowId;
+const BUDGET_MS = 13 * 60 * 1000;
 
-function wpClient(client) {
-  const base = client.wp_url.replace(/\/+$/, '') + '/wp-json/';
-  const auth = 'Basic ' + Buffer.from(client.wp_username + ':' + client.wp_app_password).toString('base64');
-  return async (path, body) => {
-    const r = await fetch(base + path, {
-      method: body ? 'POST' : 'GET',
-      headers: { Authorization: auth, ...(body ? { 'Content-Type': 'application/json' } : {}) },
-      body: body ? JSON.stringify(body) : undefined,
-      signal: AbortSignal.timeout(20000)
-    });
-    const text = await r.text();
-    if (!r.ok) {
-      let msg = text; try { msg = JSON.parse(text).message || text; } catch { /* raw */ }
-      throw new Error('WordPress ' + r.status + ': ' + String(msg).slice(0, 160));
+function fixDeps(supabase, client, wp, url, optKey) {
+  const key = fixKey(url, optKey);
+  return {
+    wp,
+    fetchHtml: fetchLiveHtml,
+    save: status => saveAeoFix(supabase, client.id, { url, optKey, key }, status),
+    previewUrlFor: k => previewUrl('f', client.id + '-' + k),
+    recordApplied: async ({ opt, plan, live, by }) => {
+      const { data: impl } = await supabase.from('syte_suite_implementations').insert({
+        client_id: client.id, module: 'aeo', change_type: opt.type || 'content', page_url: url,
+        title: opt.name || 'AEO optimisation', description: ('Added (' + plan.position + ' of the page) by the AEO Autopilot, ' + by + '.\n\n' + plan.html).slice(0, 2000),
+        implemented_by: 'AEO Autopilot (' + by + ')',
+        verification_status: live.status === 'verified' ? 'verified' : 'pending', verification_detail: live.detail,
+        verified_at: live.status === 'verified' ? new Date().toISOString() : null
+      }).select('id').single();
+      return impl?.id || null;
+    },
+    recordUndone: async (implId) => {
+      if (!implId) return;
+      await supabase.from('syte_suite_implementations')
+        .update({ verification_status: 'failed', verification_detail: 'Removed from the page (undo in the suite).' }).eq('id', implId);
     }
-    try { return JSON.parse(text); } catch { return text; }
   };
 }
 
@@ -40,72 +55,57 @@ export async function handler(event) {
   let body;
   try { body = JSON.parse(event.body || '{}'); } catch { return { statusCode: 400 }; }
   const { clientId, url, optKey, action } = body;
-  if (!clientId || !url || !optKey || !['plan', 'apply', 'undo'].includes(action)) return { statusCode: 400 };
+  if (!clientId || !['plan', 'apply', 'undo', 'auto_all'].includes(action)) return { statusCode: 400 };
+  if (action !== 'auto_all' && (!url || !optKey)) return { statusCode: 400 };
 
+  const started = Date.now();
   const supabase = getServerSupabase();
-  const key = fixKey(url, optKey);
-  const rowId = aeoFixRowId(clientId, key);
-  const { data: prevRow } = await supabase.from('syte_suite_settings').select('data').eq('id', rowId).maybeSingle();
-  let status = prevRow?.data || null;
-  const save = async (next) => {
-    status = { ...next, client_id: clientId, url, opt_key: optKey, key, at: new Date().toISOString() };
-    const { error } = await supabase.from('syte_suite_settings').upsert({ id: rowId, data: status, updated_at: status.at });
-    if (error) throw new Error('Could not save the status: ' + error.message);
-  };
 
+  if (action === 'auto_all') {
+    const state = await loadAeoState(supabase, clientId);
+    if (!state?.rows) return { statusCode: 404 };
+    const base = (process.env.URL || 'https://syte-seo-suite.netlify.app').replace(/\/+$/, '');
+    const scheduled = body.by === 'schedule';
+    let client = null;
+    try {
+      client = await loadClient(supabase, clientId);
+      state.auto = { status: 'applying', started_at: new Date().toISOString(), by: scheduled ? 'schedule' : 'person' };
+      await saveAeoState(supabase, state);
+      if (hasWordPress(client)) {
+        const wp = wpClient(client);
+        const items = state.rows.flatMap(r => (r.optimizations || []).map(opt => ({ url: r.url, opt })));
+        await runAllAeoFixes(
+          { items, fixes: await loadAeoFixes(supabase, clientId), keyOf: fixKey, by: scheduled ? 'added automatically' : 'Add all in the suite' },
+          (u, k) => fixDeps(supabase, client, wp, u, k),
+          { timeLeftMs: () => BUDGET_MS - (Date.now() - started) }
+        );
+        state.auto = { ...state.auto, status: 'done', finished_at: new Date().toISOString() };
+      } else {
+        state.auto = { ...state.auto, status: 'skipped', reason: 'No working WordPress connection — nothing was changed on the site.' };
+      }
+    } catch (e) {
+      console.error('[aeofix] auto_all failed:', e.message);
+      state.auto = { ...(state.auto || {}), status: 'failed', reason: String(e.message || e).slice(0, 300) };
+    }
+    try { await saveAeoState(supabase, state); } catch { /* the email still goes */ }
+    await emailAeoSummary(supabase, client || { id: clientId, name: state.client_name || 'Client' }, state, base);
+    return { statusCode: 202 };
+  }
+
+  const key = fixKey(url, optKey);
+  const prev = (await loadAeoFixes(supabase, clientId)).get(key) || null;
+  const target = { url, optKey, key };
   try {
     const client = await loadClient(supabase, clientId);
-    if (client.cms_type !== 'WordPress' || !client.wp_url || !client.wp_app_password) {
-      await save({ status: 'manual', reason: 'Adding it automatically needs a working WordPress connection for ' + client.name + '.' });
+    if (!hasWordPress(client)) {
+      await saveAeoFix(supabase, clientId, target, { status: 'manual', reason: 'Adding it automatically needs a working WordPress connection for ' + client.name + '.' });
       return { statusCode: 202 };
     }
     const { data: rows } = await supabase.from('syte_suite_aeo_results').select('url, optimizations').eq('client_id', clientId).eq('url', url);
-    const opt = (rows?.[0]?.optimizations || []).find(o => optKeyOf(o) === optKey);
-    if (!opt) { await save({ status: 'manual', reason: 'This optimisation is no longer in the AEO Engine for that page.' }); return { statusCode: 202 }; }
-    if (opt.check && opt.check.verdict !== 'confirmed') {
-      await save({ status: 'manual', reason: 'Only optimisations the independent check confirmed are added automatically.' });
-      return { statusCode: 202 };
-    }
-    const wp = wpClient(client);
-
-    if (action === 'plan') {
-      await save({ status: 'planning' });
-      const plan = await planAeoFix({ url, opt, optKey }, wp, fetchLiveHtml);
-      if (!plan.applicable) { await save({ status: 'manual', reason: plan.reason }); return { statusCode: 202 }; }
-      await save({ status: 'planned', plan, preview_url: previewUrl('f', clientId + '-' + key) });
-      return { statusCode: 202 };
-    }
-
-    if (action === 'apply') {
-      const plan = status?.plan;
-      if (status?.status !== 'planned' || !plan) { await save({ ...(status || {}), error: 'Preview it before adding it to the page.' }); return { statusCode: 202 }; }
-      await save({ ...status, status: 'applying', error: '' });
-      const r = await applyAeoFix(plan, wp);
-      if (!r.ok) { await save({ ...status, status: r.changed ? 'planned' : 'failed', error: r.reason || 'WordPress did not keep the change.' }); return { statusCode: 202 }; }
-      const live = aeoLiveCheck(await fetchLiveHtml(url), plan);
-      const { data: impl } = await supabase.from('syte_suite_implementations').insert({
-        client_id: clientId, module: 'aeo', change_type: opt.type || 'content', page_url: url,
-        title: opt.name || 'AEO optimisation', description: ('Added (' + plan.position + ' of the page) by the AEO Autopilot, approved in the suite.\n\n' + plan.html).slice(0, 2000),
-        implemented_by: 'AEO Autopilot (approved in the suite)',
-        verification_status: live.status === 'verified' ? 'verified' : 'pending', verification_detail: live.detail,
-        verified_at: live.status === 'verified' ? new Date().toISOString() : null
-      }).select('id').single();
-      await save({ ...status, status: 'applied', live, impl_id: impl?.id || null });
-      return { statusCode: 202 };
-    }
-
-    // undo
-    const plan = status?.plan;
-    if (!plan || status?.status !== 'applied') { await save({ ...(status || {}), error: 'Nothing to undo.' }); return { statusCode: 202 }; }
-    await save({ ...status, status: 'undoing' });
-    const r = await undoAeoFix(plan, wp);
-    if (!r.ok) { await save({ ...status, status: 'applied', error: 'Could not remove it — remove it in WordPress by hand.' }); return { statusCode: 202 }; }
-    if (status.impl_id) {
-      await supabase.from('syte_suite_implementations').update({ verification_status: 'failed', verification_detail: 'Removed from the page (undo in the suite).' }).eq('id', status.impl_id);
-    }
-    await save({ status: 'removed', plan });
+    const opt = (rows?.[0]?.optimizations || []).find(o => aeoOptKey(o) === optKey);
+    await runAeoFix({ url, opt, optKey, action, prev }, fixDeps(supabase, client, wpClient(client), url, optKey));
   } catch (e) {
-    await save({ ...(status || {}), status: 'failed', error: String(e.message || e).slice(0, 300) });
+    await saveAeoFix(supabase, clientId, target, { ...(prev || {}), status: 'failed', error: String(e.message || e).slice(0, 300) });
   }
   return { statusCode: 202 };
 }

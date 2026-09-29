@@ -1,6 +1,6 @@
 // Applying Technical SEO fixes on the client's WordPress site — only the
-// kinds the REST API can change in place safely, and only after a person
-// has seen "current → new" and clicked Apply:
+// kinds the REST API can change in place safely. Each one records what was
+// there before, so it can be put back (undoResults):
 //
 //   meta_title / meta_description → the page's Yoast / Rank Math fields
 //   image_alt                      → the image's alt text in the media library
@@ -111,7 +111,10 @@ export async function planFix(task, wp) {
     applicable: true,
     changes: [{
       kind: task.fix_type, label: (task.fix_type === 'meta_title' ? 'SEO title' : 'Meta description') + ' · ' + (obj.title || obj.link),
-      target: { type: obj.type, id: obj.id }, fields, from, to: values.value
+      target: { type: obj.type, id: obj.id }, fields, from, to: values.value,
+      // What each field held, so Undo restores it exactly ('' = the SEO
+      // plugin's own default title).
+      fromFields: Object.fromEntries(fields.map(k => [k, obj.meta[k] || '']))
     }]
   };
 }
@@ -137,6 +140,36 @@ export async function applyPlan(plan, wp) {
     }
   }
   return results;
+}
+
+// Put back what was there before. Only where the value is still the one we
+// wrote — if someone has edited it since, their edit is left alone.
+export async function undoResults(results, wp) {
+  const out = [];
+  for (const c of (results || []).filter(r => r.ok)) {
+    try {
+      if (c.kind === 'image_alt') {
+        const path = 'wp/v2/media/' + c.target.id;
+        const cur = await wp(path + '?context=edit&_fields=alt_text');
+        if ((cur?.alt_text || '') !== c.to) { out.push({ ...c, undone: false, kept: true }); continue; }
+        await wp(path, { alt_text: c.from || '' });
+        const back = await wp(path + '?context=edit&_fields=alt_text');
+        out.push({ ...c, undone: (back?.alt_text || '') === (c.from || '') });
+      } else {
+        const path = 'wp/v2/' + c.target.type + '/' + c.target.id;
+        const cur = await wp(path + '?context=edit&_fields=meta');
+        const ours = c.fields.filter(k => (cur?.meta?.[k] || '') === c.to);
+        if (!ours.length) { out.push({ ...c, undone: false, kept: true }); continue; }
+        const before = k => (c.fromFields ? c.fromFields[k] : c.from) || '';
+        await wp(path, { meta: Object.fromEntries(ours.map(k => [k, before(k)])) });
+        const back = await wp(path + '?context=edit&_fields=meta');
+        out.push({ ...c, undone: ours.every(k => (back?.meta?.[k] || '') === before(k)) });
+      }
+    } catch (e) {
+      out.push({ ...c, undone: false, error: String(e.message || e).slice(0, 200) });
+    }
+  }
+  return out;
 }
 
 // Is the change visible on the live page? Caches can lag, so "not yet" is

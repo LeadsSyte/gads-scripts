@@ -79,14 +79,29 @@ export const PROFILE_DEFAULTS = {
   // as DRAFTS at the end of each run. Publishing still waits for approval.
   autopilot_push: false,
 
+  // Autopilot: drafts that passed both checks AND read back clean from the
+  // site are approved straight away, so the publisher takes them live
+  // (within 15 minutes) and the team is told afterwards. Needs autopilot_push.
+  autopilot_publish: false,
+
   // Tech Autopilot: scan the site on the 2nd of each month, write the fix
   // list, have it independently checked, and refresh the Technical SEO task
   // board (netlify/functions/techscan-monthly.js). Off until switched on.
   techscan_enabled: false,
 
+  // Tech Autopilot: apply the checked fixes the suite can make itself (SEO
+  // titles, meta descriptions, image alt text) at the end of each scan,
+  // without waiting for a person. Each one can be undone in the panel.
+  techfix_auto: false,
+
   // AEO Autopilot: generate and independently check this month's AEO
   // optimisations on the 3rd (netlify/functions/aeoscan-monthly.js).
   aeoscan_enabled: false,
+
+  // AEO Autopilot: add the checked sections to the client's pages at the
+  // end of each run, without waiting for a person. This is new wording
+  // visitors can see; each addition can be undone in the panel.
+  aeofix_auto: false,
 
   // Report Autopilot: build last month's SEO report on the 5th, check every
   // figure against the data, and tell the account manager it's ready

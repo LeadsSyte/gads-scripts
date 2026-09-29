@@ -168,10 +168,13 @@ export default function AutopilotPanel({ accent, onFinished }) {
         <div className="row" style={{ gap: 8, marginTop: 10, flexWrap: 'wrap', fontSize: 12 }}>
           <span>
             {confirming === 'push'
-              ? `Create ${unpushed} draft(s) on ${client.name}'s site? They stay drafts until approved.`
+              ? `Create ${unpushed} draft(s) on ${client.name}'s site? `
+                + (profile.autopilot_publish ? 'Drafts that check out clean go live within 15 minutes; the rest stay drafts.' : 'They stay drafts until approved.')
               : `Write and check ${client.pages_per_month || 4} article(s) for ${client.name} now?`
                 + (thisMonth ? ' This starts a fresh run for this month.' : '')
-                + (profile.autopilot_push && connected ? ' Articles that pass are pushed to the site as drafts.' : ' Nothing is pushed to the website.')}
+                + (profile.autopilot_push && connected
+                  ? (profile.autopilot_publish ? ' Articles that pass every check are published on the website.' : ' Articles that pass are pushed to the site as drafts.')
+                  : ' Nothing is pushed to the website.')}
           </span>
           <button className="primary" disabled={busy}
             onClick={() => send(confirming === 'push' ? { mode: 'push' } : { restart: !!thisMonth })}
@@ -193,6 +196,17 @@ export default function AutopilotPanel({ accent, onFinished }) {
           onChange={e => setProfileFlag('autopilot_push', e.target.checked)} style={{ width: 'auto', margin: 0 }} />
         Push articles that pass to the site as drafts{connected ? '' : ' (not connected)'}
       </label>
+      <label style={{ ...CHECKBOX_LABEL, opacity: connected && profile.autopilot_push ? 1 : 0.5 }}
+        title={profile.autopilot_push ? '' : 'Switch on "Push articles that pass" first'}>
+        <input type="checkbox" checked={!!profile.autopilot_publish && !!profile.autopilot_push} disabled={busy || !connected || !profile.autopilot_push}
+          onChange={e => setProfileFlag('autopilot_publish', e.target.checked)} style={{ width: 'auto', margin: 0 }} />
+        Publish them without waiting for approval, when the draft on the site checks out clean
+      </label>
+      {!!profile.autopilot_publish && !!profile.autopilot_push && (
+        <div className="muted" style={{ fontSize: 11, margin: '2px 0 0 24px' }}>
+          Goes live within 15 minutes of the run. The live page is then checked and the result is emailed. Drafts with any warning stay drafts.
+        </div>
+      )}
 
       <div className="row" style={{ gap: 8, marginTop: 10, fontSize: 12, flexWrap: 'wrap' }}>
         <span className="muted">Run summaries and "went live" emails (all clients) go to:</span>
@@ -238,7 +252,8 @@ export default function AutopilotPanel({ accent, onFinished }) {
                     ...(a?.check?.problems || []).filter(q => q.severity === 'error').map(q => q.issue),
                     ...(a?.relevance?.verdict === 'mismatch' ? (a.relevance.detail || ['Off topic for this client']) : []),
                     ...(a?.error ? [a.error] : []),
-                    ...(a?.push?.status === 'failed' ? ['Push: ' + a.push.error] : [])
+                    ...(a?.push?.status === 'failed' ? ['Push: ' + a.push.error] : []),
+                    ...(a?.push?.held ? [a.push.held] : [])
                   ];
                   return (
                     <tr key={i}>
@@ -256,6 +271,7 @@ export default function AutopilotPanel({ accent, onFinished }) {
                             preview in theme →
                           </a>
                         )}
+                        {a?.push?.approved && <span style={{ marginLeft: 8, fontSize: 11, color: 'var(--green)' }}>approved to go live</span>}
                         {a?.push?.admin_url && (
                           <a href={a.push.admin_url} target="_blank" rel="noreferrer" style={{ marginLeft: 8, fontSize: 11, color: accent }}>open draft →</a>
                         )}

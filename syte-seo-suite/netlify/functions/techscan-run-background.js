@@ -1,8 +1,9 @@
 // Tech Autopilot run for ONE client (background function, ~15 min).
 // POST { clientId, restart? } with header X-Suite-Auth (same gate as the
 // content Autopilot). See lib/techScan.js. Writes the confirmed fixes to the
-// Technical SEO task board and emails the report address a summary.
-// Nothing is changed on the client's site.
+// Technical SEO task board. Then either emails the summary, or — when the
+// client has publishing_profile.techfix_auto on — hands over to
+// techfix-background, which applies the safe fixes and emails what it did.
 
 import { runTechScan, newTechState, realCrawl } from './lib/techScan.js';
 import { claudeCompleteServer, openaiJson } from './lib/serverAi.js';
@@ -10,7 +11,8 @@ import { getServerSupabase } from './lib/serverSupabase.js';
 import { fetchGscPages } from './lib/serverGsc.js';
 import { loadClient } from './lib/autopilotStore.js';
 import { loadTechHistory, replaceOpenTasks, loadTechState, saveTechState, fetchLiveHtml, fetchPlainText } from './lib/techStore.js';
-import { reportRecipients, sendReport, buildTechSummaryEmail } from './lib/reportEmail.js';
+import { emailTechSummary, startAutoFixes } from './lib/runNotify.js';
+import { getPublishingProfile } from '../../src/modules/cms/publishingProfile.js';
 
 const BUDGET_MS = 14 * 60 * 1000;
 const MAX_HOPS = 6;
@@ -63,7 +65,10 @@ export async function handler(event) {
         body: JSON.stringify({ clientId, hop: hop + 1 })
       });
     } else {
-      await emailSummary(supabase, client, state, base);
+      const auto = state.status === 'done' && getPublishingProfile(client).techfix_auto;
+      if (!auto || !(await startAutoFixes('techfix-background', clientId, base, required))) {
+        await emailTechSummary(supabase, client, state, base);
+      }
     }
   } catch (e) {
     console.error('[techscan] failed:', e.message);
@@ -72,20 +77,8 @@ export async function handler(event) {
       state.error = String(e.message || e).slice(0, 400);
       state.updated_at = new Date().toISOString();
       try { await saveTechState(supabase, state); } catch { /* nothing more */ }
-      await emailSummary(supabase, client || { id: clientId, name: state.client_name || 'Client' }, state, base);
+      await emailTechSummary(supabase, client || { id: clientId, name: state.client_name || 'Client' }, state, base);
     }
   }
   return { statusCode: 202 };
-}
-
-async function emailSummary(supabase, client, state, base) {
-  try {
-    const to = await reportRecipients(supabase);
-    if (!to.length) return;
-    await sendReport({ to, ...buildTechSummaryEmail(client, state, base) });
-    state.report = { sent_at: new Date().toISOString(), to };
-  } catch (e) {
-    state.report = { error: String(e.message || e).slice(0, 200) };
-  }
-  try { await saveTechState(supabase, state); } catch { /* best effort */ }
 }

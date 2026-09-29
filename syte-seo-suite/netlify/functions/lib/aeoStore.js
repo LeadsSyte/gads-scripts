@@ -45,6 +45,21 @@ export async function saveAeoState(supabase, state) {
   if (error) throw new Error('Could not save AEO Autopilot state: ' + error.message);
 }
 
+// One status row per addition: 'aeofix:<clientId>:<key>' (see aeofix-background.js).
+export const aeoFixRowId = (clientId, key) => 'aeofix:' + clientId + ':' + key;
+
+export async function loadAeoFixes(supabase, clientId) {
+  const { data } = await supabase.from('syte_suite_settings').select('data').like('id', 'aeofix:' + clientId + ':%');
+  return new Map((data || []).map(r => r.data).filter(d => d?.key).map(d => [d.key, d]));
+}
+
+export async function saveAeoFix(supabase, clientId, { url, optKey, key }, status) {
+  const row = { ...status, client_id: clientId, url, opt_key: optKey, key, at: new Date().toISOString() };
+  const { error } = await supabase.from('syte_suite_settings').upsert({ id: aeoFixRowId(clientId, key), data: row, updated_at: row.at });
+  if (error) throw new Error('Could not save the status: ' + error.message);
+  return row;
+}
+
 // Search Console page clicks as the traffic ranking (the browser uses GA4
 // sessions; the server has Search Console access already).
 export function trafficFromGsc(rows) {

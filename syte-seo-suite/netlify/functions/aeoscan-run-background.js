@@ -1,7 +1,8 @@
 // AEO Autopilot run for ONE client (background function, ~15 min).
 // POST { clientId, restart? } with X-Suite-Auth. See lib/aeoScan.js.
-// Saves the checked optimisations to the AEO Engine and emails the report
-// address a summary. Nothing is changed on the client's site.
+// Saves the checked optimisations to the AEO Engine. Then either emails the
+// summary, or — when the client has publishing_profile.aeofix_auto on —
+// hands over to aeofix-background, which adds them and emails what it did.
 
 import { runAeoScan, newAeoState } from './lib/aeoScan.js';
 import { installDomParser } from './lib/techScan.js';
@@ -11,7 +12,8 @@ import { fetchGscPages } from './lib/serverGsc.js';
 import { loadClient } from './lib/autopilotStore.js';
 import { fetchLiveHtml } from './lib/techStore.js';
 import { loadAeoPrior, saveAeoRow, loadAeoState, saveAeoState, trafficFromGsc } from './lib/aeoStore.js';
-import { reportRecipients, sendReport, buildAeoSummaryEmail } from './lib/reportEmail.js';
+import { emailAeoSummary, startAutoFixes } from './lib/runNotify.js';
+import { getPublishingProfile } from '../../src/modules/cms/publishingProfile.js';
 import { discoverSiteUrls } from '../../src/modules/aeo/sitemap.js';
 
 const BUDGET_MS = 14 * 60 * 1000;
@@ -64,7 +66,10 @@ export async function handler(event) {
         body: JSON.stringify({ clientId, hop: hop + 1 })
       });
     } else {
-      await emailSummary(supabase, client, state, base);
+      const auto = state.status === 'done' && getPublishingProfile(client).aeofix_auto;
+      if (!auto || !(await startAutoFixes('aeofix-background', clientId, base, required))) {
+        await emailAeoSummary(supabase, client, state, base);
+      }
     }
   } catch (e) {
     console.error('[aeoscan] failed:', e.message);
@@ -73,20 +78,8 @@ export async function handler(event) {
       state.error = String(e.message || e).slice(0, 400);
       state.updated_at = new Date().toISOString();
       try { await saveAeoState(supabase, state); } catch { /* nothing more */ }
-      await emailSummary(supabase, client || { id: clientId, name: state.client_name || 'Client' }, state, base);
+      await emailAeoSummary(supabase, client || { id: clientId, name: state.client_name || 'Client' }, state, base);
     }
   }
   return { statusCode: 202 };
-}
-
-async function emailSummary(supabase, client, state, base) {
-  try {
-    const to = await reportRecipients(supabase);
-    if (!to.length) return;
-    await sendReport({ to, ...buildAeoSummaryEmail(client, state, base) });
-    state.report = { sent_at: new Date().toISOString(), to };
-  } catch (e) {
-    state.report = { error: String(e.message || e).slice(0, 200) };
-  }
-  try { await saveAeoState(supabase, state); } catch { /* best effort */ }
 }

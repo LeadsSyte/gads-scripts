@@ -2,7 +2,8 @@
 // unchanged (pushItemInline → wordpressPush / shopifyPush → verifyDraft) so
 // an Autopilot draft is built exactly like one pushed by hand: same HTML
 // clean-up, publishing profile, hero image, SEO meta and read-back check.
-// Drafts only — publishing still waits for approval (publish-approved.js).
+// Drafts only. Publishing waits for approval (publish-approved.js) — given
+// by a person, or by the Autopilot for clients with autopilot_publish on.
 //
 // What differs from the browser is the plumbing, set up by prepareServerPush:
 //   - the proxies (wp-proxy, shopify-proxy, openai-proxy) are called on the
@@ -73,6 +74,19 @@ export function serverQueueDeps(supabase) {
       });
     }
   };
+}
+
+// Mark a pushed draft approved, the same way the Approve button does, so
+// publish-approved takes it live on its next pass (every 15 minutes).
+export async function approveQueueRow(supabase, queueId) {
+  const { data: row, error } = await supabase.from('syte_suite_cms_queue').select('id, status, payload').eq('id', queueId).single();
+  if (error || !row) throw new Error('Push record not found');
+  if (row.status !== 'pushed') throw new Error('The draft is "' + row.status + '", not awaiting review');
+  const { error: upErr } = await supabase.from('syte_suite_cms_queue').update({
+    status: 'approved',
+    payload: { ...(row.payload || {}), approved_via: 'autopilot', approved_at: new Date().toISOString() }
+  }).eq('id', queueId);
+  if (upErr) throw new Error(upErr.message);
 }
 
 // Push one written article as a draft. Same item shape as Auto Write's

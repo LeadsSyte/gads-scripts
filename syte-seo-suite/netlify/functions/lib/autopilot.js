@@ -275,6 +275,9 @@ export async function runAutopilotStep(clientIn, state, deps) {
 // deps: pushArticle({title, keyword, output}) → pushItemInline result,
 //       loadOutput(blogId) → article text, pushedTitles() → Set of lowercased
 //       titles already in the CMS queue. Returns true when it paused for time.
+//       approveForPublish(queueId) — optional. When given, a draft that read
+//       back clean from the site is approved at once, so the publisher takes
+//       it live; anything less than clean stays a draft for a person.
 export async function pushReadyArticles(client, state, deps, { now, save, PER_ARTICLE_MS = 4 * 60 * 1000 }) {
   const plan = state.plan || [];
   const todo = plan.map((opp, idx) => ({ opp, idx, a: state.articles[idx] }))
@@ -307,6 +310,19 @@ export async function pushReadyArticles(client, state, deps, { now, save, PER_AR
       };
       already.add(key);
       log(state, 'Draft created: ' + opp.topic_title, now());
+      if (deps.approveForPublish && a.push.queue_id) {
+        if (a.push.verification === 'verified') {
+          try {
+            await deps.approveForPublish(a.push.queue_id);
+            a.push.approved = true;
+            log(state, 'Approved to go live: ' + opp.topic_title, now());
+          } catch (e) {
+            a.push.held = 'Could not approve it automatically: ' + String(e.message || e).slice(0, 200);
+          }
+        } else {
+          a.push.held = 'Left as a draft: the check of the draft on the site ' + (a.push.verification === 'unchecked' ? 'could not run' : 'found problems') + '.';
+        }
+      }
     } catch (e) {
       a.push = { status: 'failed', error: String(e.message || e).slice(0, 300) };
       log(state, 'Push failed: ' + opp.topic_title + ' — ' + a.push.error, now());
