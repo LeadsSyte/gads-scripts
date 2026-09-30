@@ -42,7 +42,7 @@ function AeoFixControls({ fix, wpConnected, accent, onAction }) {
   const f = fix || {};
   const btn = { fontSize: 11, padding: '3px 10px' };
   const note = (text, color) => <div style={{ fontSize: 11, marginTop: 4, color: color || 'var(--text-muted)' }}>{text}</div>;
-  if (!wpConnected) return note('Add by hand — no working WordPress connection.');
+  if (!wpConnected) return note('Add by hand — no working WordPress or Shopify connection.');
   if (f.status === 'planning') return note('Checking the page and building the preview…');
   if (f.status === 'applying') return note('Adding it to the page and checking the live site…');
   if (f.status === 'undoing') return note('Removing it from the page…');
@@ -148,7 +148,8 @@ export default function AeoAutopilotPanel({ accent, onFinished }) {
   if (!client) return null;
   const profile = getPublishingProfile(client);
   const active = state && ACTIVE.includes(state.status);
-  const wpConnected = client.cms_type === 'WordPress' && !!(client.wp_url && client.wp_username && client.wp_app_password);
+  const wpConnected = (client.cms_type === 'WordPress' && !!(client.wp_url && client.wp_username && client.wp_app_password))
+    || (client.cms_type === 'Shopify' && !!(client.shopify_store && client.shopify_token));
 
   async function start() {
     setConfirming(false); setBusy(true); setErr('');
@@ -227,7 +228,7 @@ export default function AeoAutopilotPanel({ accent, onFinished }) {
         <input type="checkbox" checked={!!profile.aeofix_auto} disabled={busy || !wpConnected}
           onChange={e => toggle('aeofix_auto', e.target.checked)} style={{ width: 'auto', margin: 0 }} />
         After each run, add the checked sections to the website without waiting for approval
-        {!wpConnected && <span className="muted"> (needs a working WordPress connection)</span>}
+        {!wpConnected && <span className="muted"> (needs a working WordPress or Shopify connection)</span>}
       </label>
       {!!profile.aeofix_auto && (
         <div className="muted" style={{ fontSize: 11, margin: '2px 0 0 24px' }}>

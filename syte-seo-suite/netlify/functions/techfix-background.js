@@ -15,14 +15,23 @@ import { loadClient } from './lib/autopilotStore.js';
 import { loadTechState, saveTechState, fetchLiveHtml, loadTechFixes, saveTechFix, techFixRowId } from './lib/techStore.js';
 import { runTechFix, runAllTechFixes } from './lib/techFixRun.js';
 import { wpClient, hasWordPress } from './lib/wpClient.js';
+import { shopifyClient, hasShopify } from './lib/shopifyClient.js';
+import { shopifyTechOps } from './lib/shopifyFix.js';
 import { emailTechSummary } from './lib/runNotify.js';
 
 export const fixRowId = techFixRowId;
 const BUDGET_MS = 13 * 60 * 1000;
 
-function fixDeps(supabase, client, wp, entry) {
+// The site's API and operations: WordPress, or Shopify. null = no connection.
+function siteApi(client) {
+  if (hasWordPress(client)) return { wp: wpClient(client), ops: undefined };
+  if (hasShopify(client)) return { wp: shopifyClient(client), ops: shopifyTechOps };
+  return null;
+}
+
+function fixDeps(supabase, client, site, entry) {
   return {
-    wp,
+    wp: site.wp, ops: site.ops,
     fetchHtml: fetchLiveHtml,
     save: status => saveTechFix(supabase, client.id, entry.task.id, status),
     // Record it like any implemented fix, so the pipeline and reports count it.
@@ -71,16 +80,16 @@ export async function handler(event) {
       client = await loadClient(supabase, clientId);
       state.auto = { status: 'applying', started_at: new Date().toISOString(), by: body.by === 'schedule' ? 'schedule' : 'person' };
       await saveTechState(supabase, state);
-      if (hasWordPress(client)) {
-        const wp = wpClient(client);
+      const site = siteApi(client);
+      if (site) {
         await runAllTechFixes(
           { entries: state.tasks, fixes: await loadTechFixes(supabase, clientId), by: body.by === 'schedule' ? 'applied automatically' : 'Apply all in the suite' },
-          entry => fixDeps(supabase, client, wp, entry),
+          entry => fixDeps(supabase, client, site, entry),
           { timeLeftMs: () => BUDGET_MS - (Date.now() - started) }
         );
         state.auto = { ...state.auto, status: 'done', finished_at: new Date().toISOString() };
       } else {
-        state.auto = { ...state.auto, status: 'skipped', reason: 'No working WordPress connection — nothing was changed on the site.' };
+        state.auto = { ...state.auto, status: 'skipped', reason: 'No working WordPress or Shopify connection — nothing was changed on the site.' };
       }
     } catch (e) {
       console.error('[techfix] auto_all failed:', e.message);
@@ -96,11 +105,12 @@ export async function handler(event) {
   const prev = (await loadTechFixes(supabase, clientId)).get(taskId) || null;
   try {
     const client = await loadClient(supabase, clientId);
-    if (!hasWordPress(client)) {
-      await saveTechFix(supabase, clientId, taskId, { status: 'manual', reason: 'Automatic fixes need a working WordPress connection for ' + client.name + '.' });
+    const site = siteApi(client);
+    if (!site) {
+      await saveTechFix(supabase, clientId, taskId, { status: 'manual', reason: 'Automatic fixes need a working WordPress or Shopify connection for ' + client.name + '.' });
       return { statusCode: 202 };
     }
-    await runTechFix({ entry, action, prev }, fixDeps(supabase, client, wpClient(client), entry));
+    await runTechFix({ entry, action, prev }, fixDeps(supabase, client, site, entry));
   } catch (e) {
     await saveTechFix(supabase, clientId, taskId, { ...(action === 'undo' && prev ? prev : {}), status: action === 'undo' && prev ? prev.status : 'failed', reason: String(e.message || e).slice(0, 300), error: String(e.message || e).slice(0, 300) });
   }

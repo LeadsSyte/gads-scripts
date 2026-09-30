@@ -189,14 +189,22 @@ async function previewAeoAddition(supabase, id) {
   const fix = row?.data;
   if (!fix?.plan?.renderedPreview) return message(404, 'There is no preview for this addition — preview it again in the suite.');
   const { data: client } = await supabase.from('syte_suite_clients').select('*').eq('id', clientId).maybeSingle();
-  if (!client?.wp_url) return message(404, 'Client not found.');
-  const get = wp(client);
-  const [current, pageHtml] = await Promise.all([
-    get('wp/v2/' + fix.plan.target.type + '/' + fix.plan.target.id + '?_fields=content'),
-    fetchPublicHtml(fix.url)
-  ]);
+  if (!client) return message(404, 'Client not found.');
+  // The page's content as the site holds it now: WordPress renders post
+  // content; a Shopify page/article/product keeps it in body_html.
+  const currentContent = async () => {
+    if (fix.plan.target.resource && client.shopify_store && client.shopify_token) {
+      const j = await shop(client)(fix.plan.target.resource + '.json?fields=id,body_html');
+      return (Object.values(j || {})[0] || {}).body_html || '';
+    }
+    if (!client.wp_url) throw new Error('no site connection');
+    return (await wp(client)('wp/v2/' + fix.plan.target.type + '/' + fix.plan.target.id + '?_fields=content'))?.content?.rendered || '';
+  };
+  let current = '';
+  try { [current, ] = await Promise.all([currentContent()]); } catch { current = ''; }
+  const pageHtml = await fetchPublicHtml(fix.url);
   const r = buildThemePreview({
-    pageHtml, templateContent: current?.content?.rendered || '', templateTitle: '',
+    pageHtml, templateContent: current, templateTitle: '',
     draftContent: fix.plan.renderedPreview, draftTitle: '', pageUrl: fix.url,
     note: 'Showing the page with the new ' + (fix.plan.position === 'top' ? 'section at the top of the content' : 'section at the end of the content') + '.'
   });

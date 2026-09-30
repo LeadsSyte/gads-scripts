@@ -3,11 +3,16 @@
 // the page without waiting for a person (publishing_profile.aeofix_auto, or
 // "Add all" in the panel). Used by aeofix-background.js. Injected:
 //
-//   wp(path[, body]), fetchHtml(url), save(status), previewUrlFor(key)
+//   wp(path[, body])  the site's API (WordPress REST, or Shopify Admin)
+//   ops               { plan, apply, undo } for that site (aeoFix.js /
+//                     shopifyAeo.js); WordPress when left out
+//   fetchHtml(url), save(status), previewUrlFor(key)
 //   recordApplied({ opt, plan, live, by }) → implementation id
 //   recordUndone(implId)
 
 import { planAeoFix, applyAeoFix, undoAeoFix, aeoLiveCheck } from './aeoFix.js';
+
+const WP_OPS = { plan: planAeoFix, apply: applyAeoFix, undo: undoAeoFix };
 
 export const aeoOptKey = o => (o.type || '') + '::' + (o.name || o.title || ''); // = aeoOptKey in AEOEngine.jsx
 
@@ -16,6 +21,7 @@ export const canAutoAdd = opt => opt?.check?.verdict === 'confirmed' && ['conten
 
 export async function runAeoFix({ url, opt, optKey, action, prev = null, by = 'approved in the suite' }, deps) {
   const { wp, fetchHtml, save, previewUrlFor, recordApplied, recordUndone } = deps;
+  const ops = deps.ops || WP_OPS;
 
   if (!opt) return save({ status: 'manual', reason: 'This optimisation is no longer in the AEO Engine for that page.' });
   if (opt.check && opt.check.verdict !== 'confirmed') {
@@ -28,8 +34,8 @@ export async function runAeoFix({ url, opt, optKey, action, prev = null, by = 'a
     const plan = prev?.plan;
     if (!plan || prev?.status !== 'applied') return save({ ...(prev || {}), error: 'Nothing to undo.' });
     await save({ ...prev, status: 'undoing' });
-    const r = await undoAeoFix(plan, wp);
-    if (!r.ok) return save({ ...prev, status: 'applied', error: 'Could not remove it — remove it in WordPress by hand.' });
+    const r = await ops.undo(plan, wp);
+    if (!r.ok) return save({ ...prev, status: 'applied', error: 'Could not remove it — remove it on the site by hand.' });
     await recordUndone(prev.impl_id || null);
     return save({ status: 'removed', plan });
   }
@@ -37,7 +43,7 @@ export async function runAeoFix({ url, opt, optKey, action, prev = null, by = 'a
   if (action === 'plan' || action === 'auto') {
     if (prev?.status === 'applied') return prev;
     await save({ status: 'planning' });
-    const plan = await planAeoFix({ url, opt, optKey }, wp, fetchHtml);
+    const plan = await ops.plan({ url, opt, optKey }, wp, fetchHtml);
     if (!plan.applicable) return save({ status: 'manual', reason: plan.reason });
     prev = await save({ status: 'planned', plan, preview_url: previewUrlFor(plan.key) });
     if (action === 'plan') return prev;
@@ -47,8 +53,8 @@ export async function runAeoFix({ url, opt, optKey, action, prev = null, by = 'a
   const plan = prev?.plan;
   if (prev?.status !== 'planned' || !plan) return save({ ...(prev || {}), error: 'Preview it before adding it to the page.' });
   await save({ ...prev, status: 'applying', error: '' });
-  const r = await applyAeoFix(plan, wp);
-  if (!r.ok) return save({ ...prev, status: r.changed ? 'planned' : 'failed', error: r.reason || 'WordPress did not keep the change.' });
+  const r = await ops.apply(plan, wp);
+  if (!r.ok) return save({ ...prev, status: r.changed ? 'planned' : 'failed', error: r.reason || 'The site did not keep the change.' });
   const live = aeoLiveCheck(await fetchHtml(url), plan);
   const implId = await recordApplied({ opt, plan, live, by });
   return save({ ...prev, status: 'applied', error: '', live, impl_id: implId || null, by });

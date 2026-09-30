@@ -4,13 +4,18 @@
 // "Apply all" in the panel). Used by techfix-background.js for both a single
 // fix and a whole client. Everything outside is injected:
 //
-//   wp(path[, body])            WordPress REST, as in techFix.js
+//   wp(path[, body])            the site's API: WordPress REST (techFix.js)
+//                               or Shopify Admin (shopifyFix.js)
+//   ops                         { plan, apply, undo } for that site; WordPress
+//                               when left out
 //   fetchHtml(url)              the live page
 //   save(status)                write this fix's status row
 //   recordApplied({ entry, results, live, by }) → implementation id
 //   recordUndone({ entry, implId })
 
 import { planFix, applyPlan, undoResults, checkLive, AUTO_FIX_TYPES } from './techFix.js';
+
+const WP_OPS = { plan: planFix, apply: applyPlan, undo: undoResults };
 
 export const canAutoFix = entry => entry?.check?.verdict === 'confirmed' && AUTO_FIX_TYPES.includes(entry?.task?.fix_type);
 
@@ -19,6 +24,7 @@ const sameChanges = (a, b) => JSON.stringify((a || []).map(c => [c.target, c.to]
 // prev: this fix's saved status (or null). Returns the final status.
 export async function runTechFix({ entry, action, prev = null, by = 'approved in the suite' }, deps) {
   const { wp, fetchHtml, save, recordApplied, recordUndone } = deps;
+  const ops = deps.ops || WP_OPS;
 
   if (entry.check?.verdict !== 'confirmed') {
     return save({ status: 'manual', reason: 'Only fixes the independent check confirmed are applied automatically.' });
@@ -26,23 +32,23 @@ export async function runTechFix({ entry, action, prev = null, by = 'approved in
 
   if (action === 'plan') {
     await save({ status: 'planning' });
-    const plan = await planFix(entry.task, wp);
+    const plan = await ops.plan(entry.task, wp);
     return save(plan.applicable ? { status: 'planned', plan } : { status: 'manual', reason: plan.reason });
   }
 
   if (action === 'undo') {
     if (prev?.status !== 'applied' || !prev.results?.length) return save({ ...(prev || {}), error: 'Nothing to undo.' });
     await save({ ...prev, status: 'undoing', error: '' });
-    const undone = await undoResults(prev.results, wp);
+    const undone = await ops.undo(prev.results, wp);
     const failed = undone.filter(r => !r.undone && !r.kept);
     if (failed.length) {
-      return save({ ...prev, status: 'applied', error: 'Could not put it back (' + (failed[0].error || 'WordPress kept the new value') + ') — change it in WordPress by hand.' });
+      return save({ ...prev, status: 'applied', error: 'Could not put it back (' + (failed[0].error || 'the site kept the new value') + ') — change it on the site by hand.' });
     }
     await recordUndone({ entry, implId: prev.impl_id || null });
     const kept = undone.filter(r => r.kept).length;
     return save({
       status: 'undone', plan: prev.plan, results: prev.results,
-      note: kept ? kept + ' value(s) had been edited in WordPress since — those were left as they are.' : ''
+      note: kept ? kept + ' value(s) had been edited on the site since — those were left as they are.' : ''
     });
   }
 
@@ -53,7 +59,7 @@ export async function runTechFix({ entry, action, prev = null, by = 'approved in
     if (prev?.status !== 'planned' || !approved) return save({ ...(prev || {}), error: 'Preview the change before applying it.' });
   }
   await save({ status: 'applying', plan: approved || null });
-  const fresh = await planFix(entry.task, wp);
+  const fresh = await ops.plan(entry.task, wp);
   if (action === 'auto') {
     if (!fresh.applicable) return save({ status: 'manual', reason: fresh.reason });
     approved = fresh;
@@ -65,12 +71,12 @@ export async function runTechFix({ entry, action, prev = null, by = 'approved in
     return save({ status: 'not_needed', reason: 'The site already has this value — nothing to change.' });
   }
 
-  const results = await applyPlan(approved, wp);
+  const results = await ops.apply(approved, wp);
   const allOk = results.every(r => r.ok);
   if (!allOk) {
     // Put back anything that did stick, so a half-applied fix isn't left behind.
-    if (results.some(r => r.ok)) { try { await undoResults(results, wp); } catch { /* reported below */ } }
-    return save({ status: 'failed', plan: approved, results, live: { status: 'failed', detail: 'WordPress did not keep the change.' }, reason: results.find(r => !r.ok)?.error || 'WordPress did not keep the change.' });
+    if (results.some(r => r.ok)) { try { await ops.undo(results, wp); } catch { /* reported below */ } }
+    return save({ status: 'failed', plan: approved, results, live: { status: 'failed', detail: 'The site did not keep the change.' }, reason: results.find(r => !r.ok)?.error || 'The site did not keep the change.' });
   }
   const live = checkLive(await fetchHtml(entry.task.page_url), results);
   const implId = await recordApplied({ entry, results, live, by });

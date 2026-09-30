@@ -42,7 +42,7 @@ export const fixesToApply = entries => (entries || []).filter(e =>
 function FixControls({ entry, wpConnected, accent, onPlan, onApply, onUndo }) {
   const a = entry.apply || {};
   const btn = { fontSize: 11, padding: '3px 10px' };
-  if (!wpConnected) return <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>Apply by hand — no working WordPress connection.</div>;
+  if (!wpConnected) return <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>Apply by hand — no working WordPress or Shopify connection.</div>;
   if (a.status === 'planning') return <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>Reading the current value from the site…</div>;
   if (a.status === 'applying') return <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>Applying and checking the live page…</div>;
   if (a.status === 'undoing') return <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>Putting it back…</div>;
@@ -159,7 +159,8 @@ export default function TechAutopilotPanel({ accent, onFinished }) {
   if (!client) return null;
   const profile = getPublishingProfile(client);
   const active = state && ACTIVE.includes(state.status);
-  const wpConnected = client.cms_type === 'WordPress' && !!(client.wp_url && client.wp_username && client.wp_app_password);
+  const wpConnected = (client.cms_type === 'WordPress' && !!(client.wp_url && client.wp_username && client.wp_app_password))
+    || (client.cms_type === 'Shopify' && !!(client.shopify_store && client.shopify_token));
 
   async function start() {
     setConfirming(false); setBusy(true); setErr('');
@@ -210,7 +211,7 @@ export default function TechAutopilotPanel({ accent, onFinished }) {
           <div className="muted" style={{ fontSize: 12 }}>
             The server crawls the site, writes the fix list, and a second AI checks every fix against the live page.
             Confirmed fixes go on the Task Board (replacing this client's open tasks); false alarms are dropped.
-            Page titles, meta descriptions and image descriptions can then be changed on the website from here, and undone.
+            Page titles, meta descriptions and image descriptions can then be changed on the website from here (WordPress or Shopify), and undone.
           </div>
         </div>
         {!active && !confirming && (
@@ -239,7 +240,7 @@ export default function TechAutopilotPanel({ accent, onFinished }) {
         <input type="checkbox" checked={!!profile.techfix_auto} disabled={busy || !wpConnected}
           onChange={e => toggle('techfix_auto', e.target.checked)} style={{ width: 'auto', margin: 0 }} />
         After each scan, make the checked fixes on the website without waiting for approval
-        {!wpConnected && <span className="muted"> (needs a working WordPress connection)</span>}
+        {!wpConnected && <span className="muted"> (needs a working WordPress or Shopify connection)</span>}
       </label>
 
       {!active && wpConnected && toApply.length > 0 && !applyingAll && !confirmingAll && (

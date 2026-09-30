@@ -17,16 +17,25 @@ import { loadAeoState, saveAeoState, loadAeoFixes, saveAeoFix, aeoFixRowId as ro
 import { fixKey } from './lib/aeoFix.js';
 import { runAeoFix, runAllAeoFixes, aeoOptKey } from './lib/aeoFixRun.js';
 import { wpClient, hasWordPress } from './lib/wpClient.js';
+import { shopifyClient, hasShopify } from './lib/shopifyClient.js';
+import { shopifyAeoOps } from './lib/shopifyAeo.js';
 import { previewUrl } from './lib/previewSig.js';
 import { emailAeoSummary } from './lib/runNotify.js';
 
 export const aeoFixRowId = rowId;
 const BUDGET_MS = 13 * 60 * 1000;
 
-function fixDeps(supabase, client, wp, url, optKey) {
+// The site's API and operations: WordPress, or Shopify. null = no connection.
+function siteApi(client) {
+  if (hasWordPress(client)) return { wp: wpClient(client), ops: undefined };
+  if (hasShopify(client)) return { wp: shopifyClient(client), ops: shopifyAeoOps };
+  return null;
+}
+
+function fixDeps(supabase, client, site, url, optKey) {
   const key = fixKey(url, optKey);
   return {
-    wp,
+    wp: site.wp, ops: site.ops,
     fetchHtml: fetchLiveHtml,
     save: status => saveAeoFix(supabase, client.id, { url, optKey, key }, status),
     previewUrlFor: k => previewUrl('f', client.id + '-' + k),
@@ -71,17 +80,17 @@ export async function handler(event) {
       client = await loadClient(supabase, clientId);
       state.auto = { status: 'applying', started_at: new Date().toISOString(), by: scheduled ? 'schedule' : 'person' };
       await saveAeoState(supabase, state);
-      if (hasWordPress(client)) {
-        const wp = wpClient(client);
+      const site = siteApi(client);
+      if (site) {
         const items = state.rows.flatMap(r => (r.optimizations || []).map(opt => ({ url: r.url, opt })));
         await runAllAeoFixes(
           { items, fixes: await loadAeoFixes(supabase, clientId), keyOf: fixKey, by: scheduled ? 'added automatically' : 'Add all in the suite' },
-          (u, k) => fixDeps(supabase, client, wp, u, k),
+          (u, k) => fixDeps(supabase, client, site, u, k),
           { timeLeftMs: () => BUDGET_MS - (Date.now() - started) }
         );
         state.auto = { ...state.auto, status: 'done', finished_at: new Date().toISOString() };
       } else {
-        state.auto = { ...state.auto, status: 'skipped', reason: 'No working WordPress connection — nothing was changed on the site.' };
+        state.auto = { ...state.auto, status: 'skipped', reason: 'No working WordPress or Shopify connection — nothing was changed on the site.' };
       }
     } catch (e) {
       console.error('[aeofix] auto_all failed:', e.message);
@@ -97,13 +106,14 @@ export async function handler(event) {
   const target = { url, optKey, key };
   try {
     const client = await loadClient(supabase, clientId);
-    if (!hasWordPress(client)) {
-      await saveAeoFix(supabase, clientId, target, { status: 'manual', reason: 'Adding it automatically needs a working WordPress connection for ' + client.name + '.' });
+    const site = siteApi(client);
+    if (!site) {
+      await saveAeoFix(supabase, clientId, target, { status: 'manual', reason: 'Adding it automatically needs a working WordPress or Shopify connection for ' + client.name + '.' });
       return { statusCode: 202 };
     }
     const { data: rows } = await supabase.from('syte_suite_aeo_results').select('url, optimizations').eq('client_id', clientId).eq('url', url);
     const opt = (rows?.[0]?.optimizations || []).find(o => aeoOptKey(o) === optKey);
-    await runAeoFix({ url, opt, optKey, action, prev }, fixDeps(supabase, client, wpClient(client), url, optKey));
+    await runAeoFix({ url, opt, optKey, action, prev }, fixDeps(supabase, client, site, url, optKey));
   } catch (e) {
     await saveAeoFix(supabase, clientId, target, { ...(prev || {}), status: 'failed', error: String(e.message || e).slice(0, 300) });
   }
