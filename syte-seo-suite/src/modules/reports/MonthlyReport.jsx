@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useClients } from '../../store/useClients.js';
 import { claudeComplete, extractJSON } from '../../lib/anthropic.js';
 import { previousMonthKey, monthKeyLabel } from './reportMonths.js';
-import { listAeoSnapshots, logReportSent, logReportGenerated, getGeneratedReport, getCachedReportData, setCachedReportData, persistAeoRuns, saveAeoSnapshot } from '../../lib/supabase.js';
+import { listAeoSnapshots, logReportSent, logReportGenerated, getGeneratedReport, getCachedReportData, setCachedReportData, persistAeoRuns, saveAeoSnapshot, latestEarlierAeoProbe } from '../../lib/supabase.js';
 import {
   ALICE_SEO_SYSTEM, MICROSITE_SEO_SYSTEM, QA_SEO_SYSTEM,
   ALICE_AEO_SYSTEM, MICROSITE_AEO_SYSTEM, QA_AEO_SYSTEM,
@@ -237,11 +237,14 @@ export default function MonthlyReport({ initialMonth }) {
 
   useEffect(() => {
     if (!client) { setAeoSnap(null); setPreviousAeoSnap(null); setWorkSummary(null); return; }
-    listAeoSnapshots(client.id).then(rows => {
+    listAeoSnapshots(client.id).then(async rows => {
       // Sort newest-first then find this month + the most recent prior month.
       const sorted = (rows || []).slice().sort((a, b) => (b.month || '').localeCompare(a.month || ''));
       const match = sorted.find(r => r.month === month) || null;
-      const prev = sorted.find(r => r.month && r.month < month) || null;
+      let prev = sorted.find(r => r.month && r.month < month) || null;
+      // No snapshot in AEO History: the previous month's AEO report carries
+      // the results it was measured from, which is the same baseline.
+      if (!prev) prev = await latestEarlierAeoProbe(client.id, month);
       setAeoSnap(match);
       setPreviousAeoSnap(prev);
     }).catch(() => {});
@@ -549,7 +552,12 @@ export default function MonthlyReport({ initialMonth }) {
     try {
       const saved = await saveAeoSnapshot({ ...probeResult, client_id: client.id, month });
       setAeoSnap(saved);
-    } catch { /* non-fatal — report still works without the saved baseline */ }
+    } catch (e) {
+      // Non-fatal: the report still works, and next month compares against
+      // this report's own saved results. Say so rather than hide it.
+      console.warn('[Report] AEO snapshot not saved to AEO History:', e.message);
+      setProbeWarnings(w => [...(w || []), 'Not added to AEO History (' + String(e.message || e).slice(0, 120) + '). Next month still compares against this report.']);
+    }
   }
 
   async function generateAeoOnly() {

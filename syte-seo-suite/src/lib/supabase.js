@@ -827,6 +827,28 @@ export async function syncGeneratedLocal() {
 
 // Newest-first status rows for the Generated dashboard. Content columns are
 // left out: the dashboard only needs status, and the payloads are large.
+// The latest AEO report BEFORE `month`, with the results it was measured
+// from — the month-on-month baseline when AEO History has no snapshot (in
+// production it never had one: the history insert fails silently, see
+// saveAeoSnapshot). Same lookup the server's AEO Report Autopilot uses.
+export async function latestEarlierAeoProbe(clientId, month) {
+  assertClientId(clientId, 'latestEarlierAeoProbe');
+  if (!supabase) return null;
+  try {
+    const { data, error } = await supabase
+      .from('syte_suite_report_generated_log')
+      .select('month, aeo_probe')
+      .eq('client_id', clientId).eq('report_type', 'aeo').lt('month', month)
+      .order('month', { ascending: false }).limit(3);
+    if (error) throw error;
+    const row = (data || []).find(r => r.aeo_probe && (r.aeo_probe.queries_count || r.aeo_probe.per_query?.length));
+    return row ? { ...row.aeo_probe, month: row.month, source: 'generated-report' } : null;
+  } catch (e) {
+    console.warn('[reports] latestEarlierAeoProbe failed:', e.message);
+    return null;
+  }
+}
+
 export async function listGeneratedReports(clientId) {
   let dbRows = [];
   if (supabase) {

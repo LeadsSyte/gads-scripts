@@ -8,6 +8,7 @@ import { getPublishingProfile } from './publishingProfile.js';
 import { connectShopify, shopifyCallbackUrl } from './shopifyConnect.js';
 import { buildConnectionRows, summarizeConnections } from './connectionStatus.js';
 import { openThemePreview } from './previewLink.js';
+import { unpublishItem, canUnpublish } from './unpublish.js';
 
 const ACCENT = '#4dabff';
 
@@ -77,6 +78,7 @@ export default function CMSPush({ sub, setSub }) {
   }, [client?.id]);
 
   const [showAllAttempts, setShowAllAttempts] = useState(false);
+  const [takingDown, setTakingDown] = useState(null); // queue row id awaiting "Yes, take it down"
 
   async function refreshHistory() {
     try { setAllHistory(await listCmsQueue()); }
@@ -312,6 +314,20 @@ export default function CMSPush({ sub, setSub }) {
       }
       await updateCmsQueueItem(item.id, patch);
       await refreshHistory();
+    } catch (e) { setErr(e.message); }
+    finally { setBusy(false); }
+  }
+
+  // Undo for a published article: back to a draft on the site, back to
+  // "awaiting review" here. The row's own client is used, not the dropdown —
+  // the All clients view lists other clients' articles.
+  async function takeDown(item) {
+    setTakingDown(null); setBusy(true); setErr('');
+    try {
+      const owner = allClients.find(c => c.id === item.client_id);
+      await unpublishItem(owner, item);
+      await refreshHistory();
+      setMsg('Taken down — it is a draft on the site again and back in review here.');
     } catch (e) { setErr(e.message); }
     finally { setBusy(false); }
   }
@@ -798,6 +814,22 @@ export default function CMSPush({ sub, setSub }) {
                     )}
                     {item.status === 'published' && item.payload?.live_url && (
                       <a href={item.payload.live_url} target="_blank" rel="noreferrer" style={{ color: 'var(--green)' }}>Live →</a>
+                    )}
+                    {canUnpublish(item) && takingDown !== item.id && (
+                      <button className="ghost" disabled={busy} onClick={() => setTakingDown(item.id)}
+                        style={{ marginLeft: 8, fontSize: 11 }} title="Back to a draft on the site; nothing is deleted">
+                        Take down
+                      </button>
+                    )}
+                    {takingDown === item.id && (
+                      <div className="row" style={{ gap: 6, marginTop: 4, fontSize: 11, flexWrap: 'wrap' }}>
+                        <span>Take "{item.page_title}" off the live site? It becomes a draft again.</span>
+                        <button disabled={busy} onClick={() => takeDown(item)} style={{ fontSize: 11 }}>Yes, take it down</button>
+                        <button className="ghost" onClick={() => setTakingDown(null)} style={{ fontSize: 11 }}>Cancel</button>
+                      </div>
+                    )}
+                    {item.status === 'pushed' && item.payload?.unpublished_at && (
+                      <div className="muted" style={{ fontSize: 11 }}>Taken down {new Date(item.payload.unpublished_at).toLocaleDateString()} — a draft again, awaiting review.</div>
                     )}
                     {item.status === 'changes_requested' && (
                       <div style={{ marginTop: 4 }}>

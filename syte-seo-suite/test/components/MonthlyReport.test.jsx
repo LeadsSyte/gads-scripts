@@ -11,6 +11,7 @@ import userEvent from '@testing-library/user-event';
 import { describe, test, expect, vi, beforeEach } from 'vitest';
 
 const mockClaudeComplete = vi.fn();
+let mockEarlierProbe = vi.fn(async () => null);
 vi.mock('../../src/lib/anthropic.js', () => ({
   claudeComplete: (...a) => mockClaudeComplete(...a),
   extractJSON: (t) => { try { return JSON.parse(t); } catch { return null; } }
@@ -21,6 +22,7 @@ vi.mock('../../src/lib/supabase.js', () => ({
   supabase: null,
   updateClientFields: vi.fn().mockResolvedValue({}),
   listAeoSnapshots: vi.fn().mockResolvedValue([]),
+  latestEarlierAeoProbe: (...a) => mockEarlierProbe(...a),
   logReportSent: vi.fn().mockResolvedValue({}),
   logReportGenerated: vi.fn().mockResolvedValue({}),
   getGeneratedReport: vi.fn().mockResolvedValue(null),
@@ -183,5 +185,29 @@ describe('MonthlyReport — Search Console gate', () => {
     await waitFor(() => {
       expect(screen.getByRole('button', { name: /Generate AEO Report/i })).toBeEnabled();
     });
+  });
+});
+
+describe('MonthlyReport — AEO month on month', () => {
+  const aeoAnswers = ({ system }) => /JSON/.test(system) && /report page|microsite/i.test(system)
+    ? '{"headline":"Named in 2 of 4 prompts","summary":"ok"}'
+    : /review|QA/i.test(system.slice(0, 300)) ? '{"overallScore": 8}' : 'SUBJECT: Acme in AI answers' + String.fromCharCode(10) + '---' + String.fromCharCode(10) + 'Hi team';
+  const payloadOf = () => mockClaudeComplete.mock.calls.map(c => c[0]?.messages?.[0]?.content || '').find(t => /AEO PERFORMANCE REPORT/.test(t)) || '';
+
+  test('with no AEO History, the previous month comes from the last AEO report', async () => {
+    mockEarlierProbe = vi.fn(async () => ({ month: '2026-08', visibility_score: 10, detection_rate: 20, top3_rate: 5, mentions: 3, citations: 1, sentiment_score: 50, coverage_rate: 0.2, composite_index: 30, queries_count: 4, per_query: [{ query: 'q' }] }));
+    mockClaudeComplete.mockImplementation(async (o) => aeoAnswers(o));
+    render(<MonthlyReport />);
+    await userEvent.click(await screen.findByRole('button', { name: /Generate AEO Report/i }));
+    await waitFor(() => expect(payloadOf()).toMatch(/MONTH-ON-MONTH \(vs August 2026\)/), { timeout: 8000 });
+    expect(mockEarlierProbe).toHaveBeenCalledWith('c1', previousMonthKey());
+  });
+
+  test('with nothing earlier, the report is framed as the first measurement', async () => {
+    mockEarlierProbe = vi.fn(async () => null);
+    mockClaudeComplete.mockImplementation(async (o) => aeoAnswers(o));
+    render(<MonthlyReport />);
+    await userEvent.click(await screen.findByRole('button', { name: /Generate AEO Report/i }));
+    await waitFor(() => expect(payloadOf()).toMatch(/first AEO SNAPSHOT/), { timeout: 8000 });
   });
 });
