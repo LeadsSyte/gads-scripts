@@ -12,3 +12,4 @@ playwright-report
 
 # Local Netlify folder
 .netlify
+test/live/last-tech-email.html
