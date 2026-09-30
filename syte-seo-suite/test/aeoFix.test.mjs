@@ -93,5 +93,21 @@ await t('marker helpers and live check', () => {
   assertEq(aeoLiveCheck('<p>old</p>', { html: '<p>New section text</p>' }).status, 'pending');
 });
 
+await t('an added section carries the classes the client's own posts use (house style)', async () => {
+  const { wp } = fakeWp();
+  const styled = async (path, body) => path.startsWith('wp/v2/posts?status=publish')
+    ? [1, 2, 3].map(() => ({ content: { rendered: '<h2 class="wp-block-heading has-black-color has-text-color">A</h2><p class="has-text-align-left">b</p>' } }))
+    : wp(path, body);
+  const plan = await planAeoFix({ url: URL_, opt: FAQ, optKey: 'content::' + FAQ.name }, styled, async () => LIVE);
+  assertEq(plan.applicable, true);
+  if (!/<h2 class="wp-block-heading has-black-color has-text-color">Frequently asked questions/.test(plan.html)) throw new Error('h2 not styled: ' + plan.html.slice(0, 120));
+  if (!/<p class="has-text-align-left">Usually about an hour/.test(plan.html)) throw new Error('p not styled');
+  assertEq(plan.house_style.h2, 'wp-block-heading has-black-color has-text-color');
+  // A site whose posts can't be read still gets the plain section.
+  const plain = await planAeoFix({ url: URL_, opt: FAQ, optKey: 'content::' + FAQ.name }, wp, async () => LIVE);
+  assertEq(plain.applicable, true); assertEq(plain.house_style, null);
+  if (!/<h2>Frequently asked questions/.test(plain.html)) throw new Error('should be plain');
+});
+
 console.log(`\naeoFix: ${pass} passed, ${fail} failed`);
 if (fail > 0) process.exit(1);

@@ -14,6 +14,7 @@
 // `wp` is injected (see techFix.js).
 
 import { resolveWpObject } from './techFix.js';
+import { learnHouseStyle, applyHouseStyle } from '../../../src/modules/cms/houseStyle.js';
 
 const TOP_HINT = /answer|summary|takeaway|tl;?dr|overview|definition|at a glance|intro/i;
 const TOP_WHERE = /after (the )?h1|top of|beginning|start of|above the (first|intro)|before the (first|intro)|right after the (title|heading)/i;
@@ -107,7 +108,18 @@ function simpleHash(s) {
   return h.toString(36) + ':' + String(s || '').length;
 }
 
-// Dry run. { applicable, reason?, target, position, html, key, rawHash, renderedPreview }
+// The client's own markup, from their recent posts (see cms/houseStyle.js):
+// an added section then carries the same heading/paragraph classes as the
+// rest of the page, so the theme styles it alike. Chris's "clients' styling
+// doesn't pick up" request, for AEO sections. Best-effort; {} when unknown.
+export async function houseStyleFor(wp, type = 'posts') {
+  try {
+    const recent = await wp('wp/v2/' + type + '?status=publish&per_page=5&_fields=content');
+    return learnHouseStyle((Array.isArray(recent) ? recent : []).map(p => p?.content?.rendered || ''));
+  } catch { return {}; }
+}
+
+// Dry run. { applicable, reason?, target, position, html, key, rawHash, renderedPreview, house_style }
 export async function planAeoFix({ url, opt, optKey }, wp, fetchLive) {
   const ins = planInsertion(opt);
   if (!ins.ok) return { applicable: false, reason: ins.reason };
@@ -122,11 +134,14 @@ export async function planAeoFix({ url, opt, optKey }, wp, fetchLive) {
   if (!contentIsRendered(rendered, live)) {
     return { applicable: false, reason: 'This page\'s visible content comes from a page builder, not the WordPress editor — adding it through the connection wouldn\'t show. Apply it in the builder (or with a Grok Bot).' };
   }
+  const style = await houseStyleFor(wp, obj.type);
+  const html = applyHouseStyle(ins.html, style);
   return {
-    applicable: true, target: { type: obj.type, id: obj.id }, position: ins.position, html: ins.html, key,
+    applicable: true, target: { type: obj.type, id: obj.id }, position: ins.position, html, key,
     rawHash: simpleHash(raw),
+    house_style: Object.keys(style).length ? style : null,
     // For the in-theme preview: the page's rendered content with the addition in place.
-    renderedPreview: insertInto(rendered, ins.html, ins.position)
+    renderedPreview: insertInto(rendered, html, ins.position)
   };
 }
 
