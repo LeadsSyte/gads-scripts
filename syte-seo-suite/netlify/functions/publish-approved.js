@@ -97,7 +97,8 @@ export default async function handler() {
   return new Response(`Published ${published}, failed ${failed}`, { status: 200 });
 }
 
-async function publishOne(client, row) {
+// Exported for tests against a real (test) site.
+export async function publishOne(client, row) {
   if (!client) throw new Error('Client not found for queue row');
   const p = row.payload || {};
 
