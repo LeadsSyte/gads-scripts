@@ -815,6 +815,14 @@ export default function CMSPush({ sub, setSub }) {
                     {item.status === 'published' && item.payload?.live_url && (
                       <a href={item.payload.live_url} target="_blank" rel="noreferrer" style={{ color: 'var(--green)' }}>Live →</a>
                     )}
+                    {item.status === 'published' && item.payload?.visual_check?.status === 'ok' && (
+                      <div style={{ fontSize: 11, color: 'var(--green)' }} title={item.payload.visual_check.summary || ''}>✓ screenshot check: looks right</div>
+                    )}
+                    {item.status === 'published' && item.payload?.visual_check?.status === 'problems' && (
+                      <div style={{ fontSize: 11, color: 'var(--orange, #e8a33d)', maxWidth: 260 }}>
+                        ⚠ screenshot check: {(item.payload.visual_check.problems || []).join(' ')}
+                      </div>
+                    )}
                     {canUnpublish(item) && takingDown !== item.id && (
                       <button className="ghost" disabled={busy} onClick={() => setTakingDown(item.id)}
                         style={{ marginLeft: 8, fontSize: 11 }} title="Back to a draft on the site; nothing is deleted">

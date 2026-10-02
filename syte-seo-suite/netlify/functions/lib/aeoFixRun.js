@@ -7,6 +7,8 @@
 //   ops               { plan, apply, undo } for that site (aeoFix.js /
 //                     shopifyAeo.js); WordPress when left out
 //   fetchHtml(url), save(status), previewUrlFor(key)
+//   visualCheck({ url, opt, plan }) → { status, problems, summary }  (optional:
+//                     a screenshot-based look at the page after adding)
 //   recordApplied({ opt, plan, live, by }) → implementation id
 //   recordUndone(implId)
 
@@ -57,7 +59,13 @@ export async function runAeoFix({ url, opt, optKey, action, prev = null, by = 'a
   if (!r.ok) return save({ ...prev, status: r.changed ? 'planned' : 'failed', error: r.reason || 'The site did not keep the change.' });
   const live = aeoLiveCheck(await fetchHtml(url), plan);
   const implId = await recordApplied({ opt, plan, live, by });
-  return save({ ...prev, status: 'applied', error: '', live, impl_id: implId || null, by });
+  const applied = await save({ ...prev, status: 'applied', error: '', live, impl_id: implId || null, by });
+  // The section is on the page and can be undone; now look at it. Only when
+  // the text check saw it live — a cached page would be a picture of the old one.
+  if (!deps.visualCheck || live.status !== 'verified') return applied;
+  let visual = null;
+  try { visual = await deps.visualCheck({ url, opt, plan }); } catch { visual = null; }
+  return visual ? save({ ...applied, visual }) : applied;
 }
 
 // items: [{ url, opt }] from the run. fixes: Map key → saved status, keyOf(url, optKey).

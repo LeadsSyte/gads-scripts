@@ -112,6 +112,11 @@ const LIVE = live => live?.status === 'verified'
   ? '<span style="color:#15803d">Checked: showing on the live page.</span>'
   : '<span style="color:#b45309">Saved on the site, but not showing on the live page yet (usually the page cache).</span>';
 
+// The screenshot-based look at the page (lib/visualCheck.js), when it ran.
+const VISUAL = v => !v || v.status === 'unchecked' ? ''
+  : v.status === 'ok' ? '<div style="font-size:13px;color:#15803d;margin-top:3px">Screenshot check: looks right.</div>'
+  : '<div style="font-size:13px;color:#b45309;margin-top:3px">Screenshot check: ' + (v.problems || []).map(esc).join(' ') + '</div>';
+
 function todoBox(items) {
   const body = items.length
     ? '<ol style="margin:6px 0 0 18px;padding:0">' + items.map(i => '<li style="margin-bottom:4px">' + i + '</li>').join('') + '</ol>'
@@ -214,10 +219,13 @@ export function aeoBuckets(state, fixes = new Map()) {
 export function buildAeoSummaryEmail(client, state, siteUrl, { fixes = new Map(), fixSheetUrl = '' } = {}) {
   const b = aeoBuckets(state, fixes);
   const failedRun = state?.status === 'failed';
-  const subject = runSubject(client, 'AEO', b, failedRun, 'nothing to add this month');
+  const odd = b.done.filter(x => x.f.visual?.status === 'problems').length;
+  const subject = (odd && !failedRun ? 'Look at this — ' : '') + runSubject(client, 'AEO', b, failedRun, 'nothing to add this month') + (odd ? ' (' + odd + ' may not look right)' : '');
   const pending = b.done.filter(x => x.f.live?.status !== 'verified');
 
+  const looksWrong = b.done.filter(x => x.f.visual?.status === 'problems');
   const todo = [
+    looksWrong.length ? `<strong>${plural(looksWrong.length, 'added section')} may not look right on the page.</strong> See the notes below; click <em>Undo</em> in the suite to take ${looksWrong.length === 1 ? 'it' : 'one'} off.` : '',
     b.done.length ? `<strong>Read the ${plural(b.done.length, 'new section')} on the live ${b.done.length === 1 ? 'page' : 'pages'}.</strong> This is new wording visitors can see.` : '',
     b.waiting.length ? `<strong>Approve ${plural(b.waiting.length, 'addition')}.</strong> Open the suite → AEO Engine → Run Optimizations → <em>Add all</em>. You can preview each one in the page first.` : '',
     b.failed.length ? `<strong>${plural(b.failed.length, 'addition')} could not be made.</strong> The reason is next to each one below.` : '',
@@ -237,7 +245,7 @@ export function buildAeoSummaryEmail(client, state, siteUrl, { fixes = new Map()
     ${state?.auto?.status === 'failed' || state?.auto?.status === 'skipped' ? '<p style="color:#b91c1c">' + esc(state.auto.reason || '') + '</p>' : ''}
     ${todoBox(todo)}
     ${b.done.length ? SECTION('Added to the site', b.done.length, '#15803d')
-      + list(b.done, x => `<div style="font-size:13px;margin-top:3px">Added at the ${x.f.plan?.position === 'top' ? 'top' : 'end'} of the page. ${LIVE(x.f.live)}</div>`)
+      + list(b.done, x => `<div style="font-size:13px;margin-top:3px">Added at the ${x.f.plan?.position === 'top' ? 'top' : 'end'} of the page. ${LIVE(x.f.live)}</div>` + VISUAL(x.f.visual))
       + '<p style="font-size:13px;color:#555">Not happy with one? Open the suite → AEO Engine → Run Optimizations and click <em>Undo</em> next to it. The page goes back to exactly what it was.</p>' : ''}
     ${b.waiting.length ? SECTION('Waiting for your OK', b.waiting.length, '#b45309') + list(b.waiting, x => (x.f?.preview_url ? `<div style="font-size:13px;margin-top:3px"><a href="${esc(x.f.preview_url)}">See it in the page</a></div>` : '') + reason({ o: x.o }, '#555')) : ''}
     ${b.failed.length ? SECTION('Could not be added', b.failed.length, '#b91c1c') + list(b.failed, x => reason(x, '#b91c1c')) : ''}
@@ -318,5 +326,19 @@ export function buildPublishedEmail(results, siteUrl) {
     ${ok.length ? '<p><strong>Now live:</strong></p><ul style="padding-left:18px">' + ok.map(item).join('') + '</ul>' : ''}
     ${bad.length ? '<p style="color:#b91c1c"><strong>Could not publish</strong> (still drafts, marked "publish failed" in Push History):</p><ul style="padding-left:18px">' + bad.map(item).join('') + '</ul>' : ''}
     <p style="margin-top:18px">${BTN(siteUrl, 'Open the suite')}</p>`);
+  return { subject, html };
+}
+
+// Sent only when the screenshot check finds something wrong with a post
+// that has just gone live. item: { client, title, url, result }
+export function buildVisualProblemEmail(item, siteUrl) {
+  const subject = 'Look at this live page — ' + item.client + ': "' + item.title + '" may not look right';
+  const html = WRAP(`
+    <p style="font-size:15px"><strong>${esc(item.client)}</strong> — the article <a href="${esc(item.url)}">${esc(item.title)}</a> went live, and the screenshot check found something that may be wrong.</p>
+    ${todoBox(['<strong>Open the live page and look at it.</strong> If it is wrong, fix it in the site\'s admin, or open the suite → CMS → Push History and click <em>Take down</em> to make it a draft again.'])}
+    <ul style="font-size:14px;padding-left:18px;color:#b45309">${(item.result.problems || []).map(p => '<li>' + esc(p) + '</li>').join('')}</ul>
+    ${item.result.compared_with ? '<p style="font-size:13px;color:#777">Compared with another article on the same site: ' + esc(item.result.compared_with) + '</p>' : ''}
+    <p style="margin-top:18px">${BTN(item.url, 'Open the live page')} &nbsp; ${BTN(siteUrl, 'Open the suite')}</p>
+    <p style="color:#777;font-size:12px">The article is still live. This check looks at a screenshot of the page; it can be wrong, so trust your own eyes.</p>`);
   return { subject, html };
 }

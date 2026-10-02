@@ -21,6 +21,8 @@ import { shopifyClient, hasShopify } from './lib/shopifyClient.js';
 import { shopifyAeoOps } from './lib/shopifyAeo.js';
 import { previewUrl } from './lib/previewSig.js';
 import { emailAeoSummary } from './lib/runNotify.js';
+import { visualCheck, visualCheckAvailable } from './lib/visualCheck.js';
+import { claudeCompleteServer } from './lib/serverAi.js';
 
 export const aeoFixRowId = rowId;
 const BUDGET_MS = 13 * 60 * 1000;
@@ -39,6 +41,10 @@ function fixDeps(supabase, client, site, url, optKey) {
     fetchHtml: fetchLiveHtml,
     save: status => saveAeoFix(supabase, client.id, { url, optKey, key }, status),
     previewUrlFor: k => previewUrl('f', client.id + '-' + k),
+    visualCheck: visualCheckAvailable() ? ({ url: u, opt, plan }) => visualCheck({
+      url: u,
+      what: 'A new section ("' + (opt.name || opt.type) + '") was added at the ' + (plan.position === 'top' ? 'top' : 'end') + ' of this page\'s main content. It should look like part of the page, in the same fonts and colours.'
+    }, { complete: claudeCompleteServer }) : undefined,
     recordApplied: async ({ opt, plan, live, by }) => {
       const { data: impl } = await supabase.from('syte_suite_implementations').insert({
         client_id: client.id, module: 'aeo', change_type: opt.type || 'content', page_url: url,
@@ -86,7 +92,7 @@ export async function handler(event) {
         await runAllAeoFixes(
           { items, fixes: await loadAeoFixes(supabase, clientId), keyOf: fixKey, by: scheduled ? 'added automatically' : 'Add all in the suite' },
           (u, k) => fixDeps(supabase, client, site, u, k),
-          { timeLeftMs: () => BUDGET_MS - (Date.now() - started) }
+          { timeLeftMs: () => BUDGET_MS - (Date.now() - started), perFixMs: visualCheckAvailable() ? 120000 : 60000 }
         );
         state.auto = { ...state.auto, status: 'done', finished_at: new Date().toISOString() };
       } else {

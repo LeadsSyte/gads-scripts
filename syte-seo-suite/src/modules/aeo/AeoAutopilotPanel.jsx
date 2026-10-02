@@ -55,6 +55,8 @@ function AeoFixControls({ fix, wpConnected, accent, onAction }) {
           {f.live?.status === 'verified' ? '✓ Added and live on the page.' : '✓ Added in WordPress. ' + (f.live?.detail || '')}
         </span>
         <button className="ghost" style={btn} onClick={() => onAction('undo')}>Undo</button>
+        {f.visual?.status === 'ok' && <span style={{ fontSize: 11, color: 'var(--green)' }} title={f.visual.summary || ''}>✓ screenshot check: looks right</span>}
+        {f.visual?.status === 'problems' && note('⚠ Screenshot check: ' + (f.visual.problems || []).join(' '), 'var(--orange, #e8a33d)')}
         {f.error && note(f.error, 'var(--red)')}
       </div>
     );

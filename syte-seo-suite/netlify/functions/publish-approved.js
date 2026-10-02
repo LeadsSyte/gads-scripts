@@ -57,6 +57,7 @@ export default async function handler() {
 
   let published = 0, failed = 0;
   const results = [];
+  const toLookAt = [];
   for (const row of rows) {
     const client = byId[row.client_id];
     try {
@@ -70,6 +71,7 @@ export default async function handler() {
         payload: { ...(row.payload || {}), published_at: new Date().toISOString(), live_url: liveUrl, live_check: check }
       }).eq('id', row.id);
       published++;
+      toLookAt.push(row.id);
       console.log('[publish-approved] published:', client?.name, '-', row.page_title);
     } catch (e) {
       await supabase.from('syte_suite_cms_queue').update({
@@ -92,6 +94,17 @@ export default async function handler() {
     }
   } catch (e) {
     console.error('[publish-approved] report email failed:', e.message);
+  }
+
+  // The visual check (a screenshot takes ~30 s) runs in its own background
+  // function; it emails only if a page looks wrong.
+  const auth = process.env.WP_PROXY_AUTH;
+  if (auth && process.env.PAGESPEED_API_KEY) {
+    const base = (process.env.URL || 'https://syte-seo-suite.netlify.app').replace(/\/+$/, '');
+    await Promise.all(toLookAt.map(id => fetch(base + '/.netlify/functions/visual-check-background', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Suite-Auth': auth },
+      body: JSON.stringify({ queueId: id }), signal: AbortSignal.timeout(8000)
+    }).catch(() => {})));
   }
 
   return new Response(`Published ${published}, failed ${failed}`, { status: 200 });
