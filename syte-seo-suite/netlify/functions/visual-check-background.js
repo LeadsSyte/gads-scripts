@@ -2,6 +2,10 @@
 // function — a screenshot takes ~30 s). POST { queueId } with X-Suite-Auth.
 // Called by publish-approved for each post it publishes.
 //
+// POST { testUrl, referenceUrl? } runs the same check on any address and
+// writes the result to syte_suite_settings 'visualcheck-test' — to prove the
+// server can take and judge a screenshot without changing or emailing anything.
+//
 // Takes a screenshot of the live page and of another published post on the
 // same site, has an AI compare them (lib/visualCheck.js), saves the result on
 // the Push History row (payload.visual_check) and — only when something looks
@@ -37,10 +41,22 @@ export async function handler(event) {
   if (!required || given !== required) return { statusCode: 401 };
   let body;
   try { body = JSON.parse(event.body || '{}'); } catch { return { statusCode: 400 }; }
+  const supabase = getServerSupabase();
+  if (body.testUrl) {
+    const started = Date.now();
+    let result;
+    try {
+      if (!/^https:\/\/[^\s]+$/.test(String(body.testUrl))) throw new Error('testUrl must be an https address');
+      result = await visualCheck({ url: String(body.testUrl), referenceUrl: String(body.referenceUrl || ''), what: 'Nothing was changed; this is a test of the check. Judge the page as it is.' }, { complete: claudeCompleteServer });
+    } catch (e) { result = { status: 'unchecked', problems: [], summary: String(e.message || e).slice(0, 200) }; }
+    await supabase.from('syte_suite_settings').upsert({
+      id: 'visualcheck-test', updated_at: new Date().toISOString(),
+      data: { url: body.testUrl, result, seconds: Math.round((Date.now() - started) / 1000), key_set: visualCheckAvailable(), at: new Date().toISOString() }
+    });
+    return { statusCode: 202 };
+  }
   if (!body.queueId) return { statusCode: 400 };
   if (!visualCheckAvailable()) return { statusCode: 202 };
-
-  const supabase = getServerSupabase();
   try {
     const { data: row } = await supabase.from('syte_suite_cms_queue').select('*').eq('id', body.queueId).maybeSingle();
     const url = row?.payload?.live_url;
