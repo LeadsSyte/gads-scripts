@@ -9,6 +9,7 @@ import { connectShopify, shopifyCallbackUrl } from './shopifyConnect.js';
 import { buildConnectionRows, summarizeConnections } from './connectionStatus.js';
 import { openThemePreview } from './previewLink.js';
 import { unpublishItem, canUnpublish } from './unpublish.js';
+import { downloadHelperPlugin, checkHelperPlugin, HELPER_PLUGIN_VERSION } from './helperPlugin.js';
 
 const ACCENT = '#4dabff';
 
@@ -66,6 +67,7 @@ export default function CMSPush({ sub, setSub }) {
     // truthy, suppressed this client's own stored readiness line.
     setBlogs([]);
     setHealth(null);
+    setHelper(null);
     setMsg(''); setErr(''); setMsgFor('general');
   }, [client?.id]);
 
@@ -79,6 +81,7 @@ export default function CMSPush({ sub, setSub }) {
 
   const [showAllAttempts, setShowAllAttempts] = useState(false);
   const [takingDown, setTakingDown] = useState(null); // queue row id awaiting "Yes, take it down"
+  const [helper, setHelper] = useState(null);          // result of "Check this site" for the helper plugin
 
   async function refreshHistory() {
     try { setAllHistory(await listCmsQueue()); }
@@ -689,6 +692,34 @@ export default function CMSPush({ sub, setSub }) {
               )}
               <Status scope="health" />
             </div>
+
+            {form.cms_type === 'WordPress' && (
+              <div className="card">
+                <strong>Syte SEO Helper plugin</strong>
+                <div className="muted" style={{ fontSize: 13, marginTop: 6 }}>
+                  A small plugin for the client's WordPress. With it installed, the suite can make the fixes that live in the
+                  theme — duplicate or missing main headings, redirects, canonical and noindex tags, structured data, the home
+                  page's title, and AEO sections on page-builder pages — each with a preview on the real page and an Undo.
+                  It never edits the theme; removing a fix (or the plugin) puts everything back.
+                </div>
+                <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
+                  To install: download it, then in the site's WordPress go to Plugins → Add New → Upload Plugin, choose the file, and Activate.
+                </div>
+                <div className="row" style={{ gap: 8, marginTop: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+                  <button onClick={() => downloadHelperPlugin().catch(e => setErr(e.message))}>Download plugin (v{HELPER_PLUGIN_VERSION})</button>
+                  <button className="ghost" disabled={busy || !form.wp_url}
+                    onClick={async () => { setBusy(true); try { setHelper(await checkHelperPlugin({ ...client, ...form })); } finally { setBusy(false); } }}>
+                    Check this site
+                  </button>
+                  {helper && helper.installed && (
+                    <span style={{ fontSize: 12, color: helper.upToDate ? 'var(--green)' : 'var(--orange, #e8a33d)' }}>
+                      ✓ Installed (v{helper.version}){helper.upToDate ? '' : ' — a newer version is available; upload it again to update'} · {helper.enabled} fix{helper.enabled === 1 ? '' : 'es'} active
+                    </span>
+                  )}
+                  {helper && !helper.installed && <span style={{ fontSize: 12, color: 'var(--orange, #e8a33d)' }}>✗ {helper.reason}</span>}
+                </div>
+              </div>
+            )}
 
             <div className="card">
               <strong>Custom Site</strong>

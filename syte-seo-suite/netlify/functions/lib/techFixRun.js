@@ -6,8 +6,8 @@
 //
 //   wp(path[, body])            the site's API: WordPress REST (techFix.js)
 //                               or Shopify Admin (shopifyFix.js)
-//   ops                         { plan, apply, undo } for that site; WordPress
-//                               when left out
+//   ops                         { plan, apply, undo[, live] } for that site;
+//                               WordPress when left out
 //   fetchHtml(url)              the live page
 //   save(status)                write this fix's status row
 //   recordApplied({ entry, results, live, by }) → implementation id
@@ -78,7 +78,7 @@ export async function runTechFix({ entry, action, prev = null, by = 'approved in
     if (results.some(r => r.ok)) { try { await ops.undo(results, wp); } catch { /* reported below */ } }
     return save({ status: 'failed', plan: approved, results, live: { status: 'failed', detail: 'The site did not keep the change.' }, reason: results.find(r => !r.ok)?.error || 'The site did not keep the change.' });
   }
-  const live = checkLive(await fetchHtml(entry.task.page_url), results);
+  const live = ops.live ? await ops.live({ entry, results, fetchHtml }) : checkLive(await fetchHtml(entry.task.page_url), results);
   const implId = await recordApplied({ entry, results, live, by });
   return save({ status: 'applied', plan: approved, results, live, impl_id: implId || null, by });
 }

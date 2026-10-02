@@ -19,6 +19,7 @@ import { runAeoFix, runAllAeoFixes, aeoOptKey } from './lib/aeoFixRun.js';
 import { wpClient, hasWordPress } from './lib/wpClient.js';
 import { shopifyClient, hasShopify } from './lib/shopifyClient.js';
 import { shopifyAeoOps } from './lib/shopifyAeo.js';
+import { wpAeoOps } from './lib/helperFix.js';
 import { previewUrl } from './lib/previewSig.js';
 import { emailAeoSummary } from './lib/runNotify.js';
 import { visualCheck, visualCheckAvailable } from './lib/visualCheck.js';
@@ -29,7 +30,7 @@ const BUDGET_MS = 13 * 60 * 1000;
 
 // The site's API and operations: WordPress, or Shopify. null = no connection.
 function siteApi(client) {
-  if (hasWordPress(client)) return { wp: wpClient(client), ops: undefined };
+  if (hasWordPress(client)) return { wp: wpClient(client), ops: wpAeoOps() };
   if (hasShopify(client)) return { wp: shopifyClient(client), ops: shopifyAeoOps };
   return null;
 }

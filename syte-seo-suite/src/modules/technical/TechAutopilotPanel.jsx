@@ -30,6 +30,10 @@ const CHECKBOX_LABEL = { display: 'flex', alignItems: 'center', gap: 8, margin: 
 // Fix types the suite can change on a WordPress site itself (see
 // netlify/functions/lib/techFix.js AUTO_FIX_TYPES).
 const AUTO_FIX = ['meta_title', 'meta_description', 'image_alt'];
+// Fix types the suite can make through the Syte SEO Helper plugin when the
+// site has it (netlify/functions/lib/helperFix.js). These are always
+// previewed and applied one at a time, never by "Apply all".
+const HELPER_FIX = ['h1', 'structured_data', 'schema', 'canonical', 'robots', 'redirect'];
 
 // Fixes still to be made: confirmed, a kind the suite can change, and not
 // already applied, undone by a person, or found to need a person.
@@ -77,6 +81,9 @@ function FixControls({ entry, wpConnected, accent, onPlan, onApply, onUndo }) {
         </div>
       ))}
       {a.status === 'planned' && a.plan?.note && <div className="muted" style={{ fontSize: 11 }}>{a.plan.note}</div>}
+      {a.status === 'planned' && a.plan?.preview_url && (
+        <a href={a.plan.preview_url} target="_blank" rel="noreferrer" style={{ fontSize: 11, color: accent }}>See it on the real page (only this link shows it) →</a>
+      )}
       <div className="row" style={{ gap: 6, marginTop: 4 }}>
         {a.status !== 'planned' && <button className="ghost" style={btn} onClick={onPlan}>Preview change</button>}
         {a.status === 'planned' && (
@@ -294,7 +301,7 @@ export default function TechAutopilotPanel({ accent, onFinished }) {
                         </div>
                         <div className="muted" style={{ fontSize: 11 }}>{e.task.page_url}</div>
                         {e.check?.reason && <div style={{ fontSize: 11, color: v?.color }}>{e.check.reason}</div>}
-                        {!active && e.check?.verdict === 'confirmed' && AUTO_FIX.includes(e.task.fix_type) && (
+                        {!active && e.check?.verdict === 'confirmed' && (AUTO_FIX.includes(e.task.fix_type) || HELPER_FIX.includes(e.task.fix_type)) && (
                           <FixControls entry={e} wpConnected={wpConnected} accent={accent}
                             onPlan={() => fixAction(e.task.id, 'plan')} onApply={() => fixAction(e.task.id, 'apply')}
                             onUndo={() => fixAction(e.task.id, 'undo')} />

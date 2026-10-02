@@ -17,6 +17,7 @@ import { runTechFix, runAllTechFixes } from './lib/techFixRun.js';
 import { wpClient, hasWordPress } from './lib/wpClient.js';
 import { shopifyClient, hasShopify } from './lib/shopifyClient.js';
 import { shopifyTechOps } from './lib/shopifyFix.js';
+import { wpTechOps } from './lib/helperFix.js';
 import { emailTechSummary } from './lib/runNotify.js';
 
 export const fixRowId = techFixRowId;
@@ -24,7 +25,7 @@ const BUDGET_MS = 13 * 60 * 1000;
 
 // The site's API and operations: WordPress, or Shopify. null = no connection.
 function siteApi(client) {
-  if (hasWordPress(client)) return { wp: wpClient(client), ops: undefined };
+  if (hasWordPress(client)) return { wp: wpClient(client), ops: wpTechOps() };
   if (hasShopify(client)) return { wp: shopifyClient(client), ops: shopifyTechOps };
   return null;
 }
