@@ -63,6 +63,7 @@ export function aeoNumbers(probe, compare, ranking, brandRank) {
     'visibility_score', 'detection_rate', 'top3_rate', 'avg_position', 'mentions', 'citations', 'sentiment_score',
     'iterations', 'total_runs', 'expansion_count'].forEach(k => add(probe?.[k]));
   if (probe?.coverage_rate != null) add(Math.round(probe.coverage_rate * 100));
+  Object.values(probe?.carry_forward || {}).forEach(add);
   add((probe?.engines_used || []).length);
   Object.values(probe?.engine_scores || {}).forEach(add);
   (probe?.intent_breakdown || []).forEach(b => { add(b.visibility); add(b.queries); });
@@ -106,7 +107,8 @@ export function buildAeoCheckInput({ client, month, probe, compare, ranking, bra
     aeo_index: probe.composite_index ?? probe.overall_score, share_of_voice_pct: probe.share_of_voice,
     visibility_pct: probe.visibility_score, detection_pct: probe.detection_rate, top3_pct: probe.top3_rate,
     avg_position: probe.avg_position, mentions: probe.mentions, citations: probe.citations, sentiment_positive_pct: probe.sentiment_score,
-    new_themes: probe.new_themes, engines: probe.engines_used, per_engine_visibility_pct: probe.engine_scores,
+    new_themes: probe.new_themes, engines: probe.engines_used,
+    long_tail_carried_from_last_month: probe.carry_forward || null, per_engine_visibility_pct: probe.engine_scores,
     by_intent: probe.intent_breakdown,
     ranking: (ranking || []).slice(0, 8).map(r => ({ name: r.name, is_client: !!r.isBrand, visibility: r.visibility, mentions: r.mentions, citations: r.citations })),
     client_rank: brandRank || null,
@@ -198,8 +200,14 @@ export async function runAeoReportScan(client, state, deps, { force = false } = 
     if (!engines.length) throw new Error('No AI engine keys are set on the server (OPENAI_API_KEY, GOOGLE_AI_KEY, ANTHROPIC_API_KEY).');
     const saved = await deps.loadCarry(client);
     const carry = saved?.month === month ? unpackCarry(saved) : null;
+    // Last month's long-tail prompts are this month's starting point.
+    let previousSnapshot = null;
+    try {
+      const prev = await deps.loadPrevious(client, month);
+      if (prev?.snapshot) previousSnapshot = { ...prev.snapshot, month: prev.month };
+    } catch { /* no previous month: the web starts from the tracked set */ }
     const result = await snapshot(working, {
-      engines, extract: deps.extract, carry,
+      engines, extract: deps.extract, carry, previousSnapshot,
       retrievalOnly: true,
       expandWinners: true, winnerTarget: 30, maxExpansionQueries: 40,
       timeLeftMs: deps.timeLeftMs,

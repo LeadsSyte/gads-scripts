@@ -579,6 +579,7 @@ export default function MonthlyReport({ initialMonth }) {
       const probeResult = await runSnapshot(groundedClient, {
         retrievalOnly: true, // headline is retrieval-first; skip the parametric pass to halve engine calls
         expandWinners: true, winnerTarget: 30, maxExpansionQueries: 40, // spider-web long-tail off every winner
+        previousSnapshot: previousAeoSnap, // last month's long-tail prompts are this month's starting point
         onRuns: (records, raws) => persistAeoRuns(records, raws).catch(() => {}),
         onProgress: (p) => { if (!p.index) probeStartRef.current = Date.now(); setPhase('aeo-probe'); setAeoProgress(p); }
       });

@@ -290,6 +290,15 @@ function loadImplementations() {
   try { return JSON.parse(localStorage.getItem('syte-suite-implementations') || '[]'); } catch { return []; }
 }
 
+// Long-tail prompts carried over from last month's run (aeoCarryForward.js):
+// the like-for-like improvement story. '' when nothing was carried.
+function carryForwardLine(cf) {
+  if (!cf || !cf.carried) return '';
+  return `Long-tail prompts re-measured from last month: ${cf.carried} (named in ${cf.carried_won} this month; ` +
+    `${cf.newly_won} newly won after missing last month; ${cf.lost} won last month but missed this month). ` +
+    `New long-tail prompts explored this month: ${cf.new_prompts} (named in ${cf.new_won}).`;
+}
+
 export function getWorkSummary(clientId, month) {
   return workSummaryFrom({
     articles: loadContentHistory(), tasks: loadTechTasks(),
@@ -467,6 +476,8 @@ export function buildAlicePayload(form, aeo, workSummary) {
     lines.push(`Named in: ${aeo.prompt_coverage ?? 'n/a'} of ${aeo.scorable_probes ?? aeo.queries_count ?? 'n/a'} buyer prompts (coverage rate ${aeo.coverage_rate != null ? Math.round(aeo.coverage_rate * 100) + '%' : 'n/a'}). LEAD WITH THIS.`);
     lines.push(`AEO Index (composite): ${aeo.composite_index ?? aeo.overall_score ?? 'n/a'}`);
     lines.push(`New prompt themes discovered this month: ${aeo.new_themes ?? 0}`);
+    const cfLine = carryForwardLine(aeo.carry_forward);
+    if (cfLine) lines.push(cfLine);
     if (aeo.share_of_voice != null) {
       lines.push(`Share of voice: ${aeo.share_of_voice}% of all brand mentions across the census were the brand (vs tracked competitors)`);
     }
@@ -575,6 +586,8 @@ export function buildAeoPayload({ client, monthLabel: ml, previousMonthLabel, pr
   lines.push(`Named in: ${probe.prompt_coverage ?? 'n/a'} of ${probe.scorable_probes ?? probe.queries_count ?? 'n/a'} buyer prompts (coverage rate ${probe.coverage_rate != null ? Math.round(probe.coverage_rate * 100) + '%' : 'n/a'}). THIS IS THE HEADLINE.`);
   lines.push(`AEO Index (composite 0-100): ${probe.composite_index ?? probe.overall_score ?? 'n/a'}`);
   lines.push(`New prompt themes discovered and now tracked this month: ${probe.new_themes ?? 0}`);
+  const cfLine = carryForwardLine(probe.carry_forward);
+  if (cfLine) lines.push(cfLine);
   if (probe.share_of_voice != null) {
     lines.push(`Share of voice: ${probe.share_of_voice}% of all brand mentions across the census were ${client.name} (vs tracked competitors)`);
   }
