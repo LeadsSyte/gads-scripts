@@ -26,6 +26,7 @@ import {
 } from './aeoProbes.js';
 import { buildCitationGaps } from './aeoCitationGaps.js';
 import { expandWinnerQuery } from './winnerExpansion.js';
+import { carriedPromptsFrom, stampLongTail, carryForwardSummary, DEFAULT_MAX_CARRIED } from './aeoCarryForward.js';
 
 const DEFAULT_ITERATIONS = 3;
 const DEFAULT_CONCURRENCY = 3;   // max in-flight requests per engine
@@ -190,6 +191,11 @@ export async function runSnapshot(client, opts = {}) {
     maxExpansionQueries = 60,   // hard cap on extra queries the expansion may add
     expandGeos = [],            // extra cities/regions to drill into
     expandSegments,            // buyer segments/industries to qualify by (defaults inside winnerExpansion)
+    // Carry-forward: last month's snapshot. Its long-tail prompts (winners
+    // first, recent misses once more) are re-run as this month's starting
+    // point, so the web grows month to month instead of restarting.
+    previousSnapshot = null,
+    maxCarried = DEFAULT_MAX_CARRIED,
     // Server runs have a hard time limit, and a full census doesn't fit in
     // one. timeLeftMs() is asked before each (probe, engine, mode) group
     // starts: when it runs low, the groups not yet started are left for the
@@ -228,13 +234,25 @@ export async function runSnapshot(client, opts = {}) {
     : active;
   const runnableProbes = scorableToRun.concat(reverse.filter(r => !scorableToRun.some(a => a.id === r.id)));
 
+  // Last month's long-tail prompts, minus anything this run already asks
+  // (the tracked set, or children an earlier part of this run carried over).
+  const carriedChildren = carry?.discovered || [];
+  const priorCands = carriedPromptsFrom(previousSnapshot, {
+    max: maxCarried,
+    exclude: runnableProbes.concat(carriedChildren).map(p => p.query)
+  });
+  let cfSeq = carriedChildren.filter(p => p.source === 'carried').length;
+  const priorProbes = priorCands.map(c => ({ ...c, id: `${client.id}-CF${++cfSeq}`, active: true, runMode: 'search_on' }));
+  const carriedFromMonth = previousSnapshot?.month
+    || carriedChildren.find(p => p.source === 'carried')?.carriedFrom || null;
+
   const N = Math.max(1, Math.min(10, Number(iterations) || DEFAULT_ITERATIONS));
   const competitorList = parseCompetitors(client.competitors);
   const brandName = client.name;
 
   // Precount for progress.
   let total = 0;
-  for (const probe of runnableProbes)
+  for (const probe of runnableProbes.concat(carriedChildren, priorProbes))
     for (const eng of engines)
       total += runModesFor(probe.runMode, eng, retrievalOnly).length * N;
   let done = 0;
@@ -377,16 +395,15 @@ export async function runSnapshot(client, opts = {}) {
   }));
   const carriedKeys = new Set(carriedGroups.map(g => groupKey(g.probe, g.engine.id, g.mode)));
   for (const g of carriedGroups) if (g.runs.length) enginesRan.add(g.engine.id);
-  const carriedChildren = carry?.discovered || [];
   let unfinished = false;
 
-  let groups = carriedGroups.concat(await sweep(runnableProbes.concat(carriedChildren)));
+  let groups = carriedGroups.concat(await sweep(runnableProbes.concat(carriedChildren, priorProbes)));
 
   // ── Winner expansion (spider web) ─────────────────────────────
   // A probe "wins" when the brand appeared in any run. Drill each winner into
   // deeper long-tail (geo + segment) and recurse on winners-of-winners until we
   // hit the volume target, run out of new winners, or exhaust the query budget.
-  const discoveredProbes = [...carriedChildren];   // fan-out children we actually probed (for the report / approval queue)
+  const discoveredProbes = [...carriedChildren, ...priorProbes];   // long-tail prompts we actually probed (for the report, approval queue and next month)
   let expansionUsed = carry?.expansionUsed || 0;
   let expansionDepth = carry?.expansionDepth || 0;
   const expandedQueries = new Set(carry?.expandedQueries || []);
@@ -396,12 +413,16 @@ export async function runSnapshot(client, opts = {}) {
       for (const g of grps) if (g.runs.some(r => r.appeared)) ids.add(g.probe.id);
       return ids;
     };
-    const probedNorm = new Set(runnableProbes.concat(carriedChildren).map(p => normQ(p.query)));
+    const probedNorm = new Set(runnableProbes.concat(carriedChildren, priorProbes).map(p => normQ(p.query)));
     let seq = carriedChildren.length;
     while (expansionDepth < maxExpansionDepth) {
       if (timeUp()) { unfinished = true; break; }
       const winners = [...winningIds(groups)];
-      if (winners.length >= winnerTarget) break;
+      // The target counts winners found off this month's seeds; carried
+      // winners are expanded too but don't use up the target, so a month
+      // that starts with last month's wins still pushes into new long-tail.
+      const isCarried = id => groups.find(g => g.probe.id === id)?.probe?.source === 'carried';
+      if (winners.filter(id => !isCarried(id)).length >= winnerTarget) break;
       const parentOf = id => groups.find(g => g.probe.id === id)?.probe;
       const toExpand = winners.filter(id => parentOf(id) && !expandedQueries.has(normQ(parentOf(id).query)));
       if (!toExpand.length) break;
@@ -668,6 +689,8 @@ export async function runSnapshot(client, opts = {}) {
   }));
 
   const month = (now ? new Date(now) : new Date()).toISOString().slice(0, 7);
+  const wonQueries = new Set(probeAgg.filter(p => p.appearances > 0).map(p => normQ(p.query)));
+  const longTail = stampLongTail(discoveredProbes, wonQueries, month);
   const newThemes = countNewThemesSince(allProbes, sinceISO);
 
   // Branch exhaustion (Requirement 4 stopping rule): per fan-out parent, the
@@ -734,10 +757,12 @@ export async function runSnapshot(client, opts = {}) {
     total_runs: runRecords.filter(r => !r.error).length,
     queries_count: probeAgg.length,
 
-    // Winner-expansion output: the long-tail children the spider web probed.
-    // The UI can offer to add the ones that won to the tracked probe set.
-    expansion_probes: discoveredProbes,
-    expansion_count: discoveredProbes.length,
+    // Winner-expansion output: every long-tail prompt probed (carried from
+    // last month + newly discovered), stamped with this month's outcome so
+    // next month can carry it forward. expansion_count = new ones only.
+    expansion_probes: longTail,
+    expansion_count: longTail.filter(p => p.source !== 'carried').length,
+    carry_forward: carryForwardSummary(longTail, carriedFromMonth),
 
     per_query: perQuery,
     competitors,

@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { useClients } from '../../store/useClients.js';
 import { snapshotPreflight, runSnapshot, estimateRunCost } from './aeoRunner.js';
 import { normalizeSnapshot } from './aeoCompare.js';
-import { saveAeoSnapshot, listAeoSnapshots, getCachedReportData, persistAeoRuns } from '../../lib/supabase.js';
+import { saveAeoSnapshot, listAeoSnapshots, getCachedReportData, persistAeoRuns, latestEarlierAeoProbe } from '../../lib/supabase.js';
 import { ALL_ENGINES, CORE_ENGINE_IDS } from './aeoEngines.js';
 import { SETTINGS_EVENT } from '../../lib/settings.js';
 import { readinessFor } from '../../lib/clientReadiness.js';
@@ -309,14 +309,22 @@ export default function AEOSnapshot() {
     setBusy(true); setErr(''); setSnapshot(null);
     setProgress({ phase: 'starting', index: 0, total: 0 });
     try {
+      // Last month's long-tail prompts are this month's starting point. AEO
+      // History is the first choice; the previous AEO report's results otherwise.
+      const thisMonth = new Date().toISOString().slice(0, 7);
+      let previousSnapshot = (lastSnapshot?.month && lastSnapshot.month < thisMonth) ? lastSnapshot : null;
+      if (!previousSnapshot) previousSnapshot = await latestEarlierAeoProbe(runClient.id, thisMonth);
       const result = await runSnapshot(runClient, {
         iterations,
         expandWinners: true, winnerTarget: 30, maxExpansionQueries: 60, // spider-web long-tail off every winner
+        previousSnapshot,
         onProgress: (p) => setProgress(p),
         onRuns: (records, raws) => persistAeoRuns(records, raws).catch(() => {})
       });
       setSnapshot(result);
       setProgress({ phase: 'complete', index: result.per_query.length, total: result.per_query.length });
+      const cfw = result.carry_forward;
+      if (cfw?.carried) setMsg(`Started from ${cfw.carried} long-tail prompt${cfw.carried === 1 ? '' : 's'} carried over from ${cfw.carried_from || 'last month'} (${cfw.newly_won} newly won) · explored ${cfw.new_prompts} new.`);
       generateProposals(result);
     } catch (e) {
       setErr(e.message);
