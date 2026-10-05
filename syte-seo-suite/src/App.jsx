@@ -82,16 +82,22 @@ export default function App() {
   const [migration, setMigration] = useState({ checked: false, needed: false, count: 0 });
 
   const load = useClients(s => s.load);
+  const loadError = useClients(s => s.error);
 
   useEffect(() => {
     if (!unlocked) return;
     (async () => {
-      await load();
-      // Pull the shared engine API keys into this device's local cache so a
-      // fresh browser / cleared cache doesn't silently run AEO on Claude only.
-      hydrateSettingsFromRemote().catch(() => {});
-      const needed = needsMigration();
-      setMigration({ checked: true, needed, count: needed ? countLegacyClients() : 0 });
+      try {
+        await load();
+        // Pull the shared engine API keys into this device's local cache so a
+        // fresh browser / cleared cache doesn't silently run AEO on Claude only.
+        hydrateSettingsFromRemote().catch(() => {});
+        const needed = needsMigration();
+        setMigration({ checked: true, needed, count: needed ? countLegacyClients() : 0 });
+      } catch (e) {
+        console.error('[App] startup failed', e);
+        setMigration({ checked: true, needed: false, count: 0 });
+      }
     })();
 
     // On app start, attempt to silently renew the Google access token
@@ -133,6 +139,12 @@ export default function App() {
         {!hasSupabase && (
           <div style={{ background: 'var(--surface-2)', padding: '8px 24px', fontSize: 12, color: 'var(--orange)', borderBottom: '1px solid var(--border)' }}>
             Supabase not configured — running on localStorage fallback. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in .env to enable sync.
+          </div>
+        )}
+        {loadError && (
+          <div style={{ background: 'var(--surface-2)', padding: '8px 24px', fontSize: 12, color: 'var(--red)', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 12 }}>
+            <span style={{ flex: 1 }}>Couldn't load clients: {loadError}</span>
+            <button className="ghost" onClick={() => load()}>Retry</button>
           </div>
         )}
         <ErrorBoundary key={module} label={module.charAt(0).toUpperCase() + module.slice(1) + ' module'}>
