@@ -17,7 +17,7 @@ import crypto from 'node:crypto';
 import { planFix, applyPlan, undoResults, checkLive, parseFixValues } from './techFix.js';
 import { planAeoFix, applyAeoFix, undoAeoFix, planInsertion, fixKey } from './aeoFix.js';
 
-export const HELPER_FIX_TYPES = ['h1', 'structured_data', 'schema', 'canonical', 'robots', 'redirect', 'meta_title', 'meta_description'];
+export const HELPER_FIX_TYPES = ['h1', 'image_alt', 'structured_data', 'schema', 'canonical', 'robots', 'redirect', 'meta_title', 'meta_description'];
 
 // null when the plugin isn't installed (or the login isn't an administrator).
 export async function helperStatus(wp) {
@@ -110,6 +110,16 @@ export function ruleFromTask(task) {
     return { manual: 'The heading fix isn\'t in a form the suite can apply — it needs a person.' };
   }
 
+  if (type === 'image_alt') {
+    // Theme and builder images (a tracking pixel, a hero banner, related-post
+    // thumbnails) are not in the media library; the plugin sets the alt text
+    // on the page instead. One site-wide task covers every page.
+    const v = parseFixValues(task);
+    if (!v?.images?.length) return { manual: 'The fix doesn\'t name the image files and their new alt text plainly enough.' };
+    const siteWide = /site-?wide|every page|all (\d+ )?(crawled )?pages|across \d+\+? pages|template|header|footer/i.test((task.title || '') + ' ' + (task.description || ''));
+    return { rule: { type: 'image_alt', path: siteWide ? '*' : path, images: v.images.map(i => ({ src: i.src, alt: i.alt })) }, label: 'Image alt text · ' + v.images.length + ' image' + (v.images.length === 1 ? '' : 's'), to: v.images.map(i => '"' + i.alt + '"').join('; ') };
+  }
+
   if (type === 'meta_title' || type === 'meta_description') {
     const v = parseFixValues(task);
     if (!v?.value) return { manual: 'The fix doesn\'t state the new value plainly enough to apply automatically.' };
@@ -148,6 +158,23 @@ export function verifyRule(rule, before, after) {
         : fail('The page did not redirect (status ' + (after?.status || 'none') + ').');
     case 'insert_html':
       return String(after?.html || '').includes('<!-- syte:' + rule.id + ' -->') ? { ok: true, from: '', now: 'Section present on the page' } : fail('The section did not appear on the page.');
+    case 'image_alt': {
+      const tags = [...stripNonContent(after?.html).matchAll(/<img\b[^>]*>/gi)].map(m => m[0]);
+      const stemOf = src => { try { return decodeURIComponent(new URL(src, 'https://x').pathname.split('/').pop()).replace(/\.[a-z0-9]+$/i, '').replace(/-\d+x\d+$/, '').replace(/-scaled$/, '').toLowerCase(); } catch { return ''; } };
+      const altOf = tag => decode((tag.match(/\salt\s*=\s*["']([^"']*)["']/i) || [])[1] || '');
+      const srcOf = tag => (tag.match(/\b(?:data-)?src\s*=\s*["']([^"']+)["']/i) || [])[1] || '';
+      const found = [], wrong = [];
+      for (const img of rule.images || []) {
+        const want = stemOf(img.src);
+        const hits = tags.filter(t => stemOf(srcOf(t)) === want);
+        if (!hits.length) continue;
+        found.push(img);
+        if (!hits.every(t => altOf(t) === img.alt)) wrong.push(img);
+      }
+      if (!found.length) return fail('None of those images is on this page.');
+      if (wrong.length) return fail('The alt text did not take on ' + wrong.map(i => i.src.split('/').pop()).join(', ') + '.');
+      return { ok: true, from: '', now: found.length + ' image' + (found.length === 1 ? '' : 's') + ' with the new alt text' };
+    }
     default:
       return fail('Unknown rule type.');
   }

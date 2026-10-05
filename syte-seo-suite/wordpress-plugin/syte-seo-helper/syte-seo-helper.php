@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name: Syte SEO Helper
- * Description: Lets the Syte SEO Suite make small, reversible SEO fixes that live in a site's theme rather than in a post: heading levels, redirects, canonical and robots tags, structured data, titles and descriptions for pages without an editor, and added sections on page-builder pages. Nothing in the theme or the database content is edited — each fix is a rule applied as the page is served, and removing the rule undoes it.
- * Version: 1.0.0
+ * Description: Lets the Syte SEO Suite make small, reversible SEO fixes that live in a site's theme rather than in a post: heading levels, image alt text on theme images, redirects, canonical and robots tags, structured data, titles and descriptions for pages without an editor, and added sections on page-builder pages. Nothing in the theme or the database content is edited — each fix is a rule applied as the page is served, and removing the rule undoes it.
+ * Version: 1.1.0
  * Author: Syte Digital
  * Requires at least: 5.6
  * Requires PHP: 7.2
@@ -10,7 +10,7 @@
 
 if (!defined('ABSPATH')) { exit; }
 
-define('SYTE_SEO_HELPER_VERSION', '1.0.0');
+define('SYTE_SEO_HELPER_VERSION', '1.1.0');
 define('SYTE_SEO_RULES_OPTION', 'syte_seo_rules');
 
 /* -------------------------------------------------------------------------
@@ -39,7 +39,17 @@ function syte_seo_text($html) {
 }
 
 function syte_seo_types() {
-  return array('heading', 'redirect', 'canonical', 'robots', 'schema', 'title', 'description', 'insert_html');
+  return array('heading', 'image_alt', 'redirect', 'canonical', 'robots', 'schema', 'title', 'description', 'insert_html');
+}
+
+/** The file name of an image without its folder, extension or WordPress size suffix. */
+function syte_seo_image_stem($src) {
+  $path = (string) wp_parse_url((string) $src, PHP_URL_PATH);
+  $name = rawurldecode(basename($path));
+  $name = preg_replace('/\.[a-z0-9]+$/i', '', $name);
+  $name = preg_replace('/-\d+x\d+$/', '', $name);
+  $name = preg_replace('/-scaled$/', '', $name);
+  return function_exists('mb_strtolower') ? mb_strtolower($name, 'UTF-8') : strtolower($name);
 }
 
 /** Validate and clean one rule coming from the suite. Returns the rule or a WP_Error. */
@@ -105,6 +115,21 @@ function syte_seo_clean_rule($id, $in) {
       if ($value === '') { return new WP_Error('syte_bad_rule', $type . ' needs a value.', array('status' => 400)); }
       if ($path === '*') { return new WP_Error('syte_bad_rule', 'A ' . $type . ' rule needs one specific page.', array('status' => 400)); }
       $rule['value'] = sanitize_text_field($value);
+      break;
+    case 'image_alt':
+      // [{ src, alt }] — matched by file name, whatever size variant the theme serves.
+      $images = array();
+      foreach ((array) (isset($in['images']) ? $in['images'] : array()) as $img) {
+        if (!is_array($img)) { continue; }
+        $src = isset($img['src']) ? trim((string) $img['src']) : '';
+        $alt = isset($img['alt']) ? sanitize_text_field((string) $img['alt']) : '';
+        $stem = syte_seo_image_stem($src);
+        if ($stem === '' || $alt === '') { continue; }
+        $images[] = array('src' => $src, 'stem' => $stem, 'alt' => mb_substr($alt, 0, 300));
+        if (count($images) >= 20) { break; }
+      }
+      if (!$images) { return new WP_Error('syte_bad_rule', 'image_alt needs at least one image with a src and alt text.', array('status' => 400)); }
+      $rule['images'] = $images;
       break;
     case 'insert_html':
       $position = $str('position');
@@ -312,6 +337,9 @@ function syte_seo_filter_html($html) {
       case 'heading':
         $headings[] = $rule;
         break;
+      case 'image_alt':
+        $html = syte_seo_apply_image_alt($html, $rule);
+        break;
     }
   }
 
@@ -344,6 +372,29 @@ function syte_seo_insert($html, $block, $position) {
   }
   $pos = strripos($html, '</body>');
   return $pos === false ? $html . $block : substr($html, 0, $pos) . $block . substr($html, $pos);
+}
+
+/** Set alt text on <img> tags whose file matches. Nothing else on the tag changes. */
+function syte_seo_apply_image_alt($html, $rule) {
+  $parts = preg_split('#(<script\b.*?</script>|<style\b.*?</style>|<textarea\b.*?</textarea>|<!--.*?-->)#is', $html, -1, PREG_SPLIT_DELIM_CAPTURE);
+  foreach ($parts as $i => $part) {
+    if ($i % 2 === 1) { continue; }
+    $parts[$i] = preg_replace_callback('#<img\b[^>]*>#i', function ($m) use ($rule) {
+      $tag = $m[0];
+      if (!preg_match('/\b(?:data-)?src\s*=\s*["\']([^"\']+)["\']/i', $tag, $s)) { return $tag; }
+      $stem = syte_seo_image_stem($s[1]);
+      foreach ($rule['images'] as $img) {
+        if ($stem !== $img['stem']) { continue; }
+        $alt = ' alt="' . esc_attr($img['alt']) . '"';
+        if (preg_match('/\salt\s*=\s*(?:"[^"]*"|\'[^\']*\'|[^\s>]*)/i', $tag)) {
+          return preg_replace('/\salt\s*=\s*(?:"[^"]*"|\'[^\']*\'|[^\s>]*)/i', $alt, $tag, 1);
+        }
+        return preg_replace('/^<img\b/i', '<img' . $alt, $tag, 1);
+      }
+      return $tag;
+    }, $part);
+  }
+  return implode('', $parts);
 }
 
 /** Change heading levels. Only the tag changes; classes and content stay. */

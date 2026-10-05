@@ -95,6 +95,18 @@ await t('a preview link only works with its own token', async () => {
   await wp('syte/v1/rules/tech-k2', null, 'DELETE');
 });
 
+await t('THEME IMAGE alt text (a tracking pixel the template prints on every page): set site-wide, undone', async () => {
+  const PX = SITE + '/wp-content/uploads/syte-pixel.png';
+  const e = entry('i1', 'image_alt', P1, '<img src="' + PX + '" alt="">\n<img src="' + PX + '" alt="Syte Test Shelving">', 'Fix site-wide tracking pixel rendered as <img> with missing alt text — affects all crawled pages');
+  const altOnPage = async url => ((await raw(url)).html.match(/<img[^>]*syte-pixel[^>]*>/i) || [''])[0];
+  await previewApplyUndo(e, {
+    beforeOk: async () => { if (!/alt=""/.test(await altOnPage(P1))) throw new Error('pixel should have an empty alt: ' + await altOnPage(P1)); },
+    afterOk: async () => {
+      for (const u of [P1, P2, NEWS]) if (!/alt="Syte Test Shelving"/.test(await altOnPage(u))) throw new Error('alt not set on ' + u + ': ' + await altOnPage(u));
+    }
+  });
+});
+
 await t('STRUCTURED DATA is added to the page code, and removed on undo', async () => {
   const schema = '<script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"Mezzanine Floors Benefits","author":{"@type":"Organization","name":"Syte Test Shelving"}}</script>';
   await previewApplyUndo(entry('s1', 'structured_data', P1, schema, 'Add Article schema'), {
