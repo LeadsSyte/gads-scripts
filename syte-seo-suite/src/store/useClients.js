@@ -1,6 +1,18 @@
 import { create } from 'zustand';
 import { listClients, upsertClient, deleteClient } from '../lib/supabase.js';
 
+// The app shell waits on the first load, so a Supabase request that never
+// answers (project paused, network stall) must not hold it on "Loading…".
+const LOAD_TIMEOUT_MS = 20000;
+
+function withTimeout(promise, ms) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`Supabase did not respond within ${ms / 1000}s — the project may be paused or unreachable.`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
 export const useClients = create((set, get) => ({
   clients: [],
   selectedId: null,
@@ -10,7 +22,7 @@ export const useClients = create((set, get) => ({
   async load() {
     set({ loading: true, error: null });
     try {
-      const clients = await listClients();
+      const clients = await withTimeout(listClients(), LOAD_TIMEOUT_MS);
       let selectedId = get().selectedId;
       const lastId = localStorage.getItem('syte-suite-selected-client');
       if (!selectedId && lastId && clients.some(c => c.id === lastId)) selectedId = lastId;
