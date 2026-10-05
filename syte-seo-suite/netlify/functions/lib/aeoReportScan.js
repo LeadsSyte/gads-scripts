@@ -76,6 +76,9 @@ export function aeoNumbers(probe, compare, ranking, brandRank) {
   (probe?.citation_gaps || []).forEach(g => add(g.hitCount));
   add((probe?.citation_gaps || []).length);
   if (probe?.sov_detail) Object.values(probe.sov_detail).forEach(add);
+  // Gaps the email may state: "trailing Equinix (34.7%) by 15.4 points".
+  const vis = [probe?.visibility_score, ...(ranking || []).map(r => r.visibility), ...Object.values(probe?.engine_scores || {})].map(Number).filter(Number.isFinite);
+  for (let i = 0; i < vis.length; i++) for (let j = i + 1; j < vis.length; j++) add(Math.round(Math.abs(vis[i] - vis[j]) * 10) / 10);
   if (compare?.has_previous) {
     Object.values(compare.previous || {}).forEach(add);
     Object.values(compare.current || {}).forEach(add);
@@ -109,6 +112,7 @@ export function buildAeoCheckInput({ client, month, probe, compare, ranking, bra
     avg_position: probe.avg_position, mentions: probe.mentions, citations: probe.citations, sentiment_positive_pct: probe.sentiment_score,
     new_themes: probe.new_themes, engines: probe.engines_used,
     long_tail_carried_from_last_month: probe.carry_forward || null, per_engine_visibility_pct: probe.engine_scores,
+    strongest_engine: Object.entries(probe.engine_scores || {}).sort((a, b) => b[1] - a[1])[0]?.[0] || null,
     by_intent: probe.intent_breakdown,
     ranking: (ranking || []).slice(0, 8).map(r => ({ name: r.name, is_client: !!r.isBrand, visibility: r.visibility, mentions: r.mentions, citations: r.citations })),
     client_rank: brandRank || null,

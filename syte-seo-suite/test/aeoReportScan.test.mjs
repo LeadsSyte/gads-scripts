@@ -245,6 +245,13 @@ await t('figures are checked against the measured results; invented ones are lef
   const f = checkFigures(text, aeoNumbers(probe, null, [], 0));
   for (const ok of ['33%', '12', '50%', '36']) if (!f.verified.includes(ok)) throw new Error(ok + ' should verify: ' + JSON.stringify(f));
   if (!f.unmatched.includes('45%')) throw new Error('45% is invented');
+  // The first real server report was wrongly flagged for these two: a gap between two
+  // visibility figures, and which engine is strongest.
+  const ranked = [{ name: 'Equinix', visibility: 34.7, mentions: 1, citations: 1 }, { name: 'DPA', visibility: 19.3, isBrand: true, mentions: 1, citations: 1 }];
+  const gap = checkFigures('trailing Equinix (34.7%) by 15.4 percentage points', aeoNumbers({ ...probe, visibility_score: 19.3, engine_scores: { claude: 24, chatgpt: 17, gemini: 17 } }, null, ranked, 2));
+  if (!gap.verified.includes('15.4')) throw new Error('a gap between two stated figures should verify: ' + JSON.stringify(gap));
+  const input = buildAeoCheckInput({ client: CLIENT, month: '2026-09', probe: { ...probe, engine_scores: { claude: 24, chatgpt: 17, gemini: 17 } }, compare: null, ranking: ranked, brandRank: 2, email: { subject: 's', body: 'b' }, micro: {} });
+  has(input, /"strongest_engine": "claude"/);
 });
 
 await t('an engine that could not be measured, and a missing earlier month, are flagged to the reviewer', () => {
