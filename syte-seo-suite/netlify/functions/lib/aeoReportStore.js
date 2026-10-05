@@ -10,6 +10,7 @@ import { extractRun } from '../../../src/modules/reports/aeoExtract.js';
 import { groundClientForAeo } from '../../../src/modules/reports/grounding.js';
 import { buildGoldProbesForClient } from '../../../src/modules/reports/gridProfile.js';
 import { probeCandidatesFromGSC, groundedProbeSet } from '../../../src/modules/reports/keywordBuckets.js';
+import { insertDroppingUnknownColumns } from '../../../src/modules/reports/aeoHistoryInsert.js';
 
 // The engines call their providers directly with the deployment's keys
 // (see aeoEngines.js). Returns the engines that have a key.
@@ -94,8 +95,10 @@ export async function persistRunsServer(supabase, records, rawEntries) {
 export async function saveSnapshotToHistory(supabase, snapshot) {
   const { data } = await supabase.from('syte_suite_aeo_history').select('id').eq('client_id', snapshot.client_id).eq('month', snapshot.month).limit(1);
   if (data?.[0]) return;
-  const { error } = await supabase.from('syte_suite_aeo_history').insert(snapshot);
-  if (error) throw new Error(error.message);
+  try {
+    const { dropped } = await insertDroppingUnknownColumns(r => supabase.from('syte_suite_aeo_history').insert(r), snapshot);
+    if (dropped.length) console.warn('[aeoreport] AEO History saved without columns missing from the database (run supabase-schema-aeo-history-columns.sql):', dropped.join(', '));
+  } catch (e) { throw new Error(e.message); }
 }
 
 const row = (prefix) => ({
