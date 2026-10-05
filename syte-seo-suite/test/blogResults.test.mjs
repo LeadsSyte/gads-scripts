@@ -7,7 +7,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SRC = fs.readFileSync(path.join(__dirname, '../src/lib/supabase.js'), 'utf8');
@@ -21,6 +21,11 @@ const PATCHED = SRC
   .replace(
     "import { createClient } from '@supabase/supabase-js';",
     "const createClient = () => null;"
+  )
+  // The copy runs from the temp dir, so point relative imports at the source.
+  .replace(
+    "from '../modules/reports/aeoHistoryInsert.js';",
+    "from '" + pathToFileURL(path.join(__dirname, '../src/modules/reports/aeoHistoryInsert.js')).href + "';"
   )
   .replace(
     "const url = import.meta.env.VITE_SUPABASE_URL;",

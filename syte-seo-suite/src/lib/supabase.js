@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
+import { insertDroppingUnknownColumns } from '../modules/reports/aeoHistoryInsert.js';
 
 // `import.meta.env` is injected by Vite in the browser build but is undefined
 // under plain Node (the test runner), where this module is now reachable via
@@ -281,12 +282,11 @@ export async function diagnoseSupabase() {
 export async function saveAeoSnapshot(row) {
   assertClientId(row?.client_id, 'saveAeoSnapshot');
   if (supabase) {
-    const { data, error } = await supabase
-      .from('syte_suite_aeo_history')
-      .insert(row)
-      .select()
-      .single();
-    if (error) throw error;
+    const { data, dropped } = await insertDroppingUnknownColumns(
+      r => supabase.from('syte_suite_aeo_history').insert(r).select().single(),
+      row
+    );
+    if (dropped.length) console.warn('[AEO History] saved without columns missing from the database (run supabase-schema-aeo-history-columns.sql):', dropped.join(', '));
     return data;
   }
   const list = JSON.parse(localStorage.getItem(LS_PREFIX + 'aeo_history') || '[]');
