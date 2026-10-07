@@ -11,6 +11,7 @@ import { previewSig } from './lib/previewSig.js';
 import { buildMicrositeHtml } from '../../src/modules/reports/microsite.js';
 import { monthKeyLabel } from '../../src/modules/reports/reportMonths.js';
 import { compareSnapshots, rankBrandWithCompetitors, normalizeSnapshot } from '../../src/modules/reports/aeoCompare.js';
+import { stripBrandedPrompts } from '../../src/modules/reports/brandedQuery.js';
 
 const reply = (status, body) => ({
   statusCode: status,
@@ -46,8 +47,8 @@ export async function handler(event) {
       .select('month, aeo_probe').eq('client_id', clientId).eq('report_type', 'aeo').lt('month', month)
       .order('month', { ascending: false }).limit(3);
     const prev = (earlier || []).find(r => r.aeo_probe);
-    const aeoProbe = normalizeSnapshot(row.aeo_probe || null);
-    const previous = prev ? normalizeSnapshot({ ...prev.aeo_probe, month: prev.month }) : null;
+    const aeoProbe = stripBrandedPrompts(normalizeSnapshot(row.aeo_probe || null), client);
+    const previous = prev ? stripBrandedPrompts(normalizeSnapshot({ ...prev.aeo_probe, month: prev.month }), client) : null;
     html = buildMicrositeHtml({
       micro: row.microsite_json, client, monthLabel: monthKeyLabel(month), previousMonthLabel: prev ? monthKeyLabel(prev.month) : null,
       rankscale: client.rankscale_url, reportData: null, aeoProbe,

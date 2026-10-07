@@ -10,6 +10,17 @@ import { PPC_MIN_VALUE } from './microsite.js';
 // rather than en-ZA: the reports write thousands with a comma, not a space.
 const PPC_MIN_LABEL = 'R' + PPC_MIN_VALUE.toLocaleString('en-US');
 
+// House rule for every SEO and AEO report: branded search/prompt performance
+// is never showcased or mentioned. Branded rows are filtered out of the data
+// before it reaches the model (brandedQuery.js / nonBrandedKeywords); this
+// rule stops the model reintroducing the topic from its own knowledge.
+const BRANDED_RULE = `
+
+BRANDED SEARCH RULE (NEVER BREAK):
+- Never mention, quote, celebrate or analyse how the client performs for branded searches or branded prompts: queries or AI prompts that contain the client's own name, or "brand awareness"/"brand knowledge" style questions about the client.
+- Do not say "branded", "non-branded", "brand searches", "brand queries" or "people searching for you by name" anywhere. Talk only about the category, product and service searches/prompts in the payload.
+- If a query or prompt in the payload contains the client's name, ignore it completely.`;
+
 export const ALICE_SYSTEM = `${SYTE_DESIGN_SYSTEM}
 
 You are Alice, AI account manager at Syte Digital Agency, Johannesburg. Write warm, confident, human monthly performance emails.
@@ -54,7 +65,7 @@ SECTION COVERAGE (only include sections for services the client actually has):
 FORMAT:
 SUBJECT: [compelling subject line — specific, not generic like "Monthly Update"]
 ---
-[email body]`;
+[email body]` + BRANDED_RULE;
 
 export const MICROSITE_SYSTEM = `${SYTE_DESIGN_SYSTEM}
 
@@ -107,7 +118,7 @@ Rules:
 - Highlights: 3-6 metrics. Prefer coverage-led metrics FIRST: "named in X of Y prompts", coverage rate + MoM delta, share of voice, then the AEO Index. Use citations/sentiment as secondary.
 - citationGapsNarrative: frame the top competitor source domains as the growth plan, never as a failure. Omit if no gaps in the payload.
 - NEVER use em dashes or en dashes anywhere in the JSON strings. Use commas or colons. Hard house rule.
-- topPages: up to 5, mirror what's in the payload.`;
+- topPages: up to 5, mirror what's in the payload.` + BRANDED_RULE;
 
 export const QA_SYSTEM = `You are a senior copy reviewer at Syte Digital Agency. Review the Alice email against the rules and return ONLY JSON in this shape (no prose, no code fences):
 {
@@ -123,13 +134,15 @@ export const QA_SYSTEM = `You are a senior copy reviewer at Syte Digital Agency.
     { "label": "Positive-first framing", "pass": true, "note": "" },
     { "label": "Dips acknowledged with action plan", "pass": true, "note": "" },
     { "label": "PPC equivalent mentioned if applicable", "pass": true, "note": "" },
-    { "label": "Clear next step or observation", "pass": true, "note": "" }
+    { "label": "Clear next step or observation", "pass": true, "note": "" },
+    { "label": "No branded-search talk", "pass": true, "note": "fails if the email mentions branded searches/queries, non-branded, or how the client ranks for its own name" }
   ],
   "suggestion": "one improvement if score < 8, else empty string"
 }
 
 Score 1-10. readyToSend = true only if score >= 7.
-CRITICAL: fail "Positive-first framing" if the email leads with bad news or reads like a doom report.`;
+CRITICAL: fail "Positive-first framing" if the email leads with bad news or reads like a doom report.
+CRITICAL: fail "No branded-search talk", and drop readyToSend to false, if branded search performance is mentioned in any way.`;
 
 // ===========================================================================
 // SEO-ONLY MODE - used by the "Generate SEO Report" button.
@@ -209,7 +222,7 @@ WRITING RULES:
 FORMAT:
 SUBJECT: [confident, specific, AEO-flavoured — never "AI Visibility Crisis" or any variant. Examples: "Krost now leads SA on AI visibility", "AEO Month 2: citations up 68%", "Krost cited in 12 head-term AI answers"]
 ---
-[email body]`;
+[email body]` + BRANDED_RULE;
 
 export const MICROSITE_AEO_SYSTEM = `${SYTE_DESIGN_SYSTEM}
 
@@ -249,7 +262,7 @@ Rules:
 - highlights: 4-6 items, drawn ONLY from AEO metrics. Order coverage-led: "named in X of Y prompts" and coverage rate FIRST, then share of voice, then the AEO Index, then citations/sentiment.
 - citationGapsNarrative: frame the top competitor source domains as the growth plan, never a failure. Omit if no gaps in the payload.
 - NEVER use em dashes or en dashes anywhere in the JSON strings. Use commas or colons. Hard house rule.
-- Use real numbers from the payload, not made-up ones.`;
+- Use real numbers from the payload, not made-up ones.` + BRANDED_RULE;
 
 export const QA_AEO_SYSTEM = `You are a senior copy reviewer at Syte Digital Agency reviewing an AEO-only monthly performance email. Return ONLY JSON in this shape (no prose, no code fences):
 {
@@ -263,14 +276,16 @@ export const QA_AEO_SYSTEM = `You are a senior copy reviewer at Syte Digital Age
     { "label": "Cites specific AEO numbers (visibility %, citations, mentions, MoM delta)", "pass": true, "note": "" },
     { "label": "Under 250 words", "pass": true, "note": "" },
     { "label": "Names a specific next-month deliverable", "pass": true, "note": "" },
-    { "label": "Subject line is specific and not doom-flavoured", "pass": true, "note": "" }
+    { "label": "Subject line is specific and not doom-flavoured", "pass": true, "note": "" },
+    { "label": "No branded-prompt talk", "pass": true, "note": "fails if the email cites or mentions prompts containing the client's name, branded prompts, or brand-awareness questions" }
   ],
   "suggestion": "one improvement if score < 8, else empty string"
 }
 
 Score 1-10. readyToSend = true only if score >= 7.
 CRITICAL: fail "AEO scope only" if any organic-traffic, GSC keyword, GA4, conversion, lead, or PPC reference appears.
-CRITICAL: fail "No doom framings" hard if ANY forbidden phrase appears in the subject or body.`;
+CRITICAL: fail "No doom framings" hard if ANY forbidden phrase appears in the subject or body.
+CRITICAL: fail "No branded-prompt talk", and drop readyToSend to false, if branded-prompt performance is mentioned in any way.`;
 
 // ---------------------------------------------------------------------------
 // Auto-pull "what we did" from suite localStorage history.

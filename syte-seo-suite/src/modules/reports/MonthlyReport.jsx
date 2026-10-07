@@ -40,6 +40,7 @@ import { runSnapshot, snapshotPreflight } from './aeoRunner.js';
 import { CORE_ENGINE_IDS, ALL_ENGINES } from './aeoEngines.js';
 import { SETTINGS_EVENT } from '../../lib/settings.js';
 import { compareSnapshots, rankBrandWithCompetitors, normalizeSnapshot } from './aeoCompare.js';
+import { stripBrandedPrompts } from './brandedQuery.js';
 import { ensureToken, SCOPES, getToken, switchAccount, silentRefresh, getCurrentEmail, getTokenForEmail, TOKEN_EVENT } from '../technical/googleAuth.js';
 import { serverAuthEnabled } from '../../lib/googleServerAuth.js';
 import { fetchReportData } from './reportData.js';
@@ -504,9 +505,9 @@ export default function MonthlyReport({ initialMonth }) {
     // saved snapshot for this month so the report renders even without
     // a fresh probe in the same session. Normalize either way so legacy
     // snapshots get derived visibility / detection / keyword_wins fields.
-    const aeoProbe = includeAeo ? normalizeSnapshot(liveAeoProbe || aeoSnap || null) : null;
+    const aeoProbe = includeAeo ? stripBrandedPrompts(normalizeSnapshot(liveAeoProbe || aeoSnap || null), client) : null;
     const aeoCompare = aeoProbe
-      ? compareSnapshots(aeoProbe, normalizeSnapshot(previousAeoSnap))
+      ? compareSnapshots(aeoProbe, stripBrandedPrompts(normalizeSnapshot(previousAeoSnap), client))
       : null;
     const aeoRanking = aeoProbe
       ? rankBrandWithCompetitors(aeoProbe, client.name)

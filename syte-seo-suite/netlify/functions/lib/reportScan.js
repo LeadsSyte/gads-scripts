@@ -12,6 +12,7 @@
 import { fetchReportData } from '../../../src/modules/reports/reportData.js';
 import { formFromReportData, generateSeoReport } from '../../../src/modules/reports/reportGenerate.js';
 import { workSummaryFrom } from '../../../src/modules/reports/reportPrompts.js';
+import { nonBrandedKeywords } from '../../../src/modules/reports/keywordBuckets.js';
 import { evaluateGscReadiness } from '../../../src/modules/reports/gscGuard.js';
 import { REPORT_DATA_VERSION } from '../../../src/modules/reports/reportDataVersion.js';
 import { previousMonthKey, monthKeyLabel } from '../../../src/modules/reports/reportMonths.js';
@@ -56,7 +57,7 @@ export function dataNumbers(data, form) {
   for (const c of [t.momChange, t.yoyChange]) if (c) Object.values(c).forEach(v => { add(v); add(Math.abs(v)); });
   ['gscClicksThis', 'gscImpressionsThis'].forEach(k => add(form?.[k]));
   add(String(form?.gscCtrThis || '').replace('%', ''));
-  const kw = (data?.keywords || []).slice(0, 50);
+  const kw = nonBrandedKeywords(data?.keywords).slice(0, 50);
   kw.forEach(k => { add(k.position); add(k.prevPosition); add(k.clicks); add(k.impressions); add(k.change); add(Math.abs(k.change || 0)); });
   const pages = (data?.topPages || []).slice(0, 20);
   pages.forEach(p => { add(p.clicks); add(p.impressions); add(p.position); });
@@ -120,7 +121,7 @@ export function buildReportCheckInput({ client, month, data, form, work, email, 
     change_vs_last_month_pct: data.traffic?.momChange || null,
     change_vs_last_year_pct: data.traffic?.yoyChange || null,
     search_console: { clicks: form.gscClicksThis || null, impressions: form.gscImpressionsThis || null, ctr: form.gscCtrThis || null },
-    top_keywords: (data.keywords || []).slice(0, 25).map(k => ({ query: k.query, position: k.position, previous_position: k.prevPosition, clicks: k.clicks })),
+    top_keywords: nonBrandedKeywords(data.keywords).slice(0, 25).map(k => ({ query: k.query, position: k.position, previous_position: k.prevPosition, clicks: k.clicks })),
     top_pages: (data.topPages || []).slice(0, 10)
   };
   const text = (email.subject || '') + '\n' + (email.body || '') + '\n' + JSON.stringify(micro || {});

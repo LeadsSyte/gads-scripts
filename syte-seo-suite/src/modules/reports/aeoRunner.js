@@ -25,6 +25,7 @@ import {
   reverseProbesFor, countNewThemesSince, INTENT_IDS
 } from './aeoProbes.js';
 import { buildCitationGaps } from './aeoCitationGaps.js';
+import { brandedMatcherFor } from './brandedQuery.js';
 import { expandWinnerQuery } from './winnerExpansion.js';
 import { carriedPromptsFrom, stampLongTail, carryForwardSummary, DEFAULT_MAX_CARRIED } from './aeoCarryForward.js';
 
@@ -123,7 +124,11 @@ function retrievalPreferred(runs) {
 export function resolveProbes(client, { now, includeReverse = true } = {}) {
   const stored = parseProbes(client);
   const base = (stored && stored.length) ? stored : migrateClientProbes(client, { now });
-  const act = activeProbes(base);
+  // Branded prompts (ones naming the client) are never run or scored: AEO
+  // reports must not count or mention branded-prompt performance. Reverse
+  // probes name the brand by design but are instruments, not scored.
+  const isBranded = brandedMatcherFor(client);
+  const act = activeProbes(base).filter(p => p.type === 'reverse' || !isBranded(p.query));
   const reverse = includeReverse ? reverseProbesFor(client, { now }) : [];
   return { all: base, active: act, scorable: act.filter(p => p.type !== 'reverse'), reverse };
 }
@@ -237,10 +242,11 @@ export async function runSnapshot(client, opts = {}) {
   // Last month's long-tail prompts, minus anything this run already asks
   // (the tracked set, or children an earlier part of this run carried over).
   const carriedChildren = carry?.discovered || [];
+  const isBranded = brandedMatcherFor(client);
   const priorCands = carriedPromptsFrom(previousSnapshot, {
     max: maxCarried,
     exclude: runnableProbes.concat(carriedChildren).map(p => p.query)
-  });
+  }).filter(c => !isBranded(c.query));
   let cfSeq = carriedChildren.filter(p => p.source === 'carried').length;
   const priorProbes = priorCands.map(c => ({ ...c, id: `${client.id}-CF${++cfSeq}`, active: true, runMode: 'search_on' }));
   const carriedFromMonth = previousSnapshot?.month

@@ -24,6 +24,7 @@
 //     recommended for by an AI engine, given the above?
 
 import { claudeComplete, extractJSON } from '../../lib/anthropic.js';
+import { distinctiveBrandTokens, isBrandedQuery, brandedMatcherFor } from './brandedQuery.js';
 
 // The buyer-intent taxonomy the census is built around. Every generated
 // prompt is tagged with exactly one of these. Coverage across all five is
@@ -62,27 +63,6 @@ const INTENT_MIX = {
 // still drops "krost racking" as branded but KEEPS "industrial shelving" as a
 // legitimate category ranking, instead of nuking every "...shelving" query.
 // ---------------------------------------------------------------------------
-function tokenize(s) {
-  return (s || '').toLowerCase().replace(/[^\w\s&-]/g, ' ').split(/\s+/).filter(Boolean);
-}
-
-// Brand-name tokens that actually identify the brand, excluding any token that
-// also appears in the category/industry text (those are generic, not branded).
-function distinctiveBrandTokens(brandName, category = '') {
-  const generic = new Set(tokenize(category));
-  const toks = tokenize(brandName);
-  const out = new Set();
-  for (const t of toks) if (t.length >= 4 && !generic.has(t)) out.add(t);
-  const concat = toks.join('');
-  if (concat.length >= 5) out.add(concat); // catch "krostshelving"
-  return out;
-}
-
-function isBrandedQuery(query, brandTokenSet) {
-  const toks = tokenize(query);
-  return toks.some(t => brandTokenSet.has(t)) || brandTokenSet.has(toks.join(''));
-}
-
 export function topRankingSeeds(gscKeywords, brandName, { limit = 15, maxPosition = 3.5, minImpressions = 5, category = '' } = {}) {
   const brandTokenSet = distinctiveBrandTokens(brandName, category);
   const seeds = (gscKeywords || [])
@@ -208,8 +188,8 @@ RULES:
   heavy-duty pallet racking from in Johannesburg?" over "pallet racking jhb".
 - Comparison prompts may reference the named competitors above.
 - Include the location in the local bucket (AI uses it for local recs).
-- Include 1-2 brand-name prompts (in comparison or awareness) to test brand
-  knowledge, but keep the census overwhelmingly NON-branded.
+- NEVER include the brand's own name in a prompt. Branded prompts name the
+  brand regardless of our work, so they are excluded from AEO reporting.
 - Each prompt unique, natural, 6-18 words.
 
 Return ONLY JSON in this exact shape:
@@ -250,7 +230,10 @@ export async function generateCensus({ client, rankingSeeds = [], likelyTopics =
   if (!parsed?.prompts || !Array.isArray(parsed.prompts)) {
     throw new Error('Census generator returned unexpected output. Try again.');
   }
-  const prompts = normalizePrompts(parsed.prompts);
+  // Drop any branded prompt the model slipped in anyway: branded prompts are
+  // never scored or reported (see brandedQuery.js).
+  const isBranded = brandedMatcherFor(client);
+  const prompts = normalizePrompts(parsed.prompts).filter(p => !isBranded(p.query));
   if (!prompts.length) throw new Error('Census generator produced no usable prompts. Try again.');
 
   return {

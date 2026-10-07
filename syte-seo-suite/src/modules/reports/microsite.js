@@ -2,6 +2,7 @@
 // monthly report microsite. No external JS, only Google Fonts via CDN.
 
 import { stripDashes } from './sanitize.js';
+import { nonBrandedKeywords } from './keywordBuckets.js';
 
 function esc(s = '') {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -151,28 +152,15 @@ function renderKeywordSections(rd) {
     sectionTable(buckets.top10,    'Top 10 Rankings',    `All ${buckets.counts.top10} keywords on page 1 (positions 4-10). Head terms flagged.`, 'var(--accent)', 200),
     sectionTable(buckets.improved, 'Most Improved',      `${buckets.counts.improved} keywords with position gains of 0.5+ vs last month. Sorted by improvement size.`, 'var(--green)', 150),
     sectionTable(buckets.striking, 'Striking Distance',  `${buckets.counts.striking} page-2 keywords (positions 11-20) — the queries closest to breaking into the top 10. Highest-impact next push.`, 'var(--orange)', 100),
-    buckets.branded.length > 0 ? `
-      <section>
-        <h2 style="display:flex;align-items:center;gap:10px;"><span>Branded Queries</span>
-          <span style="font-family:'JetBrains Mono',monospace;font-size:14px;color:var(--muted);background:rgba(154,154,166,.1);border:1px solid var(--border);padding:2px 10px;border-radius:6px;">${buckets.branded.length}</span>
-        </h2>
-        <p style="color:var(--muted);font-size:13px;margin-bottom:14px;">Searches that include the brand name — context only, not part of competitive SEO performance.</p>
-        <table class="data-table" style="width:100%;border-collapse:collapse;font-size:12px;">
-          ${tableHead(true)}
-          <tbody>${buckets.branded.slice(0, 12).map(kw => keywordRow(kw)).join('')}</tbody>
-        </table>
-      </section>
-    ` : '',
     `<section>
       <h2 style="display:flex;align-items:center;gap:10px;"><span>Full Keyword Detail</span>
         <span style="font-family:'JetBrains Mono',monospace;font-size:14px;color:var(--muted);background:rgba(154,154,166,.1);border:1px solid var(--border);padding:2px 10px;border-radius:6px;">${buckets.counts.eligible}</span>
       </h2>
-      <p style="color:var(--muted);font-size:13px;margin-bottom:14px;">Every non-branded keyword GSC reported, sorted by impressions.</p>
+      <p style="color:var(--muted);font-size:13px;margin-bottom:14px;">Every keyword Search Console reported, sorted by impressions.</p>
       <table class="data-table" style="width:100%;border-collapse:collapse;font-size:12px;">
         ${tableHead(true)}
         <tbody>
-          ${(rd.keywords || [])
-            .filter(kw => !kw.classification || !kw.classification.branded)
+          ${nonBrandedKeywords(rd.keywords)
             .slice(0, 60)
             .map(kw => keywordRow(kw)).join('')}
         </tbody>

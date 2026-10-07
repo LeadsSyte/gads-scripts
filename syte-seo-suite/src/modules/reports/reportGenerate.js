@@ -11,6 +11,8 @@ import { ALICE_SEO_SYSTEM, MICROSITE_SEO_SYSTEM, QA_SEO_SYSTEM, buildAlicePayloa
   ALICE_AEO_SYSTEM, MICROSITE_AEO_SYSTEM, QA_AEO_SYSTEM, buildAeoPayload } from './reportPrompts.js';
 import { compareSnapshots, rankBrandWithCompetitors } from './aeoCompare.js';
 import { sanitizeEmail } from './sanitize.js';
+import { nonBrandedKeywords } from './keywordBuckets.js';
+import { stripBrandedPrompts } from './brandedQuery.js';
 
 export const REPORT_MODEL = 'claude-sonnet-4-6';
 
@@ -56,7 +58,9 @@ export function formFromReportData(data) {
       gscClicksThis: String(gscClicks),
       gscImpressionsThis: String(gscImpr),
       gscCtrThis: gscImpr > 0 ? ((gscClicks / gscImpr) * 100).toFixed(1) + '%' : '',
-      topQueries: data.keywords.slice(0, 10).map(k =>
+      // Branded queries never reach the model: the report must not mention
+      // how the client performs for searches on its own name.
+      topQueries: nonBrandedKeywords(data.keywords).slice(0, 10).map(k =>
         k.query + ' — pos ' + k.position + (k.change != null ? ' (' + (k.change > 0 ? '+' : '') + k.change + ')' : '') + ', ' + k.clicks + ' clicks'
       ).join('\n')
     });
@@ -125,7 +129,10 @@ export async function generateSeoReport({ client, form, workSummary, monthLabel,
 // Build the AEO report from a snapshot (runSnapshot's result) and, when there
 // is one, the previous month's. onPhase('alice' | 'micro' | 'qa').
 // Returns { payload, aliceText, email, micro, qa, compare, ranking, brandRank }.
-export async function generateAeoReport({ client, probe, previousSnap = null, monthLabel, previousMonthLabel = null, complete = claudeComplete, onPhase }) {
+export async function generateAeoReport({ client, probe: rawProbe, previousSnap: rawPrev = null, monthLabel, previousMonthLabel = null, complete = claudeComplete, onPhase }) {
+  // Branded prompts never appear in an AEO report (older snapshots may hold some).
+  const probe = stripBrandedPrompts(rawProbe, client);
+  const previousSnap = stripBrandedPrompts(rawPrev, client);
   const compare = compareSnapshots(probe, previousSnap);
   const ranking = rankBrandWithCompetitors(probe, client.name);
   const brandRank = ranking.findIndex(r => r.isBrand) + 1;

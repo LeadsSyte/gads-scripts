@@ -105,6 +105,15 @@ export function classifyKeywords(keywords, brandName) {
   );
 }
 
+// Keywords the SEO report may talk about: everything except branded
+// queries. Reports never showcase, or even mention, branded-search
+// performance, so the topQueries handed to the AI, the accuracy check and the
+// microsite tables all read through this. Rows without a classification are
+// kept (older cached pulls); classify first when the brand name is at hand.
+export function nonBrandedKeywords(keywords) {
+  return (keywords || []).filter(kw => !kw?.classification?.branded);
+}
+
 // Build the bucketed views used by the report microsite.
 //
 // Each bucket is sorted to surface what matters most:
