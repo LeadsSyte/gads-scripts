@@ -20,6 +20,7 @@ export function checkDraftContent({ html, profile = {}, hasFeaturedImage = false
   const body = String(html || '');
   const text = body
     .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
     .replace(/<[^>]+>/g, ' ')
     .replace(/&nbsp;/gi, ' ')
     .replace(/\s+/g, ' ')
@@ -42,6 +43,14 @@ export function checkDraftContent({ html, profile = {}, hasFeaturedImage = false
   if (/\[[^\]\n]{2,}\]\((?:https?:\/\/|\/)[^)\s]+\)/.test(body)) artifacts.push('markdown links');
   add('No raw markdown', artifacts.length === 0, 'error',
     artifacts.length ? 'Visible on the page: ' + artifacts.join(', ') : 'Converted cleanly to HTML');
+
+  // 2b. The client's CSS (cms/clientCss.js) must stay inside its <style>. A
+  //     site that strips the tag but keeps its text shows the CSS on the page.
+  if (/syte-content/.test(body)) {
+    const leaked = /\.syte-content[^<{]*\{/.test(body.replace(/<style[\s\S]*?<\/style>/gi, ''));
+    add('Client CSS not showing as text', !leaked, 'error',
+      leaked ? 'The site removed the <style> tag but kept the CSS, so it shows as text — remove the client CSS for this client or use an Administrator login' : 'Kept inside its <style> tag');
+  }
 
   // 3. Double-escaped HTML — tags rendering as literal text.
   add('HTML not escaped', !/&lt;\s*\/?\s*(p|h[1-6]|ul|ol|li|strong|em|a|img|blockquote)\b/i.test(body), 'error',

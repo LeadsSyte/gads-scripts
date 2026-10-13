@@ -6,7 +6,7 @@
 import crypto from 'node:crypto';
 import {
   REQUIRED_SCOPES, isValidShopDomain, normalizeShop, stateKeyFromEnv,
-  sealState, openState, verifyCallbackHmac, buildAuthorizeUrl, missingScopes, parseCookies, callbackUrlFor
+  sealState, openState, verifyCallbackHmac, buildAuthorizeUrl, missingScopes, missingOptionalUses, OPTIONAL_SCOPES, parseCookies, callbackUrlFor
 } from '../netlify/functions/lib/shopifyOAuth.js';
 
 let pass = 0, fail = 0;
@@ -121,14 +121,21 @@ await t('a missing or malformed hmac fails rather than throwing', () => {
 
 // ---- authorize URL and scopes ----
 
-await t('authorize URL asks for offline content access only', () => {
+await t('authorize URL asks for offline content access, plus products and redirects — never orders or customers', () => {
   const url = new URL(buildAuthorizeUrl({ shop: 'x.myshopify.com', appClientId: 'cid', redirectUri: 'https://s/cb', state: 'st' }));
   assertEq(url.host, 'x.myshopify.com');
   assertEq(url.pathname, '/admin/oauth/authorize');
-  assertEq(url.searchParams.get('scope'), REQUIRED_SCOPES.join(','));
+  assertEq(url.searchParams.get('scope'), [...REQUIRED_SCOPES, ...OPTIONAL_SCOPES].join(','));
   assertEq(url.searchParams.get('redirect_uri'), 'https://s/cb');
   assertEq(url.searchParams.has('grant_options[]'), false, 'online token would expire with the session');
-  if (/order|customer|product/.test(url.searchParams.get('scope'))) throw new Error('asks for more than content');
+  if (/order|customer/.test(url.searchParams.get('scope'))) throw new Error('asks for orders or customers');
+});
+
+await t('optional permissions: a store without them still connects, and the gap is named', () => {
+  assertEq(missingScopes('read_content,write_content').length, 0, 'content alone is enough to connect');
+  assertEq(missingOptionalUses('read_content,write_content').join('|'), 'product and collection SEO fixes|redirects');
+  assertEq(missingOptionalUses('write_content,write_products').join('|'), 'redirects', 'write implies read');
+  assertEq(missingOptionalUses('write_content,write_products,write_online_store_navigation').length, 0);
 });
 
 await t('scope check spots an app configured without write access', () => {

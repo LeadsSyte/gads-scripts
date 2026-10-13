@@ -8,6 +8,7 @@ import { shopifyRequest, listBlogs, findArticleByHandle, storeHandle } from './s
 import { parseArticleBody, slugifyTitle, cleanPushHtml } from './parseArticle.js';
 import { getPublishingProfile } from './publishingProfile.js';
 import { learnHouseStyle, applyHouseStyle } from './houseStyle.js';
+import { withClientCss } from './clientCss.js';
 import { markdownToHtml } from '../content/articleParser.js';
 import { generateHeroImage } from '../content/imageGen.js';
 import { loadSettings } from '../../lib/settings.js';
@@ -66,6 +67,8 @@ export async function pushArticleToShopify(client, item) {
       bodyHtml = applyHouseStyle(bodyHtml, learnHouseStyle((j?.articles || []).map(a => a.body_html || '')));
     } catch { /* best effort — push unstyled */ }
   }
+  // The client's own CSS for our content (clientCss.js); Shopify keeps <style> in body_html.
+  if (profile.client_css) bodyHtml = withClientCss(bodyHtml, profile.client_css);
 
   // Hero image: generated client-side, attached base64. Shopify's article
   // `image` is its featured image; inline placement is a body <img> added

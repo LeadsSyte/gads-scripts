@@ -18,7 +18,7 @@ export const config = {
   schedule: '0 6 * * 1' // every Monday at 06:00 UTC
 };
 
-const RECIPIENTS = ['michaelh@syte.co.za', 'chrisf@syte.co.za'];
+const RECIPIENTS = ['michaelh@syte.co.za', 'chrisb@syte.co.za'];
 
 // Statuses that mean the work is done. A change handed to the client's
 // developer by email is delivered work, so it is neither chased in the

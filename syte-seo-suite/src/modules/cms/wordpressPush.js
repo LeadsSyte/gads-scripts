@@ -9,6 +9,7 @@ import { markdownToHtml } from '../content/articleParser.js';
 import { parseArticleBody, slugifyTitle, cleanPushHtml } from './parseArticle.js';
 import { getPublishingProfile } from './publishingProfile.js';
 import { learnHouseStyle, applyHouseStyle } from './houseStyle.js';
+import { withClientCss } from './clientCss.js';
 
 function slugFromUrl(pageUrl) {
   try {
@@ -71,6 +72,21 @@ export async function pushContentToWordPress(client, item) {
       houseStyle = learnHouseStyle((Array.isArray(recent) ? recent : []).map(p => p?.content?.rendered || ''));
       cleanHtml = applyHouseStyle(cleanHtml, houseStyle);
     } catch { /* style learning is best-effort; the push goes ahead unstyled */ }
+  }
+
+  // The client's own CSS for our content (clientCss.js). WordPress keeps a
+  // <style> in post content only for a login allowed unfiltered HTML (an
+  // Administrator on a normal site); for anyone else it strips the tag and
+  // the CSS would show as text — so it is only added when the login may.
+  let cssWarning = '';
+  if (profile.client_css) {
+    let mayStyle = false;
+    try {
+      const me = await wpRequest(client, { path: 'wp/v2/users/me?context=edit&_fields=capabilities' });
+      mayStyle = !!me?.capabilities?.unfiltered_html;
+    } catch { /* unknown: leave it out */ }
+    if (mayStyle) cleanHtml = withClientCss(cleanHtml, profile.client_css);
+    else cssWarning = 'client CSS not added — this WordPress login may not put styles in posts (needs an Administrator)';
   }
 
   // Post title: the article's own H1 (now stripped from the body so themes
@@ -182,6 +198,7 @@ export async function pushContentToWordPress(client, item) {
   const warnings = [];
   if (metaStatus !== 'set') warnings.push('SEO meta not set: ' + metaStatus);
   if (hasImageApi && !featuredMediaId) warnings.push('featured image failed — draft has no hero image');
+  if (cssWarning) warnings.push(cssWarning);
 
   return {
     ok: true,

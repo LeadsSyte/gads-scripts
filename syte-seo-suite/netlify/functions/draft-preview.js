@@ -16,6 +16,7 @@ import { previewSig } from './lib/previewSig.js';
 import { handler as pageProxy } from './page-proxy.js';
 import { buildThemePreview, pickTemplate } from '../../src/modules/cms/themePreview.js';
 import { learnHouseStyle, applyHouseStyle } from '../../src/modules/cms/houseStyle.js';
+import { withClientCss } from '../../src/modules/cms/clientCss.js';
 import { parseArticleBody, cleanPushHtml } from '../../src/modules/cms/parseArticle.js';
 import { markdownToHtml } from '../../src/modules/content/articleParser.js';
 import { getPublishingProfile } from '../../src/modules/cms/publishingProfile.js';
@@ -218,6 +219,8 @@ function render(client, profile, chosen, candidates, { draftTitle, draftContent,
   if (!pushed && profile.house_style !== 'off') {
     content = applyHouseStyle(content, learnHouseStyle(candidates.map(c => c.content)));
   }
+  // …and the client's own CSS, as the push sends it (cms/clientCss.js).
+  if (!pushed && profile.client_css) content = withClientCss(content, profile.client_css);
   const note = pushed
     ? 'Showing the draft as stored in ' + (client.cms_type || 'the CMS') + '.'
     : 'Not pushed yet' + (draftImage ? '.' : ' — the hero image shown belongs to an existing post.');

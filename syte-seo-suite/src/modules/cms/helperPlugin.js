@@ -21,7 +21,7 @@ export async function downloadHelperPlugin() {
 // → { installed, version, upToDate, rules, enabled } | { installed: false, reason }
 export async function checkHelperPlugin(client, request = wpRequest) {
   try {
-    const s = await request(client, { path: 'syte/v1/status' });
+    const s = await request(client, { path: 'syte/v1/status?fresh=' + Date.now().toString(36) });  // a host page cache can hold a stale count
     if (s?.plugin !== 'syte-seo-helper') return { installed: false, reason: 'The site answered, but not with the helper plugin.' };
     return { installed: true, version: s.version, upToDate: s.version === HELPER_PLUGIN_VERSION, rules: s.rules, enabled: s.enabled };
   } catch (e) {

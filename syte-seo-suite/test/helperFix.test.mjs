@@ -21,6 +21,7 @@ const task = (fix_type, fix, over = {}) => ({ id: 't1', fix_type, page_url: U, c
 await t('scan tasks become rules: the real shapes the triage writes', () => {
   const dup = ruleFromTask(task('h1', 'Keep exactly ONE instance of: <h1>Gaming Desks South Africa</h1>\nRemove the second duplicate H1 tag.'));
   eq(dup.rule, { type: 'heading', mode: 'keep_one', path: '/racking-guide/', text: 'Gaming Desks South Africa', to: 2 });
+  eq(ruleFromTask(task('h1', 'Keep exactly one: <h1>Gaming Desks South Africa</h1>')).rule.mode, 'keep_one', '"one:" with no space');
   const krost = ruleFromTask(task('h1', 'change: <h1>Latest News</h1> to: <h2>Latest News</h2>.', { title: 'Fix site-wide duplicate H1 caused by blog post template' }));
   eq(krost.rule, { type: 'heading', mode: 'demote', path: '*', text: 'Latest News', to: 2 });
   eq(ruleFromTask(task('h1', 'Change <h1>Latest News</h1> to <h2>Latest News</h2>', { title: 'Duplicate H1 on this post' })).rule.path, '/racking-guide/', 'one page unless filed as site-wide');
@@ -82,7 +83,7 @@ function fakeSite({ installed = true, effective = true } = {}) {
     calls.push((method || (body ? 'POST' : 'GET')) + ' ' + path);
     if (path.startsWith('wp/v2/pages?slug=') || path.startsWith('wp/v2/posts?slug=')) return [];
     if (!installed) throw new Error('WordPress 404: No route was found');
-    if (path === 'syte/v1/status') return { plugin: 'syte-seo-helper', version: '1.0.0' };
+    if (path.startsWith('syte/v1/status')) return { plugin: 'syte-seo-helper', version: '1.0.0' };
     const id = (path.match(/^syte\/v1\/rules\/([\w-]+)$/) || [])[1];
     if (id && method === 'DELETE') { rules.delete(id); return { deleted: true }; }
     if (id && body) { const r = { ...body, id }; rules.set(id, r); return r; }

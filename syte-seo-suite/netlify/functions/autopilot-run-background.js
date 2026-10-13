@@ -9,7 +9,7 @@
 // as drafts, and approving clean drafts to go live, are per-client switches
 // (publishing_profile.autopilot_push / autopilot_publish), both off by default.
 
-import { runAutopilotStep, newRunState, monthKey, CHECKER_SYSTEM, buildCheckerInput, normalizeCheck } from './lib/autopilot.js';
+import { runAutopilotStep, newRunState, monthKey, CHECKER_SYSTEM, buildCheckerInput, normalizeCheck, autoApproveDeps } from './lib/autopilot.js';
 import { claudeCompleteServer, openaiJson } from './lib/serverAi.js';
 import { getServerSupabase } from './lib/serverSupabase.js';
 import { fetchGscForClient } from './lib/serverGsc.js';
@@ -108,8 +108,9 @@ export async function handler(event) {
         pushArticle: a => pushArticleServer(supabase, client, a),
         loadOutput: id => loadArticleOutput(supabase, id),
         pushedTitles: () => pushedTitles(supabase, client.id),
-        // Go live without waiting for a person — only for clients with it on.
-        ...(getPublishingProfile(client).autopilot_publish ? { approveForPublish: id => approveQueueRow(supabase, id) } : {})
+        // Go live without waiting for a person — only for clients with it on,
+        // and never for a client who approves their own articles.
+        ...autoApproveDeps(getPublishingProfile(client), id => approveQueueRow(supabase, id))
       };
     } else if (wantPush) {
       state.push_note = 'Not pushed: ' + client.name + ' has no working WordPress or Shopify connection. The articles are in Auto Write.';

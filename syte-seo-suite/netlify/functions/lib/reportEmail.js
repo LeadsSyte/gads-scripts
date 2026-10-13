@@ -305,24 +305,34 @@ export function buildReportReadyEmail(client, state, siteUrl, viewUrl, { kind = 
 
 // Digest from one publisher pass. results: [{ client, title, liveUrl, error }]
 export function buildPublishedEmail(results, siteUrl) {
-  const ok = results.filter(r => !r.error);
+  const held = results.filter(r => r.held);
+  const ok = results.filter(r => !r.error && !r.held);
   const bad = results.filter(r => r.error);
   const flagged = ok.filter(r => r.check && !r.check.ok);
-  const subject = (bad.length ? 'Publish FAILED for ' + bad.length + (ok.length ? ', ' + ok.length + ' went live' : '') : ok.length + ' post' + (ok.length > 1 ? 's' : '') + ' went live')
+  const subject = [
+    bad.length ? 'Publish FAILED for ' + bad.length : '',
+    held.length ? held.length + ' held back before publishing' : '',
+    ok.length ? ok.length + (bad.length || held.length ? '' : ' post' + (ok.length > 1 ? 's' : '')) + ' went live' : ''
+  ].filter(Boolean).join(', ')
     + (flagged.length ? ' (' + flagged.length + ' to look at)' : '')
     + ': ' + [...new Set(results.map(r => r.client))].join(', ');
   const looked = r => !r.check ? ''
     : r.check.ok ? '<br/><span style="font-size:13px;color:#15803d">Checked: the live page looks right.</span>'
     : '<ul style="margin:4px 0 0 16px;padding:0;font-size:13px;color:#b45309">' + r.check.problems.slice(0, 5).map(p => '<li>' + esc(p) + '</li>').join('') + '</ul>';
+  const before = r => r.lookNote ? '<br/><span style="font-size:13px;color:' + (/^Looked right/.test(r.lookNote) ? '#15803d' : '#777') + '">' + esc(r.lookNote) + '</span>' : '';
   const item = r => r.error
     ? `<li style="margin-bottom:8px"><strong>${esc(r.client)}</strong> — ${esc(r.title)}<br/><span style="color:#b91c1c">${esc(r.error)}</span></li>`
-    : `<li style="margin-bottom:8px"><strong>${esc(r.client)}</strong> — ${r.liveUrl ? '<a href="' + esc(r.liveUrl) + '">' + esc(r.title) + '</a>' : esc(r.title)}${r.auto ? ' <span style="font-size:12px;color:#777">(published automatically)</span>' : ''}${looked(r)}</li>`;
+    : r.held
+      ? `<li style="margin-bottom:8px"><strong>${esc(r.client)}</strong> — ${r.previewUrl ? '<a href="' + esc(r.previewUrl) + '">' + esc(r.title) + '</a>' : esc(r.title)}<ul style="margin:4px 0 0 16px;padding:0;font-size:13px;color:#b45309">${r.held.map(p => '<li>' + esc(p) + '</li>').join('')}</ul></li>`
+      : `<li style="margin-bottom:8px"><strong>${esc(r.client)}</strong> — ${r.liveUrl ? '<a href="' + esc(r.liveUrl) + '">' + esc(r.title) + '</a>' : esc(r.title)}${r.auto ? ' <span style="font-size:12px;color:#777">(published automatically)</span>' : ''}${before(r)}${looked(r)}</li>`;
   const todo = [
+    held.length ? `<strong>Look at ${plural(held.length, 'draft')} held back.</strong> Before publishing, the suite looked at ${held.length === 1 ? 'it' : 'them'} in the site's design and something didn't look right. ${held.length === 1 ? 'It is' : 'They are'} still a draft, marked "changes requested" in CMS → Push History — fix ${held.length === 1 ? 'it' : 'them'} in the site's admin, or approve again if ${held.length === 1 ? 'it looks' : 'they look'} fine to you.` : '',
     flagged.length ? `<strong>Look at ${plural(flagged.length, 'live page')}.</strong> The check after publishing found something. ${flagged.length === 1 ? 'It is' : 'They are'} still live — fix or unpublish in the site's admin.` : '',
     bad.length ? `<strong>${plural(bad.length, 'post')} could not be published.</strong> ${bad.length === 1 ? 'It is' : 'They are'} still a draft. Fix the cause below, then click Approve again in CMS → Push History.` : ''
   ].filter(Boolean);
   const html = WRAP(`
     ${todoBox(todo)}
+    ${held.length ? '<p style="color:#b45309"><strong>Held back before publishing</strong> (click the title to see the preview):</p><ul style="padding-left:18px">' + held.map(item).join('') + '</ul>' : ''}
     ${ok.length ? '<p><strong>Now live:</strong></p><ul style="padding-left:18px">' + ok.map(item).join('') + '</ul>' : ''}
     ${bad.length ? '<p style="color:#b91c1c"><strong>Could not publish</strong> (still drafts, marked "publish failed" in Push History):</p><ul style="padding-left:18px">' + bad.map(item).join('') + '</ul>' : ''}
     <p style="margin-top:18px">${BTN(siteUrl, 'Open the suite')}</p>`);

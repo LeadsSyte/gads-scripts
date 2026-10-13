@@ -16,6 +16,8 @@
 import { createClient } from '@supabase/supabase-js';
 import { reportRecipients, sendReport, buildPublishedEmail } from './lib/reportEmail.js';
 import { lookAtLivePost } from './lib/livePostCheck.js';
+import { prePublishDecision, startedPrecheck, heldPayload } from './lib/prePublishCheck.js';
+import { previewUrl } from './lib/previewSig.js';
 
 export const config = {
   schedule: '*/15 * * * *'
@@ -55,17 +57,42 @@ export default async function handler() {
   }
   const byId = Object.fromEntries((clients || []).map(c => [c.id, c]));
 
-  let published = 0, failed = 0;
+  let published = 0, failed = 0, held = 0;
   const results = [];
   const toLookAt = [];
+  const toPrecheck = [];
+  const auth = process.env.WP_PROXY_AUTH;
+  const base = (process.env.URL || 'https://syte-seo-suite.netlify.app').replace(/\/+$/, '');
+  const lookAvailable = !!(auth && process.env.PAGESPEED_API_KEY);
   for (const row of rows) {
     const client = byId[row.client_id];
+    // First a look at the draft in the client's design (lib/prePublishCheck.js).
+    const decision = prePublishDecision(row, { available: lookAvailable });
+    if (decision.action === 'wait') continue;
+    if (decision.action === 'start') {
+      await supabase.from('syte_suite_cms_queue').update({
+        payload: startedPrecheck(row.payload, { previewUrl: previewUrl('q', row.id, { base, key: auth }) })
+      }).eq('id', row.id);
+      toPrecheck.push(row.id);
+      continue;
+    }
+    if (decision.action === 'hold') {
+      await supabase.from('syte_suite_cms_queue').update({
+        status: 'changes_requested',
+        error_msg: 'Held before publishing — the preview did not look right: ' + decision.problems.join(' '),
+        payload: heldPayload(row.payload)
+      }).eq('id', row.id);
+      held++;
+      results.push({ client: client?.name || 'Unknown client', title: row.page_title, held: decision.problems, previewUrl: row.payload?.precheck?.preview_url || '' });
+      console.log('[publish-approved] held before publishing:', client?.name, '-', row.page_title);
+      continue;
+    }
     try {
       const liveUrl = (await publishOne(client, row)) || row.payload?.live_url || '';
       // Look at the page now it's public; problems go in the email, the post stays live.
       let check = null;
       try { check = await lookAtLivePost(liveUrl, row.page_title); } catch { /* the email says it wasn't checked */ }
-      results.push({ client: client?.name || 'Unknown client', title: row.page_title, liveUrl, check, auto: row.payload?.approved_via === 'autopilot' });
+      results.push({ client: client?.name || 'Unknown client', title: row.page_title, liveUrl, check, auto: row.payload?.approved_via === 'autopilot', lookNote: decision.note || '' });
       await supabase.from('syte_suite_cms_queue').update({
         status: 'published',
         payload: { ...(row.payload || {}), published_at: new Date().toISOString(), live_url: liveUrl, live_check: check }
@@ -96,18 +123,18 @@ export default async function handler() {
     console.error('[publish-approved] report email failed:', e.message);
   }
 
-  // The visual check (a screenshot takes ~30 s) runs in its own background
-  // function; it emails only if a page looks wrong.
-  const auth = process.env.WP_PROXY_AUTH;
-  if (auth && process.env.PAGESPEED_API_KEY) {
-    const base = (process.env.URL || 'https://syte-seo-suite.netlify.app').replace(/\/+$/, '');
-    await Promise.all(toLookAt.map(id => fetch(base + '/.netlify/functions/visual-check-background', {
+  // The visual checks (a screenshot takes ~30 s) run in their own background
+  // function: the look before publishing, and the look at the live page
+  // (which emails only if a page looks wrong).
+  if (lookAvailable) {
+    const look = (id, mode) => fetch(base + '/.netlify/functions/visual-check-background', {
       method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Suite-Auth': auth },
-      body: JSON.stringify({ queueId: id }), signal: AbortSignal.timeout(8000)
-    }).catch(() => {})));
+      body: JSON.stringify({ queueId: id, ...(mode ? { mode } : {}) }), signal: AbortSignal.timeout(8000)
+    }).catch(() => {});
+    await Promise.all([...toPrecheck.map(id => look(id, 'draft')), ...toLookAt.map(id => look(id))]);
   }
 
-  return new Response(`Published ${published}, failed ${failed}`, { status: 200 });
+  return new Response(`Published ${published}, failed ${failed}, held ${held}, looking at ${toPrecheck.length}`, { status: 200 });
 }
 
 // Exported for tests against a real (test) site.

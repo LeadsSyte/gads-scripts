@@ -23,6 +23,17 @@ import {
 import { verifyArticleRelevance } from '../../../src/modules/content/articleRelevance.js';
 import { parseArticleBody } from '../../../src/modules/cms/parseArticle.js';
 import { parseScanBlock, isScanStale, mergeScanIntoBrandDocs } from '../../../src/lib/brandScan.js';
+import { autoPublishBlock } from '../../../src/modules/cms/publishingProfile.js';
+
+// The push deps that decide whether a clean draft is approved straight away.
+// autopilot_publish off → nothing extra (drafts wait for the team as before).
+// On, but the client approves their own articles → no approval, and each
+// draft records why it is waiting. On otherwise → approve clean drafts.
+export function autoApproveDeps(profile, approve) {
+  if (!profile?.autopilot_publish) return {};
+  const block = autoPublishBlock(profile);
+  return block ? { approvalHold: block } : { approveForPublish: approve };
+}
 
 export const STATE_PREFIX = 'autopilot:';
 export const monthKey = (d = new Date()) => d.toISOString().slice(0, 7);
@@ -278,6 +289,8 @@ export async function runAutopilotStep(clientIn, state, deps) {
 //       approveForPublish(queueId) — optional. When given, a draft that read
 //       back clean from the site is approved at once, so the publisher takes
 //       it live; anything less than clean stays a draft for a person.
+//       approvalHold — optional text: auto-publish is on but someone else
+//       (the client) must approve, so each draft records this as the reason.
 export async function pushReadyArticles(client, state, deps, { now, save, PER_ARTICLE_MS = 4 * 60 * 1000 }) {
   const plan = state.plan || [];
   const todo = plan.map((opp, idx) => ({ opp, idx, a: state.articles[idx] }))
@@ -322,6 +335,8 @@ export async function pushReadyArticles(client, state, deps, { now, save, PER_AR
         } else {
           a.push.held = 'Left as a draft: the check of the draft on the site ' + (a.push.verification === 'unchecked' ? 'could not run' : 'found problems') + '.';
         }
+      } else if (deps.approvalHold) {
+        a.push.held = deps.approvalHold;
       }
     } catch (e) {
       a.push = { status: 'failed', error: String(e.message || e).slice(0, 300) };

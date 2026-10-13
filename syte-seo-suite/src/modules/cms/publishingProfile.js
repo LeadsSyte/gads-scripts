@@ -66,6 +66,13 @@ export const PROFILE_DEFAULTS = {
   // Who gets the internal "draft ready" notification for this client.
   notify_email: null,
 
+  // The client's own CSS for our content (clientCss.js): uploaded on the CMS
+  // page, kept only where it styles article content, confined to
+  // .syte-content and sent with every article and AEO section. null = none.
+  client_css: null,
+  // { file, kept, dropped, truncated, bytes, saved_at } — shown on the CMS page.
+  client_css_info: null,
+
   // Set when the team has decided not to publish to this client's site
   // (e.g. it needs a VPN, or it's white-labelled through another agency).
   // The text is the reason, shown on CMS → Connections. null = in scope.
@@ -113,6 +120,18 @@ export const PROFILE_DEFAULTS = {
   // (netlify/functions/aeoreport-monthly.js). Costs API money on every run.
   aeo_reports_enabled: false,
 };
+
+// Why the Autopilot must NOT approve a draft on this client's behalf, or
+// null when it may. A client who signs off on their own articles
+// (approval_mode 'client') keeps that right even with autopilot_publish on:
+// the draft goes to them by email (notify-draft) and waits for their click.
+export function autoPublishBlock(profile) {
+  if (profile?.approval_mode === 'client') {
+    return 'Waiting for the client to approve it: this client approves their own articles' +
+      (profile.client_approval_email ? ' (email to ' + profile.client_approval_email + ').' : ', but no client approval email is set, so nobody has been asked yet.');
+  }
+  return null;
+}
 
 export function getPublishingProfile(client) {
   let raw = client?.publishing_profile;

@@ -45,7 +45,7 @@ export async function runAeoFix({ url, opt, optKey, action, prev = null, by = 'a
   if (action === 'plan' || action === 'auto') {
     if (prev?.status === 'applied') return prev;
     await save({ status: 'planning' });
-    const plan = await ops.plan({ url, opt, optKey }, wp, fetchHtml);
+    const plan = await ops.plan({ url, opt, optKey, clientCss: deps.clientCss || '' }, wp, fetchHtml);
     if (!plan.applicable) return save({ status: 'manual', reason: plan.reason });
     // A helper-plugin plan previews on the real page; the others in a rebuilt one.
     prev = await save({ status: 'planned', plan, preview_url: plan.preview_url || previewUrlFor(plan.key) });
