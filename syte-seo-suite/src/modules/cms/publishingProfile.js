@@ -42,7 +42,8 @@ export const PROFILE_DEFAULTS = {
   // author is free text, and when the API omits it Shopify writes "Shopify
   // API" — which is what the first real BAM DIY draft showed. Chris was
   // explicit that drafts must not carry the agency's name ("Admin Syte"):
-  // the business name or plain "Admin" only. Set a value here to override.
+  // on 8 Sep he asked for a generic author such as "admin", so drafts are
+  // bylined "Admin" unless a value is set here.
   shopify_author: null,
 
   // Who signs off on drafts before they go live:

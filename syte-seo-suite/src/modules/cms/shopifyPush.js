@@ -23,18 +23,11 @@ async function resolveBlog(client, profile) {
   return blogs[0];
 }
 
-// The byline. The store's own name as Shopify has it ("BAM DIY") matches how
-// clients sign their own posts; the suite's client name is often just a
-// domain ("bamdiy.com"), so it isn't used. Never the agency's name — see
-// publishingProfile.shopify_author.
+// The byline: a generic "Admin" — Chris, 8 Sep: generated content gets a
+// generic author such as "admin", never the agency's or a person's name.
+// A client that wants something else sets publishingProfile.shopify_author.
 async function resolveAuthor(client, profile) {
-  if (profile.shopify_author) return profile.shopify_author;
-  try {
-    const j = await shopifyRequest(client, { path: 'shop.json' });
-    const name = String((j && j.shop && j.shop.name) || '').trim();
-    if (name) return name;
-  } catch { /* fall back below */ }
-  return 'Admin';
+  return String(profile.shopify_author || '').trim() || 'Admin';
 }
 
 export async function pushMetaToShopify(client, item) {

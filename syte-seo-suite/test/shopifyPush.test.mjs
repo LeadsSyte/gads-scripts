@@ -127,17 +127,12 @@ await t('articles are ALWAYS created unpublished', async () => {
 });
 
 // The first real draft (BAM DIY) was bylined "Shopify API" because no author
-// was sent. Chris: the business's name or plain "Admin" — never the agency's.
-await t('articles are bylined with the store\'s own name, not "Shopify API"', async () => {
+// was sent. Chris (8 Sep): a generic author such as "admin" — never the
+// agency's name or a person's.
+await t('articles are bylined "Admin" — not "Shopify API", the agency, or the store', async () => {
   await mod.pushToShopify(CLIENT, item());
-  assertEq(sentArticle().author, 'Widget Co', 'store name as Shopify has it');
-  assertNoMatch(sentArticle().author, /syte|shopify api/i, 'no agency or API byline');
-});
-
-await t('the byline falls back to "Admin" when the store name can\'t be read', async () => {
-  globalThis.__shopify.shopName = '';
-  await mod.pushToShopify(CLIENT, item());
-  assertEq(sentArticle().author, 'Admin', 'fallback author');
+  assertEq(sentArticle().author, 'Admin', 'generic author');
+  assertNoMatch(sentArticle().author, /syte|shopify api|widget/i, 'no agency, API or store byline');
 });
 
 await t('drafts carry no internal tag that a theme would show publicly', async () => {
