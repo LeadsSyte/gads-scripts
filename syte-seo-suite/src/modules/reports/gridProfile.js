@@ -39,7 +39,7 @@ function htmlToText(html, cap = 6000) {
 }
 
 const PROFILE_SYSTEM =
-  'You extract a B2B company\'s go-to-market profile from its website text. ' +
+  'You extract a company\'s go-to-market profile from its website text. ' +
   'Return ONLY strict JSON, no prose. Be specific and use the company\'s own ' +
   'vocabulary. Do not invent services or industries that are not supported by ' +
   'the text. Prefer concrete offerings ("Dynamics 365", "Power BI") over vague ' +
@@ -56,6 +56,7 @@ function profilePrompt({ name, geo, siteText, gscQueries }) {
     '',
     'Return JSON with exactly these keys:',
     '{',
+    '  "audience": "b2c" if it mainly sells to consumers (shoppers, households), "b2b" if it mainly sells to businesses,',
     '  "services": [up to 14 specific service lines / product offerings, most important first],',
     '  "headlineServices": [up to 6 category nouns a buyer would search, e.g. "Microsoft partners", "AI consultancies"],',
     '  "gridQualifierServices": [the 4 flagship services to pair with buyer segments],',
@@ -81,7 +82,9 @@ export async function extractClientProfile(client, { gscQueries = [], complete =
     const parsed = extractJSON(raw);
     if (!parsed || typeof parsed !== 'object') return null;
     const arr = (v) => Array.isArray(v) ? v.map(s => String(s).trim()).filter(Boolean) : [];
+    const audience = String(parsed.audience || '').toLowerCase();
     const prof = {
+      audience: (audience === 'b2c' || audience === 'b2b') ? audience : undefined,
       services: arr(parsed.services),
       headlineServices: arr(parsed.headlineServices),
       gridQualifierServices: arr(parsed.gridQualifierServices),

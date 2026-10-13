@@ -26,6 +26,7 @@ import {
 } from './aeoProbes.js';
 import { buildCitationGaps } from './aeoCitationGaps.js';
 import { expandWinnerQuery } from './winnerExpansion.js';
+import { clientAudience, offTopicReason } from './probeRelevance.js';
 import { carriedPromptsFrom, stampLongTail, carryForwardSummary, DEFAULT_MAX_CARRIED } from './aeoCarryForward.js';
 
 const DEFAULT_ITERATIONS = 3;
@@ -119,11 +120,15 @@ function retrievalPreferred(runs) {
   return on.length ? on : (runs || []);
 }
 
-// Resolve the probe set the snapshot runs against.
+// Resolve the probe set the snapshot runs against. Active probes that have
+// nothing to do with the client's business (B2B phrasing on a consumer brand,
+// a segment bolted onto a question — see probeRelevance.js) are left out, so
+// they are never probed or reported even if an older grid stored them.
 export function resolveProbes(client, { now, includeReverse = true } = {}) {
   const stored = parseProbes(client);
   const base = (stored && stored.length) ? stored : migrateClientProbes(client, { now });
-  const act = activeProbes(base);
+  const ctx = { audience: clientAudience(client), brand: client?.name };
+  const act = activeProbes(base).filter(p => !offTopicReason(p.query, ctx));
   const reverse = includeReverse ? reverseProbesFor(client, { now }) : [];
   return { all: base, active: act, scorable: act.filter(p => p.type !== 'reverse'), reverse };
 }
@@ -237,10 +242,11 @@ export async function runSnapshot(client, opts = {}) {
   // Last month's long-tail prompts, minus anything this run already asks
   // (the tracked set, or children an earlier part of this run carried over).
   const carriedChildren = carry?.discovered || [];
+  const relevance = { audience: clientAudience(client), brand: client.name };
   const priorCands = carriedPromptsFrom(previousSnapshot, {
     max: maxCarried,
     exclude: runnableProbes.concat(carriedChildren).map(p => p.query)
-  });
+  }).filter(c => !offTopicReason(c.query, relevance));
   let cfSeq = carriedChildren.filter(p => p.source === 'carried').length;
   const priorProbes = priorCands.map(c => ({ ...c, id: `${client.id}-CF${++cfSeq}`, active: true, runMode: 'search_on' }));
   const carriedFromMonth = previousSnapshot?.month
@@ -434,7 +440,8 @@ export async function runSnapshot(client, opts = {}) {
         if (expansionUsed >= maxExpansionQueries) break;
         const kids = expandWinnerQuery(parent.query, {
           geos: expandGeos, segments: expandSegments,
-          parentProbeId: parent.id, parentTier: parent.tier
+          parentProbeId: parent.id, parentTier: parent.tier,
+          audience: relevance.audience, brand: relevance.brand
         });
         for (const k of kids) {
           const nk = normQ(k.query);
