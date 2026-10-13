@@ -51,7 +51,7 @@ globalThis.crypto.randomUUID = () => 'uuid-' + (++nextId);
 
 const tmp = path.join(os.tmpdir(), 'supabase-' + Date.now() + '.mjs');
 fs.writeFileSync(tmp, PATCHED);
-const sb = await import(tmp);
+const sb = await import(pathToFileURL(tmp).href);
 fs.unlinkSync(tmp);
 
 let pass = 0, fail = 0;

@@ -24,8 +24,14 @@ import crypto from 'node:crypto';
 
 // Articles and blogs need content access. write_content implies read_content;
 // asking for both keeps the approval screen explicit about what we touch.
-// Nothing about orders, customers or products — keep the ask minimal.
 export const REQUIRED_SCOPES = ['read_content', 'write_content'];
+
+// Asked for, but a store that doesn't grant them still connects (blogs work):
+//   products + collections → SEO titles, meta descriptions, product image alt text
+//   online store navigation → URL redirects for broken links
+// Never anything about orders or customers.
+export const OPTIONAL_SCOPES = ['read_products', 'write_products', 'read_online_store_navigation', 'write_online_store_navigation'];
+export const OPTIONAL_SCOPE_USE = { products: 'product and collection SEO fixes', online_store_navigation: 'redirects' };
 
 export const NONCE_COOKIE = 'syte_shopify_oauth';
 export const STATE_TTL_MS = 15 * 60 * 1000;
@@ -102,7 +108,7 @@ export function buildAuthorizeUrl({ shop, appClientId, redirectUri, state }) {
   // No grant_options[] → offline access, the token our background publisher needs.
   return 'https://' + shop + '/admin/oauth/authorize?' + new URLSearchParams({
     client_id: appClientId,
-    scope: REQUIRED_SCOPES.join(','),
+    scope: [...REQUIRED_SCOPES, ...OPTIONAL_SCOPES].join(','),
     redirect_uri: redirectUri,
     state
   }).toString();
@@ -111,10 +117,19 @@ export function buildAuthorizeUrl({ shop, appClientId, redirectUri, state }) {
 // Shopify reports what was actually granted, which can be less than asked for
 // if the app's configured scopes don't include them. A write_* grant covers the
 // matching read_*.
-export function missingScopes(grantedScopeString) {
+export function missingScopes(grantedScopeString, wanted = REQUIRED_SCOPES) {
   const granted = new Set(String(grantedScopeString || '').split(',').map(s => s.trim()).filter(Boolean));
-  return REQUIRED_SCOPES.filter(s =>
+  return wanted.filter(s =>
     !granted.has(s) && !(s.startsWith('read_') && granted.has('write_' + s.slice(5))));
+}
+
+// The optional permissions a store did not grant, as what they'd have allowed:
+// e.g. ['product and collection SEO fixes', 'redirects']. Empty when all granted.
+export function missingOptionalUses(grantedScopeString) {
+  const miss = missingScopes(grantedScopeString, OPTIONAL_SCOPES);
+  return Object.entries(OPTIONAL_SCOPE_USE)
+    .filter(([area]) => miss.some(s => s.endsWith('_' + area)))
+    .map(([, use]) => use);
 }
 
 export function parseCookies(header) {

@@ -148,7 +148,7 @@ export default function ImplementationProgress() {
           <h2 style={{ margin: 0 }}>Implementation Progress</h2>
           <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
             Track what's been uploaded to client sites and whether the AI verified it's actually there.
-            A summary email goes to michaelh@ and chrisf@ every Monday.
+            A summary email goes to michaelh@ and chrisb@ every Monday.
           </div>
         </div>
         <button onClick={load}>Refresh</button>

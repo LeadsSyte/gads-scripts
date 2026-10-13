@@ -15,6 +15,12 @@
 
 import { resolveWpObject } from './techFix.js';
 import { learnHouseStyle, applyHouseStyle } from '../../../src/modules/cms/houseStyle.js';
+import { withClientCss } from '../../../src/modules/cms/clientCss.js';
+
+// Does this WordPress login keep <style> tags in post content (unfiltered_html)?
+export async function wpMayStoreStyles(wp) {
+  try { return !!(await wp('wp/v2/users/me?context=edit&_fields=capabilities'))?.capabilities?.unfiltered_html; } catch { return false; }
+}
 
 const TOP_HINT = /answer|summary|takeaway|tl;?dr|overview|definition|at a glance|intro/i;
 const TOP_WHERE = /after (the )?h1|top of|beginning|start of|above the (first|intro)|before the (first|intro)|right after the (title|heading)/i;
@@ -120,7 +126,7 @@ export async function houseStyleFor(wp, type = 'posts') {
 }
 
 // Dry run. { applicable, reason?, target, position, html, key, rawHash, renderedPreview, house_style }
-export async function planAeoFix({ url, opt, optKey }, wp, fetchLive) {
+export async function planAeoFix({ url, opt, optKey, clientCss = '' }, wp, fetchLive) {
   const ins = planInsertion(opt);
   if (!ins.ok) return { applicable: false, reason: ins.reason };
   const obj = await resolveWpObject(wp, url);
@@ -135,7 +141,10 @@ export async function planAeoFix({ url, opt, optKey }, wp, fetchLive) {
     return { applicable: false, reason: 'This page\'s visible content comes from a page builder, not the WordPress editor — adding it through the connection wouldn\'t show. Apply it in the builder (or with a Grok Bot).' };
   }
   const style = await houseStyleFor(wp, obj.type);
-  const html = applyHouseStyle(ins.html, style);
+  let html = applyHouseStyle(ins.html, style);
+  // The client's own CSS (cms/clientCss.js) — only if this login may keep a
+  // <style> in post content; otherwise WordPress would show the CSS as text.
+  if (clientCss && await wpMayStoreStyles(wp)) html = withClientCss(html, clientCss);
   return {
     applicable: true, target: { type: obj.type, id: obj.id }, position: ins.position, html, key,
     rawHash: simpleHash(raw),

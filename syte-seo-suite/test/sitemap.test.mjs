@@ -9,7 +9,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SRC = fs.readFileSync(path.join(__dirname, '../src/modules/aeo/sitemap.js'), 'utf8');
@@ -22,7 +22,7 @@ const PATCHED = SRC.replace(
 );
 const tmp = path.join(os.tmpdir(), 'sitemap-' + process.pid + '.mjs');
 fs.writeFileSync(tmp, PATCHED);
-const mod = await import(tmp);
+const mod = await import(pathToFileURL(tmp).href);
 fs.unlinkSync(tmp);
 
 // ---------------------------------------------------------------------------

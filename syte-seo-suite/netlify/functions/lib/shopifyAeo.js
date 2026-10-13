@@ -7,6 +7,7 @@
 
 import { resolveShopifyObject } from './shopifyFix.js';
 import { planInsertion, contentIsRendered, wrapInsertion, insertInto, removeInsertion, hasInsertion, fixKey } from './aeoFix.js';
+import { withClientCss } from '../../../src/modules/cms/clientCss.js';
 
 const WRAP = { product: 'product', page: 'page', article: 'article' };
 
@@ -22,7 +23,7 @@ async function readBody(sh, obj) {
   return j?.[wrap]?.body_html ?? '';
 }
 
-export async function planAeoFixShopify({ url, opt, optKey }, sh, fetchLive) {
+export async function planAeoFixShopify({ url, opt, optKey, clientCss = '' }, sh, fetchLive) {
   const ins = planInsertion(opt);
   if (!ins.ok) return { applicable: false, reason: ins.reason };
   const obj = await resolveShopifyObject(sh, url);
@@ -35,10 +36,11 @@ export async function planAeoFixShopify({ url, opt, optKey }, sh, fetchLive) {
   if (!contentIsRendered(raw, live)) {
     return { applicable: false, reason: 'This page\'s visible content comes from the theme\'s sections, not the page content — adding it through the connection wouldn\'t show. Add it in the theme editor (or with a Grok Bot).' };
   }
+  const html = clientCss ? withClientCss(ins.html, clientCss) : ins.html; // the client's own CSS (cms/clientCss.js)
   return {
-    applicable: true, target: { kind: obj.kind, id: obj.id, resource: obj.resource, blogId: obj.blogId || null }, position: ins.position, html: ins.html, key,
+    applicable: true, target: { kind: obj.kind, id: obj.id, resource: obj.resource, blogId: obj.blogId || null }, position: ins.position, html, key,
     rawHash: simpleHash(raw),
-    renderedPreview: insertInto(raw, ins.html, ins.position)
+    renderedPreview: insertInto(raw, html, ins.position)
   };
 }
 

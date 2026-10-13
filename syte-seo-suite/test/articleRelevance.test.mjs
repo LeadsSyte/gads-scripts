@@ -16,7 +16,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -49,7 +49,7 @@ const PATCHED = SRC.replace(
 const tmp = path.join(__dirname, '../src/modules/content', '.article-relevance-test-' + Date.now() + '.mjs');
 fs.writeFileSync(tmp, PATCHED);
 let rel;
-try { rel = await import(tmp); } finally { fs.unlinkSync(tmp); }
+try { rel = await import(pathToFileURL(tmp).href); } finally { fs.unlinkSync(tmp); }
 
 // ---------------------------------------------------------------------------
 // Fixtures — the real incident.
@@ -215,7 +215,7 @@ const BROKEN = fs.readFileSync(path.join(__dirname, '../src/modules/content/arti
 const brokenTmp = path.join(__dirname, '../src/modules/content', '.article-relevance-broken-' + Date.now() + '.mjs');
 fs.writeFileSync(brokenTmp, BROKEN);
 let brokenMod;
-try { brokenMod = await import(brokenTmp); } finally { fs.unlinkSync(brokenTmp); }
+try { brokenMod = await import(pathToFileURL(brokenTmp).href); } finally { fs.unlinkSync(brokenTmp); }
 const degraded = await brokenMod.verifyArticleRelevance({ output: CHAMDOR_PROPERTY, client: JGS });
 
 t('a failed reviewer call degrades to the lexical verdict instead of throwing', () => {

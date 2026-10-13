@@ -9,7 +9,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const VERIF_SRC = fs.readFileSync(path.join(__dirname, '../src/lib/verification.js'), 'utf8');
@@ -97,7 +97,7 @@ const PATCHED = VERIF_SRC
 
 const tmpFile = path.join(os.tmpdir(), 'verification-patched-' + Date.now() + '.mjs');
 fs.writeFileSync(tmpFile, PATCHED);
-const verif = await import(tmpFile);
+const verif = await import(pathToFileURL(tmpFile).href);
 fs.unlinkSync(tmpFile);
 
 // -------- Runner --------

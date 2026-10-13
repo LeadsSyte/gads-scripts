@@ -24,6 +24,7 @@ import { previewUrl } from './lib/previewSig.js';
 import { emailAeoSummary } from './lib/runNotify.js';
 import { visualCheck, visualCheckAvailable } from './lib/visualCheck.js';
 import { claudeCompleteServer } from './lib/serverAi.js';
+import { getPublishingProfile } from '../../src/modules/cms/publishingProfile.js';
 
 export const aeoFixRowId = rowId;
 const BUDGET_MS = 13 * 60 * 1000;
@@ -39,6 +40,7 @@ function fixDeps(supabase, client, site, url, optKey) {
   const key = fixKey(url, optKey);
   return {
     wp: site.wp, ops: site.ops,
+    clientCss: getPublishingProfile(client).client_css || '',
     fetchHtml: fetchLiveHtml,
     save: status => saveAeoFix(supabase, client.id, { url, optKey, key }, status),
     previewUrlFor: k => previewUrl('f', client.id + '-' + k),

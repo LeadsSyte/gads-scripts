@@ -2,6 +2,9 @@
 // function — a screenshot takes ~30 s). POST { queueId } with X-Suite-Auth.
 // Called by publish-approved for each post it publishes.
 //
+// POST { queueId, mode: 'draft' } is the look BEFORE publishing: the approved
+// draft in the client's design (see lookBeforePublishing, lib/prePublishCheck.js).
+//
 // POST { testUrl, referenceUrl? } runs the same check on any address and
 // writes the result to syte_suite_settings 'visualcheck-test' — to prove the
 // server can take and judge a screenshot without changing or emailing anything.
@@ -17,6 +20,7 @@ import { visualCheck, visualCheckAvailable } from './lib/visualCheck.js';
 import { wpClient, hasWordPress } from './lib/wpClient.js';
 import { shopifyClient, hasShopify } from './lib/shopifyClient.js';
 import { reportRecipients, sendReport, buildVisualProblemEmail } from './lib/reportEmail.js';
+import { PRECHECK_WHAT } from './lib/prePublishCheck.js';
 
 // Another published post on the same site, to compare the new one with.
 export async function referencePostUrl(client, row, { wp, sh } = {}) {
@@ -33,6 +37,32 @@ export async function referencePostUrl(client, row, { wp, sh } = {}) {
     }
   } catch { /* no reference: the page is judged on its own */ }
   return '';
+}
+
+// Before publishing (lib/prePublishCheck.js): screenshot the approved draft in
+// the client's design via its signed in-theme preview, judge it, and store the
+// result on the row for publish-approved's next pass. Never publishes or emails.
+export async function lookBeforePublishing(supabase, queueId, { check = visualCheck, complete = claudeCompleteServer, reference = referencePostUrl } = {}) {
+  let result;
+  try {
+    const { data: row } = await supabase.from('syte_suite_cms_queue').select('*').eq('id', queueId).maybeSingle();
+    if (!row || row.status !== 'approved') return null;
+    const url = row.payload?.precheck?.preview_url;
+    const { data: client } = await supabase.from('syte_suite_clients').select('*').eq('id', row.client_id).maybeSingle();
+    result = !url || !client
+      ? { status: 'unchecked', problems: [], summary: !url ? 'No preview link (the server cannot sign one).' : 'Client not found.', checked_at: new Date().toISOString() }
+      : await check({ url, referenceUrl: await reference(client, row), what: PRECHECK_WHAT.replace('%TITLE%', String(row.page_title || '').replace(/"/g, "'")) }, { complete });
+  } catch (e) {
+    result = { status: 'unchecked', problems: [], summary: 'The look before publishing could not run: ' + String(e.message || e).slice(0, 160), checked_at: new Date().toISOString() };
+  }
+  // Re-read before writing: keep whatever else changed on the row meanwhile.
+  const { data: fresh } = await supabase.from('syte_suite_cms_queue').select('status, payload').eq('id', queueId).maybeSingle();
+  if (!fresh || fresh.status !== 'approved') return result;
+  const prev = fresh.payload?.precheck || {};
+  await supabase.from('syte_suite_cms_queue').update({
+    payload: { ...(fresh.payload || {}), precheck: { ...prev, ...result, status: result.status } }
+  }).eq('id', queueId);
+  return result;
 }
 
 export async function handler(event) {
@@ -57,6 +87,10 @@ export async function handler(event) {
   }
   if (!body.queueId) return { statusCode: 400 };
   if (!visualCheckAvailable()) return { statusCode: 202 };
+  if (body.mode === 'draft') {
+    await lookBeforePublishing(supabase, body.queueId);
+    return { statusCode: 202 };
+  }
   try {
     const { data: row } = await supabase.from('syte_suite_cms_queue').select('*').eq('id', body.queueId).maybeSingle();
     const url = row?.payload?.live_url;

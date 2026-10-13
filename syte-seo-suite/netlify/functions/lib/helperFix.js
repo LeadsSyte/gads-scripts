@@ -20,8 +20,9 @@ import { planAeoFix, applyAeoFix, undoAeoFix, planInsertion, fixKey } from './ae
 export const HELPER_FIX_TYPES = ['h1', 'image_alt', 'structured_data', 'schema', 'canonical', 'robots', 'redirect', 'meta_title', 'meta_description'];
 
 // null when the plugin isn't installed (or the login isn't an administrator).
+// The query string stops a host's page cache (seen on LiteSpeed) handing back a stale count.
 export async function helperStatus(wp) {
-  try { const s = await wp('syte/v1/status'); return s?.plugin === 'syte-seo-helper' ? s : null; } catch { return null; }
+  try { const s = await wp('syte/v1/status?fresh=' + Date.now().toString(36)); return s?.plugin === 'syte-seo-helper' ? s : null; } catch { return null; }
 }
 
 const decode = s => String(s || '').replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#0?39;|&apos;|&#8217;|&rsquo;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&nbsp;|&#160;/g, ' ');
@@ -98,7 +99,7 @@ export function ruleFromTask(task) {
   }
 
   if (type === 'h1') {
-    const keep = fix.match(/keep\s+(?:exactly\s+)?one\s+(?:instance\s+)?(?:of)?:?\s*<h1[^>]*>([\s\S]*?)<\/h1>/i);
+    const keep = fix.match(/keep\s+(?:exactly\s+)?one\s*(?:instance\s+)?(?:of)?:?\s*<h1[^>]*>([\s\S]*?)<\/h1>/i);
     if (keep) return { rule: { type: 'heading', mode: 'keep_one', path, text: plain(keep[1]), to: 2 }, label: 'Main heading (H1)', to: 'One H1: "' + plain(keep[1]) + '". Other H1s become H2.' };
     const demote = fix.match(/<h1[^>]*>([\s\S]*?)<\/h1>\s*(?:to|→|->|with|into)\s*:?\s*<h([2-6])\b/i);
     // A fix the scan filed as one site-wide task (one template, many pages)
@@ -282,11 +283,13 @@ export async function planHelperAeo({ url, opt, optKey }, wp, { fetchPage = fetc
   if (!path) return { applicable: false, reason: 'The page address is not a valid URL.' };
   const key = fixKey(url, optKey);
   const id = ruleId('aeo', key);
-  const rule = { type: 'insert_html', path, position: ins.position === 'top' ? 'after_h1' : 'end_of_main', html: ins.html };
+  // No client CSS here: the plugin strips <style> from what it inserts (by design).
+  const html = ins.html;
+  const rule = { type: 'insert_html', path, position: ins.position === 'top' ? 'after_h1' : 'end_of_main', html };
   const p = await previewRule(wp, id, rule, url, fetchPage);
   if (!p.ok) return { applicable: false, reason: p.reason };
   return {
-    applicable: true, helper: true, target: { rule: id }, position: ins.position, html: ins.html, key,
+    applicable: true, helper: true, target: { rule: id }, position: ins.position, html, key,
     rawHash: '', renderedPreview: '', preview_url: p.previewUrl, rule: { ...p.saved, preview: '' }
   };
 }

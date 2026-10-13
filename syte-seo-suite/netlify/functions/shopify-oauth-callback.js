@@ -18,7 +18,7 @@
 import { createClient } from '@supabase/supabase-js';
 import {
   NONCE_COOKIE, isValidShopDomain, stateKeyFromEnv, openState,
-  verifyCallbackHmac, missingScopes, parseCookies
+  verifyCallbackHmac, missingScopes, missingOptionalUses, parseCookies
 } from './lib/shopifyOAuth.js';
 
 // Same version shopify-proxy uses, so a token that passes here works there.
@@ -153,13 +153,16 @@ export async function handler(event) {
     else testNote = 'The token was saved but a test call returned HTTP ' + res.status + '.';
   } catch (e) { testNote = 'The token was saved but the test call failed: ' + e.message; }
 
-  const expiryNote = tokenData.expires_in
+  const notAllowed = missingOptionalUses(tokenData.scope);
+  const expiryNote = (tokenData.expires_in
     ? ' Shopify issued a token that expires, which this suite does not renew yet, so this store will need reconnecting.'
-    : '';
+    : '') + (notAllowed.length
+    ? ' The store did not allow ' + notAllowed.join(' or ') + ', so those stay manual. To allow them, add the permissions to this store\'s app in the Dev Dashboard, release a new version, then Connect again.'
+    : '');
 
   if (!tested) {
     return respond(200, 'Saved, but not yet confirmed', testNote + ' Use Test Connection on the CMS page to check it.' + expiryNote, false, attempt);
   }
   return respond(200, 'Connected',
-    storeName + ' is now connected' + (clientName ? ' to ' + clientName : '') + '. Blog drafts can be pushed from the suite. You can close this window.' + expiryNote, true, attempt);
+    storeName + ' is now connected' + (clientName ? ' to ' + clientName : '') + '. Blog drafts can be pushed from the suite' + (notAllowed.length ? '' : ', and product, collection and redirect fixes can be made') + '. You can close this window.' + expiryNote, true, attempt);
 }

@@ -21,7 +21,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import assert from 'node:assert/strict';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -51,7 +51,7 @@ const trTmp = path.join(__dirname, '../src/modules/content', '.topic-research-te
 fs.writeFileSync(trTmp, TR_PATCHED);
 let research;
 try {
-  research = await import(trTmp);
+  research = await import(pathToFileURL(trTmp).href);
 } finally {
   fs.unlinkSync(trTmp);
 }

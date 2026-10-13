@@ -10,6 +10,7 @@ import { buildConnectionRows, summarizeConnections } from './connectionStatus.js
 import { openThemePreview } from './previewLink.js';
 import { unpublishItem, canUnpublish } from './unpublish.js';
 import { downloadHelperPlugin, checkHelperPlugin, HELPER_PLUGIN_VERSION } from './helperPlugin.js';
+import ClientCssField from './ClientCssField.jsx';
 
 const ACCENT = '#4dabff';
 
@@ -486,14 +487,14 @@ export default function CMSPush({ sub, setSub }) {
               <div style={{ marginTop: 10 }}>
                 <div style={{ fontSize: 12, fontWeight: 600 }}>Connect with Shopify</div>
                 <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
-                  Each store needs its own app from the Shopify Dev Dashboard. It only asks
-                  to read and write blog content. Nothing about orders, customers or products.
+                  Each store needs its own app from the Shopify Dev Dashboard. It asks
+                  for blog content (required), plus products, collections and redirects for SEO fixes (optional). Nothing about orders or customers.
                 </div>
                 <details style={{ marginTop: 6, fontSize: 12 }}>
                   <summary style={{ cursor: 'pointer' }}>How to set up the app for this store</summary>
                   <ol style={{ margin: '6px 0 0', paddingLeft: 18, lineHeight: 1.6 }}>
                     <li>In the Shopify Dev Dashboard, choose the Syte organisation and create an app named after this client.</li>
-                    <li>Set its access scopes to <code>read_content, write_content</code>.</li>
+                    <li>Set its access scopes to <code>read_content, write_content, read_products, write_products, read_online_store_navigation, write_online_store_navigation</code>. Only the two content ones are required; without the others, product, collection and redirect fixes stay manual.</li>
                     <li>
                       Add this redirect URL: <code>{shopifyCallbackUrl()}</code>{' '}
                       <button style={{ fontSize: 10, padding: '1px 6px' }}
@@ -652,6 +653,7 @@ export default function CMSPush({ sub, setSub }) {
                       Stops the title appearing twice. Leave on unless this client's theme
                       does not render the post title itself.
                     </div>
+                    <ClientCssField profile={profile} setP={setP} disabled={busy} />
                     <div className="row" style={{ marginTop: 10 }}>
                       <button onClick={() => saveConnector({}, 'Profile saved.', 'profile')} disabled={busy}>Save Profile</button>
                     </div>
@@ -841,7 +843,19 @@ export default function CMSPush({ sub, setSub }) {
                       </div>
                     )}
                     {item.status === 'approved' && (
-                      <div className="muted" style={{ fontSize: 11 }}>publishing within 15 min…</div>
+                      <div className="muted" style={{ fontSize: 11 }}>
+                        {item.payload?.precheck?.status === 'running' ? 'looking at it in the site\'s design before publishing…'
+                          : item.payload?.precheck?.status === 'ok' ? '✓ looked right — publishing within 15 min…'
+                          : 'publishing within 15 min…'}
+                      </div>
+                    )}
+                    {item.status === 'changes_requested' && item.payload?.precheck_held?.status === 'problems' && (
+                      <div style={{ fontSize: 11, color: 'var(--orange, #e8a33d)', maxWidth: 260 }}>
+                        ⚠ held before publishing: {(item.payload.precheck_held.problems || []).join(' ')}
+                        {item.payload.precheck_held.preview_url && (
+                          <> <a href={item.payload.precheck_held.preview_url} target="_blank" rel="noreferrer">See the preview →</a></>
+                        )}
+                      </div>
                     )}
                     {item.status === 'published' && item.payload?.live_url && (
                       <a href={item.payload.live_url} target="_blank" rel="noreferrer" style={{ color: 'var(--green)' }}>Live →</a>

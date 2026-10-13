@@ -5,7 +5,7 @@
 import { runTechFix, runAllTechFixes, canAutoFix } from '../netlify/functions/lib/techFixRun.js';
 import { runAeoFix, runAllAeoFixes, aeoOptKey, canAutoAdd } from '../netlify/functions/lib/aeoFixRun.js';
 import { fixKey } from '../netlify/functions/lib/aeoFix.js';
-import { pushReadyArticles } from '../netlify/functions/lib/autopilot.js';
+import { pushReadyArticles, autoApproveDeps } from '../netlify/functions/lib/autopilot.js';
 import { checkLivePost, lookAtLivePost } from '../netlify/functions/lib/livePostCheck.js';
 import { buildTechSummaryEmail, buildAeoSummaryEmail, buildRunSummaryEmail, buildPublishedEmail } from '../netlify/functions/lib/reportEmail.js';
 import { PROFILE_DEFAULTS } from '../src/modules/cms/publishingProfile.js';
@@ -218,6 +218,25 @@ await t('publishing: with the switch off nothing is approved', async () => {
   const state = pushState();
   await pushReadyArticles({ name: 'C' }, state, pushDeps(), { now: () => new Date(), save: async () => {} });
   assertEq([state.articles[0].push.status, !!state.articles[0].push.approved, state.articles[0].push.held], ['pushed', false, undefined]);
+});
+
+await t('publishing: a client who approves their own articles is never published for, even with the switch on', async () => {
+  const approve = async () => { throw new Error('must not be called'); };
+  const prof = over => ({ ...PROFILE_DEFAULTS, autopilot_push: true, autopilot_publish: true, ...over });
+  assertEq(Object.keys(autoApproveDeps(prof({}), approve)), ['approveForPublish'], 'internal review + switch on → approves');
+  assertEq(autoApproveDeps(prof({ approval_mode: 'auto' }), approve).approveForPublish, approve, "'auto' clients still go live");
+  assertEq(autoApproveDeps(prof({ autopilot_publish: false }), approve), {}, 'switch off → nothing');
+  const held = autoApproveDeps(prof({ approval_mode: 'client', client_approval_email: 'owner@client.example' }), approve);
+  assertEq(held.approveForPublish, undefined, 'client approves → no auto-approval');
+  has(held.approvalHold, /client to approve.*owner@client\.example/);
+  has(autoApproveDeps(prof({ approval_mode: 'client' }), approve).approvalHold, /no client approval email is set/);
+
+  const state = pushState();
+  await pushReadyArticles({ name: 'C' }, state, pushDeps(held), { now: () => new Date(), save: async () => {} });
+  for (const i of [0, 1]) {
+    assertEq([state.articles[i].push.status, !!state.articles[i].push.approved], ['pushed', false]);
+    has(state.articles[i].push.held, /client to approve/);
+  }
 });
 
 // ── The look at the live page ──

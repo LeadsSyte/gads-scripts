@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useClients } from '../../store/useClients.js';
 import { supabase, updateClientFields } from '../../lib/supabase.js';
 import { proxyAuthHash } from '../cms/proxyAuth.js';
-import { getPublishingProfile } from '../cms/publishingProfile.js';
+import { getPublishingProfile, autoPublishBlock } from '../cms/publishingProfile.js';
 import { connectionState } from '../cms/connectionStatus.js';
 import { openThemePreview } from '../cms/previewLink.js';
 
@@ -86,6 +86,7 @@ export default function AutopilotPanel({ accent, onFinished }) {
 
   if (!client) return null;
   const profile = getPublishingProfile(client);
+  const publishBlock = autoPublishBlock(profile);
   const connected = connectionState(client).state === 'connected';
   const active = state && ACTIVE.includes(state.status);
   const thisMonth = state && state.month === new Date().toISOString().slice(0, 7);
@@ -169,11 +170,11 @@ export default function AutopilotPanel({ accent, onFinished }) {
           <span>
             {confirming === 'push'
               ? `Create ${unpushed} draft(s) on ${client.name}'s site? `
-                + (profile.autopilot_publish ? 'Drafts that check out clean go live within 15 minutes; the rest stay drafts.' : 'They stay drafts until approved.')
+                + (profile.autopilot_publish && !publishBlock ? 'Drafts that check out clean go live within 15 minutes; the rest stay drafts.' : publishBlock ? 'They go to the client to approve.' : 'They stay drafts until approved.')
               : `Write and check ${client.pages_per_month || 4} article(s) for ${client.name} now?`
                 + (thisMonth ? ' This starts a fresh run for this month.' : '')
                 + (profile.autopilot_push && connected
-                  ? (profile.autopilot_publish ? ' Articles that pass every check are published on the website.' : ' Articles that pass are pushed to the site as drafts.')
+                  ? (profile.autopilot_publish && !publishBlock ? ' Articles that pass every check are published on the website.' : ' Articles that pass are pushed to the site as drafts.')
                   : ' Nothing is pushed to the website.')}
           </span>
           <button className="primary" disabled={busy}
@@ -202,7 +203,12 @@ export default function AutopilotPanel({ accent, onFinished }) {
           onChange={e => setProfileFlag('autopilot_publish', e.target.checked)} style={{ width: 'auto', margin: 0 }} />
         Publish them without waiting for approval, when the draft on the site checks out clean
       </label>
-      {!!profile.autopilot_publish && !!profile.autopilot_push && (
+      {!!profile.autopilot_push && publishBlock && (
+        <div style={{ fontSize: 11, margin: '2px 0 0 24px', color: 'var(--orange, #e8a33d)' }}>
+          {client.name} approves their own articles, so the Autopilot never publishes for them — each draft is emailed to the client to approve{profile.client_approval_email ? '' : ' (set their approval email under CMS first)'}.
+        </div>
+      )}
+      {!!profile.autopilot_publish && !!profile.autopilot_push && !publishBlock && (
         <div className="muted" style={{ fontSize: 11, margin: '2px 0 0 24px' }}>
           Goes live within 15 minutes of the run. The live page is then checked and the result is emailed. Drafts with any warning stay drafts.
         </div>
