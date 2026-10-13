@@ -11,7 +11,12 @@
 // The intent stays transactional — we only ever narrow a query the brand
 // already ranks for, which is where a small specialist wins on volume.
 //
-// Pure and node-testable: no imports.
+// Consumer (B2C) brands get no default segment drill — "duvets for SMEs" is
+// not a prompt their buyers ask — and no winner is ever segment-qualified if it
+// is a complete question or names the brand ("...sourced? for startups").
+//
+// Pure and node-testable: only imports the pure relevance filter.
+import { offTopicReason } from './probeRelevance.js';
 
 // Default drill dimensions. Callers pass client-specific geos/segments/
 // industries; these are the fallback so expansion still works with no profile.
@@ -51,10 +56,14 @@ function hasSegment(q) {
 //   parentProbeId string
 //   parentTier    number    — child tier = min(parentTier+1, 3)
 //   maxPerWinner  number    — cap children per winner (controls fan-out width)
+//   audience      'b2b' | 'b2c' — B2C skips the default B2B segment list
+//   brand         string    — brand-anchored winners are never segment-qualified
 export function expandWinnerQuery(query, {
-  geos = [], segments = DEFAULT_SEGMENTS, geoDrill = DEFAULT_GEO_DRILL,
-  parentProbeId = null, parentTier = 1, maxPerWinner = 6
+  geos = [], segments, geoDrill = DEFAULT_GEO_DRILL,
+  parentProbeId = null, parentTier = 1, maxPerWinner = 6,
+  audience = 'b2b', brand = ''
 } = {}) {
+  if (!segments) segments = audience === 'b2c' ? [] : DEFAULT_SEGMENTS;
   const q = String(query || '').trim();
   if (!q) return [];
   const childTier = Math.min((Number(parentTier) || 1) + 1, 3);
@@ -64,6 +73,7 @@ export function expandWinnerQuery(query, {
     const cq = String(childQuery || '').replace(/\s+/g, ' ').trim();
     const key = norm(cq);
     if (!cq || seen.has(key)) return;
+    if (offTopicReason(cq, { audience, brand })) return;
     seen.add(key);
     out.push({ query: cq, type: 'qualified', tier: childTier, intent: 'commercial', source: 'fanout', parentProbeId });
   };
@@ -79,8 +89,12 @@ export function expandWinnerQuery(query, {
   }
 
   // 2. Segment / industry qualifier — narrow by buyer type, but only if the
-  //    query isn't already qualified (avoid "... for X for Y" stacking).
-  if (!hasSegment(q)) {
+  //    query isn't already qualified (avoid "... for X for Y" stacking), isn't
+  //    a complete question, and doesn't name the brand (a reverse probe like
+  //    "List companies similar to Acme" has no buyer segment).
+  const isQuestion = /[?.!]\s*$/.test(q);
+  const namesBrand = !!brand && norm(q).includes(norm(brand));
+  if (!hasSegment(q) && !isQuestion && !namesBrand) {
     for (const seg of segments) push(`${q} for ${seg}`);
   }
 

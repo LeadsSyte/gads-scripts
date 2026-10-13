@@ -14,8 +14,15 @@
 //                 a {service} x {buyer segment} qualifier grid.
 //   Tier 3 (~24): {template} x {industry} grid.
 //
+// The grid was tuned on a B2B client. A consumer (B2C) profile — audience
+// 'b2c' — swaps the partner/implementation/industry templates for shopper
+// prompts and drops buyer segments, so a bedding brand is never probed for
+// "Microsoft partner for regulated financial services".
+//
 // Pure and node-testable: imports nothing browser-coupled. Emits probe-candidate
 // objects ({ tier, type, intent, query, theme, source }) ready for addProbes().
+
+import { clientAudience } from './probeRelevance.js';
 
 // ---- profile normalisation ------------------------------------------------
 
@@ -57,15 +64,17 @@ export function toGridProfile(input = {}) {
     ? input.competitors
     : String(input.competitors || '').split(/[,\n]/))
     .map(s => String(s).trim()).filter(Boolean);
+  const audience = input.audience === 'b2c' ? 'b2c' : 'b2b';
   return {
     brand,
+    audience,
     geo,
     geoVariants: (input.geoVariants && input.geoVariants.length) ? input.geoVariants : DEFAULT_GEO_VARIANTS(geo),
     primaryCity: input.primaryCity || (DEFAULT_GEO_VARIANTS(geo)[1] || geo),
     services: (input.services || []).map(s => String(s).trim()).filter(Boolean),
     headlineServices: (input.headlineServices || []).map(s => String(s).trim()).filter(Boolean),
     gridQualifierServices: (input.gridQualifierServices || []).map(s => String(s).trim()).filter(Boolean),
-    segments: (input.segments && input.segments.length) ? input.segments : DEFAULT_SEGMENTS,
+    segments: (input.segments && input.segments.length) ? input.segments : (audience === 'b2c' ? [] : DEFAULT_SEGMENTS),
     industries: (input.industries || []).map(s => String(s).trim()).filter(Boolean),
     competitors
   };
@@ -99,12 +108,21 @@ function tier1(p) {
     push('category', 'commercial', 'Core money', `Best ${s}${geo ? ' in ' + geo : ''}`);
   }
 
-  // Qualified money — service x segment / capability / who-should.
-  if (s0) {
+  const b2c = p.audience === 'b2c';
+
+  // Qualified money — consumer brands get shopper prompts, not partner ones.
+  if (s0 && b2c) {
+    push('qualified', 'commercial', 'Qualified money', `Where to buy ${s0}${geo ? ' in ' + geo : ''}`);
+    push('qualified', 'commercial', 'Qualified money', `Which ${s0} brand is best value for money${geo ? ' in ' + geo : ''}?`);
+  }
+  // Qualified money (B2B) — service x segment / capability / who-should. The
+  // Microsoft and AI-agent lines only apply to clients that offer them.
+  if (s0 && !b2c) {
     push('qualified', 'commercial', 'Qualified money', `Best ${s0} partner${geo ? ' in ' + geo : ''} for ${p.segments[0] || 'mid-market companies'}`);
-    push('qualified', 'commercial', 'Qualified money', `Microsoft partner${geo ? ' ' + geo : ''} for regulated financial services`);
-    const aiSvc = p.services.find(s => /ai|agent/i.test(s)) || s0;
-    push('qualified', 'commercial', 'Qualified money', `${aiSvc}${p.primaryCity ? ' ' + p.primaryCity : ''} for building AI agents`);
+    if (p.services.some(s => /microsoft|dynamics|azure|power (?:bi|platform)/i.test(s)))
+      push('qualified', 'commercial', 'Qualified money', `Microsoft partner${geo ? ' ' + geo : ''} for regulated financial services`);
+    const aiSvc = p.services.find(s => /\bai\b|agent/i.test(s));
+    if (aiSvc) push('qualified', 'commercial', 'Qualified money', `${aiSvc}${p.primaryCity ? ' ' + p.primaryCity : ''} for building AI agents`);
     const nicheIndustry = p.industries.find(i => /insurance|credit|bank|pension/i.test(i)) || p.industries[0];
     if (nicheIndustry) push('qualified', 'commercial', 'Qualified money', `Who should implement ${s0} for ${adj ? 'an ' + adj : 'an'} ${singular(nicheIndustry)}`);
   }
@@ -116,12 +134,17 @@ function tier1(p) {
   if (c1) push('comparison', 'comparison', 'Comparison', `Alternatives to ${c1} for ${p.services[3] || cmpSvc} work`);
   if (c0 && c1 && p.brand) push('comparison', 'comparison', 'Comparison', `${c0} vs ${p.brand} vs ${c1} for ${cmpSvc}`);
 
-  // Niche moonshots — industry-anchored, high-intent.
-  for (const ind of p.industries.slice(0, 4)) {
+  // Niche moonshots — industry-anchored, high-intent (B2B only).
+  for (const ind of (b2c ? [] : p.industries.slice(0, 4))) {
     push('niche', 'problem', 'Niche moonshot', `AI solutions for ${geoScopedIndustry(ind, geo)}`);
   }
 
   // Conversational buyer-journey.
+  if (b2c && s0) {
+    push('conversational', 'problem', 'Buyer journey',
+      `I'm shopping for ${s0}${geo ? ' in ' + geo : ''}, which brands should I consider?`);
+    return out;
+  }
   const convoInd = p.industries.find(i => /insurance/i.test(i)) || p.industries[0];
   if (convoInd && s0) {
     push('conversational', 'problem', 'Buyer journey',
@@ -134,12 +157,15 @@ function tier1(p) {
 // Top/Recommended qualifier rotates continuously across the flattened grid,
 // exactly like the gold sheet.
 function tier2ServiceGeo(p) {
-  const QUALIFIERS = ['Best', 'Top', 'Recommended'];
+  const b2c = p.audience === 'b2c';
+  const QUALIFIERS = b2c ? ['Best', 'Top rated', 'Where to buy'] : ['Best', 'Top', 'Recommended'];
   const out = [];
   let i = 0;
   for (const s of p.services) {
     for (const g of p.geoVariants) {
-      const q = `${QUALIFIERS[i % QUALIFIERS.length]} ${s} implementation partner in ${g}`;
+      const q = b2c
+        ? `${QUALIFIERS[i % QUALIFIERS.length]} ${s} in ${g}`
+        : `${QUALIFIERS[i % QUALIFIERS.length]} ${s} implementation partner in ${g}`;
       out.push({ tier: 2, type: 'qualified', intent: 'commercial', theme: `Grid: ${s}`, query: q, source: 'gold' });
       i++;
     }
@@ -162,6 +188,7 @@ function tier2Qualifier(p) {
 
 // Tier 3: {template} x {industry} grid.
 function tier3Industry(p) {
+  if (p.audience === 'b2c') return [];   // technology/AI-partner templates are B2B only
   const TEMPLATES = ['Best technology partner for', 'Dynamics 365 for', 'AI solutions for'];
   const svc0 = p.services[0] || 'Dynamics 365';
   // Use the client's flagship service in the middle template rather than a
@@ -248,6 +275,7 @@ export function deriveGridProfile(client = {}, { sitePhrases = [], gscQueries = 
 
   return toGridProfile({
     brand: client.name || client.brand,
+    audience: clientAudience(client, lp),
     geo,
     services,
     headlineServices,

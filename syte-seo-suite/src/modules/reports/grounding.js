@@ -17,6 +17,7 @@
 // module imports nothing that touches the browser.
 
 import { parseProbes, migrateClientProbes, addProbes, probesToProbeList } from './aeoProbes.js';
+import { clientAudience, offTopicReason } from './probeRelevance.js';
 
 // A gold build below this size, or covering fewer than this many probe types,
 // is treated as a thin/failed derivation — not something to retire real probes
@@ -67,12 +68,21 @@ function retireGsc(probes) {
 // new object with updated aeo_probes when changed, else the input unchanged.
 export async function groundClientForAeo(client, { gscQueries = [], buildGold = null, fallbackSet = [] } = {}) {
   if (!client) return { client, changed: false, reason: 'no-client', activeBefore: 0, activeAfter: 0 };
-  const existing = parseProbes(client) || migrateClientProbes(client) || [];
-  const activeBefore = countActive(existing);
+  const parsed = parseProbes(client) || migrateClientProbes(client) || [];
+  const activeBefore = countActive(parsed);
 
-  // Already on a healthy active gold grid — keep it stable for MoM continuity.
+  // Retire active probes that don't fit the client's business (a B2B grid
+  // stored for a consumer brand). The runner already skips them, so this
+  // doesn't shrink what actually runs — it lets a fresh grid replace them.
+  const ctx = { audience: clientAudience(client), brand: client.name };
+  const offTopic = parsed.filter(p => p && p.active !== false && offTopicReason(p.query, ctx));
+  const existing = offTopic.length
+    ? parsed.map(p => offTopic.includes(p) ? { ...p, active: false } : p)
+    : parsed;
+
+  // Already on a healthy, on-topic gold grid — keep it stable for MoM continuity.
   const activeGold = existing.filter(p => p && p.source === 'gold' && p.active !== false);
-  if (isHealthyGold(activeGold)) {
+  if (!offTopic.length && isHealthyGold(activeGold)) {
     return { client: { ...client, aeo_probes: existing }, changed: false, reason: 'already-gold', activeBefore, activeAfter: activeBefore };
   }
 
@@ -99,10 +109,10 @@ export async function groundClientForAeo(client, { gscQueries = [], buildGold = 
   let added = 0;
   if (gold.length) { const r = addProbes(base, gold); base = r.probes; added += r.added; }
   if (fallbackSet && fallbackSet.length) { const r = addProbes(base, fallbackSet); base = r.probes; added += r.added; }
-  if (added > 0) {
+  if (added > 0 || offTopic.length) {
     return {
       client: { ...client, aeo_probes: base, aeo_probe_queries: probesToProbeList(base) },
-      changed: true, reason: 'additive', activeBefore, activeAfter: countActive(base)
+      changed: true, reason: added > 0 ? 'additive' : 'retired-off-topic', activeBefore, activeAfter: countActive(base)
     };
   }
   return { client: { ...client, aeo_probes: existing }, changed: false, reason: 'kept-existing', activeBefore, activeAfter: activeBefore };
