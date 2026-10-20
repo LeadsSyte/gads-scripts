@@ -75,7 +75,7 @@ function keywordRow(kw, opts = {}) {
     : '';
   const showChange = opts.showChange !== false;
   return `<tr style="border-bottom:1px solid var(--border);">
-    <td style="padding:6px 10px;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+    <td class="query-cell" title="${esc(kw.query)}" style="padding:6px 10px;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
       ${esc(kw.query)}${headBadge}
     </td>
     <td style="padding:6px 10px;text-align:right;font-family:'JetBrains Mono',monospace;font-weight:600;">${kw.position}</td>
@@ -766,7 +766,7 @@ export function buildMicrositeHtml({ micro, client, monthLabel, previousMonthLab
               const v = r.visibility ?? (r.mentioned ? 100 : 0);
               const visColour = v >= 70 ? 'var(--green)' : v >= 30 ? 'var(--orange)' : 'var(--muted)';
               return `<tr style="border-bottom:1px solid var(--border);">
-                <td style="padding:6px 10px;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(r.query)}</td>
+                <td class="query-cell" title="${esc(r.query)}" style="padding:6px 10px;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(r.query)}</td>
                 <td style="padding:6px 10px;">${esc(r.engine_label || r.engine)}</td>
                 <td style="padding:6px 10px;text-align:center;color:${visColour};font-weight:600;">${v}%</td>
                 <td style="padding:6px 10px;text-align:center;color:var(--muted);">${r.top3_rate != null ? r.top3_rate + '%' : '—'}</td>
@@ -913,6 +913,16 @@ export function downloadMicrositePdf(html, filename) {
       table { break-inside: auto; }
       tr { break-inside: avoid; break-after: auto; }
       thead { display: table-header-group; }
+
+      /* On screen long queries are clipped with an ellipsis (hover shows
+         the full text); paper has no hover, so print them in full. */
+      .query-cell {
+        max-width: none !important;
+        overflow: visible !important;
+        text-overflow: clip !important;
+        white-space: normal !important;
+        overflow-wrap: anywhere;
+      }
     }
   `;
 
