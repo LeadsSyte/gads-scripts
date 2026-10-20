@@ -4,6 +4,7 @@
 
 import { readinessFor } from './clientReadiness.js';
 import { isDelivered, isHandoverStatus } from './deliveryStatus.js';
+import { bundledLabels, normalizeLabel, pageIdentity } from './priorWork.js';
 
 const BLOGS_KEY = 'syte-suite-content_blogs';
 
@@ -206,6 +207,57 @@ export function technicalPipelineStatus(client, implementations, tasks, month) {
   return { section: 'not-scanned', detail: 'No scan run for ' + m };
 }
 
+// ─── AEO delivered work ─────────────────────────────────────────
+// A page card's "Mark as Implemented" logs ONE row for every optimization
+// on that page ("AEO bundle: 3 optimizations", each item listed in the
+// description). Marking the page done marks every optimization in it done,
+// so the bundle must count as N items, not 1, and each child item must
+// read as implemented without being marked on its own.
+//
+// Returns Map(pageIdentity -> { labels, bundleLabels, bundled }): `labels` are
+// items marked one by one, `bundleLabels` the items a bundle listed.
+// `bundled` is the item count from the bundle title: the description is
+// capped at 2000 chars when logged, so on a long page some item lines can
+// be cut off and the title is the reliable count.
+export function aeoDeliveredByPage(implementations, clientId) {
+  const map = new Map();
+  for (const impl of implementations || []) {
+    if (!impl || impl.module !== 'aeo') continue;
+    if (clientId && impl.client_id !== clientId) continue;
+    if (!isDelivered(impl.verification_status)) continue;
+    const key = pageIdentity(impl.page_url || '');
+    if (!map.has(key)) map.set(key, { labels: new Set(), bundleLabels: new Set(), bundled: 0 });
+    const entry = map.get(key);
+    const m = String(impl.title || '').match(/^AEO bundle:\s*(\d+)/i);
+    if (m) {
+      entry.bundled = Math.max(entry.bundled, Number(m[1]));
+      for (const l of bundledLabels(impl.description)) entry.bundleLabels.add(normalizeLabel(l));
+    } else if (impl.title) {
+      entry.labels.add(normalizeLabel(impl.title));
+    }
+  }
+  return map;
+}
+
+// Is one optimization on a page delivered — either on its own or as part of
+// a delivered page bundle? A bundle covers every item on its page.
+export function isAeoOptDelivered(deliveredByPage, pageUrl, opt) {
+  const entry = deliveredByPage?.get(pageIdentity(pageUrl || ''));
+  if (!entry) return false;
+  if (entry.bundled > 0) return true;
+  return entry.labels.has(normalizeLabel(opt?.name || opt?.title || ''));
+}
+
+// Number of optimizations delivered across all pages.
+function aeoDeliveredCount(deliveredByPage) {
+  let n = 0;
+  for (const e of deliveredByPage.values()) {
+    n += Math.max(e.bundleLabels.size, e.bundled);
+    for (const l of e.labels) if (!e.bundleLabels.has(l)) n++;
+  }
+  return n;
+}
+
 // ─── AEO Engine ──────────────────────────────────────────────────
 // Sections: verified-on-site | optimizations-generated | not-run | credentials-missing
 export function aeoPipelineStatus(client, implementations, aeoResults, month, deepResults) {
@@ -258,15 +310,17 @@ export function aeoPipelineStatus(client, implementations, aeoResults, month, de
   const priorDeep = allDeep.filter(d => (d.generated_at || '').slice(0, 7) !== m);
   const deepCount = monthDeep.length + priorDeep.length;
   const totalWork = totalOpts + deepCount;
-  const allImplemented = totalWork > 0 && verified.length >= totalWork;
+  // Count delivered ITEMS, not rows: a page bundle covers all its items.
+  const deliveredCount = Math.min(totalWork, aeoDeliveredCount(aeoDeliveredByPage(monthImpls)));
+  const allImplemented = totalWork > 0 && deliveredCount >= totalWork;
   const isStale = monthResults.length === 0 && monthDeep.length === 0 && (priorResults.length > 0 || priorDeep.length > 0);
 
   // Only "verified-on-site" when all optimizations are implemented and
   // delivered (verified on the page, or handed to the developer).
-  if (allImplemented && verified.length > 0) {
+  if (allImplemented && deliveredCount > 0) {
     return {
       section: 'verified-on-site',
-      summary: verified.length + ' verified',
+      summary: deliveredCount + ' verified',
       detail: verified.map(v => v.title).slice(0, 3).join(', ')
     };
   }
@@ -275,9 +329,9 @@ export function aeoPipelineStatus(client, implementations, aeoResults, month, de
     const parts = [];
     if (totalOpts > 0) parts.push(totalOpts + ' quick-win optimizations');
     if (deepCount > 0) parts.push(deepCount + ' deep rewrite' + (deepCount > 1 ? 's' : ''));
-    if (verified.length > 0) parts.push(verified.length + ' verified');
+    if (deliveredCount > 0) parts.push(deliveredCount + ' verified');
     if (sentToDev.length > 0) parts.push('incl. ' + sentToDev.length + ' handed to dev');
-    const remaining = totalWork - verified.length;
+    const remaining = totalWork - deliveredCount;
     if (remaining > 0) parts.push(remaining + ' awaiting implementation');
     if (isStale) parts.push('from prior month — re-run for ' + m);
     return {
@@ -285,8 +339,8 @@ export function aeoPipelineStatus(client, implementations, aeoResults, month, de
       summary: parts.join(' · '),
       detail: isStale
         ? 'Existing optimizations are from a prior month. Click Run Optimizations to refresh for ' + m + '.'
-        : (verified.length > 0
-          ? verified.length + ' of ' + totalWork + ' items verified'
+        : (deliveredCount > 0
+          ? deliveredCount + ' of ' + totalWork + ' items verified'
           : 'Generated, awaiting implementation')
     };
   }

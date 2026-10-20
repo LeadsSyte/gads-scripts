@@ -8,7 +8,7 @@ import ClientCardsGrid from '../../components/ClientCardsGrid.jsx';
 import MarkImplementedButton from '../../components/MarkImplementedButton.jsx';
 import PipelineView from '../../components/PipelineView.jsx';
 import LogExternalWork from '../../components/LogExternalWork.jsx';
-import { aeoPipelineStatus, monthOptions } from '../../lib/pipelineStatus.js';
+import { aeoPipelineStatus, monthOptions, aeoDeliveredByPage, isAeoOptDelivered } from '../../lib/pipelineStatus.js';
 import { listAllImplementations, saveAeoResult, loadAeoResults as loadAeoResultsFromDb, deleteAeoResult, saveDeepResult, listDeepResults, deleteDeepResult, listAeoRejections, saveAeoRejection } from '../../lib/supabase.js';
 import { AEO_TYPES, AEO_DEEP_SYSTEM, buildAeoSystem, MAX_OPTS_PER_PAGE } from './aeoTypes.js';
 import { selectTopOptimizations, aeoItemTarget, pagesForTarget } from './aeoSelect.js';
@@ -210,7 +210,7 @@ function escapeHtmlForBlock(s) {
     .replace(/"/g, '&quot;');
 }
 
-function OptPageCard({ result: r, onDelete, onVerified, optClient, rejectedOptKeys, onRejectOpt }) {
+function OptPageCard({ result: r, onDelete, onVerified, optClient, rejectedOptKeys, onRejectOpt, implementations }) {
   const [open, setOpen] = React.useState(false);
   const [copiedAll, setCopiedAll] = React.useState(false);
   const rawOpts = Array.isArray(r.optimizations) ? r.optimizations : [];
@@ -221,6 +221,19 @@ function OptPageCard({ result: r, onDelete, onVerified, optClient, rejectedOptKe
     return rawOpts.filter(o => !rejectedOptKeys.has(aeoOptKey(o)));
   }, [rawOpts, rejectedOptKeys]);
   const hiddenCount = rawOpts.length - opts.length;
+
+  // Delivered work on this page logged since this run was generated. Marking
+  // the page card implemented logs one bundle row that covers every item, so
+  // each item below reads as implemented without being marked on its own.
+  const deliveredByPage = React.useMemo(() => {
+    const since = r.generated_at || '';
+    return aeoDeliveredByPage(
+      (implementations || []).filter(i => (i.implemented_at || i.created_at || '') >= since),
+      r.client_id || optClient?.id
+    );
+  }, [implementations, r.generated_at, r.client_id, optClient?.id]);
+  const deliveredOpts = opts.filter(o => isAeoOptDelivered(deliveredByPage, r.url, o)).length;
+  const allDelivered = opts.length > 0 && deliveredOpts === opts.length;
 
   // Build a single styled HTML block that combines every optimization
   // for this page into one paste-ready chunk. The user asked: "if there
@@ -307,6 +320,11 @@ function OptPageCard({ result: r, onDelete, onVerified, optClient, rejectedOptKe
           <span style={{ fontSize: 11, color: 'var(--teal)', background: 'rgba(0,212,170,.08)', padding: '2px 8px', borderRadius: 12 }}>
             {opts.length} opts
           </span>
+          {deliveredOpts > 0 && (
+            <span style={{ fontSize: 11, color: 'var(--green)', background: 'rgba(0,212,170,.08)', padding: '2px 8px', borderRadius: 12 }}>
+              {allDelivered ? '✓ All implemented' : '✓ ' + deliveredOpts + ' implemented'}
+            </span>
+          )}
           <button onClick={(e) => { e.stopPropagation(); copyAll(); }} style={{ fontSize: 10, padding: '2px 8px' }}>
             {copiedAll ? 'Copied ✓' : 'Copy all (1 block)'}
           </button>
@@ -398,15 +416,19 @@ function OptPageCard({ result: r, onDelete, onVerified, optClient, rejectedOptKe
                 client={optClient}
                 label="Push to CMS"
               />
-              <MarkImplementedButton
-                module="aeo"
-                changeType={o.type || 'aeo_optimization'}
-                client={optClient}
-                pageUrl={r.url}
-                title={o.name || o.title || 'AEO Optimization'}
-                description={code.slice(0, 500)}
-                onVerified={onVerified}
-              />
+              {isAeoOptDelivered(deliveredByPage, r.url, o) ? (
+                <span style={{ fontSize: 11, color: 'var(--green)', padding: '2px 8px' }}>✓ Implemented</span>
+              ) : (
+                <MarkImplementedButton
+                  module="aeo"
+                  changeType={o.type || 'aeo_optimization'}
+                  client={optClient}
+                  pageUrl={r.url}
+                  title={o.name || o.title || 'AEO Optimization'}
+                  description={code.slice(0, 500)}
+                  onVerified={onVerified}
+                />
+              )}
               {onRejectOpt && (
                 <button
                   onClick={() => {
@@ -1429,6 +1451,7 @@ export default function AEOEngine({ sub }) {
                         optClient={c}
                         rejectedOptKeys={rejectionsByPage.get(c.id + '::' + r.url)}
                         onRejectOpt={rejectAeoOpt}
+                        implementations={aeoImpls}
                       />
                     ))}
                     {cResults.length > 5 && (
@@ -1679,6 +1702,7 @@ export default function AEOEngine({ sub }) {
                   optClient={clients.find(cc => cc.id === r.client_id)}
                   rejectedOptKeys={rejectionsByPage.get(r.client_id + '::' + r.url)}
                   onRejectOpt={rejectAeoOpt}
+                  implementations={aeoImpls}
                 />
               ))}
             </div>
