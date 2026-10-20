@@ -17,7 +17,7 @@ import {
   technicalPipelineStatus,
   aeoPipelineStatus,
   aeoDeliveredByPage,
-  isAeoOptDelivered
+  aeoResultDelivery
 } from '../src/lib/pipelineStatus.js';
 import { readinessFor } from '../src/lib/clientReadiness.js';
 
@@ -343,22 +343,43 @@ await t('aeo: marking a page bundle implemented completes every item on it', asy
 await t('aeo: bundle title count wins when the description was truncated', async () => {
   const impls = [{ client_id: 'x', module: 'aeo', verification_status: 'sent_to_developer',
     page_url: 'https://aeo.test/p', title: 'AEO bundle: 4 optimizations',
-    description: '1. FAQ — why\nImplementation excerpt: cut off' }];
-  const map = aeoDeliveredByPage(impls, 'x');
-  assertEq(map.get('aeo.test/p').bundled, 4, 'bundled count');
-  if (!isAeoOptDelivered(map, 'https://aeo.test/p/', { name: 'Not In Description' })) {
-    throw new Error('every item on a bundled page should read as delivered');
-  }
-  if (isAeoOptDelivered(map, 'https://aeo.test/other', { name: 'FAQ' })) {
-    throw new Error('a bundle must not cover another page');
-  }
+    description: '1. FAQ — why\nImplementation excerpt: cut off', created_at: '2026-05-02T00:00:00Z' }];
+  assertEq(aeoDeliveredByPage(impls, 'x').get('aeo.test/p').bundled, 4, 'bundled count');
+  const d = aeoResultDelivery({ client_id: 'x', url: 'https://aeo.test/p/', generated_at: '2026-05-01T00:00:00Z',
+    optimizations: [{ name: 'FAQ' }, { name: 'Not In Description' }] }, impls);
+  assertEq(d.delivered, 2, 'every item on a bundled page is delivered');
+  assertEq(d.statusOf({ name: 'Not In Description' }), 'sent_to_developer', 'status kept');
+  const other = aeoResultDelivery({ client_id: 'x', url: 'https://aeo.test/other', generated_at: '2026-05-01T00:00:00Z',
+    optimizations: [{ name: 'FAQ' }] }, impls);
+  assertEq(other.delivered, 0, 'a bundle must not cover another page');
+});
+
+await t('aeo: per-page status says WHICH items are verified', async () => {
+  const impls = [{ client_id: 'x', module: 'aeo', verification_status: 'verified',
+    page_url: 'https://aeo.test/p', title: 'Schema', created_at: '2026-05-02T00:00:00Z' }];
+  const d = aeoResultDelivery({ client_id: 'x', url: 'https://aeo.test/p', generated_at: '2026-05-01T00:00:00Z',
+    optimizations: [{ name: 'FAQ' }, { name: 'Schema' }] }, impls);
+  assertEq(d.delivered, 1, 'one of two');
+  assertEq(d.statusOf({ name: 'Schema' }), 'verified', 'schema verified');
+  assertEq(d.statusOf({ name: 'FAQ' }), null, 'faq still open');
+});
+
+await t('aeo: a mark from before a re-run does not cover the new run', async () => {
+  const c = { ...C_FULL_AEO, id: 'rr1' };
+  const aeoResults = { p: { client_id: 'rr1', url: 'https://aeo.test/p', generated_at: '2026-05-10T00:00:00Z',
+    optimizations: [{ name: 'FAQ' }, { name: 'Schema' }] } };
+  const impls = [{ client_id: 'rr1', module: 'aeo', verification_status: 'verified', page_url: 'https://aeo.test/p',
+    title: 'AEO bundle: 2 optimizations', description: '', created_at: '2026-05-03T00:00:00Z' }];
+  const r = aeoPipelineStatus(c, impls, aeoResults, '2026-05', []);
+  if (/verified/.test(r.summary)) throw new Error('stale mark counted: ' + r.summary);
 });
 
 await t('aeo: a failed bundle does not mark its items', async () => {
   const impls = [{ client_id: 'x', module: 'aeo', verification_status: 'failed',
-    page_url: 'https://aeo.test/p', title: 'AEO bundle: 2 optimizations', description: '' }];
-  const map = aeoDeliveredByPage(impls, 'x');
-  if (isAeoOptDelivered(map, 'https://aeo.test/p', { name: 'FAQ' })) throw new Error('failed counted as delivered');
+    page_url: 'https://aeo.test/p', title: 'AEO bundle: 2 optimizations', description: '', created_at: '2026-05-02T00:00:00Z' }];
+  const d = aeoResultDelivery({ client_id: 'x', url: 'https://aeo.test/p', generated_at: '2026-05-01T00:00:00Z',
+    optimizations: [{ name: 'FAQ' }] }, impls);
+  assertEq(d.delivered, 0, 'failed counted as delivered');
 });
 
 await t('pending/failed/inconclusive still do NOT count as delivered', async () => {
