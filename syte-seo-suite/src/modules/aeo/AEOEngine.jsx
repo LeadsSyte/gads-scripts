@@ -8,7 +8,7 @@ import ClientCardsGrid from '../../components/ClientCardsGrid.jsx';
 import MarkImplementedButton from '../../components/MarkImplementedButton.jsx';
 import PipelineView from '../../components/PipelineView.jsx';
 import LogExternalWork from '../../components/LogExternalWork.jsx';
-import { aeoPipelineStatus, monthOptions, aeoDeliveredByPage, isAeoOptDelivered } from '../../lib/pipelineStatus.js';
+import { aeoPipelineStatus, monthOptions, aeoResultDelivery } from '../../lib/pipelineStatus.js';
 import { listAllImplementations, saveAeoResult, loadAeoResults as loadAeoResultsFromDb, deleteAeoResult, saveDeepResult, listDeepResults, deleteDeepResult, listAeoRejections, saveAeoRejection } from '../../lib/supabase.js';
 import { AEO_TYPES, AEO_DEEP_SYSTEM, buildAeoSystem, MAX_OPTS_PER_PAGE } from './aeoTypes.js';
 import { selectTopOptimizations, aeoItemTarget, pagesForTarget } from './aeoSelect.js';
@@ -222,18 +222,22 @@ function OptPageCard({ result: r, onDelete, onVerified, optClient, rejectedOptKe
   }, [rawOpts, rejectedOptKeys]);
   const hiddenCount = rawOpts.length - opts.length;
 
-  // Delivered work on this page logged since this run was generated. Marking
-  // the page card implemented logs one bundle row that covers every item, so
-  // each item below reads as implemented without being marked on its own.
-  const deliveredByPage = React.useMemo(() => {
-    const since = r.generated_at || '';
-    return aeoDeliveredByPage(
-      (implementations || []).filter(i => (i.implemented_at || i.created_at || '') >= since),
-      r.client_id || optClient?.id
-    );
-  }, [implementations, r.generated_at, r.client_id, optClient?.id]);
-  const deliveredOpts = opts.filter(o => isAeoOptDelivered(deliveredByPage, r.url, o)).length;
+  // Which of this page's optimizations are done, and how. Marking the page
+  // card implemented logs one bundle row that covers every item, so each
+  // item below reads as done without being marked on its own. Same rule the
+  // pipeline count uses, so "6 of 7 verified" matches the cards.
+  const delivery = React.useMemo(
+    () => aeoResultDelivery({ ...r, client_id: r.client_id || optClient?.id }, implementations),
+    [r, optClient?.id, implementations]
+  );
+  const statusOf = delivery.statusOf;
+  const deliveredOpts = opts.filter(o => statusOf(o)).length;
   const allDelivered = opts.length > 0 && deliveredOpts === opts.length;
+  const allVerified = allDelivered && opts.every(o => statusOf(o) === 'verified');
+  // A done page hides its action buttons behind "Re-check" so the page that
+  // still needs work is the one with buttons on it.
+  const [showActions, setShowActions] = React.useState(false);
+  const actionsVisible = !allDelivered || showActions;
 
   // Build a single styled HTML block that combines every optimization
   // for this page into one paste-ready chunk. The user asked: "if there
@@ -320,22 +324,33 @@ function OptPageCard({ result: r, onDelete, onVerified, optClient, rejectedOptKe
           <span style={{ fontSize: 11, color: 'var(--teal)', background: 'rgba(0,212,170,.08)', padding: '2px 8px', borderRadius: 12 }}>
             {opts.length} opts
           </span>
-          {deliveredOpts > 0 && (
-            <span style={{ fontSize: 11, color: 'var(--green)', background: 'rgba(0,212,170,.08)', padding: '2px 8px', borderRadius: 12 }}>
-              {allDelivered ? '✓ All implemented' : '✓ ' + deliveredOpts + ' implemented'}
-            </span>
+          {opts.length > 0 && (
+            allDelivered ? (
+              <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--green)', background: 'rgba(0,212,170,.08)', padding: '2px 8px', borderRadius: 12 }}>
+                {allVerified ? '✓ Verified' : '📧 Delivered (sent to developer)'}
+              </span>
+            ) : (
+              <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--orange, #e8a33d)', background: 'rgba(232,163,61,.10)', padding: '2px 8px', borderRadius: 12 }}>
+                {deliveredOpts > 0 ? '⚠ ' + deliveredOpts + ' of ' + opts.length + ' verified' : '⚠ Not verified'}
+              </span>
+            )
           )}
           <button onClick={(e) => { e.stopPropagation(); copyAll(); }} style={{ fontSize: 10, padding: '2px 8px' }}>
             {copiedAll ? 'Copied ✓' : 'Copy all (1 block)'}
           </button>
-          {opts.length > 0 && (
+          {allDelivered && !showActions && (
+            <button onClick={(e) => { e.stopPropagation(); setShowActions(true); }} style={{ fontSize: 10, padding: '2px 8px' }}>
+              Re-check
+            </button>
+          )}
+          {opts.length > 0 && actionsVisible && (
             <span onClick={(e) => e.stopPropagation()}>
               {/* Rendered per client row — pass the row's own client so the
                   push cannot land on whoever the dropdown has selected. */}
               <PushToCmsButton item={combinedPushItem} client={optClient} label="Push all to CMS" />
             </span>
           )}
-          {opts.length > 0 && (
+          {opts.length > 0 && actionsVisible && (
             <span onClick={(e) => e.stopPropagation()}>
               {/* One verify call for the whole page. Description is a
                   combined summary of every opt's name + a snippet of
@@ -379,6 +394,9 @@ function OptPageCard({ result: r, onDelete, onVerified, optClient, rejectedOptKe
                 border: '1px solid ' + typeColors.border
               }}>{o.type || 'content'}</span>
               <span style={{ fontWeight: 600, fontSize: 13 }}>{o.name || o.title || 'Optimization'}</span>
+              <span style={{ fontSize: 10, color: statusOf(o) ? 'var(--green)' : 'var(--orange, #e8a33d)' }}>
+                {statusOf(o) === 'verified' ? '✓ Verified' : statusOf(o) ? '📧 Sent to developer' : 'Not verified yet'}
+              </span>
             </div>
             {o.description && <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>{o.description}</div>}
             {o.check && (
@@ -416,8 +434,10 @@ function OptPageCard({ result: r, onDelete, onVerified, optClient, rejectedOptKe
                 client={optClient}
                 label="Push to CMS"
               />
-              {isAeoOptDelivered(deliveredByPage, r.url, o) ? (
-                <span style={{ fontSize: 11, color: 'var(--green)', padding: '2px 8px' }}>✓ Implemented</span>
+              {statusOf(o) ? (
+                <span style={{ fontSize: 11, color: 'var(--green)', padding: '2px 8px' }}>
+                  {statusOf(o) === 'verified' ? '✓ Verified' : '📧 Sent to developer'}
+                </span>
               ) : (
                 <MarkImplementedButton
                   module="aeo"
@@ -1424,7 +1444,17 @@ export default function AEOEngine({ sub }) {
           onExpandClient={(c) => setExpandedClient(prev => prev === c.id ? null : c.id)}
           expandedId={expandedClient}
           renderExpanded={(c) => {
-            const cResults = getClientResults(c.id);
+            // Pages that still need work first, so the 5-page limit below
+            // never hides the one that's awaiting while done pages show.
+            const isDone = (r) => {
+              const d = aeoResultDelivery(r, aeoImpls);
+              return d.total > 0 && d.delivered >= d.total;
+            };
+            const cResults = getClientResults(c.id)
+              .map((r, i) => ({ r, i, done: isDone(r) }))
+              .sort((a, b) => (a.done - b.done) || (a.i - b.i))
+              .map(x => x.r);
+            const hiddenOpen = cResults.slice(5).filter(r => !isDone(r)).length;
             const cDeep = deepHistory.filter(d => d.client_id === c.id);
             if (cResults.length === 0 && cDeep.length === 0) {
               return <div className="muted" style={{ padding: 12, fontSize: 12 }}>No optimizations yet. Click Run Optimizations to generate.</div>;
@@ -1456,7 +1486,7 @@ export default function AEOEngine({ sub }) {
                     ))}
                     {cResults.length > 5 && (
                       <div className="muted" style={{ padding: '8px 14px', fontSize: 11 }}>
-                        …and {cResults.length - 5} more pages. View all in Latest Results.
+                        …and {cResults.length - 5} more pages{hiddenOpen > 0 ? ' (' + hiddenOpen + ' not verified yet)' : ' (all verified)'}. View all in Latest Results.
                       </div>
                     )}
                   </>

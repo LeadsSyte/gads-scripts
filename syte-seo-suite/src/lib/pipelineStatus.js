@@ -214,48 +214,58 @@ export function technicalPipelineStatus(client, implementations, tasks, month) {
 // so the bundle must count as N items, not 1, and each child item must
 // read as implemented without being marked on its own.
 //
-// Returns Map(pageIdentity -> { labels, bundleLabels, bundled }): `labels` are
-// items marked one by one, `bundleLabels` the items a bundle listed.
-// `bundled` is the item count from the bundle title: the description is
-// capped at 2000 chars when logged, so on a long page some item lines can
-// be cut off and the title is the reliable count.
+// Returns Map(pageIdentity -> entry). `bundled` is the item count from the
+// bundle title: the description is capped at 2000 chars when logged, so on
+// a long page some item lines can be cut off and the title is the reliable
+// count. `bundleStatus` / `labelStatus` keep HOW it was delivered (verified
+// on the page beats handed to the developer) so the card can say which.
 export function aeoDeliveredByPage(implementations, clientId) {
   const map = new Map();
+  const better = (a, b) => (a === 'verified' || b === 'verified') ? 'verified' : (a || b);
   for (const impl of implementations || []) {
     if (!impl || impl.module !== 'aeo') continue;
     if (clientId && impl.client_id !== clientId) continue;
-    if (!isDelivered(impl.verification_status)) continue;
+    const status = impl.verification_status;
+    if (!isDelivered(status)) continue;
     const key = pageIdentity(impl.page_url || '');
-    if (!map.has(key)) map.set(key, { labels: new Set(), bundleLabels: new Set(), bundled: 0 });
+    if (!map.has(key)) map.set(key, { labelStatus: new Map(), bundleLabels: new Set(), bundled: 0, bundleStatus: null });
     const entry = map.get(key);
     const m = String(impl.title || '').match(/^AEO bundle:\s*(\d+)/i);
     if (m) {
       entry.bundled = Math.max(entry.bundled, Number(m[1]));
+      entry.bundleStatus = better(entry.bundleStatus, status);
       for (const l of bundledLabels(impl.description)) entry.bundleLabels.add(normalizeLabel(l));
     } else if (impl.title) {
-      entry.labels.add(normalizeLabel(impl.title));
+      const label = normalizeLabel(impl.title);
+      entry.labelStatus.set(label, better(entry.labelStatus.get(label), status));
     }
   }
   return map;
 }
 
-// Is one optimization on a page delivered — either on its own or as part of
-// a delivered page bundle? A bundle covers every item on its page.
-export function isAeoOptDelivered(deliveredByPage, pageUrl, opt) {
-  const entry = deliveredByPage?.get(pageIdentity(pageUrl || ''));
-  if (!entry) return false;
-  if (entry.bundled > 0) return true;
-  return entry.labels.has(normalizeLabel(opt?.name || opt?.title || ''));
-}
-
-// Number of optimizations delivered across all pages.
-function aeoDeliveredCount(deliveredByPage) {
-  let n = 0;
-  for (const e of deliveredByPage.values()) {
-    n += Math.max(e.bundleLabels.size, e.bundled);
-    for (const l of e.labels) if (!e.bundleLabels.has(l)) n++;
-  }
-  return n;
+// Delivery state of one generated page result: which of its optimizations
+// are done, and how. Only rows logged AFTER the run was generated count — a
+// re-run replaces the page's optimizations, and a mark against last run's
+// items says nothing about the new ones. The pipeline count and the page
+// card both read this, so "6 of 7 verified" always matches what the cards
+// show.
+//   statusOf(opt) -> 'verified' | 'sent_to_developer' | null
+export function aeoResultDelivery(result, implementations) {
+  const opts = Array.isArray(result?.optimizations) ? result.optimizations : [];
+  const page = pageIdentity(result?.url || '');
+  const since = result?.generated_at || '';
+  const relevant = (implementations || []).filter(i =>
+    i && (!result?.client_id || i.client_id === result.client_id) &&
+    pageIdentity(i.page_url || '') === page &&
+    (i.implemented_at || i.created_at || '') >= since
+  );
+  const entry = aeoDeliveredByPage(relevant).get(page);
+  const statusOf = (opt) => {
+    if (!entry) return null;
+    if (entry.bundled > 0) return entry.bundleStatus;
+    return entry.labelStatus.get(normalizeLabel(opt?.name || opt?.title || '')) || null;
+  };
+  return { total: opts.length, delivered: opts.filter(o => statusOf(o)).length, statusOf };
 }
 
 // ─── AEO Engine ──────────────────────────────────────────────────
@@ -311,7 +321,8 @@ export function aeoPipelineStatus(client, implementations, aeoResults, month, de
   const deepCount = monthDeep.length + priorDeep.length;
   const totalWork = totalOpts + deepCount;
   // Count delivered ITEMS, not rows: a page bundle covers all its items.
-  const deliveredCount = Math.min(totalWork, aeoDeliveredCount(aeoDeliveredByPage(monthImpls)));
+  const deliveredCount = Math.min(totalWork,
+    allClientResults.reduce((a, r) => a + aeoResultDelivery(r, implementations).delivered, 0));
   const allImplemented = totalWork > 0 && deliveredCount >= totalWork;
   const isStale = monthResults.length === 0 && monthDeep.length === 0 && (priorResults.length > 0 || priorDeep.length > 0);
 
