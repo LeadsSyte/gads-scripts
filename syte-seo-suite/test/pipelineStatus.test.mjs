@@ -15,7 +15,9 @@
 import {
   contentPipelineStatus,
   technicalPipelineStatus,
-  aeoPipelineStatus
+  aeoPipelineStatus,
+  aeoDeliveredByPage,
+  isAeoOptDelivered
 } from '../src/lib/pipelineStatus.js';
 import { readinessFor } from '../src/lib/clientReadiness.js';
 
@@ -309,6 +311,54 @@ await t('aeo: handovers complete the month\'s optimizations', async () => {
   ];
   const r = aeoPipelineStatus(c, impls, aeoResults, month, []);
   assertEq(r.section, 'verified-on-site', 'section');
+});
+
+await t('aeo: marking a page bundle implemented completes every item on it', async () => {
+  const c = { ...C_FULL_AEO, id: 'ab1' };
+  const month = '2026-05';
+  const aeoResults = {
+    p1: { client_id: 'ab1', url: 'https://aeo.test/a/', generated_at: month + '-01T00:00:00Z',
+          optimizations: [{ name: 'FAQ' }, { name: 'Schema' }] },
+    p2: { client_id: 'ab1', url: 'https://aeo.test/b', generated_at: month + '-01T00:00:00Z',
+          optimizations: [{ name: 'Answer Block' }, { name: 'Stats' }, { name: 'HowTo' }] }
+  };
+  const bundle = (url, names) => ({
+    client_id: 'ab1', module: 'aeo', verification_status: 'verified', page_url: url,
+    title: 'AEO bundle: ' + names.length + ' optimizations',
+    description: 'Combined AEO push.\n\n' + names.map((n, i) => (i + 1) + '. ' + n + ' — why\nImplementation excerpt: x').join('\n\n'),
+    created_at: month + '-02T00:00:00Z'
+  });
+  // Only page 1 marked: 2 of 5 delivered, 3 awaiting.
+  let r = aeoPipelineStatus(c, [bundle('https://aeo.test/a', ['FAQ', 'Schema'])], aeoResults, month, []);
+  assertEq(r.section, 'optimizations-generated', 'one page marked');
+  if (!/2 verified/.test(r.summary) || !/3 awaiting/.test(r.summary)) throw new Error('bundle should count 2 items: ' + r.summary);
+  // Both pages marked at page level only: everything is done.
+  r = aeoPipelineStatus(c, [
+    bundle('https://aeo.test/a', ['FAQ', 'Schema']),
+    bundle('https://www.aeo.test/b/', ['Answer Block', 'Stats', 'HowTo'])
+  ], aeoResults, month, []);
+  assertEq(r.section, 'verified-on-site', 'all pages marked');
+});
+
+await t('aeo: bundle title count wins when the description was truncated', async () => {
+  const impls = [{ client_id: 'x', module: 'aeo', verification_status: 'sent_to_developer',
+    page_url: 'https://aeo.test/p', title: 'AEO bundle: 4 optimizations',
+    description: '1. FAQ — why\nImplementation excerpt: cut off' }];
+  const map = aeoDeliveredByPage(impls, 'x');
+  assertEq(map.get('aeo.test/p').bundled, 4, 'bundled count');
+  if (!isAeoOptDelivered(map, 'https://aeo.test/p/', { name: 'Not In Description' })) {
+    throw new Error('every item on a bundled page should read as delivered');
+  }
+  if (isAeoOptDelivered(map, 'https://aeo.test/other', { name: 'FAQ' })) {
+    throw new Error('a bundle must not cover another page');
+  }
+});
+
+await t('aeo: a failed bundle does not mark its items', async () => {
+  const impls = [{ client_id: 'x', module: 'aeo', verification_status: 'failed',
+    page_url: 'https://aeo.test/p', title: 'AEO bundle: 2 optimizations', description: '' }];
+  const map = aeoDeliveredByPage(impls, 'x');
+  if (isAeoOptDelivered(map, 'https://aeo.test/p', { name: 'FAQ' })) throw new Error('failed counted as delivered');
 });
 
 await t('pending/failed/inconclusive still do NOT count as delivered', async () => {
