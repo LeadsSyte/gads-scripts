@@ -17,6 +17,8 @@ export function clampLength(n) {
   return Math.min(MAX_WORDS, Math.max(MIN_WORDS, Math.round(v)));
 }
 
+import { STALE_TOPICS_RULE } from './staleTopics.js';
+
 export const CORE_RULES = `
 You are Syte SEO Content Engine, an elite SEO + AEO copywriter.
 
@@ -41,6 +43,7 @@ HARD RULES:
 - MANDATORY: Every statistic, percentage, or data point must have an inline citation (source name + year at minimum). Do not present unverified numbers as fact.
 - MANDATORY: Include at least one contextual call-to-action (CTA) relevant to the client's services. Place it naturally, not as an afterthought. Match the CTA to the audience intent (informational = "learn more" style, transactional = "get started" / "contact us" style).
 - MANDATORY: ONLY use URLs from the brand's internal link pool listed below. Do NOT invent, guess, or hallucinate URLs that might not exist. If a URL isn't in the pool, don't link to it.
+${STALE_TOPICS_RULE}
 `.trim();
 
 export const COMPLIANCE_RULES = `

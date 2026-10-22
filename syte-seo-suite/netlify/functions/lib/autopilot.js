@@ -16,6 +16,7 @@
 // stopped, without redoing finished articles.
 
 import { buildSystemPrompt, TAB_PROMPTS, clampLength } from '../../../src/modules/content/prompts.js';
+import { staleTopicReason } from '../../../src/modules/content/staleTopics.js';
 import {
   summarizeResearch, emptyResearch, generateTopicRecommendations,
   buildArticleResearchContext, researchContextForClient
@@ -85,6 +86,7 @@ Mark an ERROR (and verdict "fail") for any of these:
 - It contains leftover writing instructions, placeholders or labels meant for the writer: [brackets], "insert X", "TODO", "AEO Summary Block", "Meta Title:", word counts, notes to the editor.
 - It presents a past year as the current year.
 - It recommends or links to a competitor.
+- It mentions load shedding, Eskom power cuts or rolling blackouts (long over; out of date).
 
 Mark a WARNING (verdict can still be "pass") for: weak or generic sections, repetition, claims about the industry in general that look shaky, tone that does not fit the audience.
 
@@ -240,6 +242,11 @@ export async function runAutopilotStep(clientIn, state, deps) {
         // A checker that could not run is not a pass.
         check = { verdict: 'fail', problems: [{ severity: 'error', issue: 'Independent check did not run: ' + String(e.message || e).slice(0, 200) }], summary: '' };
       }
+
+      // Out-of-date topics (load shedding) hold the article whatever the
+      // checker said: the model adds them unprompted.
+      const stale = staleTopicReason(output);
+      if (stale) check = { ...check, verdict: 'fail', problems: [{ severity: 'error', issue: stale.slice(0, 300) }, ...(check.problems || [])] };
 
       const saved = await deps.saveArticle({
         client_id: client.id,

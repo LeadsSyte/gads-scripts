@@ -8,6 +8,7 @@ import { pushToWordPress } from './wordpressPush.js';
 import { pushToShopify } from './shopifyPush.js';
 import { verifyPushedDraft } from './verifyDraft.js';
 import { fnUrl } from '../../lib/fnUrl.js';
+import { staleTopicReason } from '../content/staleTopics.js';
 
 // Browser default: the queue lives in Supabase via the browser client, and
 // the draft-ready email is a fire-and-forget call. The server-side
@@ -46,6 +47,9 @@ export function unsupportedPushReason(item) {
     return 'Technical and AEO fixes can\'t be applied to a page automatically yet — a push would create a separate draft post instead of changing ' +
       (item.page_url || 'the page') + '. Copy the fix and apply it on the page by hand for now.';
   }
+  const p = item?.payload || {};
+  const stale = staleTopicReason([item?.page_title, p.meta_title, p.meta_description, p.html, p.code].filter(Boolean).join('\n'));
+  if (stale) return 'Not pushed: ' + stale + '. Remove it from the article and push again.';
   return '';
 }
 

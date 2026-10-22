@@ -58,10 +58,11 @@ function hasSegment(q) {
 //   maxPerWinner  number    — cap children per winner (controls fan-out width)
 //   audience      'b2b' | 'b2c' — B2C skips the default B2B segment list
 //   brand         string    — brand-anchored winners are never segment-qualified
+//   brandTerms    from brandTermsFor(client) — children naming the brand are dropped
 export function expandWinnerQuery(query, {
   geos = [], segments, geoDrill = DEFAULT_GEO_DRILL,
   parentProbeId = null, parentTier = 1, maxPerWinner = 6,
-  audience = 'b2b', brand = ''
+  audience = 'b2b', brand = '', brandTerms = null
 } = {}) {
   if (!segments) segments = audience === 'b2c' ? [] : DEFAULT_SEGMENTS;
   const q = String(query || '').trim();
@@ -73,7 +74,7 @@ export function expandWinnerQuery(query, {
     const cq = String(childQuery || '').replace(/\s+/g, ' ').trim();
     const key = norm(cq);
     if (!cq || seen.has(key)) return;
-    if (offTopicReason(cq, { audience, brand })) return;
+    if (offTopicReason(cq, { audience, brand, brandTerms })) return;
     seen.add(key);
     out.push({ query: cq, type: 'qualified', tier: childTier, intent: 'commercial', source: 'fanout', parentProbeId });
   };

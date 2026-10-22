@@ -9,6 +9,7 @@ import {
 } from '../modules/reports/aeoCensus.js';
 import { topQueriesByImpression } from '../modules/technical/gsc.js';
 import { SERVICE_META } from '../lib/serviceAssignments.js';
+import { SEARCH_COUNTRIES, resolveSearchCountry } from '../modules/reports/searchCountry.js';
 
 // Brand voice presets — the dropdown contents. Picking Custom… reveals the
 // free text box so you can still type something bespoke.
@@ -583,6 +584,30 @@ export default function ClientModal({ initial, onClose }) {
               <option value="ecommerce">Ecommerce (tracks transactions + revenue)</option>
               <option value="lead_gen">Lead Generation (tracks form submissions + leads)</option>
             </select>
+          </div>
+          {/* The AI (AEO) report asks every engine from this country, so a UK
+              or US client is measured in its own market. Auto reads it off the
+              website domain (.co.uk, .co.za...) or the Location field. */}
+          <div>
+            <label>Search Country (AI report)</label>
+            {(() => {
+              const auto = resolveSearchCountry({ ...f, search_country: '' });
+              return (
+                <>
+                  <select value={f.search_country || ''} onChange={e => update('search_country', e.target.value)}>
+                    <option value="">
+                      {auto ? `Auto: ${auto.name} (from ${auto.source === 'website' ? 'website domain' : 'Location'})` : 'Auto: not detected (no location sent)'}
+                    </option>
+                    {SEARCH_COUNTRIES.map(c => <option key={c.code} value={c.code}>{c.name}</option>)}
+                  </select>
+                  {!f.search_country && !auto && (
+                    <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 4 }}>
+                      Couldn't tell the country from the website or Location. Pick one so the AI engines search from the client's market.
+                    </div>
+                  )}
+                </>
+              );
+            })()}
           </div>
           {REPORTING_FIELDS.map(([k, label, type]) => (
             <Field key={k} k={k} label={label} type={type} value={f[k]} onChange={update} />

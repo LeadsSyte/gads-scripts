@@ -40,6 +40,7 @@ import { runSnapshot, snapshotPreflight } from './aeoRunner.js';
 import { CORE_ENGINE_IDS, ALL_ENGINES } from './aeoEngines.js';
 import { SETTINGS_EVENT } from '../../lib/settings.js';
 import { compareSnapshots, rankBrandWithCompetitors, normalizeSnapshot } from './aeoCompare.js';
+import { withoutBrandedPrompts } from './probeRelevance.js';
 import { ensureToken, SCOPES, getToken, switchAccount, silentRefresh, getCurrentEmail, getTokenForEmail, TOKEN_EVENT } from '../technical/googleAuth.js';
 import { serverAuthEnabled } from '../../lib/googleServerAuth.js';
 import { fetchReportData } from './reportData.js';
@@ -504,9 +505,12 @@ export default function MonthlyReport({ initialMonth }) {
     // saved snapshot for this month so the report renders even without
     // a fresh probe in the same session. Normalize either way so legacy
     // snapshots get derived visibility / detection / keyword_wins fields.
-    const aeoProbe = includeAeo ? normalizeSnapshot(liveAeoProbe || aeoSnap || null) : null;
+    // Branded prompts never reach the client, even from a snapshot measured
+    // before they were excluded (probeRelevance.js).
+    const unbranded = (s) => s ? withoutBrandedPrompts(s, client).snapshot : s;
+    const aeoProbe = includeAeo ? normalizeSnapshot(unbranded(liveAeoProbe || aeoSnap || null)) : null;
     const aeoCompare = aeoProbe
-      ? compareSnapshots(aeoProbe, normalizeSnapshot(previousAeoSnap))
+      ? compareSnapshots(aeoProbe, normalizeSnapshot(unbranded(previousAeoSnap)))
       : null;
     const aeoRanking = aeoProbe
       ? rankBrandWithCompetitors(aeoProbe, client.name)
@@ -578,7 +582,7 @@ export default function MonthlyReport({ initialMonth }) {
       if (groundedClient !== client && groundedClient.aeo_probes) saveClient(groundedClient).catch(() => {});
       const probeResult = await runSnapshot(groundedClient, {
         retrievalOnly: true, // headline is retrieval-first; skip the parametric pass to halve engine calls
-        expandWinners: true, winnerTarget: 30, maxExpansionQueries: 40, // spider-web long-tail off every winner
+        expandWinners: true, winnerTarget: 30, maxExpansionQueries: 40, newPrompts: 15, // spider-web long-tail off every winner
         previousSnapshot: previousAeoSnap, // last month's long-tail prompts are this month's starting point
         onRuns: (records, raws) => persistAeoRuns(records, raws).catch(() => {}),
         onProgress: (p) => { if (!p.index) probeStartRef.current = Date.now(); setPhase('aeo-probe'); setAeoProgress(p); }

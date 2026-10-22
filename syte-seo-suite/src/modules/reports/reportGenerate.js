@@ -11,6 +11,7 @@ import { ALICE_SEO_SYSTEM, MICROSITE_SEO_SYSTEM, QA_SEO_SYSTEM, buildAlicePayloa
   ALICE_AEO_SYSTEM, MICROSITE_AEO_SYSTEM, QA_AEO_SYSTEM, buildAeoPayload } from './reportPrompts.js';
 import { compareSnapshots, rankBrandWithCompetitors } from './aeoCompare.js';
 import { sanitizeEmail } from './sanitize.js';
+import { withoutBrandedPrompts } from './probeRelevance.js';
 
 export const REPORT_MODEL = 'claude-sonnet-4-6';
 
@@ -125,7 +126,11 @@ export async function generateSeoReport({ client, form, workSummary, monthLabel,
 // Build the AEO report from a snapshot (runSnapshot's result) and, when there
 // is one, the previous month's. onPhase('alice' | 'micro' | 'qa').
 // Returns { payload, aliceText, email, micro, qa, compare, ranking, brandRank }.
-export async function generateAeoReport({ client, probe, previousSnap = null, monthLabel, previousMonthLabel = null, complete = claudeComplete, onPhase }) {
+export async function generateAeoReport({ client, probe: rawProbe, previousSnap: rawPrevious = null, monthLabel, previousMonthLabel = null, complete = claudeComplete, onPhase }) {
+  // The client never sees a branded prompt. A fresh run has none; last
+  // month's snapshot may have been measured before they were excluded.
+  const probe = withoutBrandedPrompts(rawProbe, client).snapshot;
+  const previousSnap = rawPrevious ? withoutBrandedPrompts(rawPrevious, client).snapshot : null;
   const compare = compareSnapshots(probe, previousSnap);
   const ranking = rankBrandWithCompetitors(probe, client.name);
   const brandRank = ranking.findIndex(r => r.isBrand) + 1;
