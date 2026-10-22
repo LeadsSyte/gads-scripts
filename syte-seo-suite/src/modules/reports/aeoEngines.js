@@ -18,6 +18,19 @@ import { fetchWithTimeout } from '../../lib/http.js';
 
 const MAX_TOKENS = 500;
 
+// Where the census searches from (searchCountry.js). `country` is
+// { code: 'GB', name: 'United Kingdom' } or null. With a country, each engine
+// gets it twice: as the web search tool's approximate user location (so the
+// search itself is run from that market) and as a one-line system note (the
+// consumer apps know roughly where their user is; the bare API does not).
+// With no country, the request is exactly what it was before.
+export function locationNote(country) {
+  return country?.name ? `The user is located in ${country.name}.` : '';
+}
+function userLocation(country) {
+  return country?.code ? { type: 'approximate', country: country.code } : null;
+}
+
 const serverKeys = () => globalThis.__SYTE_AEO_KEYS || null;
 
 // Per-engine request timeout. A single stalled provider must not hang the
@@ -89,9 +102,15 @@ export const chatgpt = {
   // manually on chatgpt.com), but takes longer. Returns a normalised
   // { text, raw } on success or { error, status, rateLimited } on failure so
   // the caller can decide whether to retry shallower.
-  async _searchAt(query, contextSize, openaiKey) {
+  async _searchAt(query, contextSize, openaiKey, country = null) {
     const reqBody = { model: 'gpt-4o', input: query, max_output_tokens: MAX_TOKENS };
-    if (contextSize) reqBody.tools = [{ type: 'web_search_preview', search_context_size: contextSize }];
+    if (country?.name) reqBody.instructions = locationNote(country);
+    if (contextSize) {
+      const tool = { type: 'web_search_preview', search_context_size: contextSize };
+      const loc = userLocation(country);
+      if (loc) tool.user_location = loc;
+      reqBody.tools = [tool];
+    }
     const direct = serverKeys();
     const res = direct
       ? await fetchJsonWithRetry('https://api.openai.com/v1/responses', {
@@ -124,7 +143,7 @@ export const chatgpt = {
     }
     return { text: parts.join('\n').trim(), raw: data };
   },
-  async ask(query, { search = true } = {}) {
+  async ask(query, { search = true, country = null } = {}) {
     const { openaiKey } = serverKeys() ? {} : loadSettings();
     const searchMode = search ? 'search_on' : 'search_off';
     // A 401/403 is a bad / expired / forbidden key (or a project without
@@ -138,7 +157,7 @@ export const chatgpt = {
     try {
       if (!search) {
         // Parametric: no web search, straight to the model.
-        const r = await this._searchAt(query, null, openaiKey);
+        const r = await this._searchAt(query, null, openaiKey, country);
         if (r.error) return { ...r, configError: isAuth(r) || undefined, searchMode };
         return { text: r.text, raw: r.raw, model: 'gpt-4o', searchMode };
       }
@@ -152,9 +171,9 @@ export const chatgpt = {
       // rejected for the model/project), so ChatGPT returns SOMETHING instead
       // of erroring to zero across the whole run.
       let usedMode = searchMode;
-      let r = await this._searchAt(query, 'low', openaiKey);
+      let r = await this._searchAt(query, 'low', openaiKey, country);
       if (r.error && !r.rateLimited && !isAuth(r)) {
-        const p = await this._searchAt(query, null, openaiKey);
+        const p = await this._searchAt(query, null, openaiKey, country);
         if (!p.error) { r = p; usedMode = 'search_off'; }   // parametric fallback succeeded
       }
       if (r.error) {
@@ -248,9 +267,13 @@ export const gemini = {
   // A personal Google AI key OR the deployment's built-in key (served by the
   // gemini-proxy from GOOGLE_AI_KEY) makes Gemini available to everyone.
   isConfigured: () => serverKeys() ? !!serverKeys().google : (!!loadSettings().googleAiKey || hasBuiltinEngine('gemini')),
-  async ask(query) {
+  async ask(query, { country = null } = {}) {
     const { googleAiKey } = serverKeys() ? {} : loadSettings();
-    const body = JSON.stringify({ contents: [{ parts: [{ text: query }] }] });
+    const payload = { contents: [{ parts: [{ text: query }] }] };
+    // Gemini's API takes no search location, so the country rides as a
+    // system instruction only.
+    if (country?.name) payload.systemInstruction = { parts: [{ text: locationNote(country) }] };
+    const body = JSON.stringify(payload);
     const chain = [GEMINI_PRIMARY, ...GEMINI_FALLBACKS];
     let lastErr = null;
     for (const model of chain) {
@@ -287,7 +310,7 @@ export const claude = {
   retrievalNative: false,
   supportsSearchOff: true,
   isConfigured: () => serverKeys() ? !!serverKeys().anthropic : !!getStoredApiKey(),
-  async ask(query, { search = false } = {}) {
+  async ask(query, { search = false, country = null } = {}) {
     const key = serverKeys() ? serverKeys().anthropic : getStoredApiKey();
     const searchMode = search ? 'search_on' : 'search_off';
     const body = {
@@ -295,7 +318,13 @@ export const claude = {
       max_tokens: MAX_TOKENS,
       messages: [{ role: 'user', content: query }]
     };
-    if (search) body.tools = [{ type: 'web_search_20250305', name: 'web_search', max_uses: 3 }];
+    if (country?.name) body.system = locationNote(country);
+    if (search) {
+      const tool = { type: 'web_search_20250305', name: 'web_search', max_uses: 3 };
+      const loc = userLocation(country);
+      if (loc) tool.user_location = loc;
+      body.tools = [tool];
+    }
     try {
       const res = await fetchJsonWithRetry('https://api.anthropic.com/v1/messages', {
         method: 'POST',

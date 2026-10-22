@@ -46,6 +46,15 @@ export async function listClients() {
   return JSON.parse(localStorage.getItem(LS_PREFIX + 'clients') || '[]');
 }
 
+// A column the app writes before its migration was run comes back as a
+// PostgREST "Could not find the 'x' column" error. Name the file to run.
+const COLUMN_MIGRATIONS = { search_country: 'supabase-schema-search-country.sql' };
+function explainMissingColumn(error) {
+  const m = String(error?.message || '').match(/'([a-z_]+)' column/);
+  const file = m && COLUMN_MIGRATIONS[m[1]];
+  return file ? new Error(`The "${m[1]}" field needs a database update: run ${file} in the Supabase SQL Editor, then save again.`) : error;
+}
+
 export async function upsertClient(client) {
   if (supabase) {
     const payload = { ...client, updated_at: new Date().toISOString() };
@@ -56,7 +65,7 @@ export async function upsertClient(client) {
         .eq('id', payload.id)
         .select()
         .single();
-      if (error) throw error;
+      if (error) throw explainMissingColumn(error);
       return data;
     }
     const { data, error } = await supabase
@@ -64,7 +73,7 @@ export async function upsertClient(client) {
       .insert(payload)
       .select()
       .single();
-    if (error) throw error;
+    if (error) throw explainMissingColumn(error);
     return data;
   }
   const list = JSON.parse(localStorage.getItem(LS_PREFIX + 'clients') || '[]');

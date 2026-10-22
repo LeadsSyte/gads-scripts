@@ -208,8 +208,9 @@ RULES:
   heavy-duty pallet racking from in Johannesburg?" over "pallet racking jhb".
 - Comparison prompts may reference the named competitors above.
 - Include the location in the local bucket (AI uses it for local recs).
-- Include 1-2 brand-name prompts (in comparison or awareness) to test brand
-  knowledge, but keep the census overwhelmingly NON-branded.
+- NEVER name the brand itself (or its website) in any prompt. Branded prompts
+  are free wins that prove nothing and are dropped before the census runs.
+  Competitor names are fine.
 - Each prompt unique, natural, 6-18 words.
 
 Return ONLY JSON in this exact shape:

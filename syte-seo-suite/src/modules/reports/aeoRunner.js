@@ -26,7 +26,8 @@ import {
 } from './aeoProbes.js';
 import { buildCitationGaps } from './aeoCitationGaps.js';
 import { expandWinnerQuery } from './winnerExpansion.js';
-import { clientAudience, offTopicReason } from './probeRelevance.js';
+import { relevanceFor, offTopicReason } from './probeRelevance.js';
+import { resolveSearchCountry } from './searchCountry.js';
 import { carriedPromptsFrom, stampLongTail, carryForwardSummary, DEFAULT_MAX_CARRIED } from './aeoCarryForward.js';
 
 const DEFAULT_ITERATIONS = 3;
@@ -123,12 +124,15 @@ function retrievalPreferred(runs) {
 // Resolve the probe set the snapshot runs against. Active probes that have
 // nothing to do with the client's business (B2B phrasing on a consumer brand,
 // a segment bolted onto a question — see probeRelevance.js) are left out, so
-// they are never probed or reported even if an older grid stored them.
+// they are never probed or reported even if an older grid stored them. The
+// same goes for branded prompts (ones that name the client): the client must
+// never see a branded query in the report. Reverse probes are exempt; they
+// name the brand by design and are never scored or shown.
 export function resolveProbes(client, { now, includeReverse = true } = {}) {
   const stored = parseProbes(client);
   const base = (stored && stored.length) ? stored : migrateClientProbes(client, { now });
-  const ctx = { audience: clientAudience(client), brand: client?.name };
-  const act = activeProbes(base).filter(p => !offTopicReason(p.query, ctx));
+  const ctx = relevanceFor(client);
+  const act = activeProbes(base).filter(p => p.type === 'reverse' || !offTopicReason(p.query, ctx));
   const reverse = includeReverse ? reverseProbesFor(client, { now }) : [];
   return { all: base, active: act, scorable: act.filter(p => p.type !== 'reverse'), reverse };
 }
@@ -242,7 +246,7 @@ export async function runSnapshot(client, opts = {}) {
   // Last month's long-tail prompts, minus anything this run already asks
   // (the tracked set, or children an earlier part of this run carried over).
   const carriedChildren = carry?.discovered || [];
-  const relevance = { audience: clientAudience(client), brand: client.name };
+  const relevance = relevanceFor(client);
   const priorCands = carriedPromptsFrom(previousSnapshot, {
     max: maxCarried,
     exclude: runnableProbes.concat(carriedChildren).map(p => p.query)
@@ -255,6 +259,9 @@ export async function runSnapshot(client, opts = {}) {
   const N = Math.max(1, Math.min(10, Number(iterations) || DEFAULT_ITERATIONS));
   const competitorList = parseCompetitors(client.competitors);
   const brandName = client.name;
+  // Every engine searches from the client's market (searchCountry.js).
+  const searchCountry = resolveSearchCountry(client);
+  const country = searchCountry ? { code: searchCountry.code, name: searchCountry.name } : null;
 
   // Precount for progress.
   let total = 0;
@@ -307,7 +314,7 @@ export async function runSnapshot(client, opts = {}) {
       }
       onProgress?.({ phase: 'query', engine: eng.label, query: probe.query, mode, index: done, total, iteration: i + 1, iterations: N });
       const search = mode === 'search_on';
-      const resp = await askWithBackoff(eng, probe.query, { search }, { retries, baseMs: retryDelayMs, sleep });
+      const resp = await askWithBackoff(eng, probe.query, { search, country }, { retries, baseMs: retryDelayMs, sleep });
       done++;
       onProgress?.({ phase: 'done', engine: eng.label, query: probe.query, mode, index: done, total });
       // A config / bad-key error is permanent — retrying is futile, so bench it
@@ -441,7 +448,7 @@ export async function runSnapshot(client, opts = {}) {
         const kids = expandWinnerQuery(parent.query, {
           geos: expandGeos, segments: expandSegments,
           parentProbeId: parent.id, parentTier: parent.tier,
-          audience: relevance.audience, brand: relevance.brand
+          audience: relevance.audience, brand: relevance.brand, brandTerms: relevance.brandTerms
         });
         for (const k of kids) {
           const nk = normQ(k.query);
@@ -741,6 +748,8 @@ export async function runSnapshot(client, opts = {}) {
       temperature, extraction_temperature: 0
     })),
     run_config: { iterations: N, concurrency, retries, temperature },
+    // Where the engines searched from (null = no location sent).
+    search_country: searchCountry,
     run_modes_used: [...new Set(groups.map(g => g.mode))],
 
     // signals for the fan-out loop (Stage 4)

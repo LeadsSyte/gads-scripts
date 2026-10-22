@@ -23,6 +23,7 @@
 // objects ({ tier, type, intent, query, theme, source }) ready for addProbes().
 
 import { clientAudience } from './probeRelevance.js';
+import { resolveSearchCountry } from './searchCountry.js';
 
 // ---- profile normalisation ------------------------------------------------
 
@@ -132,7 +133,10 @@ function tier1(p) {
   const cmpSvc = p.services[0] || svc[0] || '';
   if (c0) push('comparison', 'comparison', 'Comparison', `Alternatives to ${c0} for ${cmpSvc}${geo ? ' in ' + geo : ''}`);
   if (c1) push('comparison', 'comparison', 'Comparison', `Alternatives to ${c1} for ${p.services[3] || cmpSvc} work`);
-  if (c0 && c1 && p.brand) push('comparison', 'comparison', 'Comparison', `${c0} vs ${p.brand} vs ${c1} for ${cmpSvc}`);
+  // Head-to-head without the client in it: a prompt that names the client is
+  // branded and never probed (probeRelevance.js), so the brand has to earn its
+  // way into this answer.
+  if (c0 && c1) push('comparison', 'comparison', 'Comparison', `${c0} vs ${c1} for ${cmpSvc}, which is better or is there a better option?`);
 
   // Niche moonshots — industry-anchored, high-intent (B2B only).
   for (const ind of (b2c ? [] : p.industries.slice(0, 4))) {
@@ -254,6 +258,7 @@ function pickByHint(phrases, hint, limit) {
 // with none supplied you still get a (thin) profile that produces a valid grid.
 export function deriveGridProfile(client = {}, { sitePhrases = [], gscQueries = [], llmProfile = null } = {}) {
   const geo = String(client.geo || client.country || '').split(/[,/]/)[0].trim()
+    || (resolveSearchCountry(client)?.name || '')
     || guessGeoFromText([...(sitePhrases || []), ...(gscQueries || [])].join(' '));
   const competitors = (Array.isArray(client.competitors)
     ? client.competitors

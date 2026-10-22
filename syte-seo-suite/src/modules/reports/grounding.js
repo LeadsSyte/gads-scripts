@@ -17,7 +17,7 @@
 // module imports nothing that touches the browser.
 
 import { parseProbes, migrateClientProbes, addProbes, probesToProbeList } from './aeoProbes.js';
-import { clientAudience, offTopicReason } from './probeRelevance.js';
+import { relevanceFor, offTopicReason } from './probeRelevance.js';
 
 // A gold build below this size, or covering fewer than this many probe types,
 // is treated as a thin/failed derivation — not something to retire real probes
@@ -74,8 +74,8 @@ export async function groundClientForAeo(client, { gscQueries = [], buildGold = 
   // Retire active probes that don't fit the client's business (a B2B grid
   // stored for a consumer brand). The runner already skips them, so this
   // doesn't shrink what actually runs — it lets a fresh grid replace them.
-  const ctx = { audience: clientAudience(client), brand: client.name };
-  const offTopic = parsed.filter(p => p && p.active !== false && offTopicReason(p.query, ctx));
+  const ctx = relevanceFor(client);
+  const offTopic = parsed.filter(p => p && p.active !== false && p.type !== 'reverse' && offTopicReason(p.query, ctx));
   const existing = offTopic.length
     ? parsed.map(p => offTopic.includes(p) ? { ...p, active: false } : p)
     : parsed;
