@@ -11,7 +11,8 @@
 // caller through the `onRuns` callback for persistence, exactly like the UI
 // already owns saveAeoSnapshot.
 
-import { ALL_ENGINES, activeEngines, resolveRunModes } from './aeoEngines.js';
+import { ALL_ENGINES, activeEngines, resolveRunModes, claude as claudeEngine } from './aeoEngines.js';
+import { discoverNewPrompts } from './aeoNewPrompts.js';
 import { hydrateSettingsFromRemote } from '../../lib/settings.js';
 import { extractRun, extractCitedUrls, hashResponse } from './aeoExtract.js';
 import { detectBrand, countCitations } from './brandDetection.js';
@@ -200,6 +201,11 @@ export async function runSnapshot(client, opts = {}) {
     maxExpansionQueries = 60,   // hard cap on extra queries the expansion may add
     expandGeos = [],            // extra cities/regions to drill into
     expandSegments,            // buyer segments/industries to qualify by (defaults inside winnerExpansion)
+    // New prompts (aeoNewPrompts.js): this many prompts the census has never
+    // asked are written and probed every run, so carrying last month forward
+    // never makes the census a closed loop. 0 = off.
+    newPrompts = 0,
+    discover = null,           // async ({ client, country, known, signals, count, relevance }) => [{ query, intent }]
     // Carry-forward: last month's snapshot. Its long-tail prompts (winners
     // first, recent misses once more) are re-run as this month's starting
     // point, so the web grows month to month instead of restarting.
@@ -417,6 +423,60 @@ export async function runSnapshot(client, opts = {}) {
   // deeper long-tail (geo + segment) and recurse on winners-of-winners until we
   // hit the volume target, run out of new winners, or exhaust the query budget.
   const discoveredProbes = [...carriedChildren, ...priorProbes];   // long-tail prompts we actually probed (for the report, approval queue and next month)
+  let seq = carriedChildren.length;
+
+  // ── New prompts ───────────────────────────────────────────────
+  // Steered by what the engines said about the brand in this run; checked
+  // against everything tracked, carried or already asked. Runs once per
+  // snapshot (a resumed run finds them in carry.discovered).
+  let newDone = !!carry?.newDone;
+  let newFound = carry?.newFound || 0;
+  if (newPrompts > 0 && !newDone && !unfinished && !timeUp()) {
+    newDone = true;
+    const signals = { segmentLabels: [], reasonPhrases: [], competitorsNamed: [] };
+    for (const g of groups) for (const r of g.runs) {
+      if (!r.appeared && !(r.competitorsNamed || []).length) continue;
+      if (r.segmentLabel) signals.segmentLabels.push(r.segmentLabel);
+      if (r.reasonPhrase) signals.reasonPhrases.push(r.reasonPhrase);
+      for (const c of (r.competitorsNamed || [])) signals.competitorsNamed.push(c);
+    }
+    const known = [...new Set([
+      ...allProbes.map(p => p.query),
+      ...runnableProbes.concat(carriedChildren, priorProbes).map(p => p.query),
+      ...(previousSnapshot?.expansion_probes || []).map(p => p.query),
+      ...(previousSnapshot?.probe_results || []).map(p => p.query)
+    ].filter(Boolean))];
+    const askNew = discover || (claudeEngine.isConfigured()
+      ? (args) => discoverNewPrompts({ ...args, ask: (prompt) => claudeEngine.ask(prompt, { search: false, maxTokens: 2000 }) })
+      : null);
+    let found = [];
+    if (askNew) {
+      try { found = await askNew({ client, country, known, signals, count: newPrompts, relevance }); }
+      catch (e) { console.warn('[aeo] new prompt discovery failed:', e.message); }
+    }
+    const fresh = [];
+    const seen = new Set(known.map(normQ));
+    for (const c of (found || [])) {
+      const q = String(c?.query || '').trim();
+      if (!q || seen.has(normQ(q)) || offTopicReason(q, relevance)) continue;
+      seen.add(normQ(q));
+      const probe = {
+        id: `${client.id}-FO${++seq}`, tier: 3, type: 'qualified', intent: INTENT_IDS.includes(c.intent) ? c.intent : 'commercial',
+        query: q, source: 'new', parentProbeId: null, active: true, runMode: 'search_on'
+      };
+      fresh.push(probe);
+      discoveredProbes.push(probe);
+      if (fresh.length >= newPrompts) break;
+    }
+    newFound += fresh.length;
+    if (fresh.length) {
+      for (const probe of fresh)
+        for (const eng of engines)
+          total += runModesFor(probe.runMode, eng, retrievalOnly).length * N;
+      groups = groups.concat(await sweep(fresh));
+    }
+  }
+
   let expansionUsed = carry?.expansionUsed || 0;
   let expansionDepth = carry?.expansionDepth || 0;
   const expandedQueries = new Set(carry?.expandedQueries || []);
@@ -426,8 +486,7 @@ export async function runSnapshot(client, opts = {}) {
       for (const g of grps) if (g.runs.some(r => r.appeared)) ids.add(g.probe.id);
       return ids;
     };
-    const probedNorm = new Set(runnableProbes.concat(carriedChildren, priorProbes).map(p => normQ(p.query)));
-    let seq = carriedChildren.length;
+    const probedNorm = new Set(runnableProbes.concat(carriedChildren, priorProbes).concat(discoveredProbes).map(p => normQ(p.query)));
     while (expansionDepth < maxExpansionDepth) {
       if (timeUp()) { unfinished = true; break; }
       const winners = [...winningIds(groups)];
@@ -489,7 +548,8 @@ export async function runSnapshot(client, opts = {}) {
         runRecords,
         discovered: discoveredProbes,
         expansionUsed, expansionDepth,
-        expandedQueries: [...expandedQueries]
+        expandedQueries: [...expandedQueries],
+        newDone, newFound
       }
     };
   }
@@ -778,6 +838,9 @@ export async function runSnapshot(client, opts = {}) {
     // next month can carry it forward. expansion_count = new ones only.
     expansion_probes: longTail,
     expansion_count: longTail.filter(p => p.source !== 'carried').length,
+    // Prompts written fresh this month (never asked before), on top of the
+    // carried ones; they carry forward like any long-tail prompt.
+    new_prompts_count: newFound,
     carry_forward: carryForwardSummary(longTail, carriedFromMonth),
 
     per_query: perQuery,

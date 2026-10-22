@@ -310,12 +310,12 @@ export const claude = {
   retrievalNative: false,
   supportsSearchOff: true,
   isConfigured: () => serverKeys() ? !!serverKeys().anthropic : !!getStoredApiKey(),
-  async ask(query, { search = false, country = null } = {}) {
+  async ask(query, { search = false, country = null, maxTokens = MAX_TOKENS } = {}) {
     const key = serverKeys() ? serverKeys().anthropic : getStoredApiKey();
     const searchMode = search ? 'search_on' : 'search_off';
     const body = {
       model: 'claude-haiku-4-5-20251001',
-      max_tokens: MAX_TOKENS,
+      max_tokens: maxTokens,
       messages: [{ role: 'user', content: query }]
     };
     if (country?.name) body.system = locationNote(country);

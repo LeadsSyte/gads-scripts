@@ -213,7 +213,7 @@ export async function runAeoReportScan(client, state, deps, { force = false } = 
     const result = await snapshot(working, {
       engines, extract: deps.extract, carry, previousSnapshot,
       retrievalOnly: true,
-      expandWinners: true, winnerTarget: 30, maxExpansionQueries: 40,
+      expandWinners: true, winnerTarget: 30, maxExpansionQueries: 40, newPrompts: 15,
       timeLeftMs: deps.timeLeftMs,
       onRuns: (records, raws) => deps.persistRuns ? deps.persistRuns(records, raws).catch(() => {}) : null,
       onProgress: null

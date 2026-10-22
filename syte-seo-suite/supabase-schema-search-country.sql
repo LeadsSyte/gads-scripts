@@ -17,3 +17,6 @@ alter table syte_suite_clients
 -- ({ code, name, source }), so a month-on-month change of market is visible.
 -- Optional: an AEO History insert drops a column the database lacks.
 alter table syte_suite_aeo_history add column if not exists search_country jsonb;
+
+-- How many never-asked prompts each monthly snapshot added (aeoNewPrompts.js).
+alter table syte_suite_aeo_history add column if not exists new_prompts_count int;
