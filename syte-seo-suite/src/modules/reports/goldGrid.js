@@ -128,15 +128,17 @@ function tier1(p) {
     if (nicheIndustry) push('qualified', 'commercial', 'Qualified money', `Who should implement ${s0} for ${adj ? 'an ' + adj : 'an'} ${singular(nicheIndustry)}`);
   }
 
-  // Comparison — must name real competitors.
-  const c0 = p.competitors[0], c1 = p.competitors[1];
+  // Comparison — buyer comparisons that name NO company. A prompt naming a
+  // competitor ("Alternatives to Rival for X", "Rival A vs Rival B") or the
+  // client is never probed (probeRelevance.js): it asks about a brand the
+  // buyer already has in mind, not which brand AI recommends.
   const cmpSvc = p.services[0] || svc[0] || '';
-  if (c0) push('comparison', 'comparison', 'Comparison', `Alternatives to ${c0} for ${cmpSvc}${geo ? ' in ' + geo : ''}`);
-  if (c1) push('comparison', 'comparison', 'Comparison', `Alternatives to ${c1} for ${p.services[3] || cmpSvc} work`);
-  // Head-to-head without the client in it: a prompt that names the client is
-  // branded and never probed (probeRelevance.js), so the brand has to earn its
-  // way into this answer.
-  if (c0 && c1) push('comparison', 'comparison', 'Comparison', `${c0} vs ${c1} for ${cmpSvc}, which is better or is there a better option?`);
+  if (cmpSvc) {
+    push('comparison', 'comparison', 'Comparison', `How do the leading ${cmpSvc} ${b2c ? 'brands' : 'providers'}${geo ? ' in ' + geo : ''} compare, and which is best?`);
+    push('comparison', 'comparison', 'Comparison', `What should I compare when choosing ${b2c ? 'where to buy ' + cmpSvc : 'a ' + cmpSvc + ' provider'}${geo ? ' in ' + geo : ''}, and who comes out on top?`);
+  }
+  const cmpSvc2 = p.services[3] || p.services[1] || '';
+  if (cmpSvc2 && cmpSvc2 !== cmpSvc) push('comparison', 'comparison', 'Comparison', `Which ${cmpSvc2} ${b2c ? 'brand' : 'provider'} is better value${geo ? ' in ' + geo : ''}?`);
 
   // Niche moonshots — industry-anchored, high-intent (B2B only).
   for (const ind of (b2c ? [] : p.industries.slice(0, 4))) {

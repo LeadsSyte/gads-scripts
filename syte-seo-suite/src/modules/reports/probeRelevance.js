@@ -12,7 +12,9 @@
 // Cuddledown duvets ethically sourced?", "Acme vs Rival for X") is a free win:
 // the engine names the brand because the user did. The report measures whether
 // AI recommends the client when a buyer has NOT named it, so those prompts are
-// never probed or reported. Reverse probes ("What is Acme known for?") are the
+// never probed or reported. The same goes for prompts that name a competitor
+// ("Mattress King alternatives for pillows", "Rival A vs Rival B"): the census
+// asks what a buyer asks before they have a brand in mind. Reverse probes ("What is Acme known for?") are the
 // one exception: they are instruments, never scored or shown, and the runner
 // adds them itself.
 //
@@ -49,11 +51,14 @@ const QUALIFIER_AFTER_SENTENCE = /[?.!]\s*for\s+\S/i;
 // Why `query` is off-topic for this client, or null if it belongs.
 //   audience  'b2b' | 'b2c'
 //   brand     client name — a brand-anchored prompt never takes a segment suffix
-//   brandTerms  from brandTermsFor(client): prompts naming the brand are off-topic
-export function offTopicReason(query, { audience = 'b2b', brand = '', brandTerms = null } = {}) {
+//   brandTerms       from brandTermsFor(client): prompts naming the brand are off-topic
+//   competitorTerms  from competitorTermsFor(client): so are prompts naming a competitor
+export function offTopicReason(query, { audience = 'b2b', brand = '', brandTerms = null, competitorTerms = null } = {}) {
   const q = String(query || '').replace(/\s+/g, ' ').trim();
   if (!q) return null;
   if (brandTerms && namesBrand(q, brandTerms)) return 'names the client brand (branded prompt)';
+  const comp = competitorTerms && namedCompetitor(q, competitorTerms);
+  if (comp) return 'names a competitor (' + comp + ')';
   if (QUALIFIER_AFTER_SENTENCE.test(q)) return 'qualifier appended after a complete question';
   const b = String(brand || '').trim().toLowerCase();
   if (b && q.toLowerCase().includes(b) && B2B_SEGMENT.test(q)) return 'buyer segment appended to a brand question';
@@ -94,8 +99,13 @@ export function brandTermsFor(client = {}) {
   if (nameToks.length) phrases.add(nameToks.join(' '));
   const concat = nameToks.join('');
   if (concat.length >= 5) words.add(concat);
-  const isGeneric = (t) => generic.has(t) || generic.has(t.replace(/s$/, '')) || generic.has(t + 's');
-  for (const t of nameToks) if (t.length >= 4 && !isGeneric(t) && !/^\d+$/.test(t)) words.add(t);
+  const isGeneric = (t) => generic.has(t) || generic.has(t.replace(/e?s$/, '')) || generic.has(t + 's') || generic.has(t + 'es');
+  // A single word counts on its own only when it IS the name ("Cuddledown",
+  // "Sealy") or the website's own domain word ("krost" for Krost Shelving).
+  // An ordinary word inside a longer name ("mattress" in The Mattress Company)
+  // is how buyers ask, not a brand.
+  const sig = nameToks.filter(t => t !== 'the');
+  if (sig.length === 1 && sig[0].length >= 4 && !/^\d+$/.test(sig[0]) && !isGeneric(sig[0])) words.add(sig[0]);
   const host = String(client?.url || '').toLowerCase().replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/[/:?#].*$/, '');
   const root = host.split('.')[0];
   if (root && root.length >= 4 && !isGeneric(root)) words.add(root);
@@ -103,7 +113,7 @@ export function brandTermsFor(client = {}) {
   return { phrases: [...phrases].filter(p => p.length >= 3), words: [...words] };
 }
 
-// True when the prompt names the client (see brandTermsFor).
+// True when the prompt names the brand these terms describe (see brandTermsFor).
 export function namesBrand(query, terms) {
   if (!terms) return false;
   const qt = tokens(query);
@@ -111,24 +121,71 @@ export function namesBrand(query, terms) {
   const joined = ' ' + qt.join(' ') + ' ';
   for (const p of terms.phrases || []) if (joined.includes(' ' + tokens(p).join(' ') + ' ')) return true;
   const set = new Set(qt);
+  // Capitalised runs of words written apart ("Mattress King") checked against
+  // a run-together brand word ("mattressking" from mattressking.co.za). Only
+  // capitalised runs, so "best mattress king size" is not a brand.
+  const raw = String(query || '').replace(/[^A-Za-z0-9\s&'-]/g, ' ').split(/[\s-]+/).filter(Boolean);
+  const caps = [];
+  for (let i = 0; i < raw.length; i++) {
+    for (let n = 2; n <= 3 && i + n <= raw.length; n++) {
+      const run = raw.slice(i, i + n);
+      if (run.every(w => /^[A-Z0-9]/.test(w))) caps.push(run.join('').toLowerCase().replace(/['’]/g, ''));
+    }
+  }
   for (const w of terms.words || []) {
     if (set.has(w)) return true;
     // possessive / plural of the brand word ("Cuddledown's", "Krosts")
     if (set.has(w + 's')) return true;
     // the brand run together inside the prompt ("hotleathers.com" tokenises to "hotleathers com")
     if (w.length >= 6 && qt.some(t => t.length > w.length && t.startsWith(w))) return true;
+    if (w.length >= 6 && caps.includes(w)) return true;
   }
   return false;
 }
 
+// Competitors from the client's list ("Name", "domain.co.za" or "Name | url").
+export function competitorTermsFor(client = {}) {
+  const raw = Array.isArray(client?.competitors) ? client.competitors : String(client?.competitors || '').split(/[,\n]/);
+  const out = [];
+  for (const entry of raw.map(s => String(s || '').trim()).filter(Boolean)) {
+    const sep = entry.match(/^(.+?)\s*[|]\s*(.+)$/) || entry.match(/^(.+?)\s*\((.+?)\)\s*$/);
+    const name = sep ? sep[1].trim() : entry;
+    const url = sep ? sep[2].trim() : (/^[a-z0-9-]+(\.[a-z0-9-]+)+/i.test(entry) ? entry : '');
+    const terms = brandTermsFor({ name: /\./.test(name) ? name.split('.')[0] : name, url, industry: client?.industry });
+    if (terms.phrases.length || terms.words.length) out.push({ name, terms });
+  }
+  return out;
+}
+
+// The competitor a prompt names, or null.
+export function namedCompetitor(query, competitorTerms) {
+  for (const c of competitorTerms || []) if (namesBrand(query, c.terms)) return c.name;
+  return null;
+}
+
 // The context every relevance check for this client takes.
 export function relevanceFor(client = {}, profile = null) {
-  return { audience: clientAudience(client, profile), brand: client?.name || '', brandTerms: brandTermsFor(client) };
+  return { audience: clientAudience(client, profile), brand: client?.name || '', brandTerms: brandTermsFor(client), competitorTerms: competitorTermsFor(client) };
 }
 
 export const isRelevantProbe = (query, ctx) => offTopicReason(query, ctx) === null;
 
-// Remove branded prompts from a snapshot that was measured before branded
+// Custom queries: the team's own list (client.aeo_custom_queries, one per
+// line). They run exactly as written every month and are never filtered.
+export function customQueriesFor(client = {}) {
+  const seen = new Set();
+  const out = [];
+  for (const line of String(client?.aeo_custom_queries || '').split(/\r?\n/)) {
+    const q = line.replace(/^\s*(?:[-*•]|\d+[.)])\s+/, '').replace(/^"(.*)"$/, '$1').replace(/\s+/g, ' ').trim();
+    const k = q.toLowerCase();
+    if (q.length < 3 || seen.has(k)) continue;
+    seen.add(k);
+    out.push(q);
+  }
+  return out;
+}
+
+// Remove branded and competitor-named prompts from a snapshot that was measured before branded
 // prompts were excluded, so the client never sees one in the report. Only the
 // prompt lists are filtered; the headline scores of such a snapshot still
 // include those prompts, which is why `brandedRemoved` is returned: a caller
@@ -136,12 +193,16 @@ export const isRelevantProbe = (query, ctx) => offTopicReason(query, ctx) === nu
 export function withoutBrandedPrompts(snap, client) {
   if (!snap || typeof snap !== 'object') return { snapshot: snap, brandedRemoved: 0 };
   const terms = brandTermsFor(client);
-  if (!terms.phrases.length && !terms.words.length) return { snapshot: snap, brandedRemoved: 0 };
+  const comps = competitorTermsFor(client);
+  if (!terms.phrases.length && !terms.words.length && !comps.length) return { snapshot: snap, brandedRemoved: 0 };
+  const custom = new Set(customQueriesFor(client).map(q => q.toLowerCase()));
+  const named = (q) => namesBrand(q, terms) || !!namedCompetitor(q, comps);
   const removed = new Set();
   const keep = (row, { allowReverse = false } = {}) => {
     if (!row) return false;
     if (allowReverse && row.type === 'reverse') return true;
-    if (namesBrand(row.query, terms)) { removed.add(String(row.query).toLowerCase().trim()); return false; }
+    if (custom.has(String(row.query || '').replace(/\s+/g, ' ').trim().toLowerCase())) return true;   // the team's own queries stay
+    if (named(row.query)) { removed.add(String(row.query).toLowerCase().trim()); return false; }
     return true;
   };
   const out = { ...snap };
@@ -157,7 +218,7 @@ export function withoutBrandedPrompts(snap, client) {
   }
   if (Array.isArray(snap.citation_gaps)) {
     out.citation_gaps = snap.citation_gaps.map(g => Array.isArray(g?.exampleQueries)
-      ? { ...g, exampleQueries: g.exampleQueries.filter(q => !namesBrand(q, terms)) }
+      ? { ...g, exampleQueries: g.exampleQueries.filter(q => !named(q)) }
       : g);
   }
   return { snapshot: out, brandedRemoved: removed.size };

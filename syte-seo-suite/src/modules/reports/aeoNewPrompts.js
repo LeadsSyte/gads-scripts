@@ -52,14 +52,14 @@ AUDIENCE: ${client.audience || '(not set)'}
 How AI engines described this business this month:
 - categories they placed it in: ${list(signals.segmentLabels, 12).join('; ') || '(none)'}
 - reasons they gave for recommending it: ${list(signals.reasonPhrases, 12).join('; ') || '(none)'}
-- other companies they named beside it: ${list(signals.competitorsNamed, 12).join('; ') || '(none)'}
+- other companies they named beside it (context only, never put them in a question): ${list(signals.competitorsNamed, 12).join('; ') || '(none)'}
 
 ALREADY ASKED (do not repeat or lightly reword any of these):
 ${list(known, 80).map(q => '- ' + q).join('\n') || '- (none)'}
 
 RULES:
-- NEVER name ${client.name || 'the business'} or its website. A question that names it is useless.
-- Cover new ground: products, problems, use cases, buyer situations and comparisons the list above does not cover.
+- NEVER name ${client.name || 'the business'}, its website, a competitor or ANY other company or brand. A question that names a company is useless: it measures a brand the buyer already chose.
+- Cover new ground: products, problems, use cases, buyer situations and general comparisons (never "X vs Y" or "alternatives to X") the list above does not cover.
 - Phrase them the way a person talks to an AI, 6-20 words, written for buyers in ${country?.name || 'the business\'s market'}.
 - Only things this business actually offers. No B2B phrasing for a consumer business.
 - Never mention load shedding.

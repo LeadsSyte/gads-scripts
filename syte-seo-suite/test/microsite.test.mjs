@@ -224,7 +224,7 @@ await t('seoOnly mode strips every AEO section even when AEO data is supplied', 
   assertNotContains(html, 'Competitive Landscape', 'competitive landscape');
   assertNotContains(html, 'Keyword Performance', 'aeo keyword wins');
   assertNotContains(html, "Next Month's Strategy", 'aeo strategy');
-  assertNotContains(html, 'Query × Engine Visibility Detail', 'per-query detail');
+  assertNotContains(html, 'Prompt Visibility Detail', 'per-prompt detail');
   assertNotContains(html, 'How AI Engines Describe You', 'engine descriptions');
   assertNotContains(html, 'Citation Gaps', 'citation gaps');
   assertNotContains(html, 'Rankscale', 'rankscale link');

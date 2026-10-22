@@ -206,7 +206,9 @@ RULES:
 - Phrase them the way a person actually talks to an AI — fuller and more
   conversational than a Google keyword. Prefer "what's the best company to buy
   heavy-duty pallet racking from in Johannesburg?" over "pallet racking jhb".
-- Comparison prompts may reference the named competitors above.
+- NEVER name a competitor or any other company or brand either. Comparison
+  prompts compare options in general ("which ... brands compare best on price?"),
+  never "X vs Y" or "alternatives to X".
 - Include the location in the local bucket (AI uses it for local recs).
 - NEVER name the brand itself (or its website) in any prompt. Branded prompts
   are free wins that prove nothing and are dropped before the census runs.
