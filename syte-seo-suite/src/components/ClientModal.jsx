@@ -592,17 +592,16 @@ export default function ClientModal({ initial, onClose }) {
             <label>Search Country (AI report)</label>
             {(() => {
               const auto = resolveSearchCountry({ ...f, search_country: '' });
+              const from = { website: 'website domain', location: 'Location', default: 'default' }[auto.source];
               return (
                 <>
                   <select value={f.search_country || ''} onChange={e => update('search_country', e.target.value)}>
-                    <option value="">
-                      {auto ? `Auto: ${auto.name} (from ${auto.source === 'website' ? 'website domain' : 'Location'})` : 'Auto: not detected (no location sent)'}
-                    </option>
+                    <option value="">{`Auto: ${auto.name} (${from})`}</option>
                     {SEARCH_COUNTRIES.map(c => <option key={c.code} value={c.code}>{c.name}</option>)}
                   </select>
-                  {!f.search_country && !auto && (
+                  {!f.search_country && auto.source === 'default' && (
                     <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 4 }}>
-                      Couldn't tell the country from the website or Location. Pick one so the AI engines search from the client's market.
+                      Nothing on the website or Location says where this client is, so it searches from South Africa. Pick a country if the client is elsewhere.
                     </div>
                   )}
                 </>
