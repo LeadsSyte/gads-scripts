@@ -31,10 +31,10 @@ t('TEKenable tier-2 service×geo grid is complete', () => {
         `missing ${s} / ${geo}`);
 });
 
-t('TEKenable comparisons name real competitors', () => {
+t('TEKenable comparisons name no competitor (a named brand is never probed)', () => {
   const cmp = types(gg.buildGoldGrid(fixture.profile), 'comparison').map(p => norm(p.query));
-  ok(cmp.some(q => q.includes('codec')), 'codec not named');
-  ok(cmp.some(q => q.includes('storm')), 'storm not named');
+  ok(cmp.length >= 2, 'comparisons still asked');
+  ok(!cmp.some(q => q.includes('codec')), 'competitor named in a comparison');
 });
 
 t('no keyword-stuffed "best X company in Y" probes', () => {
@@ -60,7 +60,7 @@ t('generalises to a non-tech client with its own entities', () => {
   ok(g.length > 30, 'too few probes: ' + g.length);
   ok(all.includes('commercial litigation'), 'own service missing');
   ok(all.includes('south africa'), 'own geo missing');
-  ok(all.includes('webber wentzel'), 'own competitor missing');
+  ok(!all.includes('webber wentzel'), 'competitor named in a prompt');
   // No leakage from the TEKenable fixture.
   ok(!all.includes('tekenable'), 'TEKenable brand leaked');
   ok(!all.includes('dynamics 365'), 'TEKenable service leaked');

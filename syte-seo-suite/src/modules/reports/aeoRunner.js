@@ -27,7 +27,7 @@ import {
 } from './aeoProbes.js';
 import { buildCitationGaps } from './aeoCitationGaps.js';
 import { expandWinnerQuery } from './winnerExpansion.js';
-import { relevanceFor, offTopicReason } from './probeRelevance.js';
+import { relevanceFor, offTopicReason, competitorTermsFor, customQueriesFor } from './probeRelevance.js';
 import { resolveSearchCountry } from './searchCountry.js';
 import { carriedPromptsFrom, stampLongTail, carryForwardSummary, DEFAULT_MAX_CARRIED } from './aeoCarryForward.js';
 
@@ -133,9 +133,29 @@ export function resolveProbes(client, { now, includeReverse = true } = {}) {
   const stored = parseProbes(client);
   const base = (stored && stored.length) ? stored : migrateClientProbes(client, { now });
   const ctx = relevanceFor(client);
-  const act = activeProbes(base).filter(p => p.type === 'reverse' || !offTopicReason(p.query, ctx));
+  // The team's custom queries run exactly as written, first (so a query cap
+  // never cuts them), and are never filtered.
+  const custom = customProbesFor(client);
+  const customKeys = new Set(custom.map(p => p.query.toLowerCase()));
+  const act = custom.concat(activeProbes(base).filter(p =>
+    !customKeys.has(String(p.query || '').replace(/\s+/g, ' ').trim().toLowerCase()) &&
+    (p.type === 'reverse' || !offTopicReason(p.query, ctx))));
   const reverse = includeReverse ? reverseProbesFor(client, { now }) : [];
   return { all: base, active: act, scorable: act.filter(p => p.type !== 'reverse'), reverse };
+}
+
+// Custom queries as probes. The id is derived from the query text, so the
+// same query keeps the same id month to month (and its trend line).
+export function customProbesFor(client) {
+  const prefix = String(client?.name || '').toUpperCase().replace(/[^A-Z]/g, '').slice(0, 3) || 'AEO';
+  return customQueriesFor(client).map(query => {
+    let h = 0;
+    for (const ch of query.toLowerCase()) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+    return {
+      id: `${prefix}-CQ${h.toString(36)}`, tier: 1, type: 'qualified', intent: 'commercial',
+      query, source: 'custom', parentProbeId: null, active: true, runMode: 'both'
+    };
+  });
 }
 
 export function snapshotPreflight(client) {
@@ -449,16 +469,22 @@ export async function runSnapshot(client, opts = {}) {
     const askNew = discover || (claudeEngine.isConfigured()
       ? (args) => discoverNewPrompts({ ...args, ask: (prompt) => claudeEngine.ask(prompt, { search: false, maxTokens: 2000 }) })
       : null);
+    // Companies the engines named this run count as competitors too, so a new
+    // prompt can't smuggle in one the client list doesn't have.
+    const newRelevance = {
+      ...relevance,
+      competitorTerms: [...relevance.competitorTerms, ...competitorTermsFor({ competitors: [...new Set(signals.competitorsNamed)].slice(0, 40) })]
+    };
     let found = [];
     if (askNew) {
-      try { found = await askNew({ client, country, known, signals, count: newPrompts, relevance }); }
+      try { found = await askNew({ client, country, known, signals, count: newPrompts, relevance: newRelevance }); }
       catch (e) { console.warn('[aeo] new prompt discovery failed:', e.message); }
     }
     const fresh = [];
     const seen = new Set(known.map(normQ));
     for (const c of (found || [])) {
       const q = String(c?.query || '').trim();
-      if (!q || seen.has(normQ(q)) || offTopicReason(q, relevance)) continue;
+      if (!q || seen.has(normQ(q)) || offTopicReason(q, newRelevance)) continue;
       seen.add(normQ(q));
       const probe = {
         id: `${client.id}-FO${++seq}`, tier: 3, type: 'qualified', intent: INTENT_IDS.includes(c.intent) ? c.intent : 'commercial',
@@ -608,6 +634,7 @@ export async function runSnapshot(client, opts = {}) {
         a + (r.citedUrls || []).filter(u => hostMatchesBrand(u, client.url, brandName)).length, 0);
       probeResults.push({
         probeId: probe.id, query: probe.query, tier: probe.tier, type: probe.type, intent: probe.intent,
+        source: probe.source || null,
         engine: engine.id, engine_label: engine.label,
         runs: combined.runs, appearances: combined.appearances,
         appearanceRate: combined.appearanceRate,
@@ -734,6 +761,7 @@ export async function runSnapshot(client, opts = {}) {
   // ── Back-compat per_query (one row per scorable probe×engine) ──
   const perQuery = probeResults.filter(r => r.type !== 'reverse').map(r => ({
     query: r.query, intent: r.intent, engine: r.engine, engine_label: r.engine_label,
+    source: r.source,
     iterations: r.runs, hits: r.appearances,
     visibility: Math.round(r.appearanceRate * 100),
     appearance_rate: Math.round(r.appearanceRate * 100),

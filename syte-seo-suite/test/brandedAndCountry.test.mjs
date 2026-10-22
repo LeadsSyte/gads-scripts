@@ -93,7 +93,8 @@ await t('the gold grid holds no branded prompt outside the reverse instruments',
     : null;
   const probes = Array.isArray(grid) ? grid : (grid?.probes || []);
   ok(probes.length > 5, 'grid built');
-  ok(probes.some(p => p.type === 'comparison' && /John Lewis vs Soak/.test(p.query)), 'head-to-head kept, without the client');
+  ok(probes.some(p => p.type === 'comparison'), 'comparisons kept');
+  ok(!probes.some(p => /John Lewis|Soak/.test(p.query) && p.type !== 'reverse'), 'no competitor named');
   for (const p of probes) if (p.type !== 'reverse') ok(!branded(p.query, CUDDLEDOWN), 'branded grid line: ' + p.query);
 });
 

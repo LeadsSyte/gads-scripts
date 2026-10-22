@@ -596,7 +596,7 @@ export function buildAeoPayload({ client, monthLabel: ml, previousMonthLabel, pr
   lines.push(`Top-3 rate: ${probe.top3_rate}% of responses placed ${client.name} in positions 1-3`);
   lines.push(`Mentions: ${probe.mentions} · Citations (URL/domain): ${probe.citations}`);
   lines.push(`Sentiment: ${probe.sentiment_score}% positive`);
-  lines.push(`Engines tested: ${(probe.engines_used || []).join(', ')} (${probe.iterations || 1} iterations × ${probe.queries_count} prompts)`);
+  lines.push(`Engines tested: ${(probe.engines_used || []).join(', ')} (${probe.queries_count} prompts × ${(probe.engines_used || []).length || 1} engines × ${probe.iterations || 1} iterations = ${probe.total_runs || 'n/a'} answers; say "prompts" for the ${probe.queries_count}, never call the answers queries)`);
   lines.push(`Per-engine visibility (%): ${JSON.stringify(probe.engine_scores || {})}`);
 
   if (probe.intent_breakdown?.length) {

@@ -10,6 +10,8 @@ import {
 import { topQueriesByImpression } from '../modules/technical/gsc.js';
 import { SERVICE_META } from '../lib/serviceAssignments.js';
 import { SEARCH_COUNTRIES, resolveSearchCountry } from '../modules/reports/searchCountry.js';
+import { readQueryFile, parseQueryText } from '../modules/reports/customQueries.js';
+import { relevanceFor, offTopicReason } from '../modules/reports/probeRelevance.js';
 
 // Brand voice presets — the dropdown contents. Picking Custom… reveals the
 // free text box so you can still type something bespoke.
@@ -244,6 +246,34 @@ export default function ClientModal({ initial, onClose }) {
   }
 
   // Read uploaded text docs (.txt/.md/.csv) and append them to Brand Documents.
+  // Custom AEO queries: uploaded files are merged into the list, one per line.
+  const [customMsg, setCustomMsg] = useState('');
+  async function handleCustomUpload(e) {
+    const files = Array.from(e.target.files || []);
+    e.target.value = '';
+    if (!files.length) return;
+    setErr(''); setCustomMsg('');
+    const existing = parseQueryText(f.aeo_custom_queries || '');
+    const merged = [...existing];
+    const seen = new Set(existing.map(q => q.toLowerCase()));
+    let added = 0;
+    for (const file of files) {
+      try {
+        for (const q of await readQueryFile(file)) {
+          if (seen.has(q.toLowerCase())) continue;
+          seen.add(q.toLowerCase()); merged.push(q); added++;
+        }
+      } catch (err) { setErr(err?.message || String(err)); }
+    }
+    update('aeo_custom_queries', merged.join('\n'));
+    setCustomMsg(added ? `Added ${added} quer${added === 1 ? 'y' : 'ies'} (${merged.length} in total).` : 'No new queries found in the file.');
+  }
+  const customList = useMemo(() => parseQueryText(f.aeo_custom_queries || ''), [f.aeo_custom_queries]);
+  const customNamed = useMemo(() => {
+    const ctx = relevanceFor(f);
+    return customList.filter(q => /brand|competitor/.test(offTopicReason(q, ctx) || ''));
+  }, [customList, f.name, f.url, f.competitors]);
+
   async function handleDocUpload(e) {
     const files = Array.from(e.target.files || []);
     e.target.value = ''; // let the same file be re-selected later
@@ -667,6 +697,42 @@ export default function ClientModal({ initial, onClose }) {
             Editing the list manually won't retag intents — regenerate to refresh the census structure.
           </div>
           {genMsg && <div style={{ color: 'var(--green)', fontSize: 11, marginTop: 4 }}>{genMsg}</div>}
+        </div>
+
+        {/* Custom AEO queries — run exactly as written, every month */}
+        <div style={{ marginTop: 12 }}>
+          <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+            <label style={{ margin: 0 }}>
+              Custom AEO Queries{' '}
+              <span className="muted" style={{ textTransform: 'none', letterSpacing: 0, fontSize: 11 }}>
+                (one per line; run exactly as written in every AI report, on top of the census)
+              </span>
+            </label>
+            <label
+              style={{
+                margin: 0, padding: '4px 10px', fontSize: 11, cursor: 'pointer',
+                border: '1px solid var(--border)', borderRadius: 'var(--radius)', color: 'var(--text)'
+              }}
+            >
+              + Upload .docx/.txt/.csv
+              <input type="file" accept=".docx,.txt,.md,.csv,text/*" multiple onChange={handleCustomUpload} style={{ display: 'none' }} />
+            </label>
+          </div>
+          <textarea
+            value={f.aeo_custom_queries || ''}
+            onChange={e => update('aeo_custom_queries', e.target.value)}
+            rows={5}
+            placeholder={'Paste or upload your own queries, one per line, e.g.\nwhat is the best mattress for back pain?\nwhere can I buy a bed online in Johannesburg?'}
+          />
+          <div className="muted" style={{ fontSize: 10, marginTop: 3 }}>
+            {customList.length} custom quer{customList.length === 1 ? 'y' : 'ies'}. These are never filtered or changed, and keep their own trend month to month.
+          </div>
+          {customNamed.length > 0 && (
+            <div style={{ color: 'var(--orange)', fontSize: 11, marginTop: 4 }}>
+              {customNamed.length} of these name{customNamed.length === 1 ? 's' : ''} the client or a competitor and will show in the client's report as written: {customNamed.slice(0, 3).map(q => `"${q}"`).join(', ')}{customNamed.length > 3 ? '…' : ''}
+            </div>
+          )}
+          {customMsg && <div style={{ color: 'var(--green)', fontSize: 11, marginTop: 4 }}>{customMsg}</div>}
         </div>
 
         {/* Competitors with domain validation */}

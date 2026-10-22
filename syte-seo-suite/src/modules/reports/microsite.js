@@ -506,7 +506,7 @@ export function buildMicrositeHtml({ micro, client, monthLabel, previousMonthLab
       <h2>AI Visibility: Headline Metrics</h2>
       <p style="color:var(--muted);font-size:13px;margin-bottom:16px;">
         Probed ${probe.engines_used?.length || 0} AI engine${(probe.engines_used?.length || 0) > 1 ? 's' : ''}
-        (${(probe.engines_used || []).join(', ')}) across ${probe.scorable_probes || probe.queries_count || new Set(probe.per_query.map(r => r.query)).size} buyer prompts × ${probe.iterations || 1} iterations = ${probe.total_runs || probe.per_query.length} total responses.
+        (${(probe.engines_used || []).join(', ')}) with ${probe.scorable_probes || probe.queries_count || new Set(probe.per_query.map(r => r.query)).size} buyer prompts, each asked ${probe.iterations || 1} time${(probe.iterations || 1) > 1 ? 's' : ''} on every engine: ${probe.total_runs || probe.per_query.length} AI answers in total. Every prompt is listed in the detail table below.
       </p>
       ${(probe.mentions || 0) === 0 && (probe.citations || 0) === 0 && !cmp?.has_previous ? `
       <!-- No signal yet → reframe as "Establishing the starting point" rather than blasting six big "0%" panels at the client (which reads as a doom report even though it's a brand-new measurement). The detail table below still shows every query that was probed. -->
@@ -732,51 +732,54 @@ export function buildMicrositeHtml({ micro, client, monthLabel, previousMonthLab
     </section>` : ''}
 
     ${probe.per_query?.length > 0 ? (() => {
-      // Every other table in this report is row-capped; this granular
-      // detail table was not, so a saved snapshot with a large probe-query
-      // list (queries × engines rows) produced a multi-hundred-row table.
-      // Baked into the iframe srcDoc alongside everything else that was
-      // enough to lock the tab on render. Cap it like its siblings and note
-      // the remainder — the full per-query data lives in the AEO Snapshot.
-      const MAX_DETAIL_ROWS = 200;
-      const allRows = probe.per_query
-        .filter(r => !r.error)
-        .slice()
-        .sort((a, b) => (b.visibility || 0) - (a.visibility || 0));
-      const rows = allRows.slice(0, MAX_DETAIL_ROWS);
+      // One row per PROMPT with a visibility column per engine. The old table
+      // had a row per prompt x engine capped at 200, so a 100-prompt census
+      // on three engines (300 rows) silently dropped a third of its prompts
+      // and read as "the report only has ~100 of the 900 queries". The cap
+      // stays (a huge table can lock the tab) but now counts prompts.
+      const MAX_DETAIL_PROMPTS = 400;
+      const engineIds = [];
+      const engineLabel = {};
+      const byQuery = new Map();
+      for (const r of probe.per_query.filter(x => !x.error)) {
+        if (!engineIds.includes(r.engine)) { engineIds.push(r.engine); engineLabel[r.engine] = r.engine_label || r.engine; }
+        const k = String(r.query || '');
+        if (!byQuery.has(k)) byQuery.set(k, { query: k, custom: r.source === 'custom', engines: {}, best: 0, pos: [] });
+        const row = byQuery.get(k);
+        const v = r.visibility ?? (r.mentioned ? 100 : 0);
+        row.engines[r.engine] = v;
+        row.best = Math.max(row.best, v);
+        if (r.avg_position != null) row.pos.push(r.avg_position);
+      }
+      const allRows = [...byQuery.values()].sort((x, y) => (y.best - x.best) || x.query.localeCompare(y.query));
+      const rows = allRows.slice(0, MAX_DETAIL_PROMPTS);
       const hidden = allRows.length - rows.length;
+      const cell = (v) => {
+        if (v == null) return '<td style="padding:6px 10px;text-align:center;color:var(--muted);">-</td>';
+        const c = v >= 70 ? 'var(--green)' : v >= 30 ? 'var(--orange)' : 'var(--muted)';
+        return `<td style="padding:6px 10px;text-align:center;color:${c};font-weight:600;">${v}%</td>`;
+      };
       return `
     <section>
-      <h2>Query × Engine Visibility Detail</h2>
-      <p style="color:var(--muted);font-size:13px;margin-bottom:14px;">Per-engine visibility for every probe query — the granular data behind the scores above.</p>
+      <h2>Prompt Visibility Detail</h2>
+      <p style="color:var(--muted);font-size:13px;margin-bottom:14px;">Every buyer prompt measured this month (${allRows.length}), with how often each AI engine named the brand for it.</p>
       <table class="data-table" style="width:100%;border-collapse:collapse;font-size:12px;">
         <thead>
           <tr style="border-bottom:2px solid var(--border);text-align:left;">
-            <th style="padding:8px 10px;color:var(--muted);font-size:10px;text-transform:uppercase;">Query</th>
-            <th style="padding:8px 10px;color:var(--muted);font-size:10px;text-transform:uppercase;">Engine</th>
-            <th style="padding:8px 10px;text-align:center;color:var(--muted);font-size:10px;text-transform:uppercase;">Visibility</th>
-            <th style="padding:8px 10px;text-align:center;color:var(--muted);font-size:10px;text-transform:uppercase;">Top-3 Rate</th>
+            <th style="padding:8px 10px;color:var(--muted);font-size:10px;text-transform:uppercase;">Prompt</th>
+            ${engineIds.map(e => `<th style="padding:8px 10px;text-align:center;color:var(--muted);font-size:10px;text-transform:uppercase;">${esc(engineLabel[e])}</th>`).join('')}
             <th style="padding:8px 10px;text-align:center;color:var(--muted);font-size:10px;text-transform:uppercase;">Avg. position when named</th>
-            <th style="padding:8px 10px;color:var(--muted);font-size:10px;text-transform:uppercase;">Sentiment</th>
           </tr>
         </thead>
         <tbody>
-          ${rows
-            .map(r => {
-              const v = r.visibility ?? (r.mentioned ? 100 : 0);
-              const visColour = v >= 70 ? 'var(--green)' : v >= 30 ? 'var(--orange)' : 'var(--muted)';
-              return `<tr style="border-bottom:1px solid var(--border);">
-                <td class="query-cell" title="${esc(r.query)}" style="padding:6px 10px;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(r.query)}</td>
-                <td style="padding:6px 10px;">${esc(r.engine_label || r.engine)}</td>
-                <td style="padding:6px 10px;text-align:center;color:${visColour};font-weight:600;">${v}%</td>
-                <td style="padding:6px 10px;text-align:center;color:var(--muted);">${r.top3_rate != null ? r.top3_rate + '%' : '—'}</td>
-                <td style="padding:6px 10px;text-align:center;color:var(--muted);">${r.avg_position != null ? '#' + r.avg_position : '—'}</td>
-                <td style="padding:6px 10px;color:${r.sentiment === 'positive' ? 'var(--accent)' : r.sentiment === 'negative' ? 'var(--red)' : 'var(--muted)'};">${r.hits ? (r.sentiment || '—') : '—'}</td>
-              </tr>`;
-            }).join('')}
+          ${rows.map(r => `<tr style="border-bottom:1px solid var(--border);">
+                <td class="query-cell" title="${esc(r.query)}" style="padding:6px 10px;max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(r.query)}</td>
+                ${engineIds.map(e => cell(r.engines[e])).join('')}
+                <td style="padding:6px 10px;text-align:center;color:var(--muted);">${r.pos.length ? '#' + (Math.round((r.pos.reduce((a, b) => a + b, 0) / r.pos.length) * 10) / 10) : '-'}</td>
+              </tr>`).join('')}
         </tbody>
       </table>
-      ${hidden > 0 ? `<p style="color:var(--muted);font-size:12px;margin-top:10px;">+${hidden} more query × engine rows — see the full AEO Snapshot for the complete set.</p>` : ''}
+      ${hidden > 0 ? `<p style="color:var(--muted);font-size:12px;margin-top:10px;">+${hidden} more prompts, see the full AEO Snapshot for the complete set.</p>` : ''}
     </section>`;
     })() : ''}
 
