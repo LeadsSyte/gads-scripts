@@ -163,6 +163,7 @@ Rules:
 - Priority field: 1 = highest urgency, N = lowest.
 
 YEAR-AWARENESS (HARD RULE — never violate):
+- Never propose a topic about load shedding, Eskom power cuts or rolling blackouts. Load shedding is long over in South Africa; those topics are out of date.
 - If a topic title includes a year (e.g. "2024 Pricing Guide", "Best X 2025"), the year MUST be the CURRENT_YEAR provided in the user message. Never propose a topic with a year in the past — that's an SEO own-goal.
 - ACTIVELY SCAN the GSC data for queries / pages that contain past-year markers ("2024", "2023", "last year", etc.). These are PRIME refresh candidates: an article that ranked well in its year is now decaying; rewriting it for the current year typically reclaims position quickly. Surface these as "ranking-defend" or "low-hanging-fruit" opportunities with opportunity_type set accordingly and a rationale explaining "Updating last year's piece to CURRENT_YEAR".
 - For evergreen titles (no year), still write them as if the publication date is the current year — pricing, statistics, examples should be current.`;
