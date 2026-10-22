@@ -258,7 +258,7 @@ function pickByHint(phrases, hint, limit) {
 // with none supplied you still get a (thin) profile that produces a valid grid.
 export function deriveGridProfile(client = {}, { sitePhrases = [], gscQueries = [], llmProfile = null } = {}) {
   const geo = String(client.geo || client.country || '').split(/[,/]/)[0].trim()
-    || (resolveSearchCountry(client)?.name || '')
+    || (() => { const c = resolveSearchCountry(client); return c.source === 'default' ? '' : c.name; })()
     || guessGeoFromText([...(sitePhrases || []), ...(gscQueries || [])].join(' '));
   const competitors = (Array.isArray(client.competitors)
     ? client.competitors

@@ -10,8 +10,8 @@
 //   1. client.search_country   the Clients list field (ISO 3166-1 alpha-2)
 //   2. the website's domain    .co.uk -> GB, .co.za -> ZA, .com.au -> AU ...
 //   3. the Location field      "London", "United States", "Johannesburg" ...
-// A plain .com with no usable location resolves to null: the engines then
-// search exactly as before, rather than from a guessed country.
+//   4. South Africa             the default for a client with none of the above
+//                               (most clients are South African)
 //
 // Pure and node-testable: no imports.
 
@@ -100,7 +100,9 @@ export function countryFromLocation(text) {
   return found.size === 1 ? [...found][0] : null;
 }
 
-// { code, name, source } or null. source: 'client' | 'website' | 'location'.
+export const DEFAULT_SEARCH_COUNTRY = 'ZA';
+
+// { code, name, source }. source: 'client' | 'website' | 'location' | 'default'.
 export function resolveSearchCountry(client = {}) {
   const set = String(client?.search_country || '').trim().toUpperCase();
   if (set && set !== 'AUTO' && BY_CODE.has(set)) return { code: set, name: countryName(set), source: 'client' };
@@ -108,5 +110,5 @@ export function resolveSearchCountry(client = {}) {
   if (fromUrl) return { code: fromUrl, name: countryName(fromUrl), source: 'website' };
   const fromLoc = countryFromLocation(client?.location || client?.market || client?.geo);
   if (fromLoc) return { code: fromLoc, name: countryName(fromLoc), source: 'location' };
-  return null;
+  return { code: DEFAULT_SEARCH_COUNTRY, name: countryName(DEFAULT_SEARCH_COUNTRY), source: 'default' };
 }

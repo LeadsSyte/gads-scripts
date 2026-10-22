@@ -110,11 +110,14 @@ await t('the country comes from the field, then the website domain, then Locatio
   eq(sc.resolveSearchCountry({ url: 'https://acme.com', location: 'Cape Town, South Africa' })?.code, 'ZA');
 });
 
-await t('no country is guessed when nothing says where the client is', async () => {
-  eq(sc.resolveSearchCountry({ url: 'https://acme.com' }), null);
-  eq(sc.resolveSearchCountry({ url: 'https://acme.com', location: 'come to us for help' }), null, '"us" the pronoun');
-  eq(sc.resolveSearchCountry({ url: 'https://acme.com', location: 'UK and South Africa' }), null, 'two countries is a person\'s call');
-  eq(sc.resolveSearchCountry({ search_country: 'AUTO', url: 'https://acme.com' }), null);
+await t('South Africa is the default when nothing says where the client is', async () => {
+  const ZA = { code: 'ZA', name: 'South Africa', source: 'default' };
+  eq(sc.resolveSearchCountry({ url: 'https://acme.com' }), ZA);
+  eq(sc.resolveSearchCountry({}), ZA);
+  eq(sc.resolveSearchCountry({ url: 'https://acme.com', location: 'come to us for help' }), ZA, '"us" the pronoun');
+  eq(sc.resolveSearchCountry({ url: 'https://acme.com', location: 'UK and South Africa' }), ZA, 'two countries falls back to the default');
+  eq(sc.resolveSearchCountry({ search_country: 'AUTO', url: 'https://acme.com' }), ZA);
+  eq(sc.resolveSearchCountry({ url: 'https://acme.co.uk' })?.code, 'GB', 'a real signal still wins');
 });
 
 await t('every engine searches from the client country; without one the request is unchanged', async () => {
