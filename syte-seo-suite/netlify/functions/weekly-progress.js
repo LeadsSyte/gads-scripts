@@ -13,6 +13,7 @@
 
 import { sendMail, mailTransport } from './lib/sendMail.js';
 import { createClient } from '@supabase/supabase-js';
+import { dropPhantomImpls, isPhantomCandidate } from '../../src/lib/phantomImpls.js';
 
 export const config = {
   schedule: '0 6 * * 1' // every Monday at 06:00 UTC
@@ -80,6 +81,17 @@ export default async function handler() {
     if (allIds.has(r.id)) continue;
     allIds.add(r.id);
     all.push(r);
+  }
+
+  // Phantom "Team member / pending" copies of technical fixes (src/lib/phantomImpls.js)
+  // aren't outstanding work — their twin, logged by a person, may be older than a week.
+  const candidates = all.filter(isPhantomCandidate);
+  if (candidates.length) {
+    const titles = [...new Set(candidates.map(r => r.title))].slice(0, 200);
+    const { data: twins } = await supabase.from('syte_suite_implementations').select(IMPL_COLS)
+      .eq('module', 'technical').neq('implemented_by', 'Team member').in('title', titles);
+    const kept = dropPhantomImpls(all, [...all, ...(twins || [])]);
+    all.length = 0; all.push(...kept);
   }
 
   // 2. Group by client.

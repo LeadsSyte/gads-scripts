@@ -68,8 +68,15 @@ async function fileToImagePayload(file, maxWidth = 1200, quality = 0.8) {
 //                not-allowed cursor) when no client was selected in the
 //                topbar — falling back to a null current() left it dead.
 //   disabled?:   boolean
+//   existingImplId?: the record this item already has (a technical task's
+//                "Mark Done" creates one). It is updated instead of adding a
+//                second record — two per task left a phantom "Team member /
+//                pending" copy beside every verified fix (Oct 2026).
+//   onLogged?:   (implRow) => void — called with the record once it exists,
+//                so the caller can remember it (task.impl_id).
 export default function MarkImplementedButton({
-  module, changeType, pageUrl, title, description, disabled, onVerified, client: clientProp
+  module, changeType, pageUrl, title, description, disabled, onVerified, client: clientProp,
+  existingImplId, onLogged
 }) {
   const topbarClient = useClients(s => s.current());
   const client = clientProp || topbarClient;
@@ -87,6 +94,20 @@ export default function MarkImplementedButton({
   const [sentBusy, setSentBusy] = useState(false);
   const [sentMsg, setSentMsg] = useState('');
 
+  // One record per item: reuse the one it already has, otherwise create it.
+  async function saveRecord(row) {
+    if (existingImplId) {
+      try {
+        const { client_id, ...patch } = row;
+        const updated = await updateImplementation(existingImplId, patch);
+        if (updated?.id) { onLogged?.(updated); return updated; }
+      } catch { /* the old record is gone — create a fresh one below */ }
+    }
+    const created = await logImplementation(row);
+    if (created?.id) onLogged?.(created);
+    return created;
+  }
+
   // "Sent to Developer" entry point. If no implementation record exists yet
   // (idle state), log one first; then open the email-screenshot panel.
   async function handleSentToDeveloper() {
@@ -103,7 +124,7 @@ export default function MarkImplementedButton({
 
     setPhase('logging');
     try {
-      const impl = await logImplementation({
+      const impl = await saveRecord({
         client_id: client.id,
         module,
         change_type: changeType,
@@ -314,7 +335,7 @@ export default function MarkImplementedButton({
 
     setPhase('logging'); setErr(''); setResult(null);
     try {
-      const impl = await logImplementation({
+      const impl = await saveRecord({
         client_id: client.id,
         module,
         change_type: changeType,
