@@ -28,6 +28,10 @@ const PATCHED = SRC
     "from '" + pathToFileURL(path.join(__dirname, '../src/modules/reports/aeoHistoryInsert.js')).href + "';"
   )
   .replace(
+    "from './phantomImpls.js';",
+    "from '" + pathToFileURL(path.join(__dirname, '../src/lib/phantomImpls.js')).href + "';"
+  )
+  .replace(
     "const url = import.meta.env.VITE_SUPABASE_URL;",
     "const url = '';"
   )

@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import { insertDroppingUnknownColumns } from '../modules/reports/aeoHistoryInsert.js';
+import { dropPhantomImpls } from './phantomImpls.js';
 
 // `import.meta.env` is injected by Vite in the browser build but is undefined
 // under plain Node (the test runner), where this module is now reachable via
@@ -997,16 +998,36 @@ const IMPL_LIST_COLS =
   'id, client_id, module, change_type, page_url, title, description, ' +
   'implemented_by, implemented_at, verification_status, verified_at, created_at';
 
+// The database returns at most 1,000 rows per request, so a single request
+// silently dropped the oldest rows once a table grew past that (implementations
+// reached 1,566 and technical tasks 935 by Oct 2026, so progress counts were
+// wrong). selectAllPages reads page after page until a short page comes back.
+// build() must return a fresh query with its filters and an ORDER BY; an id
+// tiebreak is added so rows can't shift between pages.
+const PAGE_ROWS = 1000;
+async function selectAllPages(build, { maxPages = 50 } = {}) {
+  const rows = [];
+  for (let page = 0; page < maxPages; page++) {
+    const from = page * PAGE_ROWS;
+    const { data, error } = await build().order('id', { ascending: true }).range(from, from + PAGE_ROWS - 1);
+    if (error) return { data: rows.length ? rows : null, error };
+    rows.push(...(data || []));
+    if (!data || data.length < PAGE_ROWS) break;
+  }
+  return { data: rows, error: null };
+}
+
 export async function listImplementations(clientId) {
   if (supabase) {
-    let q = supabase
-      .from('syte_suite_implementations')
-      .select(IMPL_LIST_COLS)
-      .order('created_at', { ascending: false });
-    if (clientId) q = q.eq('client_id', clientId);
-    const { data, error } = await q;
+    const { data: rows, error } = await selectAllPages(() => {
+      let q = supabase
+        .from('syte_suite_implementations')
+        .select(IMPL_LIST_COLS)
+        .order('created_at', { ascending: false });
+      return clientId ? q.eq('client_id', clientId) : q;
+    });
     if (error) throw error;
-    return data || [];
+    return dropPhantomImpls(rows); // see lib/phantomImpls.js
   }
   const list = JSON.parse(localStorage.getItem(LS_PREFIX + 'implementations') || '[]');
   return clientId ? list.filter(r => r.client_id === clientId) : list;
@@ -1169,10 +1190,10 @@ export async function replaceClientOpenTasks(clientId, newTasks) {
 
 export async function loadTseoTasks() {
   if (supabase) {
-    const { data, error } = await supabase
+    const { data, error } = await selectAllPages(() => supabase
       .from('syte_suite_tseo_tasks')
       .select('*')
-      .order('created_at', { ascending: false });
+      .order('created_at', { ascending: false }));
     if (!error && data?.length > 0) {
       // Sync to localStorage as cache (best-effort — may exceed quota).
       try { localStorage.setItem(TSEO_KEY, JSON.stringify(data)); } catch {}
@@ -1562,11 +1583,12 @@ function getLocalById(row, monthKey) {
 
 export async function listBlogResults(clientId) {
   if (supabase) {
-    let q = supabase
-      .from('syte_suite_content_blogs').select('*')
-      .order('generated_at', { ascending: false });
-    if (clientId) q = q.eq('client_id', clientId);
-    const { data, error } = await q;
+    const { data, error } = await selectAllPages(() => {
+      const q = supabase
+        .from('syte_suite_content_blogs').select('*')
+        .order('generated_at', { ascending: false });
+      return clientId ? q.eq('client_id', clientId) : q;
+    });
     if (error) throw error;
     localStorage.setItem(BLOGS_KEY, JSON.stringify(data || []));
     return data || [];

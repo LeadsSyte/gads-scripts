@@ -174,3 +174,45 @@ describe('MarkImplementedButton — Sent to Developer', () => {
     expect(onVerified).not.toHaveBeenCalled();
   });
 });
+
+// Oct 2026: a technical task's "Mark Done" already created a record, and this
+// button then created a second one — every fix showed twice in Implementation
+// Progress, the extra copy stuck on "Team member / pending".
+describe('MarkImplementedButton — one record per task', () => {
+  test('a task that already has a record updates it instead of adding another', async () => {
+    const onLogged = vi.fn();
+    render(
+      <MarkImplementedButton module="technical" changeType="meta" pageUrl="https://acme.test/about"
+        title="Meta description" description="New meta description" existingImplId="impl-existing" onLogged={onLogged} />
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Sent to Developer/i }));
+    await screen.findByText('📧 Upload a screenshot of the email');
+    expect(logImplementation).not.toHaveBeenCalled();
+    expect(updateImplementation).toHaveBeenCalledWith('impl-existing', expect.objectContaining({ implemented_by: 'Mike', verification_status: 'pending', page_url: 'https://acme.test/about' }));
+    expect(updateImplementation.mock.calls[0][1].client_id).toBeUndefined();
+    expect(onLogged).toHaveBeenCalledWith(expect.objectContaining({ id: 'impl-existing' }));
+  });
+
+  test('without one, it creates the record and hands its id back to the task', async () => {
+    const onLogged = vi.fn();
+    render(
+      <MarkImplementedButton module="technical" changeType="meta" pageUrl="https://acme.test/about"
+        title="Meta description" description="New meta description" onLogged={onLogged} />
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Sent to Developer/i }));
+    await screen.findByText('📧 Upload a screenshot of the email');
+    expect(logImplementation).toHaveBeenCalledTimes(1);
+    expect(onLogged).toHaveBeenCalledWith(expect.objectContaining({ id: 'impl-1' }));
+  });
+
+  test('if the old record is gone, it falls back to creating a new one', async () => {
+    updateImplementation.mockRejectedValueOnce(new Error('no rows'));
+    render(
+      <MarkImplementedButton module="technical" changeType="meta" pageUrl="https://acme.test/about"
+        title="Meta description" description="New meta description" existingImplId="impl-deleted" />
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Sent to Developer/i }));
+    await screen.findByText('📧 Upload a screenshot of the email');
+    expect(logImplementation).toHaveBeenCalledTimes(1);
+  });
+});

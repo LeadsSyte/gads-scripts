@@ -256,6 +256,8 @@ function TaskCard({ task: t, onUpdate, onMarkDone, onVerify, onReject, busy, bui
               pageUrl={t.page_url}
               title={t.title}
               description={t.copy_paste_fix || t.description || ''}
+              existingImplId={t.impl_id}
+              onLogged={impl => { if (impl?.id && impl.id !== t.impl_id) onUpdate(t.id, { impl_id: impl.id }); }}
               onVerified={() => {
                 // Marking implemented + verified must also flip the task's own
                 // status, otherwise the badge stays at its last value (e.g.
@@ -907,6 +909,8 @@ export default function TechnicalSEO({ sub }) {
                         pageUrl={t.page_url}
                         title={t.title}
                         description={t.copy_paste_fix || t.description || ''}
+                        existingImplId={t.impl_id}
+                        onLogged={impl => { if (impl?.id && impl.id !== t.impl_id) updateTask(t.id, { impl_id: impl.id }); }}
                         onVerified={() => {
                           // Keep the task badge and the verified impl row in
                           // sync — see the note on the pipeline TaskCard above.

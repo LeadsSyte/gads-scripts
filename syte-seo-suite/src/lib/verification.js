@@ -592,8 +592,35 @@ export async function verifyImplementationFromHtml(impl, pastedHtml) {
     // let it demote an already-verified record.
     return persistInconclusive(impl, 'Pasted HTML is too short or empty.');
   }
-  const pageData = { html: pastedHtml.slice(0, 40000), source: 'pasted-html' };
+  const pageData = { html: pastedHtml, source: 'pasted-html' };
   return runVerifyWithHtml(impl, pageData);
+}
+
+// What the checker reads. Sending the raw first 40 KB of a page often sent only
+// its <head> — modern themes put tens of KB of inline CSS and scripts there —
+// so the checker answered "the page HTML is the header/metadata section only"
+// and the team had to verify by eye. Keep what a check needs: the <title>,
+// description/robots/og meta tags, canonical and JSON-LD, then the body with
+// scripts, styles, SVG and comments removed. Content from the WordPress API
+// (no <head>/<body>) passes through, cleaned the same way.
+export function pageForCheck(html, max = 40000) {
+  const s = String(html || '');
+  const head = (s.match(/<head\b[\s\S]*?<\/head>/i) || [''])[0];
+  const meta = [
+    ...(head.match(/<title\b[\s\S]*?<\/title>/gi) || []),
+    ...(head.match(/<meta\b[^>]*>/gi) || []).filter(m => /(name|property)=["'](description|robots|og:title|og:description)["']/i.test(m)),
+    ...(head.match(/<link\b[^>]*rel=["']canonical["'][^>]*>/gi) || [])
+  ];
+  const jsonLd = (s.match(/<script\b[^>]*application\/ld\+json[^>]*>[\s\S]*?<\/script>/gi) || []).join('\n').slice(0, 8000);
+  const bodyRaw = (s.match(/<body\b[\s\S]*<\/body>/i) || [s.replace(/<head\b[\s\S]*?<\/head>/i, '')])[0];
+  const body = bodyRaw
+    .replace(/<script\b[^>]*ld\+json[^>]*>[\s\S]*?<\/script>/gi, '')
+    .replace(/<script\b[\s\S]*?<\/script>/gi, '')
+    .replace(/<style\b[\s\S]*?<\/style>/gi, '')
+    .replace(/<svg\b[\s\S]*?<\/svg>/gi, '<svg/>')
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/\s+/g, ' ');
+  return ((meta.length ? '<head>' + meta.join('\n') + '</head>\n' : '') + (jsonLd ? jsonLd + '\n' : '') + body).slice(0, max);
 }
 
 // Shared verification runner — takes the impl and pre-fetched pageData.
@@ -601,7 +628,7 @@ async function runVerifyWithHtml(impl, pageData) {
   const draftNote = pageData.wpStatus === 'draft'
     ? '\nNOTE: This is a WordPress DRAFT (not yet published). The content was fetched via the WP REST API. Verify the content exists in the draft, not on the public site.'
     : '';
-  const truncated = pageData.html.slice(0, 40000);
+  const truncated = pageForCheck(pageData.html);
   const wpNote = pageData.wpSlug
     ? `\n- WordPress post slug: ${pageData.wpSlug} (ID: ${pageData.wpId})`
     : '';
@@ -784,7 +811,7 @@ export async function verifyImplementation(impl, client) {
     ? '\nNOTE: This is a WordPress DRAFT (not yet published). The content was fetched via the WP REST API. Verify the content exists in the draft, not on the public site.'
     : '';
 
-  const truncated = pageData.html.slice(0, 40000);
+  const truncated = pageForCheck(pageData.html);
   const wpNote = pageData.wpSlug
     ? `\n- WordPress post slug: ${pageData.wpSlug} (ID: ${pageData.wpId})`
     : '';
