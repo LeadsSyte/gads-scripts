@@ -1,0 +1,12 @@
+/api/auth /.netlify/functions/auth 200
+/api/clients /.netlify/functions/clients 200
+/api/clients/* /.netlify/functions/clients/:splat 200
+/api/generate /.netlify/functions/generate 200
+/api/generate-status /.netlify/functions/generate-status 200
+/api/generate-status/* /.netlify/functions/generate-status/:splat 200
+/api/articles /.netlify/functions/articles 200
+/api/articles/* /.netlify/functions/articles/:splat 200
+/api/download/* /.netlify/functions/download/:splat 200
+/api/email /.netlify/functions/email 200
+/api/history /.netlify/functions/history 200
+/api/history/* /.netlify/functions/history/:splat 200
