@@ -24,6 +24,7 @@
 // zip extraction and the cache write.
 
 import { classifyKeywords, buildKeywordBuckets } from './keywordBuckets.js';
+import { includeBrandedSearch } from './probeRelevance.js';
 import { getReportPeriods } from './reportPeriods.js';
 import { REPORT_DATA_VERSION } from './reportDataVersion.js';
 
@@ -210,7 +211,8 @@ export function buildImportedReportData({ client, month, queries = [], pages = [
     })
     .sort((a, b) => b.impressions - a.impressions);
 
-  const classified = classifyKeywords(keywords, client.name);
+  const brandName = includeBrandedSearch(client) ? '' : client.name;   // branded search kept: nothing is branded
+  const classified = classifyKeywords(keywords, brandName);
 
   return {
     version: REPORT_DATA_VERSION,
@@ -220,7 +222,7 @@ export function buildImportedReportData({ client, month, queries = [], pages = [
     period,
     traffic: { current: null, previous: null, yoy: null, momChange: null, yoyChange: null },
     keywords: classified,
-    keywordBuckets: buildKeywordBuckets(classified, client.name),
+    keywordBuckets: buildKeywordBuckets(classified, brandName),
     topPages: pages
       .map(r => ({ page: r.key, clicks: r.clicks, impressions: r.impressions, position: r.position }))
       .sort((a, b) => b.impressions - a.impressions),

@@ -24,6 +24,7 @@
 //     recommended for by an AI engine, given the above?
 
 import { claudeComplete, extractJSON } from '../../lib/anthropic.js';
+import { includeBrandedSearch } from './probeRelevance.js';
 
 // The buyer-intent taxonomy the census is built around. Every generated
 // prompt is tagged with exactly one of these. Coverage across all five is
@@ -210,13 +211,25 @@ RULES:
   prompts compare options in general ("which ... brands compare best on price?"),
   never "X vs Y" or "alternatives to X".
 - Include the location in the local bucket (AI uses it for local recs).
-- NEVER name the brand itself (or its website) in any prompt. Branded prompts
-  are free wins that prove nothing and are dropped before the census runs.
-  Competitor names are fine.
+${brandRule(client)}
 - Each prompt unique, natural, 6-18 words.
 
 Return ONLY JSON in this exact shape:
 { "prompts": [ { "query": "...", "intent": "commercial" }, ... ] }`;
+}
+
+// The branded-prompt rule. Normally the brand is never named; a client that
+// keeps branded search (see includeBrandedSearch) wants prompts that use its
+// name the way buyers do, e.g. "Sabi Sands" for Sabi Sands Lodges.
+function brandRule(client) {
+  if (includeBrandedSearch(client)) {
+    return `- This client KEEPS branded search: include prompts that use the brand name
+  "${client.name || ''}" (or the place/term it is named after) the way buyers
+  search for it, e.g. "best lodges in ${client.name || 'X'}". Roughly a third of
+  prompts should do this; never use the website address.`;
+  }
+  return `- NEVER name the brand itself (or its website) in any prompt. Branded prompts
+  are free wins that prove nothing and are dropped before the census runs.`;
 }
 
 function normalizePrompts(rawPrompts) {

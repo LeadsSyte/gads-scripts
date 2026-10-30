@@ -49,7 +49,7 @@ export async function listClients() {
 
 // A column the app writes before its migration was run comes back as a
 // PostgREST "Could not find the 'x' column" error. Name the file to run.
-const COLUMN_MIGRATIONS = { search_country: 'supabase-schema-search-country.sql', aeo_custom_queries: 'supabase-schema-aeo-custom-queries.sql' };
+const COLUMN_MIGRATIONS = { search_country: 'supabase-schema-search-country.sql', aeo_custom_queries: 'supabase-schema-aeo-custom-queries.sql', include_branded_search: 'supabase-schema-include-branded-search.sql' };
 function explainMissingColumn(error) {
   const m = String(error?.message || '').match(/'([a-z_]+)' column/);
   const file = m && COLUMN_MIGRATIONS[m[1]];

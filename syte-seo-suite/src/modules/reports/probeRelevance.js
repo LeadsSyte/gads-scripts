@@ -18,6 +18,12 @@
 // one exception: they are instruments, never scored or shown, and the runner
 // adds them itself.
 //
+// A client can opt out of the branded rule (includeBrandedSearch). Sabi Sands
+// Lodges is the case it exists for: an aggregator named after the reserve, so
+// "best lodges in the Sabi Sands" is the search it competes on, not a free
+// win. For such a client branded prompts are generated, probed and reported;
+// competitor-named prompts are still kept out.
+//
 // Pure and node-testable: no imports.
 
 // Who the client sells to. A profile audience the LLM extracted from the site
@@ -163,9 +169,16 @@ export function namedCompetitor(query, competitorTerms) {
   return null;
 }
 
+// True when this client's reports keep branded search (client.include_branded_search).
+export function includeBrandedSearch(client = {}) {
+  const v = client?.include_branded_search;
+  return v === true || v === 'true';
+}
+
 // The context every relevance check for this client takes.
 export function relevanceFor(client = {}, profile = null) {
-  return { audience: clientAudience(client, profile), brand: client?.name || '', brandTerms: brandTermsFor(client), competitorTerms: competitorTermsFor(client) };
+  const brandTerms = includeBrandedSearch(client) ? null : brandTermsFor(client);
+  return { audience: clientAudience(client, profile), brand: client?.name || '', brandTerms, competitorTerms: competitorTermsFor(client) };
 }
 
 export const isRelevantProbe = (query, ctx) => offTopicReason(query, ctx) === null;
@@ -192,7 +205,7 @@ export function customQueriesFor(client = {}) {
 // that gets a non-zero count should say the snapshot needs re-running.
 export function withoutBrandedPrompts(snap, client) {
   if (!snap || typeof snap !== 'object') return { snapshot: snap, brandedRemoved: 0 };
-  const terms = brandTermsFor(client);
+  const terms = includeBrandedSearch(client) ? { phrases: [], words: [] } : brandTermsFor(client);
   const comps = competitorTermsFor(client);
   if (!terms.phrases.length && !terms.words.length && !comps.length) return { snapshot: snap, brandedRemoved: 0 };
   const custom = new Set(customQueriesFor(client).map(q => q.toLowerCase()));

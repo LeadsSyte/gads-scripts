@@ -9,6 +9,7 @@
 import { ensureToken, SCOPES } from '../technical/googleAuth.js';
 import { querySearchAnalytics } from '../technical/gsc.js';
 import { buildKeywordBuckets, classifyKeywords } from './keywordBuckets.js';
+import { includeBrandedSearch } from './probeRelevance.js';
 import { fetchWithTimeout } from '../../lib/http.js';
 import { serverAuthEnabled, proxyGoogleFetch } from '../../lib/googleServerAuth.js';
 // Month ranges live in their own module: they must be built in UTC (see the
@@ -239,8 +240,11 @@ export async function fetchReportData(client, year, month1Based) {
   // bucketed views — top 3, top 10, improved, striking distance, head
   // term wins. Branded queries are excluded from the showcase buckets
   // since they would rank #1 regardless of SEO work.
-  const classifiedKeywords = classifyKeywords(keywords, client.name);
-  const keywordBuckets = buildKeywordBuckets(classifiedKeywords, client.name);
+  // A client that keeps branded search (includeBrandedSearch) classifies with
+  // no brand name, so its branded queries show like any other.
+  const brandName = includeBrandedSearch(client) ? '' : client.name;
+  const classifiedKeywords = classifyKeywords(keywords, brandName);
+  const keywordBuckets = buildKeywordBuckets(classifiedKeywords, brandName);
 
   const summary = {
     clientType,

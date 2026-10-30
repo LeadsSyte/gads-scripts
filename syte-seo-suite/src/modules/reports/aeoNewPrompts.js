@@ -18,7 +18,7 @@
 // pickNewPrompts is pure; discoverNewPrompts takes an injectable `ask`.
 
 import { isDuplicateQuery } from './aeoProbes.js';
-import { offTopicReason } from './probeRelevance.js';
+import { offTopicReason, includeBrandedSearch } from './probeRelevance.js';
 
 const INTENTS = new Set(['awareness', 'commercial', 'comparison', 'local', 'problem']);
 
@@ -58,7 +58,9 @@ ALREADY ASKED (do not repeat or lightly reword any of these):
 ${list(known, 80).map(q => '- ' + q).join('\n') || '- (none)'}
 
 RULES:
-- NEVER name ${client.name || 'the business'}, its website, a competitor or ANY other company or brand. A question that names a company is useless: it measures a brand the buyer already chose.
+${includeBrandedSearch(client)
+  ? `- This business KEEPS branded search: some questions should use "${client.name || ''}" (or the place/term it is named after) the way buyers do. NEVER name its website, a competitor or ANY other company or brand.`
+  : `- NEVER name ${client.name || 'the business'}, its website, a competitor or ANY other company or brand. A question that names a company is useless: it measures a brand the buyer already chose.`}
 - Cover new ground: products, problems, use cases, buyer situations and general comparisons (never "X vs Y" or "alternatives to X") the list above does not cover.
 - Phrase them the way a person talks to an AI, 6-20 words, written for buyers in ${country?.name || 'the business\'s market'}.
 - Only things this business actually offers. No B2B phrasing for a consumer business.

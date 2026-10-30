@@ -11,7 +11,7 @@ import { topQueriesByImpression } from '../modules/technical/gsc.js';
 import { SERVICE_META } from '../lib/serviceAssignments.js';
 import { SEARCH_COUNTRIES, resolveSearchCountry } from '../modules/reports/searchCountry.js';
 import { readQueryFile, parseQueryText } from '../modules/reports/customQueries.js';
-import { relevanceFor, offTopicReason } from '../modules/reports/probeRelevance.js';
+import { relevanceFor, offTopicReason, includeBrandedSearch } from '../modules/reports/probeRelevance.js';
 
 // Brand voice presets — the dropdown contents. Picking Custom… reveals the
 // free text box so you can still type something bespoke.
@@ -180,8 +180,9 @@ export default function ClientModal({ initial, onClose }) {
           );
           // Pass the industry as the "category" so generic category words in
           // the brand name (e.g. "Shelving" in "Krost Shelving") aren't treated
-          // as branded and don't drop legitimate category rankings.
-          rankingSeeds = topRankingSeeds(gscKeywords, f.name, { category: f.industry });
+          // as branded and don't drop legitimate category rankings. A client
+          // that keeps branded search keeps its branded rankings as seeds.
+          rankingSeeds = topRankingSeeds(gscKeywords, includeBrandedSearch(f) ? '' : f.name, { category: f.industry });
         } catch (e) {
           // GSC not connected / no permission — fall back to context-only.
           rankingSeeds = [];
@@ -272,7 +273,7 @@ export default function ClientModal({ initial, onClose }) {
   const customNamed = useMemo(() => {
     const ctx = relevanceFor(f);
     return customList.filter(q => /brand|competitor/.test(offTopicReason(q, ctx) || ''));
-  }, [customList, f.name, f.url, f.competitors]);
+  }, [customList, f.name, f.url, f.competitors, f.include_branded_search]);
 
   async function handleDocUpload(e) {
     const files = Array.from(e.target.files || []);
@@ -733,6 +734,22 @@ export default function ClientModal({ initial, onClose }) {
             </div>
           )}
           {customMsg && <div style={{ color: 'var(--green)', fontSize: 11, marginTop: 4 }}>{customMsg}</div>}
+        </div>
+
+        {/* Branded search — off for almost every client (branded prompts are free wins) */}
+        <div style={{ marginTop: 12 }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, textTransform: 'none', margin: 0, cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={includeBrandedSearch(f)}
+              onChange={e => update('include_branded_search', e.target.checked)}
+              style={{ width: 'auto' }}
+            />
+            <span style={{ color: 'var(--text)', fontSize: 13 }}>Include branded search in reports</span>
+          </label>
+          <div className="muted" style={{ fontSize: 10, marginTop: 3 }}>
+            Only for clients whose name is what buyers search for (e.g. Sabi Sands Lodges, an aggregator named after the reserve). AEO prompts and keyword reports then keep queries that name the client. Competitor prompts are still left out.
+          </div>
         </div>
 
         {/* Competitors with domain validation */}
