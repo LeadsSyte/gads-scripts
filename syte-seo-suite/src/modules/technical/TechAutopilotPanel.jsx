@@ -43,7 +43,7 @@ export const fixesToApply = entries => (entries || []).filter(e =>
 
 // Preview → Apply → Undo for one fix. The preview shows exactly what will
 // change; Apply changes only that, then checks the live page.
-function FixControls({ entry, wpConnected, accent, onPlan, onApply, onUndo }) {
+export function FixControls({ entry, wpConnected, accent, onPlan, onApply, onUndo }) {
   const a = entry.apply || {};
   const btn = { fontSize: 11, padding: '3px 10px' };
   if (!wpConnected) return <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>Apply by hand — no working WordPress or Shopify connection.</div>;

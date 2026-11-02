@@ -38,7 +38,7 @@ export const additionsToMake = (items, fixes) => (items || []).filter(x =>
 
 // Preview in the page → Add to the page → (Undo). The preview is the real
 // page in the client's design with the section in place.
-function AeoFixControls({ fix, wpConnected, accent, onAction }) {
+export function AeoFixControls({ fix, wpConnected, accent, onAction }) {
   const f = fix || {};
   const btn = { fontSize: 11, padding: '3px 10px' };
   const note = (text, color) => <div style={{ fontSize: 11, marginTop: 4, color: color || 'var(--text-muted)' }}>{text}</div>;

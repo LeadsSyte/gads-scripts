@@ -322,5 +322,36 @@ await t('went-live email: checked pages are marked, a flagged page becomes the t
   has(buildPublishedEmail([{ client: 'A', title: 'x', liveUrl: 'u', check: { ok: true, problems: [] } }], 'u').html, /Nothing\. This is just to let you know/);
 });
 
+// ── Nov 2026: fixes a person chooses on the board / AEO page ──
+// "Push to CMS" on a technical or AEO fix refused ("would create a separate
+// draft post") and nothing else offered to change the page. A task from the
+// board (no independent check, entry.manual) now previews and applies when a
+// person asks; the automatic run still needs the check.
+await t('board task (no independent check): a person can preview and apply it; the automatic run still will not', async () => {
+  const site = fakeSite(); const h = techHarness(site);
+  const e = { task: entry('t9', 'mezzanine', NEW_TITLE).task, manual: true };
+  const planned = await runTechFix({ entry: e, action: 'plan' }, h.depsFor(e));
+  assertEq(planned.status, 'planned'); assertEq(planned.plan.changes[0].from, OLD_TITLE);
+  const applied = await runTechFix({ entry: e, action: 'apply', prev: planned }, h.depsFor(e));
+  assertEq(applied.status, 'applied'); assertEq(site.posts[7].meta._yoast_wpseo_title, NEW_TITLE);
+  const unchecked = { task: entry('t10', 'racking', NEW_TITLE).task };
+  const refused = await runTechFix({ entry: unchecked, action: 'plan' }, h.depsFor(unchecked));
+  assertEq(refused.status, 'manual'); has(refused.reason, /independent check/);
+  assertEq(canAutoFix(e), false, 'never part of Apply all');
+});
+
+await t('AEO: a person can add an unchecked or unconfirmed optimisation; the automatic run cannot', async () => {
+  const site = fakeAeoSite(); const h = aeoHarness(site);
+  const unchecked = { ...FAQ, name: 'Chosen by Chris', check: undefined };
+  const optKey = aeoOptKey(unchecked);
+  const planned = await runAeoFix({ url: AEO_URL, opt: unchecked, optKey, action: 'plan' }, h.depsFor(AEO_URL, optKey));
+  assertEq(planned.status, 'planned');
+  const auto = await runAeoFix({ url: AEO_URL, opt: unchecked, optKey, action: 'auto' }, h.depsFor(AEO_URL, optKey));
+  assertEq(auto.status, 'manual'); has(auto.reason, /independent check/);
+  const dropped = { ...FAQ, name: 'Judged a false alarm', check: { verdict: 'false_alarm' } };
+  const k2 = aeoOptKey(dropped);
+  assertEq((await runAeoFix({ url: AEO_URL, opt: dropped, optKey: k2, action: 'auto' }, h.depsFor(AEO_URL, k2))).status, 'manual');
+  assertEq((await runAeoFix({ url: AEO_URL, opt: dropped, optKey: k2, action: 'plan' }, h.depsFor(AEO_URL, k2))).status, 'planned', 'the person decides');
+});
 console.log(`\nautoApply: ${pass} passed, ${fail} failed`);
 if (fail > 0) process.exit(1);

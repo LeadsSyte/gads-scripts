@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useClients } from '../../store/useClients.js';
 import { claudeComplete, extractJSON } from '../../lib/anthropic.js';
 import { corsFetchText } from '../../lib/corsProxy.js';
-import PushToCmsButton from '../../components/PushToCmsButton.jsx';
+import AddAeoControls from './AddAeoControls.jsx';
 import { pushItemInline } from '../cms/pushAction.js';
 import ClientCardsGrid from '../../components/ClientCardsGrid.jsx';
 import MarkImplementedButton from '../../components/MarkImplementedButton.jsx';
@@ -343,13 +343,7 @@ function OptPageCard({ result: r, onDelete, onVerified, optClient, rejectedOptKe
               Re-check
             </button>
           )}
-          {opts.length > 0 && actionsVisible && (
-            <span onClick={(e) => e.stopPropagation()}>
-              {/* Rendered per client row — pass the row's own client so the
-                  push cannot land on whoever the dropdown has selected. */}
-              <PushToCmsButton item={combinedPushItem} client={optClient} label="Push all to CMS" />
-            </span>
-          )}
+
           {opts.length > 0 && actionsVisible && (
             <span onClick={(e) => e.stopPropagation()}>
               {/* One verify call for the whole page. Description is a
@@ -423,17 +417,9 @@ function OptPageCard({ result: r, onDelete, onVerified, optClient, rejectedOptKe
               </div>
             )}
             <div className="row" style={{ gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
-              <PushToCmsButton
-                item={{
-                  module: 'aeo',
-                  page_url: r.url,
-                  page_title: o.name || o.title || 'AEO Optimization',
-                  change_type: o.type || 'aeo_optimization',
-                  payload: { code: code, placement: o.where, reason: o.description }
-                }}
-                client={optClient}
-                label="Push to CMS"
-              />
+              {/* Adds it to the page in place, with a preview first and an Undo;
+                  "Push to CMS" used to refuse these — see AddAeoControls.jsx. */}
+              <AddAeoControls client={optClient} url={r.url} optKey={aeoOptKey(o)} accent={ACCENT} />
               {statusOf(o) ? (
                 <span style={{ fontSize: 11, color: 'var(--green)', padding: '2px 8px' }}>
                   {statusOf(o) === 'verified' ? '✓ Verified' : '📧 Sent to developer'}

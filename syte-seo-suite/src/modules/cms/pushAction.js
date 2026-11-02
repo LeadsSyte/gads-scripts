@@ -44,8 +44,8 @@ export function clientIsConnected(client) {
 // Yoast / RankMath fields. Refused until in-place page editing exists.
 export function unsupportedPushReason(item) {
   if (item && (item.module === 'technical' || item.module === 'aeo')) {
-    return 'Technical and AEO fixes can\'t be applied to a page automatically yet — a push would create a separate draft post instead of changing ' +
-      (item.page_url || 'the page') + '. Copy the fix and apply it on the page by hand for now.';
+    return 'Technical and AEO fixes are not pushed as posts — a push would create a separate draft instead of changing ' +
+      (item.page_url || 'the page') + '. Use Preview change → Apply on the site (Technical SEO) or Preview in the page → Add to the page (AEO): that changes the page in place and can be undone.';
   }
   const p = item?.payload || {};
   const stale = staleTopicReason([item?.page_title, p.meta_title, p.meta_description, p.html, p.code].filter(Boolean).join('\n'));

@@ -26,11 +26,12 @@ export async function runAeoFix({ url, opt, optKey, action, prev = null, by = 'a
   const ops = deps.ops || WP_OPS;
 
   if (!opt) return save({ status: 'manual', reason: 'This optimisation is no longer in the AEO Engine for that page.' });
-  if (opt.check && opt.check.verdict !== 'confirmed') {
-    return save({ status: 'manual', reason: 'Only optimisations the independent check confirmed are added automatically.' });
+  // The independent check gates the automatic run only. A person pressing
+  // Preview / Add on the AEO page decides for themselves; the preview shows
+  // the page with the addition, and Add reads the page back afterwards.
+  if (action === 'auto' && opt.check?.verdict !== 'confirmed') {
+    return save({ status: 'manual', reason: opt.check ? 'Only optimisations the independent check confirmed are added automatically.' : 'This optimisation has not been through the independent check.' });
   }
-  // Autopilot never adds what nobody checked.
-  if (action === 'auto' && !opt.check) return save({ status: 'manual', reason: 'This optimisation has not been through the independent check.' });
 
   if (action === 'undo') {
     const plan = prev?.plan;

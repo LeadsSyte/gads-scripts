@@ -34,7 +34,7 @@ await t('a technical meta_title task is refused before anything is sent or logge
   try {
     await pushItemInline(CLIENT, { module: 'technical', page_url: 'https://x.example/about/', page_title: 'Fix title', change_type: 'meta_title', payload: { fix: '<title>Better</title>' } }, deps);
   } catch (e) { err = e.message; }
-  if (!/can't be applied to a page automatically/.test(err)) throw new Error('not refused: ' + err);
+  if (!/not pushed as posts.*Apply on the site/.test(err)) throw new Error('not refused: ' + err);
   if (calls.length) throw new Error('network was called');
   if (rows.length) throw new Error('a queue row was written');
 });
