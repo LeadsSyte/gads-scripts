@@ -1260,6 +1260,24 @@ export async function saveAeoResult(result) {
   }
 }
 
+// Add the team's own optimisations to a page's AEO results (Own Fixes) —
+// kept beside whatever the AEO Engine already found for that page, replacing
+// an own item of the same type + name. Nothing else on the row changes.
+export async function addAeoOptimizations(clientId, url, opts) {
+  if (!supabase || !opts?.length) return;
+  const { data } = await supabase.from('syte_suite_aeo_results').select('*').eq('client_id', clientId).eq('url', url).limit(1);
+  const row = data?.[0];
+  const key = o => (o?.type || '') + '::' + (o?.name || o?.title || '');
+  const incoming = new Set(opts.map(key));
+  const kept = (row?.optimizations || []).filter(o => !incoming.has(key(o)));
+  let path = '/';
+  try { path = new URL(url).pathname || '/'; } catch { /* keep */ }
+  await saveAeoResult({
+    client_id: clientId, url, path: row?.path || path, sessions: row?.sessions || 0, priority: row?.priority || 'high',
+    optimizations: [...kept, ...opts], prior_keys: row?.prior_keys || [], generated_at: row?.generated_at
+  });
+}
+
 export async function loadAeoResults() {
   if (supabase) {
     const { data, error } = await supabase
