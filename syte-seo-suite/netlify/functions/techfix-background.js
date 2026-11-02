@@ -72,7 +72,7 @@ export async function handler(event) {
   const started = Date.now();
   const supabase = getServerSupabase();
   const state = await loadTechState(supabase, clientId);
-  if (!state?.tasks) return { statusCode: 404 };
+  if (action === 'auto_all' && !state?.tasks) return { statusCode: 404 };
 
   if (action === 'auto_all') {
     const base = (process.env.URL || 'https://syte-seo-suite.netlify.app').replace(/\/+$/, '');
@@ -101,8 +101,17 @@ export async function handler(event) {
     return { statusCode: 202 };
   }
 
-  const entry = state.tasks.find(e => e.task?.id === taskId);
-  if (!entry) return { statusCode: 404 };
+  // A task from the Autopilot's scan carries the independent check. Any other
+  // task on the Technical SEO board (a manual scan, pasted data) is applied
+  // the same way when a person asks for it — that was the "Push to CMS"
+  // dead end Chris hit (Oct 2026): the push refused, and nothing else offered
+  // to change the page.
+  let entry = (state?.tasks || []).find(e => e.task?.id === taskId);
+  if (!entry) {
+    const { data: task } = await supabase.from('syte_suite_tseo_tasks').select('*').eq('id', taskId).eq('client_id', clientId).maybeSingle();
+    if (!task) return { statusCode: 404 };
+    entry = { task, manual: true };
+  }
   const prev = (await loadTechFixes(supabase, clientId)).get(taskId) || null;
   try {
     const client = await loadClient(supabase, clientId);

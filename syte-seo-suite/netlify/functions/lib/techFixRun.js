@@ -26,7 +26,10 @@ export async function runTechFix({ entry, action, prev = null, by = 'approved in
   const { wp, fetchHtml, save, recordApplied, recordUndone } = deps;
   const ops = deps.ops || WP_OPS;
 
-  if (entry.check?.verdict !== 'confirmed') {
+  // The independent check gates the automatic run. A fix a person chose on
+  // the task board (entry.manual) is that person's call: Preview still shows
+  // exactly what will change, Apply still reads it back and checks the page.
+  if (entry.check?.verdict !== 'confirmed' && !entry.manual) {
     return save({ status: 'manual', reason: 'Only fixes the independent check confirmed are applied automatically.' });
   }
 

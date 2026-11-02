@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { useClients } from '../../store/useClients.js';
 import { claudeComplete, extractJSON } from '../../lib/anthropic.js';
 import { corsFetchText } from '../../lib/corsProxy.js';
-import PushToCmsButton from '../../components/PushToCmsButton.jsx';
+import ApplyFixControls from './ApplyFixControls.jsx';
 import MarkImplementedButton from '../../components/MarkImplementedButton.jsx';
 import PipelineView from '../../components/PipelineView.jsx';
 import ExternalWork from '../../components/ExternalWork.jsx';
@@ -248,7 +248,9 @@ function TaskCard({ task: t, onUpdate, onMarkDone, onVerify, onReject, busy, bui
             {/* This list is rendered per client row, so the button must be
                 told which client the task belongs to. Without it, it falls
                 back to the dropdown selection and pushes to the wrong site. */}
-            {t.copy_paste_fix && <PushToCmsButton item={buildPushItem(t)} client={taskClient} label="Push to CMS" />}
+            {/* The suite changes the page in place (Preview → Apply → Undo);
+                "Push to CMS" used to refuse these — see ApplyFixControls.jsx. */}
+            <ApplyFixControls task={t} client={taskClient} accent={ACCENT} />
             <MarkImplementedButton
               module="technical"
               changeType={t.fix_type || 'fix'}
@@ -877,9 +879,7 @@ export default function TechnicalSEO({ sub }) {
                   <div className="row" style={{ marginTop: 8, gap: 6, flexWrap: 'wrap' }}>
                     {status === 'open' && <button onClick={() => markDone(t)}>Mark Done</button>}
                     {status === 'done' && <button onClick={() => handleVerify(t)} disabled={busy}>Verify</button>}
-                    {t.copy_paste_fix && (
-                      <PushToCmsButton item={buildPushItem(t)} client={client} label="Push to CMS" />
-                    )}
+                    <ApplyFixControls task={t} client={client} accent={ACCENT} />
                     {status === 'open' && (
                       <button
                         onClick={() => {
