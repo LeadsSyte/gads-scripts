@@ -81,6 +81,36 @@ export function hasSeoMetrics(form) {
     .some(k => form?.[k] != null && String(form[k]).trim() !== '');
 }
 
+// The microsite JSON, with one strict retry. On 2 Nov 2026 iSurgeon's AEO
+// report died here after a 50-minute census because the first answer was not
+// parseable JSON; the whole run was marked failed. The retry asks for the
+// object only, at temperature 0, with room to spare; if that fails too, the
+// error carries the start of what came back so the cause can be seen in the
+// run's state rather than only in the server console.
+export async function micrositeJson({ complete, system, payload, label }) {
+  const first = await complete({
+    system, messages: [{ role: 'user', content: payload }],
+    model: REPORT_MODEL, max_tokens: 4000, temperature: 0.5
+  });
+  let micro = extractJSON(first);
+  if (micro) return micro;
+  console.error('[Report] Microsite (' + label + ') raw output (first try):', first);
+  const second = await complete({
+    system, messages: [
+      { role: 'user', content: payload },
+      { role: 'assistant', content: String(first || '').slice(0, 2000) },
+      { role: 'user', content: 'That was not valid JSON. Reply with ONLY the JSON object described in your instructions: start with { and end with }, no prose, no code fences, no comments.' }
+    ],
+    model: REPORT_MODEL, max_tokens: 6000, temperature: 0
+  });
+  micro = extractJSON(second);
+  if (micro) return micro;
+  console.error('[Report] Microsite (' + label + ') raw output (retry):', second);
+  const peek = String(second || first || '').replace(/\s+/g, ' ').slice(0, 160);
+  throw new Error('Microsite JSON could not be parsed, even on a retry. The model answered: "' + peek + '…"');
+}
+
+
 // Build the SEO report. onPhase('alice' | 'micro' | 'qa') for progress.
 // Returns { payload, aliceText, email, micro, qa }. QA is advisory: a failed
 // QA call leaves qa null rather than losing the report.
@@ -113,15 +143,7 @@ export async function generateSeoReport({ client, form, workSummary, monthLabel,
   const email = sanitizeEmail(parseAliceOutput(aliceText));
 
   onPhase?.('micro');
-  const micrositeText = await complete({
-    system: MICROSITE_SEO_SYSTEM, messages: [{ role: 'user', content: payload }],
-    model: REPORT_MODEL, max_tokens: 4000, temperature: 0.5
-  });
-  const micro = extractJSON(micrositeText);
-  if (!micro) {
-    console.error('[Report] Microsite raw output:', micrositeText);
-    throw new Error('Microsite JSON could not be parsed from model output — usually truncated output or stray prose around the JSON.');
-  }
+  const micro = await micrositeJson({ complete, system: MICROSITE_SEO_SYSTEM, payload, label: 'SEO' });
   if (!micro.clientName) micro.clientName = client.name;
 
   onPhase?.('qa');
@@ -162,17 +184,7 @@ export async function generateAeoReport({ client, probe: rawProbe, previousSnap:
   const email = sanitizeEmail(parseAliceOutput(aliceText));
 
   onPhase?.('micro');
-  const micrositeText = await complete({
-    system: MICROSITE_AEO_SYSTEM, messages: [{ role: 'user', content: payload }],
-    // The AEO microsite JSON has narratives, highlights and work items that
-    // truncate mid-JSON at lower limits, which then fails extractJSON.
-    model: REPORT_MODEL, max_tokens: 4000, temperature: 0.5
-  });
-  const micro = extractJSON(micrositeText);
-  if (!micro) {
-    console.error('[Report] Microsite (AEO) raw output:', micrositeText);
-    throw new Error('Microsite JSON could not be parsed. Raw output logged to console — usually means truncated output (raise max_tokens) or model wrapped JSON in stray prose.');
-  }
+  const micro = await micrositeJson({ complete, system: MICROSITE_AEO_SYSTEM, payload, label: 'AEO' });
   if (!micro.clientName) micro.clientName = client.name;
 
   // Advisory only — the report exists at this point, so a failed QA call

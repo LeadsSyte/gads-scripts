@@ -19,6 +19,7 @@ import { corsFetchText } from './corsProxy.js';
 import { claudeComplete } from './anthropic.js';
 import { updateImplementation } from './supabase.js';
 import { listSites } from '../modules/technical/gsc.js';
+import { visualOutcome, invisibleInScreenshot } from './visualOutcome.js';
 
 // Task types whose evidence does NOT live in the page HTML or screenshot.
 // For these we run a targeted external check (or fall back to manual).
@@ -695,7 +696,10 @@ Return ONLY valid JSON:
 // visible. Works for Shopify/React/Vue sites where server-side HTML doesn't
 // contain the JS-rendered content.
 export async function verifyImplementationVisually(impl) {
-  if (!impl?.page_url) return { status: 'failed', detail: 'No page URL.' };
+  if (!impl?.page_url) return persistInconclusive(impl, 'No page URL to screenshot.');
+  // Alt text, meta tags, schema… never show in a screenshot: don't take one,
+  // and never call them failed on that basis (src/lib/visualOutcome.js).
+  if (invisibleInScreenshot(impl)) return persistInconclusive(impl, visualOutcome(impl, { visible: false }).detail);
 
   // thum.io renders JS and returns a screenshot. Fetch as base64 for Claude Vision.
   const screenshotUrl = 'https://image.thum.io/get/png/width/800/crop/1200/noanimate/' + impl.page_url;
@@ -772,8 +776,8 @@ Return ONLY JSON:
       return persistInconclusive(impl, 'Could not parse visual verification response.');
     }
 
-    const status = parsed.visible ? 'verified' : 'failed';
-    const detail = (parsed.evidence || '') + ' · Confidence: ' + (parsed.confidence || '?') + ' · (Visual verification via screenshot)';
+    const { status, detail } = visualOutcome(impl, parsed);
+    if (status === 'inconclusive') return persistInconclusive(impl, detail);
     await updateImplementation(impl.id, { verification_status: status, verification_detail: detail, verified_at: new Date().toISOString() });
     return { status, detail };
   } catch (e) {
