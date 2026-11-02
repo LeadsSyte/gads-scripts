@@ -648,8 +648,13 @@ export default function MonthlyReport({ initialMonth }) {
     try {
       // Alice email → microsite JSON → QA (advisory), shared with the
       // server-side Report Autopilot (reportGenerate.js).
+      // The form's metric fields are only filled after a live pull; data
+      // loaded from the cache or from a saved report never reaches them,
+      // which sent Alice a payload of dashes. Derive them from the report
+      // data on screen, which is what the tables render.
+      const seoForm = { ...form, ...formFromReportData(reportData) };
       const { aliceText, email: parsed, micro: microObj, qa: qaObj } = await generateSeoReport({
-        client, form, workSummary, monthLabel: monthLabel(month), algorithmContext: algContext,
+        client, form: seoForm, workSummary, monthLabel: monthLabel(month), algorithmContext: algContext,
         onPhase: setPhase
       });
       setEmail(parsed);
