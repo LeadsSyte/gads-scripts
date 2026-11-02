@@ -13,7 +13,7 @@
 
 import { sendMail, mailTransport } from './lib/sendMail.js';
 import { createClient } from '@supabase/supabase-js';
-import { dropPhantomImpls, isPhantomCandidate } from '../../src/lib/phantomImpls.js';
+import { buildWeeklyProgress, groupByClient, weeklySubject, ATTENTION_DAYS, isDelivered } from '../../src/lib/weeklyProgressData.js';
 
 export const config = {
   schedule: '0 6 * * 1' // every Monday at 06:00 UTC
@@ -21,13 +21,8 @@ export const config = {
 
 const RECIPIENTS = ['michaelh@syte.co.za', 'chrisb@syte.co.za'];
 
-// Statuses that mean the work is done. A change handed to the client's
-// developer by email is delivered work, so it is neither chased in the
-// outstanding list nor left out of the completion counts. Mirrors
-// src/lib/deliveryStatus.js — inlined because Netlify functions bundle
-// separately from the app source. Keep the two in step.
-const DELIVERED_STATUSES = ['verified', 'sent_to_developer'];
-const isDelivered = (status) => DELIVERED_STATUSES.includes(status);
+// isDelivered (verified or sent to the client's developer) comes from
+// src/lib/weeklyProgressData.js, which mirrors src/lib/deliveryStatus.js.
 
 export default async function handler() {
   const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
@@ -40,86 +35,53 @@ export default async function handler() {
 
   const supabase = createClient(supabaseUrl, supabaseKey);
 
-  // 1. Fetch all implementations from the last 7 days + all still pending/failed.
+  // 1. Fetch this week's records, every record still open, and the pool of
+  //    technical records by named people (to spot phantom copies). Each read
+  //    is paged: the database returns at most 1,000 rows per request.
   const weekAgo = new Date(Date.now() - 7 * 86400000).toISOString();
 
   // Explicit column list — NEVER select('*') here. verification_detail can
   // hold a multi-hundred-KB base64 proof screenshot ([SCREENSHOT]…), and this
   // email needs none of it (only status, title, who, when). Pulling it for
-  // every row — especially the unbounded pending/failed set below — bloated
-  // the payload until the query timed out (HTTP 500) and the Monday email
-  // stopped going out. The same select=* on this table broke the dashboard.
+  // every row bloated the payload until the query timed out (HTTP 500) and
+  // the Monday email stopped going out. The same select=* broke the dashboard.
   const IMPL_COLS = 'id, client_id, module, change_type, title, implemented_by, implemented_at, verification_status, created_at';
+  const PAGE = 1000;
+  async function allRows(build) {
+    const rows = [];
+    for (let page = 0; page < 20; page++) {
+      const { data, error } = await build().order('created_at', { ascending: false }).order('id', { ascending: true }).range(page * PAGE, page * PAGE + PAGE - 1);
+      if (error) { console.error('[weekly-progress] query failed:', error.message); break; }
+      rows.push(...(data || []));
+      if (!data || data.length < PAGE) break;
+    }
+    return rows;
+  }
+  const impls = () => supabase.from('syte_suite_implementations').select(IMPL_COLS);
 
-  const [recentRes, pendingRes, clientsRes] = await Promise.all([
-    supabase
-      .from('syte_suite_implementations')
-      .select(IMPL_COLS)
-      .gte('created_at', weekAgo)
-      .order('created_at', { ascending: false }),
-    supabase
-      .from('syte_suite_implementations')
-      .select(IMPL_COLS)
-      // 'sent_to_developer' is deliberately NOT here: a handover is finished
-      // work, not an outstanding item to chase every Monday.
-      .in('verification_status', ['pending', 'failed', 'inconclusive'])
-      .order('created_at', { ascending: false }),
-    supabase
-      .from('syte_suite_clients')
-      .select('id, name, url')
+  const [recent, open, pool, clientsRes] = await Promise.all([
+    allRows(() => impls().gte('created_at', weekAgo)),
+    // 'sent_to_developer' is deliberately NOT here: a handover is finished
+    // work, not an outstanding item to chase every Monday.
+    allRows(() => impls().in('verification_status', ['pending', 'failed', 'inconclusive'])),
+    allRows(() => impls().eq('module', 'technical').neq('implemented_by', 'Team member')),
+    supabase.from('syte_suite_clients').select('id, name, url')
   ]);
-
-  const recent = recentRes.data || [];
-  const pending = pendingRes.data || [];
   const clients = clientsRes.data || [];
   const clientMap = Object.fromEntries(clients.map(c => [c.id, c]));
 
-  // Merge and dedupe.
-  const allIds = new Set();
-  const all = [];
-  for (const r of [...recent, ...pending]) {
-    if (allIds.has(r.id)) continue;
-    allIds.add(r.id);
-    all.push(r);
-  }
-
-  // Phantom "Team member / pending" copies of technical fixes (src/lib/phantomImpls.js)
-  // aren't outstanding work — their twin, logged by a person, may be older than a week.
-  const candidates = all.filter(isPhantomCandidate);
-  if (candidates.length) {
-    const titles = [...new Set(candidates.map(r => r.title))].slice(0, 200);
-    const { data: twins } = await supabase.from('syte_suite_implementations').select(IMPL_COLS)
-      .eq('module', 'technical').neq('implemented_by', 'Team member').in('title', titles);
-    const kept = dropPhantomImpls(all, [...all, ...(twins || [])]);
-    all.length = 0; all.push(...kept);
-  }
-
-  // 2. Group by client.
-  const grouped = {};
-  for (const impl of all) {
-    const cid = impl.client_id;
-    if (!grouped[cid]) grouped[cid] = { client: clientMap[cid] || { name: cid }, items: [] };
-    grouped[cid].items.push(impl);
-  }
-
-  // 3. Compute stats.
-  const totalVerified = all.filter(r => isDelivered(r.verification_status)).length;
-  const totalFailed = all.filter(r => r.verification_status === 'failed').length;
-  const totalPending = all.filter(r => r.verification_status === 'pending').length;
-  const totalSentToDev = all.filter(r => r.verification_status === 'sent_to_developer').length;
-  const totalClients = Object.keys(grouped).length;
-
-  const moduleBreakdown = {};
-  for (const r of all) {
-    moduleBreakdown[r.module] = (moduleBreakdown[r.module] || 0) + 1;
-  }
+  // 2. The numbers (src/lib/weeklyProgressData.js): this week up top, what
+  //    needs attention from the last 30 days, older open items as one line.
+  const { week, thisWeek, attention, olderSummary, moduleBreakdown } = buildWeeklyProgress({ recent, open, pool });
+  const groups = groupByClient([...thisWeek, ...attention], clientMap);
+  const all = [...thisWeek, ...attention];
 
   // 4. Build HTML email.
   const now = new Date();
   const weekLabel = `${new Date(Date.now() - 7 * 86400000).toLocaleDateString('en-ZA')} — ${now.toLocaleDateString('en-ZA')}`;
+  const totalVerified = week.verified, totalSentToDev = week.sentToDev, totalFailed = week.failed, totalPending = week.pending, totalClients = week.clients;
 
-  const clientRows = Object.values(grouped)
-    .sort((a, b) => b.items.length - a.items.length)
+  const clientRows = groups
     .map(g => {
       const v = g.items.filter(r => isDelivered(r.verification_status)).length;
       const f = g.items.filter(r => r.verification_status === 'failed').length;
@@ -166,6 +128,7 @@ export default async function handler() {
   <div style="max-width:800px;margin:0 auto;padding:32px 24px">
     <div style="font-size:22px;font-weight:700;margin-bottom:4px">Syte SEO Suite</div>
     <div style="color:#8b8b96;font-size:13px;margin-bottom:24px">Weekly Implementation Progress · ${esc(weekLabel)}</div>
+    <div style="color:#8b8b96;font-size:12px;margin-bottom:10px">This week: ${week.total} change${week.total === 1 ? '' : 's'} logged across ${week.clients} client${week.clients === 1 ? '' : 's'}.</div>
 
     <div style="display:flex;gap:16px;margin-bottom:24px">
       <div style="background:#111316;border:1px solid #2a2a32;border-radius:10px;padding:16px;flex:1;text-align:center">
@@ -190,7 +153,8 @@ export default async function handler() {
       </div>
     </div>
 
-    <div style="color:#8b8b96;font-size:12px;margin-bottom:16px">By module: ${moduleStats}</div>
+    <div style="color:#8b8b96;font-size:12px;margin-bottom:16px">By module this week: ${moduleStats || 'nothing logged'}</div>
+    <div style="font-size:14px;font-weight:700;margin:8px 0 6px">This week, plus anything still open from the last ${ATTENTION_DAYS} days${attention.length ? ' (' + attention.length + ' to look at)' : ''}</div>
 
     <table style="width:100%;border-collapse:collapse;background:#111316;border:1px solid #2a2a32;border-radius:10px;overflow:hidden">
       <thead>
@@ -203,9 +167,10 @@ export default async function handler() {
         </tr>
       </thead>
       <tbody>
-        ${clientRows || '<tr><td colspan="5" style="padding:24px;text-align:center;color:#8b8b96">No implementations logged this week.</td></tr>'}
+        ${clientRows || '<tr><td colspan="5" style="padding:24px;text-align:center;color:#8b8b96">Nothing logged this week and nothing open from the last ' + ATTENTION_DAYS + ' days.</td></tr>'}
       </tbody>
     </table>
+    ${olderSummary.total ? `<div style="margin-top:14px;color:#8b8b96;font-size:12px">Older open items, not listed: ${olderSummary.failed} failed, ${olderSummary.pending} pending${olderSummary.inconclusive ? ', ' + olderSummary.inconclusive + ' inconclusive' : ''} from before ${new Date(Date.now() - ATTENTION_DAYS * 86400000).toLocaleDateString('en-ZA')}${olderSummary.oldest ? ' (oldest ' + new Date(olderSummary.oldest).toLocaleDateString('en-ZA') + ')' : ''}. They are in the suite under Implementation Progress; most are old verification results, not work that is failing now.</div>` : ''}
 
     <div style="margin-top:24px;color:#5a5a66;font-size:11px;text-align:center">
       Syte SEO Suite · Automated weekly progress · hello@syte.co.za
@@ -226,7 +191,7 @@ export default async function handler() {
     try {
       data = await sendMail({
         to: RECIPIENTS,
-        subject: `Syte SEO Progress — ${weekLabel} · ${totalVerified} verified, ${totalSentToDev} sent to dev, ${totalPending} pending`,
+        subject: weeklySubject({ week, attention, weekLabel }),
         html
       });
     } catch (err) {

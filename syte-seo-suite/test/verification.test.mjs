@@ -86,6 +86,8 @@ globalThis.__mockListSites     = async () => { throw new Error('listSites not mo
 // Rewrite verification.js imports to read from globalThis stubs, then
 // dynamic-import the patched copy from a temp file.
 const PATCHED = VERIF_SRC
+  .replace("import { visualOutcome, invisibleInScreenshot } from './visualOutcome.js';",
+    "import { visualOutcome, invisibleInScreenshot } from '" + new URL('../src/lib/visualOutcome.js', import.meta.url).href + "';")
   .replace("import { corsFetchText } from './corsProxy.js';",
            "const corsFetchText = (url) => globalThis.__mockCorsFetchText(url);")
   .replace("import { claudeComplete } from './anthropic.js';",
