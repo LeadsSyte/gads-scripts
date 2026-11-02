@@ -57,6 +57,10 @@ export function formFromReportData(data) {
       gscClicksThis: String(gscClicks),
       gscImpressionsThis: String(gscImpr),
       gscCtrThis: gscImpr > 0 ? ((gscClicks / gscImpr) * 100).toFixed(1) + '%' : '',
+      // Impression-weighted, so a handful of rare queries don't skew it.
+      gscPosThis: gscImpr > 0
+        ? (data.keywords.reduce((a, k) => a + (Number(k.position) || 0) * (Number(k.impressions) || 0), 0) / gscImpr).toFixed(1)
+        : '',
       topQueries: data.keywords.slice(0, 10).map(k =>
         k.query + ' — pos ' + k.position + (k.change != null ? ' (' + (k.change > 0 ? '+' : '') + k.change + ')' : '') + ', ' + k.clicks + ' clicks'
       ).join('\n')
@@ -72,10 +76,21 @@ export function formFromReportData(data) {
   return form;
 }
 
+export function hasSeoMetrics(form) {
+  return ['seoOrganicThis', 'seoSessThis', 'gscClicksThis', 'gscImpressionsThis']
+    .some(k => form?.[k] != null && String(form[k]).trim() !== '');
+}
+
 // Build the SEO report. onPhase('alice' | 'micro' | 'qa') for progress.
 // Returns { payload, aliceText, email, micro, qa }. QA is advisory: a failed
 // QA call leaves qa null rather than losing the report.
 export async function generateSeoReport({ client, form, workSummary, monthLabel, algorithmContext = '', complete = claudeComplete, onPhase }) {
+  // With no GA4 or Search Console figures the payload is all dashes and the
+  // model writes a refusal instead of an email (QA then scores it 1/10).
+  // Stop before spending three Claude calls on that.
+  if (!hasSeoMetrics(form)) {
+    throw new Error('No GA4 or Search Console figures loaded for this month. Click Refresh Data (or connect Google) before generating the SEO report.');
+  }
   const payload = buildAlicePayload({
     clientName: client.name,
     industry: client.industry || '',
