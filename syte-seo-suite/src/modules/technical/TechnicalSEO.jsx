@@ -3,6 +3,7 @@ import { useClients } from '../../store/useClients.js';
 import { claudeComplete, extractJSON } from '../../lib/anthropic.js';
 import { corsFetchText } from '../../lib/corsProxy.js';
 import ApplyFixControls from './ApplyFixControls.jsx';
+import OwnFixes from './OwnFixes.jsx';
 import MarkImplementedButton from '../../components/MarkImplementedButton.jsx';
 import PipelineView from '../../components/PipelineView.jsx';
 import ExternalWork from '../../components/ExternalWork.jsx';
@@ -932,6 +933,8 @@ export default function TechnicalSEO({ sub }) {
   if (sub === 'External Work') {
     return <ExternalWork />;
   }
+
+  if (sub === 'Own Fixes') return <OwnFixes />;
 
   if (sub === 'New Scan') {
     return (
