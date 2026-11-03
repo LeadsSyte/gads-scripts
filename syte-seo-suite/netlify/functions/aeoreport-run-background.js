@@ -9,7 +9,7 @@ import { runAeoReportScan, newAeoReportState } from './lib/aeoReportScan.js';
 import { reportMonthFor } from './lib/reportScan.js';
 import { claudeCompleteServer, openaiJson } from './lib/serverAi.js';
 import { getServerSupabase } from './lib/serverSupabase.js';
-import { installServerAuthGlobals } from './lib/requireAuth.js';
+import { installServerAuthGlobals, authorize, fromEvent } from './lib/requireAuth.js';
 import { loadClient } from './lib/autopilotStore.js';
 import {
   serverEngines, serverExtract, groundClientServer, saveClientProbes, loadExistingAeoReport, loadPreviousAeo,
@@ -25,9 +25,8 @@ const STALE_MS = 20 * 60 * 1000;
 const ACTIVE = ['queued', 'preparing', 'probing', 'writing', 'checking'];
 
 export async function handler(event) {
-  const required = process.env.WP_PROXY_AUTH;
-  const given = event.headers['x-suite-auth'] || event.headers['X-Suite-Auth'] || '';
-  if (!required || given !== required) { console.error('[aeoreport] unauthorized call'); return { statusCode: 401 }; }
+  const auth = await authorize(fromEvent(event));
+  if (!auth.ok) { console.error('[aeoreport-run-background] unauthorized call'); return { statusCode: auth.status }; }
   let body;
   try { body = JSON.parse(event.body || '{}'); } catch { return { statusCode: 400 }; }
   const { clientId, force = false, hop = 0 } = body;

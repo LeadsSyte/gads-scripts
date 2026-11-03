@@ -10,6 +10,7 @@
 // syte_suite_settings 'aeofix:<clientId>:<key>', which the panel polls and
 // draft-preview reads for the in-theme preview. See lib/aeoFixRun.js.
 
+import { authorize, fromEvent } from './lib/requireAuth.js';
 import { getServerSupabase } from './lib/serverSupabase.js';
 import { loadClient } from './lib/autopilotStore.js';
 import { fetchLiveHtml } from './lib/techStore.js';
@@ -67,9 +68,8 @@ function fixDeps(supabase, client, site, url, optKey) {
 }
 
 export async function handler(event) {
-  const required = process.env.WP_PROXY_AUTH;
-  const given = event.headers['x-suite-auth'] || event.headers['X-Suite-Auth'] || '';
-  if (!required || given !== required) return { statusCode: 401 };
+  const auth = await authorize(fromEvent(event));
+  if (!auth.ok) { console.error('[aeofix-background] unauthorized call'); return { statusCode: auth.status }; }
   let body;
   try { body = JSON.parse(event.body || '{}'); } catch { return { statusCode: 400 }; }
   const { clientId, url, optKey, action } = body;

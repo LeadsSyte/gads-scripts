@@ -3,6 +3,14 @@
   publish = "dist"
   functions = "netlify/functions"
 
+# Bot API (security brief Phase 2): /api/v1/* is served by one function.
+# Listed before the SPA catch-all because the first matching rule wins.
+[[redirects]]
+  from = "/api/v1/*"
+  to = "/.netlify/functions/api-v1/:splat"
+  status = 200
+  force = true
+
 [[redirects]]
   from = "/*"
   to = "/index.html"
