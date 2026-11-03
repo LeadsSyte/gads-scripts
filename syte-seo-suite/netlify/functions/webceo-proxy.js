@@ -1,3 +1,4 @@
+import { authorize, fromEvent, deny } from './lib/requireAuth.js';
 // WebCEO API proxy — correct base URL is https://online.webceo.com/api/
 // (not api.webceo.com, which doesn't resolve). The public API takes a JSON
 // POST body of { key, method, ...params } and responds with a batch-format
@@ -12,6 +13,8 @@ export async function handler(event) {
   if (event.httpMethod !== 'POST') {
     return { statusCode: 405, headers: corsHeaders(), body: 'Method Not Allowed' };
   }
+  const auth = await authorize(fromEvent(event));
+  if (!auth.ok) return deny(auth.status, corsHeaders(), auth.reason);
 
   const key = process.env.WEBCEO_KEY || process.env.WEBCEO_API_KEY;
   if (!key) {
@@ -65,7 +68,7 @@ export async function handler(event) {
 function corsHeaders() {
   return {
     'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Suite-Auth, X-Internal-Auth',
     'Access-Control-Allow-Methods': 'POST, OPTIONS'
   };
 }

@@ -1,3 +1,4 @@
+import { authorize, fromEvent, deny } from './lib/requireAuth.js';
 // Google Gemini (Generative Language API) proxy — routes browser calls to
 // Google through a Netlify serverless function so they happen server-side.
 // This keeps the API key OFF the client: the built-in GOOGLE_AI_KEY env var
@@ -17,22 +18,23 @@ export async function handler(event) {
   if (event.httpMethod !== 'POST') {
     return { statusCode: 405, headers: corsHeaders(), body: 'Method Not Allowed' };
   }
+  const auth = await authorize(fromEvent(event));
+  if (!auth.ok) return deny(auth.status, corsHeaders(), auth.reason);
 
   let parsed;
   try { parsed = JSON.parse(event.body || '{}'); }
   catch { return { statusCode: 400, headers: corsHeaders(), body: 'Invalid JSON' }; }
 
-  const { apiKey, model, payload } = parsed;
+  const { model, payload } = parsed;
   if (!model) {
     return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'Missing model' }) };
   }
 
-  // A browser-supplied key (personal override) wins; otherwise use the
-  // deployment's built-in GOOGLE_AI_KEY env var. Never sent back to the client.
-  const browserKey = String(apiKey || '').trim();
-  const cleanKey = browserKey || String(process.env.GOOGLE_AI_KEY || '').trim();
+  // Server key only (security brief §1.3): the deployment's GOOGLE_AI_KEY.
+  // A key in the request body is ignored — the browser never holds one.
+  const cleanKey = String(process.env.GOOGLE_AI_KEY || '').trim();
   if (!cleanKey) {
-    return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'No Gemini key: neither a personal key nor the built-in GOOGLE_AI_KEY env var is set.' }) };
+    return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'No Gemini key: the GOOGLE_AI_KEY env var is not set in Netlify.' }) };
   }
 
   const safeModel = String(model).replace(/[^a-zA-Z0-9._-]/g, '');
@@ -65,6 +67,6 @@ function corsHeaders() {
   return {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type'
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Suite-Auth, X-Internal-Auth'
   };
 }

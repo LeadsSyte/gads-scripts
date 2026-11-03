@@ -5,6 +5,7 @@ import { normalizeSnapshot } from './aeoCompare.js';
 import { saveAeoSnapshot, listAeoSnapshots, getCachedReportData, persistAeoRuns, latestEarlierAeoProbe } from '../../lib/supabase.js';
 import { ALL_ENGINES, CORE_ENGINE_IDS } from './aeoEngines.js';
 import { SETTINGS_EVENT } from '../../lib/settings.js';
+import { suiteFetch } from '../../lib/suiteAuth.js';
 import { readinessFor } from '../../lib/clientReadiness.js';
 import { probeCandidatesFromGSC, groundedProbeSet } from './keywordBuckets.js';
 import { buildDiscoveryQueries, runDiscoverySweep, extractSitePhrases } from './aeoDiscovery.js';
@@ -201,7 +202,7 @@ export default function AEOSnapshot() {
   async function fetchSiteHtml(url) {
     if (!url) return '';
     try {
-      const r = await fetch('/.netlify/functions/page-proxy', {
+      const r = await suiteFetch('/.netlify/functions/page-proxy', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ url })
       });

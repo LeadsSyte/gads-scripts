@@ -9,6 +9,7 @@ import { runAeoReportScan, newAeoReportState } from './lib/aeoReportScan.js';
 import { reportMonthFor } from './lib/reportScan.js';
 import { claudeCompleteServer, openaiJson } from './lib/serverAi.js';
 import { getServerSupabase } from './lib/serverSupabase.js';
+import { installServerAuthGlobals } from './lib/requireAuth.js';
 import { loadClient } from './lib/autopilotStore.js';
 import {
   serverEngines, serverExtract, groundClientServer, saveClientProbes, loadExistingAeoReport, loadPreviousAeo,
@@ -37,6 +38,7 @@ export async function handler(event) {
   const supabase = getServerSupabase();
   const base = (process.env.URL || 'https://syte-seo-suite.netlify.app').replace(/\/+$/, '');
   globalThis.__SYTE_FN_BASE = base; // the prompt-set builder reads the website through page-proxy
+  installServerAuthGlobals();
   let state = null;
   let client = null;
   let more = false;

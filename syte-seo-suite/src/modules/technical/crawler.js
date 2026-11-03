@@ -233,7 +233,7 @@ async function analyzeUrl(url) {
       // src/lib/fnUrl.js; inlined because the tests load this file standalone).
       const res = await fetch((globalThis.__SYTE_FN_BASE || '') + '/.netlify/functions/page-proxy', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...(await (globalThis.__SYTE_AUTH_HEADERS?.() ?? {})) },
         body: JSON.stringify({ url, raw: true })
       });
       if (res.ok) {

@@ -1,3 +1,4 @@
+import { authorize, fromEvent, deny } from './lib/requireAuth.js';
 // WordPress API proxy — routes all WP REST API calls through a Netlify
 // serverless function so they happen server-side. This bypasses:
 //   - Wordfence WAF blocking cross-origin API requests
@@ -19,18 +20,12 @@ export async function handler(event) {
     return { statusCode: 405, headers: corsHeaders(), body: 'Method Not Allowed' };
   }
 
-  // Auth gate: when WP_PROXY_AUTH is set (SHA-256 hex of the suite key),
-  // require the matching X-Suite-Auth header. Without it this function is
-  // an open relay anyone on the internet can push WP requests through.
-  // Enforcement is opt-in via the env var so deploys stay backwards-
-  // compatible until the frontend that sends the header is live.
-  const requiredAuth = process.env.WP_PROXY_AUTH;
-  if (requiredAuth) {
-    const given = event.headers['x-suite-auth'] || event.headers['X-Suite-Auth'] || '';
-    if (given !== requiredAuth) {
-      return { statusCode: 401, headers: corsHeaders(), body: JSON.stringify({ error: 'Unauthorized' }) };
-    }
-  }
+  // Auth gate (lib/requireAuth.js): a signed-in staff token, a service API
+  // key, the server's internal header, or — until Deploy B — the legacy
+  // X-Suite-Auth hash. Without it this function is an open relay anyone on
+  // the internet can push WP requests through.
+  const auth = await authorize(fromEvent(event));
+  if (!auth.ok) return deny(auth.status, corsHeaders(), auth.reason);
 
   let payload;
   try { payload = JSON.parse(event.body || '{}'); }
@@ -104,7 +99,7 @@ function corsHeaders() {
   // WP_PROXY_AUTH gate above is what actually blocks them.
   return {
     'Access-Control-Allow-Origin': process.env.ALLOWED_ORIGIN || 'https://syte-seo-suite.netlify.app',
-    'Access-Control-Allow-Headers': 'Content-Type, X-Suite-Auth',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Suite-Auth, X-Internal-Auth',
     'Access-Control-Allow-Methods': 'POST, OPTIONS'
   };
 }

@@ -7,12 +7,13 @@
 
 import { corsFetchText } from './corsProxy.js';
 import { claudeComplete, extractJSON } from './anthropic.js';
+import { suiteFetch } from './suiteAuth.js';
 
 // Fetch a page's HTML. Tries the Netlify page-proxy first (renders JS and
 // bypasses many WAFs), then falls back to the CORS proxy chain.
 async function fetchPageHtml(url) {
   try {
-    const res = await fetch('/.netlify/functions/page-proxy', {
+    const res = await suiteFetch('/.netlify/functions/page-proxy', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ url })

@@ -2,6 +2,7 @@
 // already uses — so its fixes appear on the normal task board.
 import { TECH_STATE_PREFIX } from './techScan.js';
 import { handler as pageProxy } from '../page-proxy.js';
+import { internalHeaders } from './requireAuth.js';
 
 // Same columns as src/lib/supabase.js (IMPL_LIST_COLS / tseoTaskRow).
 const IMPL_COLS = 'id, client_id, module, change_type, page_url, title, description, implemented_by, implemented_at, verification_status, verified_at, created_at';
@@ -52,7 +53,7 @@ export async function saveTechState(supabase, state) {
 // Live page HTML the way the crawler sees it (raw, no reader rewriting).
 export async function fetchLiveHtml(url) {
   try {
-    const res = await pageProxy({ httpMethod: 'POST', headers: {}, body: JSON.stringify({ url, raw: true }) });
+    const res = await pageProxy({ httpMethod: 'POST', headers: internalHeaders(), body: JSON.stringify({ url, raw: true }) });
     const data = JSON.parse(res.body || '{}');
     if (data.status && (data.status === 404 || data.status === 410 || data.status >= 500)) return '';
     return data.html || '';

@@ -1,3 +1,4 @@
+import { authorize, fromEvent, deny } from './lib/requireAuth.js';
 // OpenAI API proxy — routes browser calls to OpenAI through a Netlify
 // serverless function so they happen server-side. This bypasses:
 //   - CORS: api.openai.com does not include Access-Control-Allow-Origin
@@ -18,24 +19,23 @@ export async function handler(event) {
   if (event.httpMethod !== 'POST') {
     return { statusCode: 405, headers: corsHeaders(), body: 'Method Not Allowed' };
   }
+  const auth = await authorize(fromEvent(event));
+  if (!auth.ok) return deny(auth.status, corsHeaders(), auth.reason);
 
   let payload;
   try { payload = JSON.parse(event.body || '{}'); }
   catch { return { statusCode: 400, headers: corsHeaders(), body: 'Invalid JSON' }; }
 
-  const { apiKey, endpoint, body } = payload;
+  const { endpoint, body } = payload;
   if (!endpoint) {
     return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'Missing endpoint' }) };
   }
 
-  // Key resolution: a browser-supplied key (a user's personal override) wins;
-  // otherwise fall back to the deployment's built-in OPENAI_API_KEY env var so
-  // ChatGPT works for every operator without anyone pasting a key. The raw key
-  // never reaches the browser — it stays server-side in this function.
-  const browserKey = String(apiKey || '').trim();
-  const cleanKey = browserKey || String(process.env.OPENAI_API_KEY || '').trim();
+  // Server key only (security brief §1.3): the deployment's OPENAI_API_KEY.
+  // A key in the request body is ignored — the browser never holds one.
+  const cleanKey = String(process.env.OPENAI_API_KEY || '').trim();
   if (!cleanKey) {
-    return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'No OpenAI key: neither a personal key nor the built-in OPENAI_API_KEY env var is set.' }) };
+    return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'No OpenAI key: the OPENAI_API_KEY env var is not set in Netlify.' }) };
   }
 
   // HTTP header values are ByteStrings — every character must be 0-255.
@@ -89,6 +89,6 @@ function corsHeaders() {
   return {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type'
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Suite-Auth, X-Internal-Auth'
   };
 }

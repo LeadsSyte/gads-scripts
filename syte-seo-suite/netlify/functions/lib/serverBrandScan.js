@@ -3,12 +3,13 @@
 // (src/lib/brandScan.js scanBrandFromWebsite, with these passed in).
 
 import { handler as pageProxy } from '../page-proxy.js';
+import { internalHeaders } from './requireAuth.js';
 
 // Same fetch the browser uses first: the page-proxy (browser-like headers,
 // JS-rendered fallback), called in-process instead of over HTTP.
 export async function fetchHtmlServer(url) {
   try {
-    const res = await pageProxy({ httpMethod: 'POST', headers: {}, body: JSON.stringify({ url }) });
+    const res = await pageProxy({ httpMethod: 'POST', headers: internalHeaders(), body: JSON.stringify({ url }) });
     const data = JSON.parse(res.body || '{}');
     if (data.html && data.html.length > 300) return data.html;
   } catch { /* fall through */ }

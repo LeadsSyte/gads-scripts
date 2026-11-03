@@ -83,7 +83,7 @@ export async function generateWithDalle(prompt) {
   // and returns the upstream response verbatim.
   const res = await fetch(fnUrl('openai-proxy'), {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...(await (globalThis.__SYTE_AUTH_HEADERS?.() ?? {})) },
     body: JSON.stringify({
       apiKey: openaiKey,
       endpoint: 'images/generations',

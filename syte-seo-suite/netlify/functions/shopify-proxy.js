@@ -1,3 +1,4 @@
+import { authorize, fromEvent, deny } from './lib/requireAuth.js';
 // Shopify Admin API proxy — the Admin API rejects browser-origin requests
 // (CORS) and the access token must never ride in a browser-visible call to
 // a third-party host, so all Shopify calls route through this function.
@@ -18,13 +19,8 @@ export async function handler(event) {
     return { statusCode: 405, headers: corsHeaders(), body: 'Method Not Allowed' };
   }
 
-  const requiredAuth = process.env.WP_PROXY_AUTH;
-  if (requiredAuth) {
-    const given = event.headers['x-suite-auth'] || event.headers['X-Suite-Auth'] || '';
-    if (given !== requiredAuth) {
-      return { statusCode: 401, headers: corsHeaders(), body: JSON.stringify({ error: 'Unauthorized' }) };
-    }
-  }
+  const auth = await authorize(fromEvent(event));
+  if (!auth.ok) return deny(auth.status, corsHeaders(), auth.reason);
 
   let payload;
   try { payload = JSON.parse(event.body || '{}'); }
@@ -68,7 +64,7 @@ export async function handler(event) {
 function corsHeaders() {
   return {
     'Access-Control-Allow-Origin': process.env.ALLOWED_ORIGIN || 'https://syte-seo-suite.netlify.app',
-    'Access-Control-Allow-Headers': 'Content-Type, X-Suite-Auth',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Suite-Auth, X-Internal-Auth',
     'Access-Control-Allow-Methods': 'POST, OPTIONS'
   };
 }

@@ -79,7 +79,7 @@ async function fetchResource(url, { raw = false } = {}) {
     try {
       const res = await fetch('/.netlify/functions/page-proxy', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...(await (globalThis.__SYTE_AUTH_HEADERS?.() ?? {})) },
         body: JSON.stringify({ url })
       });
       if (res.ok) {
@@ -270,7 +270,7 @@ async function fetchPageContent(impl, client) {
         try {
           const res = await fetch('/.netlify/functions/wp-proxy', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ...(await (globalThis.__SYTE_AUTH_HEADERS?.() ?? {})) },
             body: JSON.stringify({
               wpUrl: wpBase, username: client.wp_username,
               appPassword: client.wp_app_password, method: 'GET',
@@ -295,7 +295,7 @@ async function fetchPageContent(impl, client) {
       try {
         const res = await fetch('/.netlify/functions/wp-proxy', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...(await (globalThis.__SYTE_AUTH_HEADERS?.() ?? {})) },
           body: JSON.stringify({
             wpUrl: wpBase, username: client.wp_username,
             appPassword: client.wp_app_password, method: 'GET',
@@ -332,7 +332,7 @@ async function fetchPageContent(impl, client) {
   try {
     const res = await fetch('/.netlify/functions/page-proxy', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...(await (globalThis.__SYTE_AUTH_HEADERS?.() ?? {})) },
       body: JSON.stringify({ url: impl.page_url, raw: headTask })
     });
     if (res.ok) {

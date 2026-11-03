@@ -3,10 +3,12 @@
 // server-side. The request shape is { endpoint, body } — the proxy turns
 // that into POST https://api.webceo.com/{endpoint}/ with { key, ...body }.
 
+import { suiteFetch } from '../../lib/suiteAuth.js';
+
 const PROXY = '/.netlify/functions/webceo-proxy';
 
 export async function webceoRequest(endpoint, body = {}) {
-  const res = await fetch(PROXY, {
+  const res = await suiteFetch(PROXY, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ endpoint, body })
@@ -20,7 +22,7 @@ export async function webceoRequest(endpoint, body = {}) {
 
 // Send a raw payload to WebCEO — supports the module+action API format.
 export async function webceoRaw(payload) {
-  const res = await fetch(PROXY, {
+  const res = await suiteFetch(PROXY, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ raw: payload })
@@ -34,7 +36,7 @@ export async function webceoRaw(payload) {
 
 // Diagnostic: send one request and return the FULL raw response for debugging.
 export async function webceoDiagnose(payload) {
-  const res = await fetch(PROXY, {
+  const res = await suiteFetch(PROXY, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(payload.raw ? payload : { raw: payload })

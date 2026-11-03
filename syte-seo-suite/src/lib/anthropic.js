@@ -1,32 +1,20 @@
-import { getStoredApiKey } from './auth.js';
 import { fetchWithTimeout } from './http.js';
+import { claudeRequest } from './claudeTransport.js';
 
 export const CLAUDE_MODEL = 'claude-sonnet-4-6';
-const API_URL = 'https://api.anthropic.com/v1/messages';
 
 // Non-streaming generation (Alice email, microsite JSON, QA) can legitimately
 // take a while, but a stalled connection must not hang the report pipeline.
 // Cap each call so a dead socket rejects instead of freezing on "Working…".
 const COMPLETE_TIMEOUT_MS = 90000;
 
-function headers() {
-  const key = getStoredApiKey();
-  if (!key) throw new Error('API key not unlocked. Refresh and enter password.');
-  return {
-    'Content-Type': 'application/json',
-    'anthropic-version': '2023-06-01',
-    'anthropic-dangerous-direct-browser-access': 'true',
-    'x-api-key': key
-  };
-}
+// Requests go through the suite's anthropic-proxy (claudeTransport.js), so
+// the provider key stays on the server.
 
 // Non-streaming single-shot call. Returns plain text.
 export async function claudeComplete({ system, messages, max_tokens = 4096, temperature = 0.7, model = CLAUDE_MODEL }) {
-  const res = await fetchWithTimeout(API_URL, {
-    method: 'POST',
-    headers: headers(),
-    body: JSON.stringify({ model, max_tokens, temperature, system, messages })
-  }, COMPLETE_TIMEOUT_MS);
+  const res = await claudeRequest({ model, max_tokens, temperature, system, messages },
+    (url, init) => fetchWithTimeout(url, init, COMPLETE_TIMEOUT_MS));
   if (!res.ok) {
     const txt = await res.text();
     throw new Error('Claude API error: ' + res.status + ' ' + txt);
@@ -37,11 +25,7 @@ export async function claudeComplete({ system, messages, max_tokens = 4096, temp
 
 // Streaming. Calls onDelta(text) for each token chunk. Returns full text.
 export async function claudeStream({ system, messages, max_tokens = 4096, temperature = 0.7, model = CLAUDE_MODEL, onDelta }) {
-  const res = await fetch(API_URL, {
-    method: 'POST',
-    headers: headers(),
-    body: JSON.stringify({ model, max_tokens, temperature, system, messages, stream: true })
-  });
+  const res = await claudeRequest({ model, max_tokens, temperature, system, messages, stream: true }, fetch);
   if (!res.ok || !res.body) {
     const txt = await res.text().catch(() => '');
     throw new Error('Claude stream error: ' + res.status + ' ' + txt);

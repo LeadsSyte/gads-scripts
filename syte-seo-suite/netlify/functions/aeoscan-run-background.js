@@ -8,6 +8,7 @@ import { runAeoScan, newAeoState } from './lib/aeoScan.js';
 import { installDomParser } from './lib/techScan.js';
 import { claudeCompleteServer, openaiJson } from './lib/serverAi.js';
 import { getServerSupabase } from './lib/serverSupabase.js';
+import { installServerAuthGlobals } from './lib/requireAuth.js';
 import { fetchGscPages } from './lib/serverGsc.js';
 import { loadClient } from './lib/autopilotStore.js';
 import { fetchLiveHtml } from './lib/techStore.js';
@@ -33,6 +34,7 @@ export async function handler(event) {
   const supabase = getServerSupabase();
   const base = (process.env.URL || 'https://syte-seo-suite.netlify.app').replace(/\/+$/, '');
   globalThis.__SYTE_FN_BASE = base; // sitemap discovery calls page-proxy by URL
+  installServerAuthGlobals();
   installDomParser();
   let state = null;
   let client = null;

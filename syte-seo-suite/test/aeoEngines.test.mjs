@@ -18,6 +18,7 @@ const SRC = fs.readFileSync(path.join(__dirname, '../src/modules/reports/aeoEngi
 const PATCHED = SRC
   .replace("import { loadSettings, hasBuiltinEngine } from '../../lib/settings.js';", 'const loadSettings = () => ({}); const hasBuiltinEngine = () => false;')
   .replace("import { getStoredApiKey } from '../../lib/auth.js';", 'const getStoredApiKey = () => null;')
+  .replace("import { suiteAuthHeaders } from '../../lib/suiteAuth.js';", 'const suiteAuthHeaders = async () => ({});')
   .replace("import { fetchWithTimeout } from '../../lib/http.js';",
            'const fetchWithTimeout = (...a) => globalThis.__fetchWithTimeout(...a);')
   // Make backoff instant so the retries-exhausted path doesn't take 7s.
