@@ -7,7 +7,9 @@ import { liveDeps } from './lib/requireAuth.js';
 import { supaDb } from './lib/apiCore.js';
 import { createApi } from './lib/apiRouter.js';
 
-export const config = { path: ['/api/v1', '/api/v1/*'] };
+// Routed by the netlify.toml redirect /api/v1/* → /.netlify/functions/api-v1/:splat.
+// No custom `path` here: a function with one loses its default
+// /.netlify/functions/<name> URL, which is where that redirect points.
 
 let api = null;
 export default async function handler(req) {
