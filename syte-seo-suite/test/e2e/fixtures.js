@@ -32,7 +32,9 @@ export const test = base.extend({
   // `page` already exists; we layer route-stubbing + storage seeding on top.
   page: async ({ page }, use) => {
     // Stub external APIs *before* the page loads so we never hit the network.
-    await page.route('**/api.anthropic.com/**', (route) => {
+    // Claude goes through the suite's anthropic-proxy function (direct call to
+    // api.anthropic.com is only the fallback when the proxy is missing).
+    const claudeStub = (route) => {
       route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -41,7 +43,9 @@ export const test = base.extend({
           stop_reason: 'end_turn'
         })
       });
-    });
+    };
+    await page.route('**/anthropic-proxy*', claudeStub);
+    await page.route('**/api.anthropic.com/**', claudeStub);
     await page.route('**/api.openai.com/**', (route) => {
       route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
     });

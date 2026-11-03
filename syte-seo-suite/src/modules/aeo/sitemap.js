@@ -61,7 +61,7 @@ export async function fetchRemoteText(url) {
     // src/lib/fnUrl.js; inlined because the tests load this file standalone).
     const res = await fetch((globalThis.__SYTE_FN_BASE || '') + PAGE_PROXY, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...(await (globalThis.__SYTE_AUTH_HEADERS?.() ?? {})) },
       // raw: true keeps the served markup intact — Jina Reader rewrites
       // documents and would mangle sitemap XML.
       body: JSON.stringify({ url, raw: true })

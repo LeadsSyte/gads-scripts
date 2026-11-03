@@ -14,6 +14,7 @@ import crypto from 'node:crypto';
 import { getServerSupabase } from './lib/serverSupabase.js';
 import { previewSig } from './lib/previewSig.js';
 import { handler as pageProxy } from './page-proxy.js';
+import { internalHeaders } from './lib/requireAuth.js';
 import { buildThemePreview, pickTemplate } from '../../src/modules/cms/themePreview.js';
 import { learnHouseStyle, applyHouseStyle } from '../../src/modules/cms/houseStyle.js';
 import { withClientCss } from '../../src/modules/cms/clientCss.js';
@@ -33,7 +34,7 @@ const message = (status, text) => page(status,
   + String(text).replace(/</g, '&lt;') + '</body>');
 
 async function fetchPublicHtml(url) {
-  const res = await pageProxy({ httpMethod: 'POST', headers: {}, body: JSON.stringify({ url, raw: true }) });
+  const res = await pageProxy({ httpMethod: 'POST', headers: internalHeaders(), body: JSON.stringify({ url, raw: true }) });
   const data = JSON.parse(res.body || '{}');
   return data.html || '';
 }

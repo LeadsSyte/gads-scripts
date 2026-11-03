@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { useClients } from '../../store/useClients.js';
 import { claudeComplete, extractJSON } from '../../lib/anthropic.js';
 import { corsFetchText } from '../../lib/corsProxy.js';
+import { suiteFetch } from '../../lib/suiteAuth.js';
 import ApplyFixControls from './ApplyFixControls.jsx';
 import OwnFixes from './OwnFixes.jsx';
 import MarkImplementedButton from '../../components/MarkImplementedButton.jsx';
@@ -118,7 +119,7 @@ async function verifyFix(task, client) {
   // Standard HTML verification for all other fix types.
   let html = '';
   try {
-    const res = await fetch('/.netlify/functions/page-proxy', {
+    const res = await suiteFetch('/.netlify/functions/page-proxy', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ url: task.page_url })

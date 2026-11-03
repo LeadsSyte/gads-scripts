@@ -15,6 +15,7 @@
 import { loadSettings, hasBuiltinEngine } from '../../lib/settings.js';
 import { getStoredApiKey } from '../../lib/auth.js';
 import { fetchWithTimeout } from '../../lib/http.js';
+import { suiteAuthHeaders } from '../../lib/suiteAuth.js';
 
 const MAX_TOKENS = 500;
 
@@ -120,7 +121,7 @@ export const chatgpt = {
       })
       : await fetchJsonWithRetry('/.netlify/functions/openai-proxy', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...(await suiteAuthHeaders()) },
         body: JSON.stringify({ apiKey: openaiKey, endpoint: 'responses', body: reqBody })
       });
     if (!res.ok) {
@@ -226,7 +227,7 @@ async function geminiCall(model, body, apiKey) {
         }, ENGINE_TIMEOUT_MS)
         : await fetchWithTimeout('/.netlify/functions/gemini-proxy', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...(await suiteAuthHeaders()) },
           body: JSON.stringify({ apiKey, model, payload: body })
         }, ENGINE_TIMEOUT_MS);
       if (res.ok) {
@@ -311,7 +312,7 @@ export const claude = {
   supportsSearchOff: true,
   isConfigured: () => serverKeys() ? !!serverKeys().anthropic : !!getStoredApiKey(),
   async ask(query, { search = false, country = null, maxTokens = MAX_TOKENS } = {}) {
-    const key = serverKeys() ? serverKeys().anthropic : getStoredApiKey();
+    const key = serverKeys() ? serverKeys().anthropic : '';
     const searchMode = search ? 'search_on' : 'search_off';
     const body = {
       model: 'claude-haiku-4-5-20251001',
@@ -326,16 +327,24 @@ export const claude = {
       body.tools = [tool];
     }
     try {
-      const res = await fetchJsonWithRetry('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'anthropic-version': '2023-06-01',
-          'anthropic-dangerous-direct-browser-access': 'true',
-          'x-api-key': key
-        },
-        body: JSON.stringify(body)
-      });
+      // Server (AEO Report Autopilot) calls Anthropic with its own key; the
+      // browser goes through anthropic-proxy so no provider key is needed.
+      const res = key
+        ? await fetchJsonWithRetry('https://api.anthropic.com/v1/messages', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'anthropic-version': '2023-06-01',
+            'anthropic-dangerous-direct-browser-access': 'true',
+            'x-api-key': key
+          },
+          body: JSON.stringify(body)
+        })
+        : await fetchJsonWithRetry('/.netlify/functions/anthropic-proxy', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...(await suiteAuthHeaders()) },
+          body: JSON.stringify(body)
+        });
       if (!res.ok) {
         const txt = await res.text().catch(() => '');
         return { error: 'Claude ' + res.status + ' ' + txt.slice(0, 200), rateLimited: res.status === 429, searchMode };

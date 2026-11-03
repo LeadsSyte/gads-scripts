@@ -10,13 +10,14 @@
 
 import { claudeComplete, extractJSON } from '../../lib/anthropic.js';
 import { fnUrl } from '../../lib/fnUrl.js';
+import { suiteFetch } from '../../lib/suiteAuth.js';
 import { extractSitePhrases } from './aeoDiscovery.js';
 import { buildGoldGrid, deriveGridProfile } from './goldGrid.js';
 
 async function fetchSiteHtml(url) {
   if (!url) return '';
   try {
-    const r = await fetch(fnUrl('page-proxy'), {
+    const r = await suiteFetch(fnUrl('page-proxy'), {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ url })
     });
