@@ -8,7 +8,7 @@
 import { runTechScan, newTechState, realCrawl } from './lib/techScan.js';
 import { claudeCompleteServer, openaiJson } from './lib/serverAi.js';
 import { getServerSupabase } from './lib/serverSupabase.js';
-import { installServerAuthGlobals } from './lib/requireAuth.js';
+import { installServerAuthGlobals, authorize, fromEvent } from './lib/requireAuth.js';
 import { fetchGscPages } from './lib/serverGsc.js';
 import { loadClient } from './lib/autopilotStore.js';
 import { loadTechHistory, replaceOpenTasks, loadTechState, saveTechState, fetchLiveHtml, fetchPlainText } from './lib/techStore.js';
@@ -21,9 +21,8 @@ const STALE_MS = 20 * 60 * 1000;
 const CRAWL_PAGES = 100;
 
 export async function handler(event) {
-  const required = process.env.WP_PROXY_AUTH;
-  const given = event.headers['x-suite-auth'] || event.headers['X-Suite-Auth'] || '';
-  if (!required || given !== required) { console.error('[techscan] unauthorized call'); return { statusCode: 401 }; }
+  const auth = await authorize(fromEvent(event));
+  if (!auth.ok) { console.error('[techscan-run-background] unauthorized call'); return { statusCode: auth.status }; }
 
   let body;
   try { body = JSON.parse(event.body || '{}'); } catch { return { statusCode: 400 }; }

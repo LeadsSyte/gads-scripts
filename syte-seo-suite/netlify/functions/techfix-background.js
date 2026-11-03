@@ -10,6 +10,7 @@
 // (One row per fix: several previews run at once, and writing into the
 // shared scan state made them overwrite each other.) See lib/techFixRun.js.
 
+import { authorize, fromEvent } from './lib/requireAuth.js';
 import { getServerSupabase } from './lib/serverSupabase.js';
 import { loadClient } from './lib/autopilotStore.js';
 import { loadTechState, saveTechState, fetchLiveHtml, loadTechFixes, saveTechFix, techFixRowId } from './lib/techStore.js';
@@ -60,9 +61,8 @@ function fixDeps(supabase, client, site, entry) {
 }
 
 export async function handler(event) {
-  const required = process.env.WP_PROXY_AUTH;
-  const given = event.headers['x-suite-auth'] || event.headers['X-Suite-Auth'] || '';
-  if (!required || given !== required) return { statusCode: 401 };
+  const auth = await authorize(fromEvent(event));
+  if (!auth.ok) { console.error('[techfix-background] unauthorized call'); return { statusCode: auth.status }; }
   let body;
   try { body = JSON.parse(event.body || '{}'); } catch { return { statusCode: 400 }; }
   const { clientId, taskId, action } = body;

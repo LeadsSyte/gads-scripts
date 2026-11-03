@@ -9,6 +9,7 @@
 // as drafts, and approving clean drafts to go live, are per-client switches
 // (publishing_profile.autopilot_push / autopilot_publish), both off by default.
 
+import { authorize, fromEvent } from './lib/requireAuth.js';
 import { runAutopilotStep, newRunState, monthKey, CHECKER_SYSTEM, buildCheckerInput, normalizeCheck, autoApproveDeps } from './lib/autopilot.js';
 import { claudeCompleteServer, openaiJson } from './lib/serverAi.js';
 import { getServerSupabase } from './lib/serverSupabase.js';
@@ -27,12 +28,8 @@ const STALE_MS = 20 * 60 * 1000; // a "running" state older than this is dead
 
 export async function handler(event) {
   // Fail closed: this spends API money, so it never runs without the gate.
-  const required = process.env.WP_PROXY_AUTH;
-  const given = event.headers['x-suite-auth'] || event.headers['X-Suite-Auth'] || '';
-  if (!required || given !== required) {
-    console.error('[autopilot] unauthorized call');
-    return { statusCode: 401 };
-  }
+  const auth = await authorize(fromEvent(event));
+  if (!auth.ok) { console.error('[autopilot-run-background] unauthorized call'); return { statusCode: auth.status }; }
 
   let body;
   try { body = JSON.parse(event.body || '{}'); } catch { return { statusCode: 400 }; }

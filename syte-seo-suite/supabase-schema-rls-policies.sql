@@ -32,6 +32,10 @@ begin
     from pg_tables
     where schemaname = 'public'
       and tablename like 'syte_suite_%'
+      -- Server-only tables (supabase-schema-bot-api.sql): key hashes, jobs,
+      -- audit rows. They stay RLS-on with NO policy so the anon key in the
+      -- browser bundle can never read them. Never add them here.
+      and tablename not in ('syte_suite_api_keys', 'syte_suite_jobs', 'syte_suite_idempotency', 'syte_suite_audit_log', 'syte_suite_rate_limits', 'syte_suite_client_secrets')
   loop
     policy_name := t.tablename || '_anon_all';
 
