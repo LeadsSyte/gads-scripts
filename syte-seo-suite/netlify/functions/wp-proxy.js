@@ -1,4 +1,3 @@
-import { authorize, fromEvent, deny } from './lib/requireAuth.js';
 // WordPress API proxy — routes all WP REST API calls through a Netlify
 // serverless function so they happen server-side. This bypasses:
 //   - Wordfence WAF blocking cross-origin API requests
@@ -6,13 +5,18 @@ import { authorize, fromEvent, deny } from './lib/requireAuth.js';
 //   - Hosting providers stripping the Authorization header (WP Engine, Kinsta)
 //   - CORS issues on wp-json endpoints
 //
-// Request body from the browser:
-//   { wpUrl, username, appPassword, method, path, body? }
-//
-// The function constructs the full WP REST URL, adds Basic Auth, forwards
-// the request, and returns the response verbatim.
+// Request body:
+//   { clientId, method, path, body? }        credentials read server-side
+//   { wpUrl, username, appPassword, … }      staff only — testing an unsaved login
+// plus { isMediaUpload, mediaBase64, mediaFilename } for image uploads.
+// See lib/cmsCreds.js. The function builds the WP REST URL, adds Basic
+// Auth, forwards the request and returns the response verbatim.
 
-export async function handler(event) {
+import { authorize, fromEvent, deny } from './lib/requireAuth.js';
+import { resolveWordPress, cleanApiPath, liveCredDeps, guardedFetch, CredsError } from './lib/cmsCreds.js';
+import { getServerSupabase } from './lib/serverSupabase.js';
+
+export async function handler(event, { credDeps } = {}) {
   if (event.httpMethod === 'OPTIONS') {
     return { statusCode: 204, headers: corsHeaders() };
   }
@@ -31,24 +35,20 @@ export async function handler(event) {
   try { payload = JSON.parse(event.body || '{}'); }
   catch { return { statusCode: 400, headers: corsHeaders(), body: 'Invalid JSON' }; }
 
-  const { wpUrl, username, appPassword, method, path, body } = payload;
-
-  if (!wpUrl || !path) {
-    return {
-      statusCode: 400,
-      headers: corsHeaders(),
-      body: JSON.stringify({ error: 'Missing wpUrl or path' })
-    };
+  let creds, path;
+  try {
+    path = cleanApiPath(payload.path);
+    creds = await resolveWordPress(payload, auth.actor, credDeps || liveCredDeps(getServerSupabase()));
+  } catch (e) {
+    return deny(e instanceof CredsError ? e.status : 500, corsHeaders(), e.message);
   }
 
-  // Build the full URL: wpUrl + /wp-json/ + path
-  const base = wpUrl.replace(/\/+$/, '');
-  const fullUrl = base + '/wp-json/' + path.replace(/^\/+/, '');
+  const fullUrl = creds.wpUrl + '/wp-json/' + path;
+  const { method, body } = payload;
 
-  // Build auth header if credentials provided.
   const reqHeaders = {};
-  if (username && appPassword) {
-    reqHeaders['Authorization'] = 'Basic ' + Buffer.from(username + ':' + appPassword).toString('base64');
+  if (creds.username && creds.appPassword) {
+    reqHeaders['Authorization'] = 'Basic ' + Buffer.from(creds.username + ':' + creds.appPassword).toString('base64');
   }
 
   // Handle media uploads: decode base64 and send as binary.
@@ -59,19 +59,15 @@ export async function handler(event) {
     if (isMediaUpload && mediaBase64) {
       const imageBuffer = Buffer.from(mediaBase64, 'base64');
       reqHeaders['Content-Type'] = 'image/png';
-      reqHeaders['Content-Disposition'] = 'attachment; filename="' + (mediaFilename || 'image.png') + '"';
-      res = await fetch(fullUrl, {
-        method: 'POST',
-        headers: reqHeaders,
-        body: imageBuffer
-      });
+      reqHeaders['Content-Disposition'] = 'attachment; filename="' + String(mediaFilename || 'image.png').replace(/["\r\n]/g, '') + '"';
+      res = await guardedFetch(fullUrl, { method: 'POST', headers: reqHeaders, body: imageBuffer }, { lookup: credDeps?.lookup, fetchImpl: credDeps?.fetchImpl });
     } else {
       reqHeaders['Content-Type'] = 'application/json';
-      res = await fetch(fullUrl, {
+      res = await guardedFetch(fullUrl, {
         method: method || 'GET',
         headers: reqHeaders,
         body: body ? JSON.stringify(body) : undefined
-      });
+      }, { lookup: credDeps?.lookup, fetchImpl: credDeps?.fetchImpl });
     }
 
     const text = await res.text();
@@ -85,6 +81,7 @@ export async function handler(event) {
       body: text
     };
   } catch (e) {
+    if (e instanceof CredsError) return deny(e.status, corsHeaders(), e.message);
     return {
       statusCode: 502,
       headers: corsHeaders(),
@@ -95,8 +92,8 @@ export async function handler(event) {
 
 function corsHeaders() {
   // Restrict browsers to the suite's own origin (overridable via env for
-  // local dev). Server-to-server callers are unaffected by CORS; the
-  // WP_PROXY_AUTH gate above is what actually blocks them.
+  // local dev). Server-to-server callers are unaffected by CORS; the auth
+  // gate above is what actually blocks them.
   return {
     'Access-Control-Allow-Origin': process.env.ALLOWED_ORIGIN || 'https://syte-seo-suite.netlify.app',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Suite-Auth, X-Internal-Auth',

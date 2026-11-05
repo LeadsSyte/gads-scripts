@@ -16,10 +16,11 @@ import { staleTopicReason } from '../content/staleTopics.js';
 const BROWSER_DEPS = {
   queue: queueCmsChange,
   update: updateCmsQueueItem,
-  notify: (queueId) => {
+  notify: async (queueId) => {
+    const auth = await (globalThis.__SYTE_AUTH_HEADERS?.() ?? {});
     fetch(fnUrl('notify-draft'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...auth },
       body: JSON.stringify({ queueId })
     }).catch(() => {});
   }

@@ -273,7 +273,10 @@ export default function CMSPush({ sub, setSub }) {
     setBusy(true); setErr(''); setMsg(''); setHealth(null);
     try {
       const { runHealthCheck } = await import('./healthCheck.js');
-      const result = await runHealthCheck({ ...client, ...form });
+      // Test what is typed: when the credentials on screen differ from the
+      // saved ones, send them (staff only) instead of the saved client's.
+      const typed = ['wp_url', 'wp_username', 'wp_app_password', 'shopify_store', 'shopify_token'].some(k => (form[k] || '') !== (client[k] || ''));
+      const result = await runHealthCheck({ ...client, ...form, __typedCreds: typed });
       setHealth(result);
       const profile = getPublishingProfile(form);
       const stamped = { ...profile, publish_readiness: { ready: result.ready, checked_at: new Date().toISOString(), summary: result.checks.map(c => (c.ok ? 'ok' : 'FAIL') + ' ' + c.name) } };
@@ -345,7 +348,7 @@ export default function CMSPush({ sub, setSub }) {
       await updateCmsQueueItem(item.id, { status: 'pushed' });
       await fetch('/.netlify/functions/notify-draft', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...(await (globalThis.__SYTE_AUTH_HEADERS?.() ?? {})) },
         body: JSON.stringify({ queueId: item.id })
       });
       await refreshHistory();

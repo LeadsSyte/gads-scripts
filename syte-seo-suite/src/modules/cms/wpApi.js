@@ -6,20 +6,23 @@
 import { proxyAuthHash } from './proxyAuth.js';
 import { fnUrl } from '../../lib/fnUrl.js';
 
+// A saved client is identified by id and the proxy reads its credentials
+// server-side (netlify/functions/lib/cmsCreds.js), so the app password does
+// not travel in the request. Raw credentials are sent only for a client with
+// no id yet, or when the caller marks typed-but-unsaved details with
+// `__typedCreds` (the Connections page health check).
+export function wpCredsFor(client) {
+  if (client.id && !client.__typedCreds) return { clientId: client.id };
+  return { wpUrl: client.wp_url, username: client.wp_username || '', appPassword: client.wp_app_password || '' };
+}
+
 export async function wpRequest(client, { method = 'GET', path, body } = {}) {
   if (!client.wp_url) throw new Error('Client has no WP Site URL set.');
 
   const res = await fetch(fnUrl('wp-proxy'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-Suite-Auth': await proxyAuthHash() },
-    body: JSON.stringify({
-      wpUrl: client.wp_url,
-      username: client.wp_username || '',
-      appPassword: client.wp_app_password || '',
-      method,
-      path,
-      body
-    })
+    body: JSON.stringify({ ...wpCredsFor(client), method, path, body })
   });
 
   // The proxy returns the WP response status code directly.
@@ -137,9 +140,7 @@ export async function uploadMedia(client, imageData, filename) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-Suite-Auth': await proxyAuthHash() },
     body: JSON.stringify({
-      wpUrl: client.wp_url,
-      username: client.wp_username || '',
-      appPassword: client.wp_app_password || '',
+      ...wpCredsFor(client),
       method: 'POST',
       path: 'wp/v2/media',
       isMediaUpload: true,

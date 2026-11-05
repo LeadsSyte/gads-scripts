@@ -16,21 +16,18 @@
 // Env vars:
 //   GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET
 //   SUPABASE_URL, SUPABASE_SERVICE_KEY (or SUPABASE_KEY)
-//   PROXY_SHARED_SECRET — optional. If set, callers must send a matching
-//       `gate` field. Left unset for the internal/password-protected case.
+//   PROXY_SHARED_SECRET — optional extra gate. Every call except `health`
+//       also needs a suite credential (lib/requireAuth.js).
 
 import { createClient } from '@supabase/supabase-js';
+import { authorize, fromEvent, corsHeaders as corsHeadersFor } from './lib/requireAuth.js';
 
 // Warm-instance access-token cache: email → { token, expiresAt }.
 const tokenCache = new Map();
 
-function corsHeaders() {
-  return {
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Headers': 'Content-Type',
-    'Access-Control-Allow-Methods': 'POST, OPTIONS'
-  };
-}
+// Set per request in the handler: the app's own origins only.
+let corsForRequest = corsHeadersFor('');
+function corsHeaders() { return corsForRequest; }
 
 function json(statusCode, obj) {
   return { statusCode, headers: { ...corsHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify(obj) };
@@ -84,6 +81,7 @@ async function getAccessToken(supabase, email) {
 }
 
 export async function handler(event) {
+  corsForRequest = corsHeadersFor(fromEvent(event).header('origin'));
   if (event.httpMethod === 'OPTIONS') return { statusCode: 204, headers: corsHeaders() };
   if (event.httpMethod !== 'POST') return json(405, { error: 'Method Not Allowed' });
 
@@ -119,7 +117,15 @@ export async function handler(event) {
     return json(200, out);
   }
 
-  // Optional shared-secret gate (off by default for the internal case).
+  // Everything past the diagnostics needs a suite credential
+  // (lib/requireAuth.js). Before this, anyone on the internet could list the
+  // connected Google accounts, disconnect them, or call any Google API as
+  // them. Bot API keys are refused: this holds every account's refresh token.
+  const auth = await authorize(fromEvent(event));
+  if (!auth.ok) return json(auth.status, { error: auth.reason });
+  if (auth.actor.kind === 'api_key') return json(403, { error: 'Google accounts are not available to API keys.' });
+
+  // Optional extra shared-secret gate, kept for deployments that set it.
   const gate = process.env.PROXY_SHARED_SECRET;
   if (gate && payload.gate !== gate) return json(401, { error: 'Unauthorized' });
 

@@ -70,16 +70,22 @@ await t('a draft is created through the live proxy with the server gate value', 
     assertEq(c.url, 'https://suite.example/.netlify/functions/wp-proxy', 'absolute proxy URL');
     assertEq(c.headers['X-Suite-Auth'], 'gate-value', 'gate header');
   }
+  for (const c of wp) {
+    assertEq(c.body.clientId, 'c1', 'saved clients go by id');
+    if ('appPassword' in c.body || 'username' in c.body) throw new Error('credentials sent in the proxy body');
+  }
   const create = wp.find(c => c.body.method === 'POST' && c.body.path === 'wp/v2/posts');
   assertEq(create.body.body.status, 'draft', 'draft only');
   if (/Meta Title|# Hay Fever Relief/.test(create.body.body.content)) throw new Error('meta block or H1 left in the body');
   if (!/<h2 class="wp-block-heading has-black-color">Relief<\/h2>/.test(create.body.body.content)) throw new Error('house style not applied: ' + create.body.body.content.slice(0, 200));
 });
 
-await t('the hero image uses the built-in OpenAI key', () => {
+await t('the hero image request carries the server credential (openai-proxy refuses it otherwise)', () => {
   const img = calls.find(c => c.url.endsWith('/openai-proxy'));
   if (!img) throw new Error('no image request');
-  assertEq(img.body.apiKey, 'sk-test-builtin');
+  assertEq(img.headers['X-Suite-Auth'], 'gate-value', 'openai-proxy auth header');
+  const notify = calls.find(c => c.url.endsWith('/notify-draft'));
+  assertEq(notify?.headers['X-Suite-Auth'], 'gate-value', 'notify-draft auth header');
 });
 
 await t('the push is logged like a hand push and marked as from the Autopilot', () => {

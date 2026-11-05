@@ -7,10 +7,10 @@
 // a popup. POST rather than a GET redirect like google-oauth-start, because
 // the client secret must never appear in a URL.
 //
-// Auth gate + CORS mirror shopify-proxy.js: when WP_PROXY_AUTH is set, the
-// matching X-Suite-Auth header is required.
+// Auth gate + CORS mirror shopify-proxy.js (lib/requireAuth.js).
 
 import crypto from 'node:crypto';
+import { authorize, fromEvent } from './lib/requireAuth.js';
 import {
   NONCE_COOKIE, STATE_TTL_MS, normalizeShop, stateKeyFromEnv, sealState,
   buildAuthorizeUrl, callbackUrlFor
@@ -24,11 +24,12 @@ export async function handler(event) {
     return json(405, { error: 'Method Not Allowed' });
   }
 
-  const requiredAuth = process.env.WP_PROXY_AUTH;
-  if (requiredAuth) {
-    const given = event.headers['x-suite-auth'] || event.headers['X-Suite-Auth'] || '';
-    if (given !== requiredAuth) return json(401, { error: 'Unauthorized' });
-  }
+  // Staff only (lib/requireAuth.js). It used to skip the check entirely when
+  // WP_PROXY_AUTH was unset; a bot API key is refused because connecting a
+  // store hands over the app's client secret.
+  const auth = await authorize(fromEvent(event));
+  if (!auth.ok) return json(auth.status, { error: auth.reason });
+  if (auth.actor.kind === 'api_key') return json(403, { error: 'Connecting a store is a staff action.' });
 
   const key = stateKeyFromEnv();
   if (!key) return json(500, { error: 'Shopify connect is not configured on the server (WP_PROXY_AUTH is not set).' });
