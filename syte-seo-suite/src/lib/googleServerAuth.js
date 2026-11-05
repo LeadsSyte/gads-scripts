@@ -36,7 +36,7 @@ export function serverAuthEnabled() {
 async function callProxy(payload) {
   const res = await fetchWithTimeout(PROXY, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...(await (globalThis.__SYTE_AUTH_HEADERS?.() ?? {})) },
     body: JSON.stringify({ ...payload, gate: GATE })
   }, PROXY_TIMEOUT_MS);
   const data = await res.json().catch(() => ({}));

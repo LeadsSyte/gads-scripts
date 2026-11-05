@@ -1,17 +1,18 @@
-import { authorize, fromEvent, deny } from './lib/requireAuth.js';
 // Shopify Admin API proxy — the Admin API rejects browser-origin requests
 // (CORS) and the access token must never ride in a browser-visible call to
 // a third-party host, so all Shopify calls route through this function.
 //
-// Request body from the browser:
-//   { store, token, method, path, body? }
+// Request body:
+//   { clientId, method, path, body? }   token read server-side (lib/cmsCreds.js)
+//   { store, token, … }                 staff only — testing an unsaved store
 // `path` is relative to /admin/api/2024-01/, e.g. "blogs.json" or
 // "blogs/123/articles.json".
-//
-// Auth gate + CORS mirror wp-proxy.js: when WP_PROXY_AUTH is set, the
-// matching X-Suite-Auth header is required.
 
-export async function handler(event) {
+import { authorize, fromEvent, deny } from './lib/requireAuth.js';
+import { resolveShopify, cleanApiPath, liveCredDeps, guardedFetch, CredsError } from './lib/cmsCreds.js';
+import { getServerSupabase } from './lib/serverSupabase.js';
+
+export async function handler(event, { credDeps } = {}) {
   if (event.httpMethod === 'OPTIONS') {
     return { statusCode: 204, headers: corsHeaders() };
   }
@@ -26,23 +27,26 @@ export async function handler(event) {
   try { payload = JSON.parse(event.body || '{}'); }
   catch { return { statusCode: 400, headers: corsHeaders(), body: 'Invalid JSON' }; }
 
-  const { store, token, method, path, body } = payload;
-  if (!store || !token || !path) {
-    return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'Missing store, token, or path' }) };
+  let creds, path;
+  try {
+    path = cleanApiPath(payload.path);
+    creds = await resolveShopify(payload, auth.actor, credDeps || liveCredDeps(getServerSupabase()));
+  } catch (e) {
+    return deny(e instanceof CredsError ? e.status : 500, corsHeaders(), e.message);
   }
 
-  const cleanStore = String(store).replace(/^https?:\/\//, '').replace(/\/+$/, '');
-  const fullUrl = 'https://' + cleanStore + '/admin/api/2024-01/' + String(path).replace(/^\/+/, '');
+  const fullUrl = 'https://' + creds.store + '/admin/api/2024-01/' + path;
+  const { method, body } = payload;
 
   try {
-    const res = await fetch(fullUrl, {
+    const res = await guardedFetch(fullUrl, {
       method: method || 'GET',
       headers: {
-        'X-Shopify-Access-Token': token,
+        'X-Shopify-Access-Token': creds.token,
         'Content-Type': 'application/json'
       },
       body: body ? JSON.stringify(body) : undefined
-    });
+    }, { lookup: credDeps?.lookup, fetchImpl: credDeps?.fetchImpl });
     const text = await res.text();
     return {
       statusCode: res.status,
@@ -53,6 +57,7 @@ export async function handler(event) {
       body: text
     };
   } catch (e) {
+    if (e instanceof CredsError) return deny(e.status, corsHeaders(), e.message);
     return {
       statusCode: 502,
       headers: corsHeaders(),

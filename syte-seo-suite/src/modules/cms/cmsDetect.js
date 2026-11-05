@@ -45,9 +45,12 @@ export async function detectCms(url) {
 
 export async function testWordPress(wpUrl, username, appPassword) {
   // Route through the Netlify wp-proxy to bypass Wordfence/Cloudflare/CORS.
+  // Typed-but-unsaved credentials: the one case the proxy accepts them raw
+  // (staff only). It used to send no suite credential at all, so once the
+  // proxy required one every Test Connection click failed with 401.
   const res = await fetch('/.netlify/functions/wp-proxy', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...(await (globalThis.__SYTE_AUTH_HEADERS?.() ?? {})) },
     body: JSON.stringify({
       wpUrl: trimUrl(wpUrl),
       username,

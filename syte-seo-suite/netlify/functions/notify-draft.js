@@ -20,10 +20,16 @@
 import { sendMail, mailTransport } from './lib/sendMail.js';
 import { createClient } from '@supabase/supabase-js';
 import { randomUUID } from 'node:crypto';
+import { authorize, fromEvent } from './lib/requireAuth.js';
 
 
 export async function handler(event) {
   if (event.httpMethod !== 'POST') return { statusCode: 405, body: 'Method Not Allowed' };
+
+  // Only the suite may trigger review emails (it used to accept anyone, so a
+  // stranger could re-send approval mails and mint fresh approval tokens).
+  const auth = await authorize(fromEvent(event));
+  if (!auth.ok) return { statusCode: auth.status, body: auth.reason };
 
   let queueId;
   try { queueId = JSON.parse(event.body || '{}').queueId; } catch { /* fall through */ }

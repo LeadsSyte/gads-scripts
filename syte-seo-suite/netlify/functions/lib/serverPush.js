@@ -15,11 +15,16 @@
 //   - the queue rows are written with the server Supabase client.
 
 import { pushItemInline } from '../../../src/modules/cms/pushAction.js';
+import { internalHeaders, installServerAuthGlobals } from './requireAuth.js';
 import { connectionState } from '../../../src/modules/cms/connectionStatus.js';
 
 export function prepareServerPush() {
   globalThis.__SYTE_FN_BASE = process.env.URL || 'https://syte-seo-suite.netlify.app';
-  globalThis.__SYTE_PROXY_AUTH = process.env.WP_PROXY_AUTH || '';
+  // Both globals: proxyAuthHash() (wpApi/shopifyApi) reads __SYTE_PROXY_AUTH,
+  // and the hero image + other function calls read __SYTE_AUTH_HEADERS.
+  // Without the second, openai-proxy refused the hero image (401) once it
+  // started requiring a credential, and drafts went out with no image.
+  installServerAuthGlobals();
   if (!globalThis.localStorage) {
     const store = new Map();
     globalThis.localStorage = {
@@ -68,7 +73,7 @@ export function serverQueueDeps(supabase) {
     notify: async (queueId) => {
       await fetch(globalThis.__SYTE_FN_BASE + '/.netlify/functions/notify-draft', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...internalHeaders() },
         body: JSON.stringify({ queueId }),
         signal: AbortSignal.timeout(15000)
       });

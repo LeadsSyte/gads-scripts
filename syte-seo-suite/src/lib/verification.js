@@ -272,8 +272,7 @@ async function fetchPageContent(impl, client) {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', ...(await (globalThis.__SYTE_AUTH_HEADERS?.() ?? {})) },
             body: JSON.stringify({
-              wpUrl: wpBase, username: client.wp_username,
-              appPassword: client.wp_app_password, method: 'GET',
+              ...(client.id ? { clientId: client.id } : { wpUrl: wpBase, username: client.wp_username, appPassword: client.wp_app_password }), method: 'GET',
               path: 'wp/v2/' + type + '?slug=' + encodeURIComponent(slug) + '&status=any'
             })
           });
@@ -297,8 +296,7 @@ async function fetchPageContent(impl, client) {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...(await (globalThis.__SYTE_AUTH_HEADERS?.() ?? {})) },
           body: JSON.stringify({
-            wpUrl: wpBase, username: client.wp_username,
-            appPassword: client.wp_app_password, method: 'GET',
+            ...(client.id ? { clientId: client.id } : { wpUrl: wpBase, username: client.wp_username, appPassword: client.wp_app_password }), method: 'GET',
             path: 'wp/v2/posts?search=' + encodeURIComponent(searchTitle) + '&per_page=5&status=any'
           })
         });

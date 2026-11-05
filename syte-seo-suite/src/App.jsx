@@ -14,6 +14,9 @@ import Approvals from './modules/clients/Approvals.jsx';
 import AccountManagers from './modules/clients/AccountManagers.jsx';
 import { useClients } from './store/useClients.js';
 import { getStoredApiKey } from './lib/auth.js';
+// Installs globalThis.__SYTE_AUTH_HEADERS, which modules that call the suite's
+// own functions read (they cannot all import it; see lib/suiteAuth.js).
+import './lib/suiteAuth.js';
 import { needsMigration, countLegacyClients, runMigration } from './lib/migration.js';
 import { hasSupabase } from './lib/supabase.js';
 import { hydrateSettingsFromRemote } from './lib/settings.js';
