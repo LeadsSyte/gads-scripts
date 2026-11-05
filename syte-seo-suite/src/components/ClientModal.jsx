@@ -12,6 +12,7 @@ import { SERVICE_META } from '../lib/serviceAssignments.js';
 import { SEARCH_COUNTRIES, resolveSearchCountry } from '../modules/reports/searchCountry.js';
 import { readQueryFile, parseQueryText } from '../modules/reports/customQueries.js';
 import { relevanceFor, offTopicReason } from '../modules/reports/probeRelevance.js';
+import { maybeAutoBaseline } from '../modules/reports/baselineAuto.js';
 
 // Brand voice presets — the dropdown contents. Picking Custom… reveals the
 // free text box so you can still type something bespoke.
@@ -339,7 +340,11 @@ export default function ClientModal({ initial, onClose }) {
         }
         payload.gsc_property = r.value;
       }
-      await save(payload);
+      const saved = await save(payload);
+      // Onboarding Baseline: a new client (or one whose GA4 / Search Console
+      // was just connected) gets its starting snapshot captured on the server.
+      // Fire-and-forget — it never blocks or fails the save.
+      if (saved?.id) maybeAutoBaseline({ ...payload, ...saved });
       onClose();
     } catch (e) {
       console.error('ClientModal save error:', e);

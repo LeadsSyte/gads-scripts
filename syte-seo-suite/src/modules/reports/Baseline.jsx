@@ -1,10 +1,12 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useClients } from '../../store/useClients.js';
 import { fetchReportData } from './reportData.js';
 import ReportDashboard from './ReportDashboard.jsx';
 import { ensureToken, SCOPES, getToken, switchAccount } from '../technical/googleAuth.js';
 import { getBaseline, saveBaseline, deleteBaseline, listBaselines } from '../../lib/supabase.js';
 import { serverAuthEnabled } from '../../lib/googleServerAuth.js';
+import { startBaselineRun, loadBaselineRunState, BASELINE_RUNNING } from './baselineAuto.js';
+import BaselineExtras from './BaselineExtras.jsx';
 
 const ACCENT = '#a78bfa';
 
@@ -32,6 +34,52 @@ function BaselineDetail() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState('');
+  const [run, setRun] = useState(null);                 // server-side baseline run state
+  const running = !!run && BASELINE_RUNNING.includes(run.status);
+  const [pollKey, setPollKey] = useState(0);            // bumped when a run is started here
+  const askedAt = useRef(0);
+
+  // Follow the server-side run (auto on client add, or "Run Full Baseline").
+  useEffect(() => {
+    let cancelled = false, timer = null, wasRunning = pollKey > 0, waits = 0;
+    if (!client?.id) { setRun(null); return; }
+    async function poll() {
+      const st = await loadBaselineRunState(client.id);
+      if (cancelled) return;
+      // A run just started here may not have written its state yet.
+      const stale = pollKey > 0 && (!st || new Date(st.started_at || 0).getTime() < askedAt.current - 5000);
+      if (stale) {
+        if (++waits <= 6) { timer = setTimeout(poll, 4000); return; }
+        setRun(null);
+        setErr('The server did not start the baseline run. Check that the suite is unlocked with the current password, then try again.');
+        return;
+      }
+      setRun(st);
+      const now = !!st && BASELINE_RUNNING.includes(st.status);
+      if (wasRunning && !now) {
+        try { const row = await getBaseline(client.id); if (!cancelled) setBaseline(row); } catch {}
+      }
+      wasRunning = now;
+      if (now) timer = setTimeout(poll, 5000);
+    }
+    poll();
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [client?.id, pollKey]);
+  useEffect(() => { setRun(null); setPollKey(0); }, [client?.id]);
+
+  async function runFull() {
+    if (!client) return;
+    if (baseline && !confirm('Replace the saved baseline with a fresh full capture?')) return;
+    setErr(''); setPreview(null); setStatus('');
+    try {
+      const ok = await startBaselineRun(client.id, { force: !!baseline, trigger: 'manual' });
+      if (!ok) throw new Error('The server refused the baseline run. Check that the suite is unlocked with the current password.');
+      askedAt.current = Date.now();
+      setRun({ client_id: client.id, status: 'queued', trigger: 'manual', started_at: new Date().toISOString(), log: [] });
+      // The function answers 202 before it runs; give it a moment to write its state.
+      setTimeout(() => setPollKey(k => k + 1), 3000);
+    } catch (e) { setErr(e.message); }
+  }
 
   // Load any existing baseline whenever the client changes.
   useEffect(() => {
@@ -99,7 +147,8 @@ function BaselineDetail() {
     if (!client || !preview) return;
     setSaving(true); setErr('');
     try {
-      const row = await saveBaseline(client.id, previewMonth, preview);
+      const extras = baseline?.data?.baseline;
+      const row = await saveBaseline(client.id, previewMonth, extras ? { ...preview, baseline: extras } : preview);
       setBaseline(row);
       setPreview(null);
       setStatus('');
@@ -133,9 +182,10 @@ function BaselineDetail() {
           <div>
             <strong>Onboarding Baseline</strong>
             <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
-              A one-time snapshot of {client.name}'s current keyword rankings and organic
-              traffic for the past month — captured when they came on board, so future
-              performance can be measured against where they started.
+              A one-time snapshot of where {client.name} stood when they came on board —
+              last month's organic traffic and keyword rankings, technical site health and
+              AI-engine visibility — so future performance can be measured against it.
+              Captured automatically when the client is added.
             </div>
             {captured && (
               <div style={{ marginTop: 8 }}>
@@ -149,14 +199,24 @@ function BaselineDetail() {
             )}
           </div>
           <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
-            {!captured && !preview && (
+            {!preview && (
               <button
                 className="primary"
-                onClick={() => fetchBaseline(false)}
-                disabled={status.includes('Pulling')}
+                onClick={runFull}
+                disabled={running}
                 style={{ background: ACCENT, borderColor: ACCENT, color: '#0a0a0c' }}
               >
-                {serverAuthEnabled() || getToken()?.access_token ? 'Fetch Baseline Data' : 'Connect Google & Fetch'}
+                {running ? 'Capturing…' : captured ? 'Re-run Full Baseline' : 'Run Full Baseline'}
+              </button>
+            )}
+            {!captured && !preview && !running && (
+              <button
+                onClick={() => fetchBaseline(false)}
+                disabled={status.includes('Pulling')}
+                style={{ borderColor: ACCENT, color: ACCENT }}
+                title="Rankings + traffic only, pulled in this browser with your Google sign-in"
+              >
+                {serverAuthEnabled() || getToken()?.access_token ? 'Rankings Only' : 'Connect Google & Fetch'}
               </button>
             )}
             {preview && (
@@ -169,10 +229,11 @@ function BaselineDetail() {
                 {saving ? 'Saving…' : 'Save as Baseline'}
               </button>
             )}
-            {captured && !preview && (
+            {captured && !preview && !running && (
               <>
-                <button onClick={() => fetchBaseline(false)} style={{ borderColor: ACCENT, color: ACCENT }}>
-                  Re-capture
+                <button onClick={() => fetchBaseline(false)} style={{ borderColor: ACCENT, color: ACCENT }}
+                  title="Re-pull rankings + traffic only, in this browser; technical and AI sections are kept">
+                  Re-capture Rankings
                 </button>
                 <button onClick={remove} style={{ borderColor: 'var(--red)', color: 'var(--red)' }}>
                   Delete
@@ -182,6 +243,21 @@ function BaselineDetail() {
           </div>
         </div>
       </div>
+
+      {/* Server-side run (automatic on client add) */}
+      {run && (running || run.status === 'failed') && (
+        <div className="card" style={{ marginBottom: 14, padding: '10px 16px', borderColor: run.status === 'failed' ? 'var(--red)' : 'rgba(167,139,250,.3)' }}>
+          <div className="row" style={{ gap: 8, fontSize: 12 }}>
+            {running && <span className="spinner" style={{ width: 12, height: 12, borderWidth: 2 }} />}
+            <span style={{ color: run.status === 'failed' ? 'var(--red)' : 'var(--text-muted)', flex: 1 }}>
+              {run.status === 'failed'
+                ? 'Baseline capture failed: ' + (run.error || 'unknown error')
+                : (run.trigger === 'auto' ? 'Capturing the onboarding baseline automatically' : 'Capturing the full baseline') +
+                  ' — ' + ((run.log || []).slice(-1)[0]?.slice(9) || 'starting…')}
+            </span>
+          </div>
+        </div>
+      )}
 
       {/* Fetch status */}
       {status && (
@@ -219,12 +295,13 @@ function BaselineDetail() {
             {captured && !preview && <span className="badge green" style={{ fontSize: 9 }}>Saved baseline</span>}
           </div>
           <ReportDashboard data={viewData} client={client} monthLabel={monthLabel(viewMonth)} />
+          <BaselineExtras extras={viewData.baseline || baseline?.data?.baseline} />
         </div>
       ) : (
-        !status && (
+        !status && !running && (
           <div className="muted" style={{ fontSize: 13 }}>
-            No baseline captured yet. Click <strong>Fetch Baseline Data</strong> to snapshot this
-            client's current rankings and organic traffic.
+            No baseline captured yet. Click <strong>Run Full Baseline</strong> to snapshot where this
+            client stands today.
           </div>
         )
       )}
@@ -240,6 +317,7 @@ export default function Baseline() {
   const select = useClients(s => s.select);
   const [showDetail, setShowDetail] = useState(false);
   const [baselines, setBaselines] = useState({});
+  const [runs, setRuns] = useState({});
 
   useEffect(() => {
     (async () => {
@@ -248,6 +326,15 @@ export default function Baseline() {
         const byClient = {};
         for (const r of rows) byClient[r.client_id] = r;
         setBaselines(byClient);
+      } catch {}
+      try {
+        const { supabase } = await import('../../lib/supabase.js');
+        if (supabase) {
+          const { data } = await supabase.from('syte_suite_settings').select('data').like('id', 'baseline:%');
+          const byClient = {};
+          for (const r of data || []) if (r.data?.client_id) byClient[r.data.client_id] = r.data;
+          setRuns(byClient);
+        }
       } catch {}
     })();
   }, [showDetail]);
@@ -269,7 +356,7 @@ export default function Baseline() {
         <div>
           <h2 style={{ margin: 0 }}>Client Baselines</h2>
           <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
-            {allClients.length} clients · Capture a starting snapshot of rankings + organic traffic when you onboard a new client
+            {allClients.length} clients · A starting snapshot is captured automatically when a client is added
           </div>
         </div>
       </div>
@@ -282,6 +369,7 @@ export default function Baseline() {
         {allClients.map(c => {
           const baseline = baselines[c.id];
           const has = !!baseline;
+          const capturing = BASELINE_RUNNING.includes(runs[c.id]?.status);
           const services = [
             c.does_content !== false && 'Content',
             c.does_technical !== false && 'Technical',
@@ -304,7 +392,9 @@ export default function Baseline() {
                 <strong style={{ fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '70%' }}>
                   {c.name}
                 </strong>
-                {has ? (
+                {capturing ? (
+                  <span className="badge" style={{ fontSize: 9, borderColor: ACCENT, color: ACCENT }}>Capturing…</span>
+                ) : has ? (
                   <span className="badge green" style={{ fontSize: 9 }}>Captured</span>
                 ) : (
                   <span className="badge" style={{ fontSize: 9, borderColor: ACCENT, color: ACCENT }}>Not set</span>
