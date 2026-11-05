@@ -1,59 +1,135 @@
-import { fetchWithTimeout } from './http.js';
 import { claudeRequest } from './claudeTransport.js';
 
 export const CLAUDE_MODEL = 'claude-sonnet-4-6';
 
-// Non-streaming generation (Alice email, microsite JSON, QA) can legitimately
-// take a while, but a stalled connection must not hang the report pipeline.
-// Cap each call so a dead socket rejects instead of freezing on "Working…".
-const COMPLETE_TIMEOUT_MS = 90000;
+// Generation calls (Alice email, microsite JSON, QA, census extraction) can
+// legitimately take a while, but a stalled connection must not hang the
+// report pipeline. The limit is on silence, not on total time: the request
+// is aborted when no bytes have arrived for this long.
+const IDLE_TIMEOUT_MS = 90000;
 
 // Requests go through the suite's anthropic-proxy (claudeTransport.js), so
 // the provider key stays on the server.
+//
+// Every call streams, including claudeComplete. Netlify cuts a function
+// response that sends nothing for ~30s ("504 Inactivity Timeout"), and a
+// non-streamed answer sends nothing until the model has finished — so a big
+// payload (Cuddledown's AEO report: 351 probes) failed on the microsite JSON
+// step. Streaming keeps bytes flowing, so the length of the answer no longer
+// matters to the proxy.
 
-// Non-streaming single-shot call. Returns plain text.
-export async function claudeComplete({ system, messages, max_tokens = 4096, temperature = 0.7, model = CLAUDE_MODEL }) {
-  const res = await claudeRequest({ model, max_tokens, temperature, system, messages },
-    (url, init) => fetchWithTimeout(url, init, COMPLETE_TIMEOUT_MS));
-  if (!res.ok) {
-    const txt = await res.text();
-    throw new Error('Claude API error: ' + res.status + ' ' + txt);
+// Overloaded / rate-limited / gateway failures before any text arrived are
+// worth one more go; anything else (bad request, auth) is not.
+const RETRYABLE = new Set([408, 429, 500, 502, 503, 504, 529]);
+const RETRY_DELAY_MS = 4000;
+
+// Turn an error body into one readable line: Anthropic's JSON message when
+// there is one, otherwise the HTML/text stripped of tags (Netlify's timeout
+// page used to land in the UI as raw <HTML><HEAD>…).
+export function describeError(status, txt) {
+  const raw = String(txt || '');
+  try {
+    const j = JSON.parse(raw);
+    const msg = j?.error?.message || (typeof j?.error === 'string' ? j.error : '') || j?.message;
+    if (msg) return status + ' ' + msg;
+  } catch {}
+  if (/inactivity timeout/i.test(raw)) {
+    return status + ' the request timed out at the proxy (no data for too long). Try again; if it keeps happening the payload is too large.';
   }
-  const data = await res.json();
-  return (data.content || []).map(b => b.text || '').join('');
+  const plain = raw.replace(/<title>[\s\S]*?<\/title>/i, ' ').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  return status + (plain ? ' ' + plain.slice(0, 300) : '');
+}
+
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+// One streamed request. Calls onDelta(text) per chunk; returns the full text.
+// Throws an Error with .status and .retryable set.
+async function streamOnce({ body, onDelta, idleMs, label }) {
+  const controller = new AbortController();
+  let timer;
+  let timedOut = false;
+  const arm = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => { timedOut = true; controller.abort(); }, idleMs);
+  };
+  const fetchImpl = (url, init) => fetch(url, { ...init, signal: controller.signal });
+  let full = '';
+  try {
+    arm();
+    const res = await claudeRequest({ ...body, stream: true }, fetchImpl);
+    if (!res.ok || !res.body) {
+      const txt = await res.text().catch(() => '');
+      const err = new Error(label + ': ' + describeError(res.status, txt));
+      err.status = res.status;
+      err.retryable = RETRYABLE.has(res.status);
+      throw err;
+    }
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+    while (true) {
+      arm();
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const lines = buf.split('\n');
+      buf = lines.pop() || '';
+      for (const line of lines) {
+        if (!line.startsWith('data:')) continue;
+        const payload = line.slice(5).trim();
+        if (!payload || payload === '[DONE]') continue;
+        let evt;
+        try { evt = JSON.parse(payload); } catch { continue; }
+        if (evt.type === 'content_block_delta' && evt.delta?.text) {
+          full += evt.delta.text;
+          onDelta?.(evt.delta.text);
+        } else if (evt.type === 'error') {
+          // Mid-stream failure (e.g. overloaded_error). Retry only if
+          // nothing has been emitted yet, so a caller never sees text twice.
+          const err = new Error(label + ': ' + (evt.error?.type || 'error') + ' ' + (evt.error?.message || ''));
+          err.retryable = !full && /overloaded|rate_limit|api_error/.test(String(evt.error?.type || ''));
+          throw err;
+        }
+      }
+    }
+    return full;
+  } catch (e) {
+    if (timedOut || e.name === 'AbortError') {
+      const err = new Error(label + ': no data from Claude for ' + Math.round(idleMs / 1000) + 's — the request was abandoned.');
+      err.retryable = !full;
+      throw err;
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function streamWithRetry(opts) {
+  try {
+    return await streamOnce(opts);
+  } catch (e) {
+    if (!e.retryable) throw e;
+    console.warn('[Claude] ' + e.message + ' — retrying once.');
+    await sleep(RETRY_DELAY_MS);
+    return streamOnce(opts);
+  }
+}
+
+// Single-shot call. Returns plain text. (Streams under the hood — see above.)
+export async function claudeComplete({ system, messages, max_tokens = 4096, temperature = 0.7, model = CLAUDE_MODEL }) {
+  return streamWithRetry({
+    body: { model, max_tokens, temperature, system, messages },
+    idleMs: IDLE_TIMEOUT_MS, label: 'Claude API error'
+  });
 }
 
 // Streaming. Calls onDelta(text) for each token chunk. Returns full text.
 export async function claudeStream({ system, messages, max_tokens = 4096, temperature = 0.7, model = CLAUDE_MODEL, onDelta }) {
-  const res = await claudeRequest({ model, max_tokens, temperature, system, messages, stream: true }, fetch);
-  if (!res.ok || !res.body) {
-    const txt = await res.text().catch(() => '');
-    throw new Error('Claude stream error: ' + res.status + ' ' + txt);
-  }
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buf = '';
-  let full = '';
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buf += decoder.decode(value, { stream: true });
-    const lines = buf.split('\n');
-    buf = lines.pop() || '';
-    for (const line of lines) {
-      if (!line.startsWith('data:')) continue;
-      const payload = line.slice(5).trim();
-      if (!payload || payload === '[DONE]') continue;
-      try {
-        const evt = JSON.parse(payload);
-        if (evt.type === 'content_block_delta' && evt.delta?.text) {
-          full += evt.delta.text;
-          onDelta?.(evt.delta.text);
-        }
-      } catch {}
-    }
-  }
-  return full;
+  return streamWithRetry({
+    body: { model, max_tokens, temperature, system, messages },
+    onDelta, idleMs: IDLE_TIMEOUT_MS, label: 'Claude stream error'
+  });
 }
 
 // Try to extract JSON from model output (tolerates code fences).
