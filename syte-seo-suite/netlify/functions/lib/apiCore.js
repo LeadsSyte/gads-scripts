@@ -43,6 +43,10 @@ export function memoryDb(seed = {}) {
     update: async (t, m, patch) => rows(t).filter(r => matches(r, m)).map(r => Object.assign(r, patch)),
     one: async (t, m) => rows(t).find(r => matches(r, m)) || null,
     many: async (t, m, { order = 'created_at', desc = true, limit = 100, like } = {}) => {
+      // Like the real database: sorting by a column the table doesn't have
+      // is an error, not a no-op, so tests catch a wrong sort column.
+      const all = rows(t);
+      if (order && all.length && !all.some(r => order in r)) throw new Error('column ' + t + '.' + order + ' does not exist');
       const likeRe = Object.entries(like || {}).map(([k, v]) => [k, new RegExp('^' + String(v).replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/%/g, '.*') + '$')]);
       return rows(t).filter(r => matches(r, m) && likeRe.every(([k, re]) => re.test(String(r[k] ?? ''))))
         .sort((a, b) => (order && a[order] !== b[order] ? ((a[order] < b[order] ? -1 : 1) * (desc ? -1 : 1)) : 0)).slice(0, limit);
