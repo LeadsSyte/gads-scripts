@@ -96,10 +96,13 @@ revoke all on syte_suite_api_keys, syte_suite_jobs, syte_suite_idempotency, syte
 
 -- Atomic rate-limit increment: returns the new count for this window.
 create or replace function syte_suite_rate_hit(p_key_id text, p_bucket text, p_window timestamptz)
-returns int language sql security definer as $$
+returns int language sql security definer set search_path = public as $$
   insert into syte_suite_rate_limits (key_id, bucket, window_start, count)
   values (p_key_id, p_bucket, p_window, 1)
   on conflict (key_id, bucket, window_start) do update set count = syte_suite_rate_limits.count + 1
   returning count;
 $$;
 revoke all on function syte_suite_rate_hit(text, text, timestamptz) from public, anon, authenticated;
+-- The functions call it with the service-role key; without this grant the
+-- revoke above would block them too and rate limits would never apply.
+grant execute on function syte_suite_rate_hit(text, text, timestamptz) to service_role;
