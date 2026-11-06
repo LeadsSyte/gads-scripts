@@ -12,6 +12,8 @@ import { authorize, fromRequest, corsHeaders, internalHeaders } from './requireA
 import { createJob, updateJob, getJob, listJobs, findInFlightJob, requestHash, idempotencyLookup, idempotencyStore, audit, rateHit, limitsFromEnv, stripClientSecrets, createApiKey, revokeApiKey, publicKeyRow, SCOPES } from './apiCore.js';
 import { refreshJob, refreshOpenJobs } from './jobStatus.js';
 import { buildOpenApi } from './openapi.js';
+import { signedUrl } from './previewSig.js';
+import { buildFixSheet, renderFixSheetText } from '../../../src/modules/technical/fixSheet.js';
 
 export class ApiError extends Error { constructor(status, message, extra) { super(message); this.status = status; this.extra = extra; } }
 const bad = (msg, extra) => new ApiError(400, msg, extra);
@@ -48,6 +50,7 @@ export const ROUTES = [
   r('POST', '/clients/:id/tech-fixes', fixScope, 'fixes', techFix, { summary: 'Plan, apply or undo one technical task (techfix-background). apply/undo need fix:apply.', body: obj({ taskId: { type: 'string' }, action: { type: 'string', enum: FIX_ACTIONS } }, ['taskId', 'action']), returns: '202 { jobId }' }),
   r('POST', '/clients/:id/autopilot', 'content', 'writes', startAutopilot, { summary: "Run this month's content Autopilot, or push the finished plan (mode: push).", body: obj({ mode: { type: 'string', enum: ['run', 'push'], default: 'run' }, restart: { type: 'boolean', default: false } }), returns: '202 { jobId }' }),
   r('GET', '/clients/:id/autopilot', 'read', 'reads', settingsState('autopilot:'), { summary: "This month's Autopilot run state." }),
+  r('GET', '/clients/:id/fix-sheet', 'read', 'reads', fixSheet, { summary: "The client's fix sheet: technical and AEO work the suite can't apply itself, as items, plain text, and a signed link a person or computer-use bot can open without a login." }),
   r('GET', '/clients/:id/articles', 'read', 'reads', table('syte_suite_content_blogs', 'created_at'), { summary: 'Written articles (content_blogs).' }),
   r('GET', '/clients/:id/implementations', 'read', 'reads', table('syte_suite_implementations', 'created_at'), { summary: 'Logged implementations.' }),
   r('GET', '/clients/:id/external-work', 'read', 'reads', table('syte_suite_external_work', 'work_date'), { summary: 'Work done outside the suite.' }),
@@ -254,6 +257,29 @@ async function startReport(ctx) {
   const body = { force: !!ctx.body.force };
   if (ctx.body.month != null) { if (!MONTH_RE.test(String(ctx.body.month))) throw bad('`month` must look like 2026-10.'); body.month = ctx.body.month; }
   return startBackground(ctx, { type: type === 'aeo' ? 'aeo_report' : 'report', body, target: body.month || 'last' });
+}
+
+// ── fix sheet ──────────────────────────────────────────────────────────────
+// Same content as the suite's "Copy for Grok" button (fix-sheet.js), so a
+// coordinating bot can hand it to the computer-use Fixer without the UI.
+async function fixSheet(ctx) {
+  const client = await clientOr404(ctx);
+  const id = client.id;
+  const [techTasks, techFixRows, aeoRows, aeoFixRows] = await Promise.all([
+    ctx.db.many('syte_suite_tseo_tasks', { client_id: id, status: 'open' }, { order: 'created_at', limit: 2000 }),
+    ctx.db.many('syte_suite_settings', {}, { like: { id: 'techfix:' + id + ':%' }, order: 'id', limit: 5000 }),
+    ctx.db.many('syte_suite_aeo_results', { client_id: id }, { order: 'generated_at', limit: 2000 }),
+    ctx.db.many('syte_suite_settings', {}, { like: { id: 'aeofix:' + id + ':%' }, order: 'id', limit: 5000 })
+  ]);
+  const sheet = buildFixSheet({
+    client,
+    techTasks,
+    techFixes: Object.fromEntries(techFixRows.map(r => [r.data?.task_id, r.data])),
+    aeoRows,
+    aeoFixes: Object.fromEntries(aeoFixRows.map(r => [r.data?.url + '|' + r.data?.opt_key, r.data])),
+    now: new Date(ctx.now())
+  });
+  return { ...sheet, count: sheet.items.length, text: renderFixSheetText(sheet), url: signedUrl('fix-sheet', 's', id, { base: ctx.base, key: ctx.env.WP_PROXY_AUTH }) || null };
 }
 
 // ── reads ──────────────────────────────────────────────────────────────────

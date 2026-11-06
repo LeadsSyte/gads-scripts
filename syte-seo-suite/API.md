@@ -68,6 +68,7 @@ webhooks for bots that do not poll.
 | POST | `/clients/{id}/tech-fixes` `{taskId, action}` | fix:plan / fix:apply | techfix-background → job |
 | POST | `/clients/{id}/autopilot` `{mode: run|push, restart}` | content | autopilot-run-background → job |
 | GET | `/clients/{id}/autopilot` | read | This month's run state |
+| GET | `/clients/{id}/fix-sheet` | read | Work the suite can't apply itself: items, plain text and a signed link (same as "Copy for Grok") |
 | GET | `/clients/{id}/articles|implementations|external-work|baseline|reports` | read | Content, work, baseline, reports (`?month&type` for one report) |
 | POST | `/clients/{id}/external-work` | content | Log work done outside the suite |
 | POST | `/clients/{id}/reports` `{type: seo|aeo, month, force}` | content | report / aeoreport background → job |
@@ -92,7 +93,7 @@ curl -s https://syte-seo-suite.netlify.app/api/v1/jobs/<jobId> -H "Authorization
 
 ## Hand-over to Riley (after the SQL has run and a key exists)
 
-Base URL, the OpenAPI URL, the key and (if used) the webhook secret — through
+How the bots use the API is in [GROK-BOTS.md](GROK-BOTS.md). Base URL, the OpenAPI URL, the key and (if used) the webhook secret — through
 Riley's secure form, never chat or email — and one test client id.
 
 ## Not in this version
