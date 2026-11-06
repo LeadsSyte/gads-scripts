@@ -155,5 +155,19 @@ await t('the OpenAPI document describes every route, and only routes', async () 
   for (const p of brief) ok(ROUTES.some(r => r.path === p), 'brief endpoint missing: ' + p);
 });
 
+await t('fix sheet: the same items and text as "Copy for Grok", plus a signed link', async () => {
+  const { call, db } = await setup();
+  db.tables.syte_suite_tseo_tasks.push({ id: 't10', client_id: 'c1', title: 'robots.txt blocks /blog/', status: 'open', fix_type: 'robots', priority: 'high', page_url: 'https://krost.co.za/robots.txt', copy_paste_fix: 'Remove Disallow: /blog/', created_at: '2026-10-03T00:00:00Z' });
+  db.tables.syte_suite_settings = [];
+  db.tables.syte_suite_aeo_results = [];
+  const r = await json(await call('GET', '/clients/c1/fix-sheet'));
+  eq(r.status, 200);
+  ok(r.body.count >= 1 && r.body.items.some(i => i.title === 'robots.txt blocks /blog/'), 'robots item listed');
+  ok(r.body.text.startsWith('FIX SHEET — Krost'), 'plain text for the bot');
+  ok(/\/\.netlify\/functions\/fix-sheet\?s=c1&sig=[0-9a-f]{64}$/.test(r.body.url), 'signed link: ' + r.body.url);
+  ok(!JSON.stringify(r.body).includes('abcd efgh'), 'no credentials');
+  eq((await call('GET', '/clients/nope/fix-sheet')).status, 404);
+});
+
 console.log(`\napiRouter: ${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);
