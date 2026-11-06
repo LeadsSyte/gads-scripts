@@ -48,7 +48,9 @@ export async function deriveJobStatus(db, job, { now = Date.now() } = {}) {
 
   if (job.type === 'aeo_fix' || job.type === 'tech_fix') {
     const like = (job.type === 'aeo_fix' ? 'aeofix:' : 'techfix:') + cid + ':%';
-    const rows = (await db.many('syte_suite_settings', {}, { like: { id: like }, limit: 1000 })).map(r => r.data).filter(Boolean);
+    // syte_suite_settings has no created_at: sorting by it made every fix-job
+    // poll fail with a database error (found in Riley's first trial run).
+    const rows = (await db.many('syte_suite_settings', {}, { like: { id: like }, order: 'id', limit: 1000 })).map(r => r.data).filter(Boolean);
     const row = job.type === 'tech_fix'
       ? rows.find(r => r.task_id === params.taskId)
       : rows.find(r => r.url === params.url && r.opt_key === params.optKey);
