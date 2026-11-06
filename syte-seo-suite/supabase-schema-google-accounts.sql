@@ -42,3 +42,7 @@ begin
     execute format('drop policy if exists %I on syte_suite_google_accounts', p.policyname);
   end loop;
 end $$;
+
+-- Also remove table grants from the public roles (added 6 Nov 2026 after the
+-- allow-all RLS file had re-opened this table to the browser key).
+revoke all on syte_suite_google_accounts from anon, authenticated;
