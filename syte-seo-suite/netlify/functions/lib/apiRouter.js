@@ -67,6 +67,8 @@ export const ROUTES = [
   r('POST', '/queue/:id/reject', 'queue:approve', 'writes', rejectQueue, { summary: 'Request changes on a pushed draft.', body: obj({ reason: { type: 'string' } }, ['reason']) }),
   r('POST', '/queue/:id/resubmit', 'content', 'writes', resubmitQueue, { summary: 'Send a draft for review again (notify-draft).' }),
   r('POST', '/queue/:id/unpublish', 'publish', 'writes', () => { throw new ApiError(501, 'Unpublish is only available in the suite for now.'); }, { summary: 'Not available through the API yet (501).' }),
+  r('POST', '/reports/bot-summary', 'content', 'writes', postBotSummary, { summary: "Post the bot's monthly summary. The suite keeps it and emails it to the team's report address (Chris).", body: obj({ subject: { type: 'string' }, summary: { type: 'string', description: 'Plain text; blank lines separate paragraphs, lines starting "- " become bullets.' }, month: { type: 'string', pattern: 'YYYY-MM' }, needs_chris: { type: 'array', items: { type: 'string' }, description: 'Decisions and approvals for Chris, one per item.' } }, ['subject', 'summary']) }),
+  r('GET', '/reports/bot-summaries', 'read', 'reads', listBotSummaries, { summary: 'Bot summaries posted so far, newest first.', query: ['limit'] }),
   r('GET', '/audit', 'read', 'reads', listAudit, { summary: 'Audit log of mutating calls.', query: ['client_id', 'limit'] }),
   r('GET', '/keys', 'settings', 'reads', listKeys, { summary: 'Service API keys (staff only).', staff: true }),
   r('POST', '/keys', 'settings', 'writes', createKey, { summary: 'Create a service API key; the key is returned once (staff only).', staff: true, body: obj({ name: { type: 'string' }, scopes: { type: 'array', items: { type: 'string', enum: SCOPES } }, webhook_url: { type: 'string' }, webhook_secret: { type: 'string' } }, ['name', 'scopes']) }),
@@ -97,7 +99,7 @@ export function matchRoute(method, path) {
 export const pathAllowed = (method, path) => ROUTES.some(x => x.method !== method && matchRoute(x.method, path));
 
 // ── the function body ──────────────────────────────────────────────────────
-export function createApi({ db, env = process.env, fetchImpl = fetch, deps, now = () => Date.now() }) {
+export function createApi({ db, env = process.env, fetchImpl = fetch, deps, now = () => Date.now(), mailer = null }) {
   const base = String(env.URL || 'https://syte-seo-suite.netlify.app').replace(/\/+$/, '');
   const limits = limitsFromEnv(env);
 
@@ -126,7 +128,7 @@ export function createApi({ db, env = process.env, fetchImpl = fetch, deps, now 
     if (route.doc.staff && actor.kind === 'api_key') return json(403, { error: 'Keys are managed by staff, not by API keys.' });
 
     const mutating = req.method !== 'GET';
-    const ctx = { db, env, params, query: url.searchParams, body, actor, fetchImpl, now, base, path, route, ip: req.headers.get('x-nf-client-connection-ip') || req.headers.get('x-forwarded-for') || null };
+    const ctx = { db, env, params, query: url.searchParams, body, actor, fetchImpl, now, base, path, route, mailer, ip: req.headers.get('x-nf-client-connection-ip') || req.headers.get('x-forwarded-for') || null };
     const hash = requestHash(req.method, path, body);
     const idemKey = req.headers.get('idempotency-key') || '';
     const actorId = actor.kind + ':' + actor.id;
@@ -396,6 +398,53 @@ async function resubmitQueue(ctx) {
     notified = res.ok;
   } catch { /* the row is pushed either way */ }
   return { ...safeQueueRow(rows[0]), notified };
+}
+
+// ── bot summaries ──────────────────────────────────────────────────────────
+// Riley's monthly summary reaches Chris through the suite: stored as a
+// settings row 'bot-summary:<iso time>' (no schema change) and emailed from
+// automation@ to the report address (autopilot-config.report_email).
+const escHtml = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+export function botSummaryHtml({ subject, summary, month, needs_chris = [], by }, siteUrl) {
+  const blocks = String(summary).replace(/\r/g, '').split(/\n{2,}/).map(b => b.trim()).filter(Boolean).map(b => {
+    const lines = b.split('\n');
+    if (lines.every(l => /^\s*[-*•]\s+/.test(l))) return '<ul style="margin:6px 0 12px 18px;padding:0">' + lines.map(l => '<li>' + escHtml(l.replace(/^\s*[-*•]\s+/, '')) + '</li>').join('') + '</ul>';
+    return '<p style="margin:0 0 12px">' + lines.map(escHtml).join('<br>') + '</p>';
+  }).join('');
+  const needs = needs_chris.length
+    ? '<div style="border:2px solid #b45309;border-radius:8px;padding:12px 16px;margin:0 0 18px;background:#fffbeb"><strong>Needs Chris</strong><ol style="margin:8px 0 0 18px;padding:0">' + needs_chris.map(n => '<li style="margin:3px 0">' + escHtml(n) + '</li>').join('') + '</ol></div>'
+    : '';
+  return '<div style="font-family:Arial,sans-serif;max-width:680px;margin:0 auto;color:#222">'
+    + '<h2 style="margin:0 0 4px">' + escHtml(subject) + '</h2>'
+    + '<p style="color:#666;margin:0 0 16px">From ' + escHtml(by || 'the Grok bots') + (month ? ' · ' + escHtml(month) : '') + ' · posted through the Syte SEO Suite</p>'
+    + needs + blocks
+    + '<p style="color:#888;font-size:12px;margin-top:24px">Approvals and fixes are done in the suite: ' + escHtml(siteUrl) + '</p></div>';
+}
+async function postBotSummary(ctx) {
+  const subject = requireString(ctx.body, 'subject', { maxLen: 200 });
+  const summary = requireString(ctx.body, 'summary', { maxLen: 50000 });
+  if (ctx.body.month != null && !MONTH_RE.test(String(ctx.body.month))) throw bad('`month` must look like 2026-11.');
+  const needs = Array.isArray(ctx.body.needs_chris) ? ctx.body.needs_chris.map(x => String(x).trim()).filter(Boolean).slice(0, 50).map(x => x.slice(0, 500)) : [];
+  const at = new Date(ctx.now()).toISOString();
+  const by = ctx.actor.name || ctx.actor.email || ctx.actor.kind;
+  const cfg = (await ctx.db.one('syte_suite_settings', { id: 'autopilot-config' }))?.data || {};
+  const to = String(cfg.report_email || '').split(/[,;\s]+/).map(x => x.trim()).filter(x => /@/.test(x));
+  const data = { subject, summary, month: ctx.body.month || at.slice(0, 7), needs_chris: needs, by, at, emailed_to: [], email_error: null };
+  if (!to.length) data.email_error = 'No report email is set (Settings → Autopilot report email).';
+  else {
+    try {
+      const send = ctx.mailer || (await import('./sendMail.js')).sendMail;
+      await send({ to, subject: '[Grok bots] ' + subject, html: botSummaryHtml(data, ctx.base) });
+      data.emailed_to = to;
+    } catch (e) { data.email_error = 'Email failed: ' + String(e?.message || e).slice(0, 200); }
+  }
+  const id = 'bot-summary:' + at;
+  await ctx.db.insert('syte_suite_settings', { id, data, updated_at: at });
+  return { status: 201, body: { id, ...data } };
+}
+async function listBotSummaries(ctx) {
+  const rows = await ctx.db.many('syte_suite_settings', {}, { like: { id: 'bot-summary:%' }, order: 'id', desc: true, limit: lim(ctx.query, 20, 100) });
+  return rows.map(r => ({ id: r.id, ...(r.data || {}) }));
 }
 
 // ── audit, keys ────────────────────────────────────────────────────────────
