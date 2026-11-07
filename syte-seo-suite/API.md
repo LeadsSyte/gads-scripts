@@ -78,6 +78,8 @@ webhooks for bots that do not poll.
 | POST | `/queue/{id}/approve`, `/reject {reason}` | queue:approve | pushed → approved / changes_requested |
 | POST | `/queue/{id}/resubmit` | content | → pushed, notify-draft re-sent |
 | POST | `/queue/{id}/unpublish` | publish | 501 for now (suite only) |
+| POST | `/reports/bot-summary` `{subject, summary, month, needs_chris[]}` | content | Bot's monthly summary: stored and emailed to the report address (Chris) |
+| GET | `/reports/bot-summaries` | read | Summaries posted so far |
 | GET | `/audit` | read | Audit log |
 | GET / POST | `/keys`, `/keys/{id}/revoke` | staff only | Manage keys |
 

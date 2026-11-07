@@ -169,5 +169,28 @@ await t('fix sheet: the same items and text as "Copy for Grok", plus a signed li
   eq((await call('GET', '/clients/nope/fix-sheet')).status, 404);
 });
 
+await t("bot summary: stored, emailed to the report address with Chris's decisions first, and listed", async () => {
+  const sent = [];
+  const db = memoryDb({ syte_suite_clients: [], syte_suite_settings: [{ id: 'autopilot-config', data: { report_email: 'chrisb@syte.co.za' } }] });
+  const { key } = await createApiKey(db, { name: 'Riley', scopes: RILEY_SCOPES });
+  const deps = { findApiKey: async h => db.tables.syte_suite_api_keys.find(k => k.key_hash === h) || null, getUser: async () => null };
+  const api = createApi({ db, env: ENV, deps, now, mailer: async m => { sent.push(m); } });
+  const call = (method, path, body) => api(new Request('https://suite.test/api/v1' + path, { method, headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key }, body: body === undefined ? undefined : JSON.stringify(body) }));
+  const r = await json(await call('POST', '/reports/bot-summary', { subject: 'November run', month: '2026-11', summary: 'Krost: 2 titles planned.\n\n- News H1 needs a hand\n- 4 schema items', needs_chris: ['Apply the 2 Krost titles', '<b>OK</b> the fix sheet'] }));
+  eq([r.status, r.body.emailed_to], [201, ['chrisb@syte.co.za']]);
+  eq(sent.length, 1);
+  ok(sent[0].subject === '[Grok bots] November run');
+  ok(sent[0].html.indexOf('Needs Chris') < sent[0].html.indexOf('Krost: 2 titles'), 'decisions come first');
+  ok(sent[0].html.includes('<li>News H1 needs a hand</li>'), 'bullets rendered');
+  ok(sent[0].html.includes('&lt;b&gt;OK&lt;/b&gt;') && !sent[0].html.includes('<b>OK</b>'), 'bot text is escaped');
+  const list = await json(await call('GET', '/reports/bot-summaries'));
+  eq([list.body.length, list.body[0].subject, list.body[0].by], [1, 'November run', 'Riley']);
+  eq((await call('POST', '/reports/bot-summary', { subject: 'x' })).status, 400, 'summary required');
+  eq((await call('POST', '/reports/bot-summary', { subject: 'x', summary: 'y', month: 'Nov' })).status, 400, 'bad month');
+  db.tables.syte_suite_settings[0].data.report_email = '';
+  const noTo = await json(await call('POST', '/reports/bot-summary', { subject: 'x', summary: 'y' }));
+  eq([noTo.status, noTo.body.emailed_to.length, /No report email/.test(noTo.body.email_error)], [201, 0, true], 'kept even without a recipient');
+});
+
 console.log(`\napiRouter: ${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);

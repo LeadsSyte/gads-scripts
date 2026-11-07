@@ -110,10 +110,13 @@ Use the Syte SEO Suite API: base https://syte-seo-suite.netlify.app/api/v1, head
 7. When the others report back, log their work so it shows in the suite:
    POST /clients/{id}/external-work {"tool": "Grok bot", "category": "Fix",
    "description": "<what was done, one line>", "work_url": "<page>", "done_by": "<bot>"}.
-8. Post ONE summary for Chris in the room:
+8. Send ONE summary to Chris through the suite: POST /reports/bot-summary
+   {"subject": "Monthly run <month>", "month": "YYYY-MM", "summary": "<text>",
+   "needs_chris": ["<each approval or problem>", ...]}. The suite emails it to Chris from
+   automation@syte.co.za and keeps it (GET /reports/bot-summaries). The summary covers:
    - per client: what the suite did; fixes planned and waiting for his Apply; what the
      Fixer did (done / skipped + why); what the Reviewer flagged; what the Paster drafted;
-   - a list headed "Needs Chris" with every approval and every problem.
+   - every approval and every problem goes in "needs_chris" (shown first in the email).
 Keep it short and factual. If a bot is stuck for over an hour, say so. If the API answers
 401/403, stop and report it; do not try another way in. On 429, wait the Retry-After
 seconds and continue.
