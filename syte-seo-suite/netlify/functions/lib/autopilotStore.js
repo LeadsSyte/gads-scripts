@@ -2,11 +2,13 @@
 //   run state        → syte_suite_settings, id 'autopilot:<clientId>', data = state
 //   written articles → syte_suite_content_blogs (same rows Auto Write saves)
 import { STATE_PREFIX } from './autopilot.js';
+import { withClientSecrets } from './clientSecrets.js';
 
 export async function loadClient(supabase, clientId) {
   const { data, error } = await supabase.from('syte_suite_clients').select('*').eq('id', clientId).single();
   if (error || !data) throw new Error('Client not found: ' + clientId);
-  return data;
+  // CMS credentials are kept server-only (lib/clientSecrets.js).
+  return withClientSecrets(supabase, data);
 }
 
 export async function saveClientFields(supabase, clientId, fields) {

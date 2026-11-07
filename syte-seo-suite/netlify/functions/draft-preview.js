@@ -15,6 +15,7 @@ import { getServerSupabase } from './lib/serverSupabase.js';
 import { previewSig } from './lib/previewSig.js';
 import { handler as pageProxy } from './page-proxy.js';
 import { internalHeaders } from './lib/requireAuth.js';
+import { withClientSecrets } from './lib/clientSecrets.js';
 import { buildThemePreview, pickTemplate } from '../../src/modules/cms/themePreview.js';
 import { learnHouseStyle, applyHouseStyle } from '../../src/modules/cms/houseStyle.js';
 import { withClientCss } from '../../src/modules/cms/clientCss.js';
@@ -125,7 +126,7 @@ export async function handler(event) {
       pushedRef = row.payload || {};
     }
 
-    const { data: client } = await supabase.from('syte_suite_clients').select('*').eq('id', clientId).maybeSingle();
+    const client = await withClientSecrets(supabase, (await supabase.from('syte_suite_clients').select('*').eq('id', clientId).maybeSingle()).data);
     if (!client) return message(404, 'Client not found.');
     const profile = getPublishingProfile(client);
 
@@ -190,7 +191,7 @@ async function previewAeoAddition(supabase, id) {
   const { data: row } = await supabase.from('syte_suite_settings').select('data').eq('id', 'aeofix:' + clientId + ':' + key).maybeSingle();
   const fix = row?.data;
   if (!fix?.plan?.renderedPreview) return message(404, 'There is no preview for this addition — preview it again in the suite.');
-  const { data: client } = await supabase.from('syte_suite_clients').select('*').eq('id', clientId).maybeSingle();
+  const client = await withClientSecrets(supabase, (await supabase.from('syte_suite_clients').select('*').eq('id', clientId).maybeSingle()).data);
   if (!client) return message(404, 'Client not found.');
   // The page's content as the site holds it now: WordPress renders post
   // content; a Shopify page/article/product keeps it in body_html.

@@ -2,6 +2,12 @@ import React, { useState, useEffect } from 'react';
 import { useClients } from '../../store/useClients.js';
 import { listCmsQueue, updateCmsQueueItem, updateClientFields, upsertClient } from '../../lib/supabase.js';
 import { detectCms, testWordPress, testShopify } from './cmsDetect.js';
+
+// A saved WordPress app password / Shopify token is kept server-side and the
+// client record only holds this marker (netlify/functions/lib/clientSecrets.js).
+// When the field still shows it, test the SAVED login by client id instead of
+// sending the marker as if it were the password.
+const SAVED_SECRET = 'stored-server-side';
 import { getPublishingProfile } from './publishingProfile.js';
 // Static, not lazy: connectShopify must open its popup inside the click, and
 // an await on a dynamic import would spend the click and get it blocked.
@@ -193,7 +199,10 @@ export default function CMSPush({ sub, setSub }) {
   async function handleTestWp() {
     setBusy(true); setErr(''); setMsg('');
     try {
-      const name = await testWordPress(form.wp_url, form.wp_username, form.wp_app_password);
+      const savedWp = form.wp_app_password === SAVED_SECRET && client?.id && form.wp_url === client.wp_url && form.wp_username === client.wp_username;
+      const name = savedWp
+        ? await (await import('./wpApi.js')).testConnection(client)
+        : await testWordPress(form.wp_url, form.wp_username, form.wp_app_password);
       await saveConnector({}, 'Connected as "' + name + '" — credentials saved.', 'wp');
     } catch (e) {
       // Keep what was typed. A failed test is often transient (network,
@@ -208,7 +217,10 @@ export default function CMSPush({ sub, setSub }) {
   async function handleTestShopify() {
     setBusy(true); setErr(''); setMsg('');
     try {
-      const name = await testShopify(form.shopify_store, form.shopify_token);
+      const savedShop = form.shopify_token === SAVED_SECRET && client?.id && form.shopify_store === client.shopify_store;
+      const name = savedShop
+        ? ((await (await import('./shopifyApi.js')).shopifyRequest(client, { path: 'shop.json' })).shop?.name || 'connected')
+        : await testShopify(form.shopify_store, form.shopify_token);
       await saveConnector({}, 'Connected to "' + name + '" — credentials saved.', 'shopify');
     } catch (e) {
       try { await upsertClient({ ...client, ...form }); await load(); } catch { /* keep the original error */ }
@@ -291,7 +303,7 @@ export default function CMSPush({ sub, setSub }) {
     setBusy(true); setErr(''); setMsg('');
     try {
       const { listBlogs } = await import('./shopifyApi.js');
-      const list = await listBlogs({ shopify_store: form.shopify_store, shopify_token: form.shopify_token });
+      const list = await listBlogs(form.shopify_token === SAVED_SECRET && client?.id ? client : { shopify_store: form.shopify_store, shopify_token: form.shopify_token });
       setBlogs(list);
       setMsg(list.length + ' blog(s) found — pick where articles should go.');
     } catch (e) { setErr(e.message); }

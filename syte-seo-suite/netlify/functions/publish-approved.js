@@ -18,6 +18,7 @@ import { reportRecipients, sendReport, buildPublishedEmail } from './lib/reportE
 import { lookAtLivePost } from './lib/livePostCheck.js';
 import { prePublishDecision, startedPrecheck, heldPayload } from './lib/prePublishCheck.js';
 import { previewUrl } from './lib/previewSig.js';
+import { withClientSecretsMany } from './lib/clientSecrets.js';
 
 export const config = {
   schedule: '*/15 * * * *'
@@ -55,7 +56,9 @@ export default async function handler() {
     console.error('[publish-approved] client query failed:', cErr.message);
     return new Response('Client query failed', { status: 500 });
   }
-  const byId = Object.fromEntries((clients || []).map(c => [c.id, c]));
+  // CMS credentials are kept server-only (lib/clientSecrets.js).
+  const withCreds = await withClientSecretsMany(supabase, clients || []);
+  const byId = Object.fromEntries(withCreds.map(c => [c.id, c]));
 
   let published = 0, failed = 0, held = 0;
   const results = [];
