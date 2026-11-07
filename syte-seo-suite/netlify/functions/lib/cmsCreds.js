@@ -19,6 +19,7 @@
 // Pure apart from the injected deps; tested in test/cmsCreds.test.mjs.
 
 import { urlProblem } from './safeFetch.js';
+import { withClientSecrets } from './clientSecrets.js';
 
 export class CredsError extends Error { constructor(status, message) { super(message); this.status = status; } }
 
@@ -121,7 +122,7 @@ export function liveCredDeps(supabase) {
     loadClient: async id => {
       const { data, error } = await supabase.from('syte_suite_clients').select(CLIENT_COLUMNS).eq('id', id).maybeSingle();
       if (error) throw new Error(error.message);
-      return data || null;
+      return data ? withClientSecrets(supabase, data) : null;
     }
   };
 }

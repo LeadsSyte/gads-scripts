@@ -15,6 +15,7 @@
 // wrong — emails the report address. The post stays live either way.
 
 import { getServerSupabase } from './lib/serverSupabase.js';
+import { withClientSecrets } from './lib/clientSecrets.js';
 import { claudeCompleteServer } from './lib/serverAi.js';
 import { visualCheck, visualCheckAvailable } from './lib/visualCheck.js';
 import { wpClient, hasWordPress } from './lib/wpClient.js';
@@ -48,7 +49,7 @@ export async function lookBeforePublishing(supabase, queueId, { check = visualCh
     const { data: row } = await supabase.from('syte_suite_cms_queue').select('*').eq('id', queueId).maybeSingle();
     if (!row || row.status !== 'approved') return null;
     const url = row.payload?.precheck?.preview_url;
-    const { data: client } = await supabase.from('syte_suite_clients').select('*').eq('id', row.client_id).maybeSingle();
+    const client = await withClientSecrets(supabase, (await supabase.from('syte_suite_clients').select('*').eq('id', row.client_id).maybeSingle()).data);
     result = !url || !client
       ? { status: 'unchecked', problems: [], summary: !url ? 'No preview link (the server cannot sign one).' : 'Client not found.', checked_at: new Date().toISOString() }
       : await check({ url, referenceUrl: await reference(client, row), what: PRECHECK_WHAT.replace('%TITLE%', String(row.page_title || '').replace(/"/g, "'")) }, { complete });
@@ -95,7 +96,7 @@ export async function handler(event) {
     const { data: row } = await supabase.from('syte_suite_cms_queue').select('*').eq('id', body.queueId).maybeSingle();
     const url = row?.payload?.live_url;
     if (!row || row.status !== 'published' || !url) return { statusCode: 202 };
-    const { data: client } = await supabase.from('syte_suite_clients').select('*').eq('id', row.client_id).maybeSingle();
+    const client = await withClientSecrets(supabase, (await supabase.from('syte_suite_clients').select('*').eq('id', row.client_id).maybeSingle()).data);
     if (!client) return { statusCode: 202 };
 
     const result = await visualCheck({
