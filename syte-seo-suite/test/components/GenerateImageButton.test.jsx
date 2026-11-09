@@ -45,22 +45,22 @@ describe('GenerateImageButton', () => {
   test('shows only DALL-E option when only OpenAI key is set', () => {
     globalThis.__mockSettings = { openaiKey: 'k' };
     render(<GenerateImageButton title="A Topic" keyword="kw" />);
-    expect(screen.getByRole('option', { name: /DALL-E 3/i })).toBeInTheDocument();
-    expect(screen.queryByRole('option', { name: /Imagen 3/i })).not.toBeInTheDocument();
+    expect(screen.getByRole('option', { name: /DALL-E/i })).toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: /Google/i })).not.toBeInTheDocument();
   });
 
   test('shows only Imagen option when only Google AI key is set', () => {
     globalThis.__mockSettings = { googleAiKey: 'g' };
     render(<GenerateImageButton title="A Topic" keyword="kw" />);
-    expect(screen.getByRole('option', { name: /Imagen 3/i })).toBeInTheDocument();
-    expect(screen.queryByRole('option', { name: /DALL-E 3/i })).not.toBeInTheDocument();
+    expect(screen.getByRole('option', { name: /Google/i })).toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: /DALL-E/i })).not.toBeInTheDocument();
   });
 
   test('shows both options when both keys are set', () => {
     globalThis.__mockSettings = { openaiKey: 'k', googleAiKey: 'g' };
     render(<GenerateImageButton title="A Topic" keyword="kw" />);
-    expect(screen.getByRole('option', { name: /DALL-E 3/i })).toBeInTheDocument();
-    expect(screen.getByRole('option', { name: /Imagen 3/i })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: /DALL-E/i })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: /Google/i })).toBeInTheDocument();
   });
 
   test('clicking Generate forwards the SELECTED provider to generateHeroImage', async () => {
