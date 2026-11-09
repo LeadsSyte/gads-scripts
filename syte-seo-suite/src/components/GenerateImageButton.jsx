@@ -22,11 +22,12 @@ export default function GenerateImageButton({ title, keyword, disabled, client: 
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null);
   const [err, setErr] = useState('');
-  const [provider, setProvider] = useState('dalle');
-
   const settings = loadSettings();
   const hasDalle = !!settings.openaiKey;
   const hasImagen = !!settings.googleAiKey;
+  // Google first: it is the image model that works on Syte's accounts
+  // (imageGen.js GOOGLE_IMAGE_MODEL); DALL-E stays as the alternative.
+  const [provider, setProvider] = useState(hasImagen ? 'imagen' : 'dalle');
   const hasAny = hasDalle || hasImagen;
 
   async function generate() {
@@ -58,8 +59,8 @@ export default function GenerateImageButton({ title, keyword, disabled, client: 
           onChange={e => setProvider(e.target.value)}
           style={{ width: 130, fontSize: 11, padding: '5px 8px' }}
         >
-          {hasDalle && <option value="dalle">DALL-E 3</option>}
-          {hasImagen && <option value="imagen">Imagen 3</option>}
+          {hasImagen && <option value="imagen">Google (Gemini)</option>}
+          {hasDalle && <option value="dalle">DALL-E</option>}
         </select>
         <button
           onClick={generate}
@@ -94,7 +95,7 @@ export default function GenerateImageButton({ title, keyword, disabled, client: 
             }}
           />
           <div className="muted" style={{ fontSize: 10, marginTop: 6 }}>
-            {result.provider === 'dalle' ? 'DALL-E 3' : 'Imagen 3'}
+            {result.provider === 'dalle' ? 'DALL-E' : 'Google (Gemini)'}
             {result.revisedPrompt && (
               <span> · Prompt: {result.revisedPrompt.slice(0, 100)}{result.revisedPrompt.length > 100 ? '…' : ''}</span>
             )}

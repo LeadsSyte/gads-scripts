@@ -103,18 +103,18 @@ await t('explicit DALL-E pick — DALL-E error surfaces, no Imagen fallback', as
 await t('explicit Imagen pick — Imagen error surfaces, no DALL-E fallback', async () => {
   globalThis.__settings = { openaiKey: 'o', googleAiKey: 'g' };
   fetchHandler = (url) => {
-    if (url.includes('generativelanguage.googleapis.com')) {
+    if (url.includes('gemini-proxy')) {
       return { ok: false, status: 404, text: async () => 'not enabled' };
     }
     throw new Error('DALL-E should not be called when user picked Imagen');
   };
   await expectThrow(
     () => mod.generateHeroImage('T', 'k', CLIENT, { preferredProvider: 'imagen' }),
-    /Imagen 3 is not available/,
+    /Google image generation is not available/,
     'imagen 404'
   );
   assertEq(fetchCalls.length, 1, 'fetch count');
-  assertMatch(fetchCalls[0].url, /generativelanguage\.googleapis\.com/, 'fetch URL');
+  assertMatch(fetchCalls[0].url, /gemini-proxy/, 'fetch URL');
 });
 
 // ============================================================================
@@ -127,8 +127,8 @@ await t('allowFallback=true falls through to the other provider when first fails
     if (url.includes('openai-proxy') || url.includes('openai.com')) {
       return { ok: false, status: 500, text: async () => 'down' };
     }
-    if (url.includes('generativelanguage.googleapis.com')) {
-      return { ok: true, json: async () => ({ predictions: [{ bytesBase64Encoded: 'AAAA' }] }) };
+    if (url.includes('gemini-proxy')) {
+      return { ok: true, json: async () => ({ candidates: [{ content: { parts: [{ inlineData: { mimeType: 'image/png', data: 'AAAA' } }] } }] }) };
     }
     throw new Error('unexpected ' + url);
   };
@@ -162,10 +162,32 @@ await t('successful DALL-E call returns expected shape', async () => {
 
 await t('successful Imagen call returns expected shape', async () => {
   globalThis.__settings = { googleAiKey: 'g' };
-  fetchHandler = () => ({ ok: true, json: async () => ({ predictions: [{ bytesBase64Encoded: 'XYZ' }] }) });
+  fetchHandler = () => ({ ok: true, json: async () => ({ candidates: [{ content: { parts: [{ text: 'here' }, { inlineData: { mimeType: 'image/png', data: 'XYZ' } }] } }] }) });
   const r = await mod.generateHeroImage('T', 'k', CLIENT, { preferredProvider: 'imagen' });
   assertEq(r.provider, 'imagen');
   assertMatch(r.dataUrl, /^data:image\/png;base64,XYZ/);
+});
+
+await t('Google image request: gemini-2.5-flash-image, 16:9, image output, through the suite proxy', async () => {
+  globalThis.__settings = { googleAiKey: 'g' };
+  fetchHandler = () => ({ ok: true, json: async () => ({ candidates: [{ content: { parts: [{ inlineData: { mimeType: 'image/png', data: 'Q' } }] } }] }) });
+  await mod.generateHeroImage('T', 'k', CLIENT, { preferredProvider: 'imagen' });
+  const body = JSON.parse(fetchCalls[0].body);
+  assertEq(body.model, 'gemini-2.5-flash-image');
+  assertEq(body.payload.generationConfig.imageConfig.aspectRatio, '16:9');
+  assertEq(body.payload.generationConfig.responseModalities[0], 'IMAGE');
+  if ('key' in body || 'apiKey' in body) throw new Error('no key sent from the caller');
+});
+
+await t('the default provider is Google; the DALL-E request no longer sends response_format', async () => {
+  globalThis.__settings = { openaiKey: 'o', googleAiKey: 'g' };
+  fetchHandler = (url) => url.includes('gemini-proxy')
+    ? ({ ok: false, status: 500, text: async () => 'down' })
+    : ({ ok: true, json: async () => ({ data: [{ b64_json: 'D' }] }) });
+  const r = await mod.generateHeroImage('T', 'k', CLIENT, { allowFallback: true });
+  assertEq(fetchCalls[0].url.includes('gemini-proxy'), true, 'Google tried first');
+  assertEq(r.provider, 'dalle', 'falls back to DALL-E');
+  if ('response_format' in JSON.parse(fetchCalls[1].body).body) throw new Error('response_format still sent');
 });
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');

@@ -30,42 +30,43 @@ High quality, well-lit, modern aesthetic.`.trim();
 // Google Imagen 3
 // ---------------------------------------------------------------------------
 
+// Google's image model, through the suite's gemini-proxy (the proxy holds
+// the GOOGLE_AI_KEY). Imagen 3 and both OpenAI image models stopped working
+// on Syte's accounts in Nov 2026 (every Autopilot draft lost its hero image),
+// so this is now the default provider. The provider id stays 'imagen' so
+// saved choices and the Generate Image button keep working.
+export const GOOGLE_IMAGE_MODEL = 'gemini-2.5-flash-image';
+
 export async function generateWithImagen(prompt) {
-  const { googleAiKey } = loadSettings();
-  if (!googleAiKey) throw new Error('Google AI API key not set. Open Suite Settings.');
-
-  const url = 'https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-002:predict?key='
-    + encodeURIComponent(googleAiKey);
-
-  const res = await fetch(url, {
+  const res = await fetch(fnUrl('gemini-proxy'), {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...(await (globalThis.__SYTE_AUTH_HEADERS?.() ?? {})) },
     body: JSON.stringify({
-      instances: [{ prompt }],
-      parameters: {
-        sampleCount: 1,
-        aspectRatio: '16:9',
-        safetyFilterLevel: 'block_few'
+      model: GOOGLE_IMAGE_MODEL,
+      payload: {
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { responseModalities: ['IMAGE'], imageConfig: { aspectRatio: '16:9' } }
       }
     })
   });
 
   if (!res.ok) {
     const txt = await res.text().catch(() => '');
-    // Imagen might not be enabled or available in all regions.
     if (res.status === 403 || res.status === 404) {
-      throw new Error('Imagen 3 is not available on your Google AI account. Try DALL-E 3 instead. (' + res.status + ')');
+      throw new Error('Google image generation is not available on this account (' + res.status + '). Try DALL-E instead.');
     }
-    throw new Error('Imagen error ' + res.status + ': ' + txt.slice(0, 200));
+    throw new Error('Google image error ' + res.status + ': ' + txt.slice(0, 200));
   }
 
   const data = await res.json();
-  const b64 = data.predictions?.[0]?.bytesBase64Encoded;
-  if (!b64) throw new Error('Imagen returned no image data.');
+  const part = (data.candidates?.[0]?.content?.parts || []).find(p => p.inlineData?.data || p.inline_data?.data);
+  const b64 = part?.inlineData?.data || part?.inline_data?.data;
+  if (!b64) throw new Error('Google returned no image data.');
+  const mime = part?.inlineData?.mimeType || part?.inline_data?.mime_type || 'image/png';
 
   return {
     provider: 'imagen',
-    dataUrl: 'data:image/png;base64,' + b64,
+    dataUrl: 'data:' + mime + ';base64,' + b64,
     prompt
   };
 }
@@ -92,8 +93,8 @@ export async function generateWithDalle(prompt) {
         prompt,
         n: 1,
         size: '1792x1024', // closest to 16:9
-        quality: 'standard',
-        response_format: 'b64_json'
+        quality: 'standard'
+        // response_format is rejected by the Images API since Nov 2026.
       }
     })
   });
@@ -123,7 +124,9 @@ export async function generateWithDalle(prompt) {
 // we want a useful error from THAT provider — not a misleading message
 // from the other one tried as a silent fallback. Auto-selected callers
 // (e.g. CMS auto-generate-on-push) can opt back into fallback.
-export async function generateHeroImage(articleTitle, keyword, client, { preferredProvider = 'dalle', allowFallback = false } = {}) {
+// Google is the default: it is the provider that works on Syte's accounts
+// (see GOOGLE_IMAGE_MODEL above).
+export async function generateHeroImage(articleTitle, keyword, client, { preferredProvider = 'imagen', allowFallback = false } = {}) {
   const prompt = buildImagePrompt(articleTitle, keyword, client);
   const { openaiKey, googleAiKey } = loadSettings();
 
@@ -135,6 +138,9 @@ export async function generateHeroImage(articleTitle, keyword, client, { preferr
   if (!chosen.available && !other.available) {
     throw new Error('No image generation API key configured. Set OpenAI or Google AI key in Suite Settings.');
   }
+  // Automatic callers (CMS push) just want an image: use whichever provider
+  // has a key rather than failing because the default one has none.
+  if (!chosen.available && allowFallback) return await other.fn();
   if (!chosen.available) {
     throw new Error(
       (preferredProvider === 'imagen' ? 'Imagen 3' : 'DALL-E 3') +

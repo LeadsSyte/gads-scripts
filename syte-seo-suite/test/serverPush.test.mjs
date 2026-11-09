@@ -6,6 +6,7 @@
 process.env.URL = 'https://suite.example';
 process.env.WP_PROXY_AUTH = 'gate-value';
 process.env.OPENAI_API_KEY = 'sk-test-builtin';
+process.env.GOOGLE_AI_KEY = 'g-test-builtin';
 
 const { prepareServerPush, pushArticleServer, canPushTo } = await import('../netlify/functions/lib/serverPush.js');
 
@@ -30,6 +31,7 @@ globalThis.fetch = async (url, init = {}) => {
   calls.push({ url: String(url), headers: init.headers || {}, body });
   const json = (obj, status = 200) => new Response(JSON.stringify(obj), { status, headers: { 'Content-Type': 'application/json' } });
   if (String(url).endsWith('/openai-proxy')) return json({ data: [{ b64_json: 'aGVsbG8=' }] });
+  if (String(url).endsWith('/gemini-proxy')) return json({ candidates: [{ content: { parts: [{ inlineData: { mimeType: 'image/png', data: 'aGVsbG8=' } }] } }] });
   if (String(url).endsWith('/notify-draft')) return json({ ok: true });
   if (String(url).endsWith('/wp-proxy')) {
     const p = body.path || '';
@@ -80,10 +82,11 @@ await t('a draft is created through the live proxy with the server gate value', 
   if (!/<h2 class="wp-block-heading has-black-color">Relief<\/h2>/.test(create.body.body.content)) throw new Error('house style not applied: ' + create.body.body.content.slice(0, 200));
 });
 
-await t('the hero image request carries the server credential (openai-proxy refuses it otherwise)', () => {
-  const img = calls.find(c => c.url.endsWith('/openai-proxy'));
+await t('the hero image comes from Google, with the server credential (the proxy refuses it otherwise)', () => {
+  const img = calls.find(c => c.url.endsWith('/gemini-proxy'));
   if (!img) throw new Error('no image request');
-  assertEq(img.headers['X-Suite-Auth'], 'gate-value', 'openai-proxy auth header');
+  assertEq(img.headers['X-Suite-Auth'], 'gate-value', 'gemini-proxy auth header');
+  assertEq(img.body.model, 'gemini-2.5-flash-image', 'Google image model');
   const notify = calls.find(c => c.url.endsWith('/notify-draft'));
   assertEq(notify?.headers['X-Suite-Auth'], 'gate-value', 'notify-draft auth header');
 });
