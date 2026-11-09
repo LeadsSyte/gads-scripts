@@ -9,6 +9,7 @@ import { loadClient } from './lib/autopilotStore.js';
 import { wpClient } from './lib/wpClient.js';
 import { shopifyClient } from './lib/shopifyClient.js';
 import { backfillHeroImages, generateGoogleImage } from './lib/heroBackfill.js';
+import { shrinkImage, withExt } from './lib/shrinkImage.js';
 import { getPublishingProfile } from '../../src/modules/cms/publishingProfile.js';
 
 export async function handler(event) {
@@ -44,7 +45,9 @@ export async function handler(event) {
       wp: {
         getPost: (restBase, id) => wp(restBase === 'posts' ? 'wp/v2/posts/' + id + '?context=edit&_fields=id,status,featured_media' : 'wp/v2/' + restBase + '/' + id + '?context=edit&_fields=id,status,featured_media'),
         uploadMedia: async (b64, mime, filename, alt) => {
-          const r = await fetch(wpBase + 'wp/v2/media', { method: 'POST', headers: { Authorization: wpAuth, 'Content-Type': mime, 'Content-Disposition': 'attachment; filename="' + filename + '"' }, body: Buffer.from(b64, 'base64'), signal: AbortSignal.timeout(60000) });
+          // Large PNGs become JPEGs: some sites reject ~2 MB uploads (413).
+          const img = shrinkImage(Buffer.from(b64, 'base64'));
+          const r = await fetch(wpBase + 'wp/v2/media', { method: 'POST', headers: { Authorization: wpAuth, 'Content-Type': img.mime, 'Content-Disposition': 'attachment; filename="' + withExt(filename, img.ext) + '"' }, body: img.buffer, signal: AbortSignal.timeout(60000) });
           const t = await r.text();
           if (!r.ok) throw new Error('WordPress media ' + r.status + ': ' + t.slice(0, 160));
           const m = JSON.parse(t);

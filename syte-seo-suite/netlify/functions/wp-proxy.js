@@ -15,6 +15,7 @@
 import { authorize, fromEvent, deny } from './lib/requireAuth.js';
 import { resolveWordPress, cleanApiPath, liveCredDeps, guardedFetch, CredsError } from './lib/cmsCreds.js';
 import { getServerSupabase } from './lib/serverSupabase.js';
+import { shrinkImage, withExt } from './lib/shrinkImage.js';
 
 export async function handler(event, { credDeps } = {}) {
   if (event.httpMethod === 'OPTIONS') {
@@ -57,9 +58,11 @@ export async function handler(event, { credDeps } = {}) {
   try {
     let res;
     if (isMediaUpload && mediaBase64) {
-      const imageBuffer = Buffer.from(mediaBase64, 'base64');
-      reqHeaders['Content-Type'] = 'image/png';
-      reqHeaders['Content-Disposition'] = 'attachment; filename="' + String(mediaFilename || 'image.png').replace(/["\r\n]/g, '') + '"';
+      // Large PNGs become JPEGs: some sites reject ~2 MB uploads (413).
+      const img = shrinkImage(Buffer.from(mediaBase64, 'base64'));
+      const imageBuffer = img.buffer;
+      reqHeaders['Content-Type'] = img.mime;
+      reqHeaders['Content-Disposition'] = 'attachment; filename="' + withExt(mediaFilename || 'image.png', img.ext).replace(/["\r\n]/g, '') + '"';
       res = await guardedFetch(fullUrl, { method: 'POST', headers: reqHeaders, body: imageBuffer }, { lookup: credDeps?.lookup, fetchImpl: credDeps?.fetchImpl });
     } else {
       reqHeaders['Content-Type'] = 'application/json';
