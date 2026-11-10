@@ -52,7 +52,15 @@ ${String(original).slice(0, 60000)}
 """`;
 }
 
-const strip = s => String(s || '').trim().replace(/^```[a-z]*\n?/i, '').replace(/\n?```$/, '').trim();
+// Unwrap only a reply wrapped whole in a code fence. Articles often END
+// with their own ```json schema block, whose closing fence must stay
+// (seen on the first live rewrite, Krost 10 Nov 2026).
+export function stripWrapper(s) {
+  const t = String(s || '').trim();
+  if (!/^```/.test(t)) return t;
+  return t.replace(/^```[a-z]*\n?/i, '').replace(/\n?```$/, '').trim();
+}
+const strip = stripWrapper;
 
 // deps: complete(opts) → text (Claude), checkArticle({system,user}) → raw JSON,
 //       saveRow(id, patch), push(client, item, row) → { ok, verification, warnings }, now() → Date
