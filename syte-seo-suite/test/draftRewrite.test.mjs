@@ -1,7 +1,7 @@
 // A draft sent back with "request changes" is rewritten and the same draft
 // updated for review (lib/draftRewrite.js); never published or approved.
 
-import { rewriteDraft, rewriteBlockReason, buildRevisePrompt, sameRowQueueDeps, MAX_REWRITES } from '../netlify/functions/lib/draftRewrite.js';
+import { rewriteDraft, rewriteBlockReason, buildRevisePrompt, sameRowQueueDeps, MAX_REWRITES, stripWrapper } from '../netlify/functions/lib/draftRewrite.js';
 
 let pass = 0, fail = 0;
 async function t(name, fn) { try { await fn(); console.log('PASS', name); pass++; } catch (e) { console.log('FAIL', name, '->', e.message); fail++; } }
@@ -92,6 +92,12 @@ await t('sameRowQueueDeps reuses the queue row instead of logging a new one', as
 await t('the revise prompt asks for the same format and no notes', () => {
   const s = buildRevisePrompt(ORIGINAL, 'Shorter intro');
   ok(s.includes('Shorter intro') && s.includes('same format') && s.includes('no notes'), s.slice(0, 200));
+});
+
+await t("an article ending in its own code block keeps the closing fence; a wrapped reply is unwrapped", () => {
+  const art = '# T\n\nBody.\n\n```json\n{"@type":"FAQPage"}\n```';
+  eq(stripWrapper(art), art);
+  eq(stripWrapper('```markdown\n# T\n\nBody.\n```'), '# T\n\nBody.');
 });
 
 console.log(`\ndraftRewrite: ${pass} passed, ${fail} failed`);
