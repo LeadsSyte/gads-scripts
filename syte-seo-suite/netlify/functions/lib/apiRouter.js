@@ -13,6 +13,8 @@ import { createJob, updateJob, getJob, listJobs, findInFlightJob, requestHash, i
 import { refreshJob, refreshOpenJobs } from './jobStatus.js';
 import { buildOpenApi } from './openapi.js';
 import { signedUrl } from './previewSig.js';
+import { rewriteBlockReason } from './draftRewrite.js';
+import { getPublishingProfile } from '../../../src/modules/cms/publishingProfile.js';
 import { buildFixSheet, renderFixSheetText } from '../../../src/modules/technical/fixSheet.js';
 
 export class ApiError extends Error { constructor(status, message, extra) { super(message); this.status = status; this.extra = extra; } }
@@ -64,7 +66,7 @@ export const ROUTES = [
   r('GET', '/jobs/:id', 'read', 'reads', getJobRoute, { summary: 'One job with its current (derived) status.' }),
   r('GET', '/queue', 'read', 'reads', listQueue, { summary: 'CMS approval queue.', query: ['status', 'client_id'] }),
   r('POST', '/queue/:id/approve', 'queue:approve', 'writes', approveQueue, { summary: 'Approve a pushed draft; publish-approved publishes it within 15 min.' }),
-  r('POST', '/queue/:id/reject', 'queue:approve', 'writes', rejectQueue, { summary: 'Request changes on a pushed draft.', body: obj({ reason: { type: 'string' } }, ['reason']) }),
+  r('POST', '/queue/:id/reject', 'queue:review', 'writes', rejectQueue, { summary: 'Request changes on a pushed draft. The reason goes to the writer: unless the client has rewrite_on_changes off, the article is rewritten against it and the same draft is updated for review again (draft-rewrite-background; progress in payload.rewrite_status).', body: obj({ reason: { type: 'string' } }, ['reason']) }),
   r('POST', '/queue/:id/resubmit', 'content', 'writes', resubmitQueue, { summary: 'Send a draft for review again (notify-draft).' }),
   r('POST', '/queue/:id/unpublish', 'publish', 'writes', () => { throw new ApiError(501, 'Unpublish is only available in the suite for now.'); }, { summary: 'Not available through the API yet (501).' }),
   r('POST', '/reports/bot-summary', 'content', 'writes', postBotSummary, { summary: "Post the bot's monthly summary. The suite keeps it and emails it to the team's report address (Chris).", body: obj({ subject: { type: 'string' }, summary: { type: 'string', description: 'Plain text; blank lines separate paragraphs, lines starting "- " become bullets.' }, month: { type: 'string', pattern: 'YYYY-MM' }, needs_chris: { type: 'array', items: { type: 'string' }, description: 'Decisions and approvals for Chris, one per item.' } }, ['subject', 'summary']) }),
@@ -386,7 +388,18 @@ async function rejectQueue(ctx) {
   if (!['pushed', 'approved'].includes(row.status)) throw new ApiError(409, 'Only a draft awaiting review or approved can have changes requested; this one is ' + row.status + '.');
   const at = new Date(ctx.now()).toISOString();
   const rows = await ctx.db.update('syte_suite_cms_queue', { id: row.id }, { status: 'changes_requested', payload: { ...(row.payload || {}), change_comment: reason, changes_requested_at: at, changes_requested_by: ctx.actor.name || ctx.actor.email || ctx.actor.kind } });
-  return safeQueueRow(rows[0]);
+  // Hand it to the writer (draftRewrite.js) unless it cannot be rewritten.
+  const client = await ctx.db.one('syte_suite_clients', { id: rows[0].client_id });
+  const blocked = rewriteBlockReason(rows[0], getPublishingProfile(client || {}));
+  let rewrite = blocked ? 'not started: ' + blocked : 'started';
+  if (!blocked) {
+    let res;
+    try {
+      res = await ctx.fetchImpl(ctx.base + '/.netlify/functions/draft-rewrite-background', { method: 'POST', headers: { 'Content-Type': 'application/json', ...internalHeaders(ctx.env) }, body: JSON.stringify({ queueId: row.id }), signal: AbortSignal.timeout(15000) });
+    } catch (e) { res = { status: 0 }; }
+    if (res.status !== 202) rewrite = 'not started: the rewrite function did not accept the request (HTTP ' + res.status + ')';
+  }
+  return { ...safeQueueRow(rows[0]), rewrite };
 }
 async function resubmitQueue(ctx) {
   const row = await queueRow(ctx);

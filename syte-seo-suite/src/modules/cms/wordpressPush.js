@@ -102,7 +102,11 @@ export async function pushContentToWordPress(client, item) {
   let inlineHeroHtml = '';
   const settings = loadSettings();
   const heroWanted = profile.hero_mode !== 'none';
-  const hasImageApi = heroWanted && !!(settings.openaiKey || settings.googleAiKey);
+  // A rewrite of an existing draft (draftRewrite.js) keeps the draft's
+  // featured image instead of generating a new one; inline heroes live in
+  // the body that is being replaced, so those are still regenerated.
+  const keepHero = !!p.keep_hero && (profile.hero_mode || 'featured-only') === 'featured-only';
+  const hasImageApi = heroWanted && !keepHero && !!(settings.openaiKey || settings.googleAiKey);
   if (hasImageApi) {
     try {
       // Auto flow on CMS push — try whichever provider works, since the
@@ -131,8 +135,10 @@ export async function pushContentToWordPress(client, item) {
   // Match on title, not slug: WordPress leaves a draft's slug empty until it
   // is published, so a slug lookup silently found nothing and every re-push
   // created another draft.
-  let existing = null;
-  try { existing = await findEditablePostByTitle(client, title, restBase); } catch { /* lookup is best-effort */ }
+  // A rewrite names the draft it replaces (draftRewrite.js), so a changed
+  // title still updates the same post.
+  let existing = p.update_wp_id ? { id: p.update_wp_id } : null;
+  if (!existing) { try { existing = await findEditablePostByTitle(client, title, restBase); } catch { /* lookup is best-effort */ } }
 
   // Create (or update) the draft post with clean HTML content. Meta fields
   // are set in a SEPARATE follow-up call because WordPress 403s if the meta

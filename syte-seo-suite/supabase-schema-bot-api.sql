@@ -21,7 +21,7 @@ create table if not exists syte_suite_api_keys (
   name text not null,
   key_hash text not null unique,
   prefix text not null,                       -- first 12 chars, to recognise a key in logs
-  scopes text[] not null default '{}',        -- read | scan | fix:plan | fix:apply | content | queue:approve | publish | settings
+  scopes text[] not null default '{}',        -- read | scan | fix:plan | fix:apply | content | queue:review | queue:approve | publish | settings
   created_by text,                            -- staff email or 'server'
   created_at timestamptz not null default now(),
   last_used_at timestamptz,

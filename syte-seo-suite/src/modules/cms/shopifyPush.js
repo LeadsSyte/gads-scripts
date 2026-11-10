@@ -50,7 +50,14 @@ export async function pushArticleToShopify(client, item) {
   const metaTitle = parsed.metaTitle || p.meta_title || title;
   const metaDesc = parsed.metaDesc || p.meta_description || '';
 
-  const blog = await resolveBlog(client, profile);
+  // A rewrite (draftRewrite.js) updates the article it came from, in its blog.
+  let blog;
+  if (p.update_shopify_article_id && p.shopify_blog_id) {
+    try { blog = (await shopifyRequest(client, { path: 'blogs/' + p.shopify_blog_id + '.json' }))?.blog; } catch { /* handle only feeds the link */ }
+    blog = blog || { id: p.shopify_blog_id, handle: '' };
+  } else {
+    blog = await resolveBlog(client, profile);
+  }
   const blogId = blog.id;
 
   // Match the markup of the store's own published articles (houseStyle.js).
@@ -70,7 +77,9 @@ export async function pushArticleToShopify(client, item) {
   let imageAttachment = null;
   const settings = loadSettings();
   const heroWanted = profile.hero_mode !== 'none';
-  const hasImageApi = heroWanted && !!(settings.openaiKey || settings.googleAiKey);
+  // A rewrite keeps the article's existing featured image (see wordpressPush).
+  const keepHero = !!p.keep_hero && (profile.hero_mode || 'featured-only') === 'featured-only';
+  const hasImageApi = heroWanted && !keepHero && !!(settings.openaiKey || settings.googleAiKey);
   if (hasImageApi) {
     try {
       const img = await generateHeroImage(title, p.primary_keyword || '', client, { allowFallback: true });
@@ -84,8 +93,8 @@ export async function pushArticleToShopify(client, item) {
   // same way WP derives slugs. Update the existing draft instead of
   // stacking copies.
   const handle = slugifyTitle(title);
-  let existing = null;
-  try { existing = await findArticleByHandle(client, blogId, handle); } catch { /* best effort */ }
+  let existing = p.update_shopify_article_id ? { id: p.update_shopify_article_id } : null;
+  if (!existing) { try { existing = await findArticleByHandle(client, blogId, handle); } catch { /* best effort */ } }
 
   const author = await resolveAuthor(client, profile);
 
