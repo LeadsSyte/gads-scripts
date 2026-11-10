@@ -102,7 +102,13 @@ Create one task per MEANINGFUL issue on a SPECIFIC page that is NOT in the alrea
     temperature: 0.3
   });
   const parsed = extractJSON(text);
-  return mergeSharedFixes(parsed?.tasks || []);
+  // A reply we can't read is a failed scan, not a clean site. Returning []
+  // here used to surface as "No issues found — site looks clean", which hid
+  // truncated / non-JSON replies behind a reassuring message.
+  if (!parsed || !Array.isArray(parsed.tasks)) {
+    throw new Error('The AI reply could not be read as a task list — run the scan again.');
+  }
+  return mergeSharedFixes(parsed.tasks);
 }
 
 // Backstop for the ONE FIX, MANY PAGES rule: tasks of the same fix type

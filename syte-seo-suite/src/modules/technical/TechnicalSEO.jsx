@@ -393,6 +393,7 @@ export default function TechnicalSEO({ sub }) {
       const gscEmail = c.gsc_account_email || c.google_account_email || null;
       let auditData = null;
       let dataSource = '';
+      let pagesWithIssues = 0;
 
       // STEP 1: Crawl the site directly (our own audit, no dependency on WebCEO).
       setMsg(`Step 1/3 — Crawling ${c.name}…`);
@@ -404,6 +405,7 @@ export default function TechnicalSEO({ sub }) {
         });
         auditData = summarizeCrawlForAI(crawl);
         dataSource = 'In-house Crawler';
+        pagesWithIssues = crawl.withIssues || 0;
         const scope = crawl.urlsDiscovered > crawl.urlsAttempted
           ? ` (${crawl.urlsDiscovered} found via ${crawl.discoverySource}, capped at ${crawl.urlsAttempted})`
           : crawl.discoverySource ? ` via ${crawl.discoverySource}` : '';
@@ -449,7 +451,11 @@ export default function TechnicalSEO({ sub }) {
         setMsg(
           repeatsSkipped > 0
             ? `No NEW issues for ${c.name} — every fix ${dataSource} surfaced has already been done (${repeatsSkipped} repeat${repeatsSkipped === 1 ? '' : 's'} skipped).`
-            : `No issues found for ${c.name} — site looks clean from ${dataSource} data.`
+            : pagesWithIssues > 0
+              // The crawler DID flag pages, so "site looks clean" would be
+              // wrong — say what actually happened.
+              ? `No tasks created for ${c.name}: the crawler flagged ${pagesWithIssues} page${pagesWithIssues === 1 ? '' : 's'} with issues, but the AI judged none worth a task this run. Run the scan again to retry.`
+              : `No issues found for ${c.name} — site looks clean from ${dataSource} data.`
         );
         setBusy(false);
         return;
@@ -475,6 +481,12 @@ export default function TechnicalSEO({ sub }) {
       // for — Claude sometimes returns more than the limit it was given,
       // and an over-long board is the thing that stops fixes shipping.
       const cappedNew = newTasks.slice(0, Math.min(suggestionCount, MAX_TASKS_PER_CLIENT));
+      if (!cappedNew.length) {
+        // Every suggestion was one the team already rejected. Leave the
+        // board as it is instead of wiping it and reporting "Added 0 tasks".
+        setMsg(`No new tasks for ${c.name} — all ${triaged.length} suggestion${triaged.length === 1 ? ' was' : 's were'} previously rejected.`);
+        return;
+      }
       setTasks(prev => {
         const kept = prev.filter(t =>
           t.client_id !== c.id || (t.status === 'done' || t.status === 'verified')
@@ -538,6 +550,10 @@ export default function TechnicalSEO({ sub }) {
       // and cap at the requested count — same logic as the live-scan path.
       // Prevents task accumulation across re-scans of the same client.
       const cappedNew = newTasks.slice(0, Math.min(suggestionCount, MAX_TASKS_PER_CLIENT));
+      if (!cappedNew.length) {
+        setMsg(`No new tasks for ${c.name} — all ${triaged.length} suggestion${triaged.length === 1 ? ' was' : 's were'} previously rejected.`);
+        return;
+      }
       const nextTasks = (() => {
         const kept = tasks.filter(t =>
           t.client_id !== c.id || (t.status === 'done' || t.status === 'verified')
@@ -661,7 +677,10 @@ export default function TechnicalSEO({ sub }) {
       'credentials-missing': []
     };
     for (const c of techClients) {
-      const status = technicalPipelineStatus(c, techImpls, tasks, currentMonth);
+      // visibleTasks, not tasks: the expanded card lists visibleTasks (rejected
+      // ones filtered out), so counting the raw list made a card read
+      // "2 tasks · 2 open" above "No tasks yet".
+      const status = technicalPipelineStatus(c, techImpls, visibleTasks, currentMonth);
       buckets[status.section]?.push({ client: c, summary: status.summary, detail: status.detail });
     }
     return [
@@ -670,7 +689,7 @@ export default function TechnicalSEO({ sub }) {
       { key: 'not-scanned',        label: 'Not Scanned Yet',        color: 'var(--text-muted)', borderColor: 'var(--border)',      clients: buckets['not-scanned'] },
       { key: 'credentials-missing', label: 'Credentials Missing',   color: 'var(--red)',        borderColor: 'var(--red)',        clients: buckets['credentials-missing'] }
     ];
-  }, [techClients, techImpls, tasks, currentMonth]);
+  }, [techClients, techImpls, visibleTasks, currentMonth]);
 
   const [expandedClient, setExpandedClient] = useState(null);
 

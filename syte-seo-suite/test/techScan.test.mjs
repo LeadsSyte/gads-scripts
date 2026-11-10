@@ -133,5 +133,15 @@ await t('one template problem on many pages becomes one site-wide task (real Kro
   assertEq(mergeSharedFixes(tasks.slice(0, 2)).length, 2, 'two alike are left alone');
 });
 
+await t('an unreadable AI reply fails the triage instead of reading as a clean site', async () => {
+  const { triageAudit } = await import('../src/modules/technical/triage.js');
+  let threw = false;
+  try { await triageAudit('PAGE https://x.example/ — missing title', 'https://x.example', 5, '', { complete: async () => 'Sorry, I could not' }); }
+  catch { threw = true; }
+  if (!threw) throw new Error('unreadable reply was treated as zero issues');
+  const none = await triageAudit('x', 'https://x.example', 5, '', { complete: async () => '{"tasks": []}' });
+  assertEq(none.length, 0, 'a real empty list is still allowed');
+});
+
 console.log(`\ntechScan: ${pass} passed, ${fail} failed`);
 if (fail > 0) process.exit(1);
