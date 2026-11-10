@@ -43,13 +43,16 @@ clients.
 1. **Account.** Use the Syte company Grok Bot account (paid by Mike), not a
    personal one.
 2. **Riley's API key.** Created on 6 Nov 2026 (scopes `read`, `scan`,
-   `fix:plan`, `content`). Give it to Riley only through Grok Bot's secret or
+   `fix:plan`, `content`, plus `queue:review` added on 10 Nov 2026 so it can
+   send a draft back for changes). Give it to Riley only through Grok Bot's secret or
    credential settings, or Riley's secure form. **Never paste it into a chat,
    a bot description or an instruction.** Riley also needs:
    - API address: `https://syte-seo-suite.netlify.app/api/v1`
    - Full reference: `https://syte-seo-suite.netlify.app/api/v1/openapi.json`
-   With these scopes Riley can read everything, start scans, plan fixes and log
-   work. It **cannot** apply a fix to a site, approve a draft or publish.
+   With these scopes Riley can read everything, start scans, plan fixes, log
+   work and send a draft back with "request changes" (the suite then rewrites
+   it and updates the same draft). It **cannot** apply a fix to a site, approve
+   a draft or publish.
    A lost key is revoked from the suite (`POST /api/v1/keys/{id}/revoke`, staff only).
 3. **Create the four bots.** In Grok Bot: **New → Create new Bot → Edit
    Profile**. Name as above; paste that bot's **Standing rules** block below as
@@ -104,7 +107,17 @@ Use the Syte SEO Suite API: base https://syte-seo-suite.netlify.app/api/v1, head
    the room to the Fixer: "Fixer — fix sheet for <client>: <url>" (the signed link opens
    without a login), followed by the "text".
 5. Ask the Reviewer to review this month's drafts, AEO previews and reports for the
-   clients from step 2.
+   clients from step 2. Before that, check each draft yourself: GET /queue?client_id={id}&status=pushed
+   gives the drafts with the suite's own read-back "warnings"; GET /clients/{id} gives
+   the client's "content_rules" and "publishing_profile" (how their articles must look).
+5b. For every draft that is wrong (a Reviewer FLAG, a warning, or a broken client rule),
+   send it back: POST /queue/{queueId}/reject {"reason": "<exactly what to change>"}.
+   The suite rewrites the article against the reason and the client's rules, has the
+   independent checker read it, and updates the SAME draft on the site (still a draft).
+   Check GET /queue?client_id={id} after ~10 minutes: payload.rewrite_status is "done"
+   (fixed, waiting for Chris), "held" (the checker still found problems — goes in
+   needs_chris) or "failed". A draft is rewritten at most twice; after that it needs Chris.
+   Never send back a draft only to change wording you prefer: only real problems.
 6. Clients with "ready" articles but no CMS connection (GET /clients/{id}: neither
    wp_configured nor shopify_configured): hand them to the Paster.
 7. When the others report back, log their work so it shows in the suite:

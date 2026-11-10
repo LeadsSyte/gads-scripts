@@ -76,6 +76,8 @@ export async function authorize(req, { scopes = [], env = process.env, deps } = 
       if (!row) return { ok: false, status: 401, reason: 'Unknown API key.' };
       if (row.revoked_at) return { ok: false, status: 401, reason: 'This API key was revoked.' };
       const have = new Set(row.scopes || []);
+      // queue:approve can always request changes too (queue:review).
+      if (have.has('queue:approve')) have.add('queue:review');
       const missing = scopes.filter(s => !have.has(s) && !have.has('*'));
       if (missing.length) return { ok: false, status: 403, reason: 'This API key lacks the scope: ' + missing.join(', ') + '.' };
       return { ok: true, actor: { kind: 'api_key', id: row.id, name: row.name, scopes: [...have] } };

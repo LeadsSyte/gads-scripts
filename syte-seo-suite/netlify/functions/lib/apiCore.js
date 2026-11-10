@@ -6,8 +6,11 @@
 import crypto from 'node:crypto';
 import { hashApiKey } from './requireAuth.js';
 
-export const SCOPES = ['read', 'scan', 'fix:plan', 'fix:apply', 'content', 'queue:approve', 'publish', 'settings'];
-export const RILEY_SCOPES = ['read', 'scan', 'fix:plan', 'content'];
+// queue:review = send a draft back with "request changes" (it is then
+// rewritten automatically, draftRewrite.js) but never approve. queue:approve
+// includes it (requireAuth.js).
+export const SCOPES = ['read', 'scan', 'fix:plan', 'fix:apply', 'content', 'queue:review', 'queue:approve', 'publish', 'settings'];
+export const RILEY_SCOPES = ['read', 'scan', 'fix:plan', 'content', 'queue:review'];
 export const JOB_STATUSES = ['queued', 'running', 'planning', 'applying', 'undoing', 'done', 'error', 'failed'];
 export const TERMINAL = new Set(['done', 'error', 'failed']);
 

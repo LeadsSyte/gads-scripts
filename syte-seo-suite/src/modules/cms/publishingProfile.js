@@ -79,6 +79,12 @@ export const PROFILE_DEFAULTS = {
   // The text is the reason, shown on CMS → Connections. null = in scope.
   cms_skip_reason: null,
 
+  // When a draft is sent back with "request changes" (by a person through
+  // the API or by a Grok bot), rewrite it against the reason and the client's
+  // rules and update the same draft for review (draftRewrite.js). Drafts
+  // only; approval stays a person's click.
+  rewrite_on_changes: true,
+
   // Autopilot: the server writes this client's articles on the 1st of each
   // month (netlify/functions/autopilot-monthly.js). Off until switched on.
   autopilot_enabled: false,

@@ -123,6 +123,18 @@ await t('queue: Riley cannot approve; staff can; approval tokens never leave; re
   eq((await call('POST', '/queue/q1/unpublish', staff)).status, 501);
 });
 
+await t('queue: Riley can request changes (never approve); an article draft is handed to the rewriter', async () => {
+  const { call, calls, db } = await setup();
+  db.tables.syte_suite_cms_queue.push({ id: 'q2', client_id: 'c1', module: 'content', change_type: 'article', status: 'pushed', page_title: 'VNA', payload: { html: '# VNA\n\nText', wp_id: 5 }, created_at: '2026-11-09T00:00:00Z' });
+  eq((await call('POST', '/queue/q2/approve')).status, 403, 'still cannot approve');
+  const rj = await json(await call('POST', '/queue/q2/reject', { body: { reason: 'Name Krost Shelving in the intro' } }));
+  eq([rj.status, rj.body.status, rj.body.payload.changes_requested_by, rj.body.rewrite], [200, 'changes_requested', 'Riley', 'started']);
+  ok(calls.some(c => c.url.endsWith('/draft-rewrite-background') && c.body.queueId === 'q2'), 'rewrite started');
+  // Not an article (q1) → recorded, not rewritten.
+  const r1 = await json(await call('POST', '/queue/q1/reject', { body: { reason: 'x' } }));
+  ok(/^not started: only articles/.test(r1.body.rewrite), r1.body.rewrite);
+});
+
 await t('keys: staff create (shown once) and list (never the hash); API keys may not manage keys; settings allowlist', async () => {
   const { call, staff } = await setup();
   eq((await call('POST', '/keys', { body: { name: 'x', scopes: ['read'] } })).status, 403);
