@@ -3,6 +3,7 @@ import { supabase } from '../../lib/supabase.js';
 import { proxyAuthHash } from '../cms/proxyAuth.js';
 import { AeoFixControls } from './AeoAutopilotPanel.jsx';
 import { siteConnected } from '../technical/ApplyFixControls.jsx';
+import GrokBotButton from '../../components/GrokBotButton.jsx';
 
 // Preview in the page → Add to the page → Undo for ONE optimisation on the
 // AEO Engine page. Replaces the "Push to CMS" button there, which refused
@@ -48,6 +49,10 @@ export default function AddAeoControls({ client, url, optKey, accent }) {
     <div style={{ width: '100%' }}>
       <AeoFixControls fix={fix} wpConnected={siteConnected(client)} accent={accent} onAction={act} />
       {err && <div style={{ fontSize: 11, color: 'var(--red)', marginTop: 4 }}>{err}</div>}
+      {!busy && fix?.status !== 'applied' && (
+        <GrokBotButton client={client} kind="aeo" url={url} optKey={optKey}
+          primary={!siteConnected(client) || ['manual', 'failed'].includes(fix?.status)} />
+      )}
     </div>
   );
 }

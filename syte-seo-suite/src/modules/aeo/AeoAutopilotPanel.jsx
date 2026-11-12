@@ -4,6 +4,7 @@ import { supabase, updateClientFields } from '../../lib/supabase.js';
 import { proxyAuthHash } from '../cms/proxyAuth.js';
 import { getPublishingProfile } from '../cms/publishingProfile.js';
 import FixSheetButtons from '../../components/FixSheetButtons.jsx';
+import GrokBotButton from '../../components/GrokBotButton.jsx';
 
 // AEO Autopilot: the server picks this month's pages, generates their AEO
 // optimisations (same rules as "Run Optimizations" below), and a second AI
@@ -224,7 +225,7 @@ export default function AeoAutopilotPanel({ accent, onFinished }) {
       <label style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '10px 0 0', cursor: 'pointer', width: 'fit-content' }}>
         <input type="checkbox" checked={!!profile.aeoscan_enabled} disabled={busy}
           onChange={e => toggle('aeoscan_enabled', e.target.checked)} style={{ width: 'auto', margin: 0 }} />
-        Run automatically on the 3rd of every month
+        Run automatically on the 1st of every month
       </label>
       <label style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '10px 0 0', cursor: 'pointer', width: 'fit-content' }}>
         <input type="checkbox" checked={!!profile.aeofix_auto} disabled={busy || !wpConnected}
@@ -292,6 +293,10 @@ export default function AeoAutopilotPanel({ accent, onFinished }) {
                         {!active && x.o.check?.verdict === 'confirmed' && (x.o.type === 'content' || x.o.type === 'schema') && (
                           <AeoFixControls fix={fixes[x.url + '|' + optKeyOf(x.o)]} wpConnected={wpConnected} accent={accent}
                             onAction={a => fixAction(x.url, optKeyOf(x.o), a)} />
+                        )}
+                        {!active && x.o.check?.verdict === 'confirmed' && fixes[x.url + '|' + optKeyOf(x.o)]?.status !== 'applied' && !['planning', 'applying', 'undoing'].includes(fixes[x.url + '|' + optKeyOf(x.o)]?.status) && (
+                          <GrokBotButton client={client} kind="aeo" url={x.url} optKey={optKeyOf(x.o)}
+                            primary={!wpConnected || ['manual', 'failed'].includes(fixes[x.url + '|' + optKeyOf(x.o)]?.status) || !(x.o.type === 'content' || x.o.type === 'schema')} />
                         )}
                       </td>
                     </tr>

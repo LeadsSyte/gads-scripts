@@ -10,8 +10,8 @@ suite, so its work is scoped, logged and repeatable.
 | Day | The suite does this by itself |
 |---|---|
 | 1st | Writes each client's articles; pushes the ones that pass as **drafts** |
-| 2nd | Technical SEO scan; checked fixes go on the task board |
-| 3rd | AEO optimisations; checked ones go into the AEO Engine |
+| 1st | Technical SEO scan; checked fixes go on the task board |
+| 1st | AEO optimisations; checked ones go into the AEO Engine |
 | 5th | Builds last month's SEO report and checks every figure |
 | 6th | AEO report (clients with AEO reports switched on) |
 
@@ -171,6 +171,40 @@ Never: edit or remove anything not named in the sheet; change themes, plugins or
 beyond the exact item; publish a draft or unpublish a page; run more than one client's
 sheet at a time. If an item needs a paid plugin, a developer or access you don't have,
 SKIP it and say so.
+```
+
+### Fixer: the job queue ("Send to Grok bot")
+
+On every technical fix and AEO addition the suite has a **Send to Grok bot**
+button (for work the suite cannot apply itself, or any item the team wants the
+bot to do). Each click is one **job**. The Fixer works the queue with its own
+API key (scopes `read`, `grok:work`; kept in its credentials, never in chat),
+on a routine (every hour on weekdays, or as often as Grok Bot allows):
+
+```
+Work the Syte job queue. API base https://syte-seo-suite.netlify.app/api/v1, header
+"Authorization: Bearer <your key>", and an "Idempotency-Key: <unique id>" header on every POST.
+
+1. GET /grok-jobs?status=queued  — the jobs waiting, oldest first. None: stop, say nothing.
+2. For each job, one at a time:
+   a. POST /grok-jobs/{job_id}/claim. If it answers 409, another run has it: skip it.
+   b. Read the job's "brief": the page, what is wrong, where to change it, the exact change,
+      the check, and the rules. Follow it exactly.
+   c. Log in to that client's site with the saved login. No login, or it fails: do not try
+      another way in. Report result "skipped" with what you saw.
+   d. BEFORE changing anything, copy the current value you are about to change. Then make the
+      change, save, clear the site cache if there is a button, and do the "Check" step.
+      If the check fails, put the page back as it was and report "failed".
+   e. POST /grok-jobs/{job_id}/complete
+      {"result": "done" | "failed" | "skipped", "note": "<one or two lines>",
+       "changes": [{"url": "<page>", "what": "<what you changed>", "before": "<value before>", "after": "<value now>"}]}
+      "done" must list every change with before and after: that is what makes Undo possible.
+3. A job whose title starts "Undo:" puts an earlier change back: set each value to the
+   "Put back" text in the brief, check, and report the same way.
+
+The suite emails the reviewer what changed after every job; you do not email anyone.
+Never: change anything the brief does not name; touch themes, plugins or settings beyond
+the item; publish, unpublish or delete anything; work on a client on the standing skip list.
 ```
 
 ## 3. Reviewer

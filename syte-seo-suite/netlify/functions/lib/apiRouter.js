@@ -14,6 +14,8 @@ import { refreshJob, refreshOpenJobs } from './jobStatus.js';
 import { buildOpenApi } from './openapi.js';
 import { signedUrl } from './previewSig.js';
 import { rewriteBlockReason } from './draftRewrite.js';
+import crypto from 'node:crypto';
+import { JOB_PREFIX, OPEN, jobRowId, refKey, techItem, aeoItem, newJob, renderJobBrief, normalizeReport, undoItem, jobDoneEmail, nextJobs, isStaleClaim } from './grokJobs.js';
 import { getPublishingProfile } from '../../../src/modules/cms/publishingProfile.js';
 import { buildFixSheet, renderFixSheetText } from '../../../src/modules/technical/fixSheet.js';
 
@@ -52,6 +54,13 @@ export const ROUTES = [
   r('POST', '/clients/:id/tech-fixes', fixScope, 'fixes', techFix, { summary: 'Plan, apply or undo one technical task (techfix-background). apply/undo need fix:apply.', body: obj({ taskId: { type: 'string' }, action: { type: 'string', enum: FIX_ACTIONS } }, ['taskId', 'action']), returns: '202 { jobId }' }),
   r('POST', '/clients/:id/autopilot', 'content', 'writes', startAutopilot, { summary: "Run this month's content Autopilot, push the finished plan (mode: push), or write 1-3 more articles on top of a month that already ran (extra). Articles reach the site as drafts only.", body: obj({ mode: { type: 'string', enum: ['run', 'push'], default: 'run' }, restart: { type: 'boolean', default: false }, extra: { type: 'integer', minimum: 1, maximum: 3 } }), returns: '202 { jobId }' }),
   r('GET', '/clients/:id/autopilot', 'read', 'reads', settingsState('autopilot:'), { summary: "This month's Autopilot run state." }),
+  r('POST', '/clients/:id/grok-jobs', 'content', 'writes', createGrokJob, { summary: "Send one technical fix or AEO addition to the Grok bot to do on the client's site by logging in (for work the suite cannot apply itself). Body: {kind:'tech', taskId} or {kind:'aeo', url, optKey}. An open job for the same item is returned instead of a second one.", body: obj({ kind: { type: 'string', enum: ['tech', 'aeo'] }, taskId: { type: 'string' }, url: { type: 'string' }, optKey: { type: 'string' } }, ['kind']) }),
+  r('GET', '/clients/:id/grok-jobs', 'read', 'reads', listGrokJobs, { summary: "This client's Grok bot jobs, newest first.", query: ['status'] }),
+  r('GET', '/grok-jobs', 'read', 'reads', listGrokJobs, { summary: 'Grok bot jobs across clients. ?status=queued is the work waiting for the bot, oldest first, each with its full `brief`.', query: ['status', 'client_id'] }),
+  r('GET', '/grok-jobs/:id', 'read', 'reads', getGrokJob, { summary: 'One Grok bot job with its `brief` (what to change, where, how to check, what to report).' }),
+  r('POST', '/grok-jobs/:id/claim', 'grok:work', 'writes', claimGrokJob, { summary: 'The bot takes a queued job before starting it, so no other bot does the same work.' }),
+  r('POST', '/grok-jobs/:id/complete', 'grok:work', 'writes', completeGrokJob, { summary: "The bot's report when it has finished: result done | failed | skipped, a note, and for done the list of changes with the value before and after (needed for undo). The suite emails the reviewer what changed and logs it as external work.", body: obj({ result: { type: 'string', enum: ['done', 'failed', 'skipped'] }, note: { type: 'string' }, changes: { type: 'array', items: obj({ url: { type: 'string' }, what: { type: 'string' }, before: { type: 'string' }, after: { type: 'string' } }, ['what']) } }, ['result']) }),
+  r('POST', '/grok-jobs/:id/undo', 'content', 'writes', undoGrokJob, { summary: 'Queue a job that puts back the "before" values of a finished job.' }),
   r('GET', '/clients/:id/blueprint', 'read', 'reads', getBlueprint, { summary: "The client's article blueprint (how their own published articles are written: structure, headings, tone, recurring elements) and the state of the last learn. New articles and rewrites follow it; check drafts against it." }),
   r('POST', '/clients/:id/blueprint', 'content', 'writes', learnBlueprintRoute, { summary: "Learn (or re-learn) the blueprint from the articles published on the client's own blog (blueprint-learn-background; read-only on the site). A blueprint the team edited is kept unless force is true. Poll GET /clients/{id}/blueprint until learn.status is done, skipped, not_enough or failed.", body: obj({ force: { type: 'boolean' } }, []) }),
   r('GET', '/clients/:id/fix-sheet', 'read', 'reads', fixSheet, { summary: "The client's fix sheet: technical and AEO work the suite can't apply itself, as items, plain text, and a signed link a person or computer-use bot can open without a login." }),
@@ -252,6 +261,100 @@ async function techFix(ctx) {
   const taskId = requireString(ctx.body, 'taskId', { maxLen: 100 }), action = fixAction(ctx.body);
   return startBackground(ctx, { type: 'tech_fix', body: { taskId, action, by: 'api:' + (ctx.actor.name || ctx.actor.kind) }, target: taskId });
 }
+// ── Grok bot jobs (lib/grokJobs.js) ────────────────────────────────────────
+const grokRows = async (ctx, pattern) => ctx.db.many('syte_suite_settings', {}, { like: { id: pattern }, order: 'id', limit: 2000 });
+const withBrief = j => ({ ...j, brief: renderJobBrief(j) });
+async function grokJobOr404(ctx) {
+  const id = String(ctx.params.id || '').replace(/[^a-zA-Z0-9-]/g, '');
+  const rows = id ? await grokRows(ctx, JOB_PREFIX + '%:' + id) : [];
+  if (!rows.length) throw new ApiError(404, 'No Grok bot job with that id.');
+  return rows[0];
+}
+const saveGrokJob = async (ctx, rowId, job) => { await ctx.db.update('syte_suite_settings', { id: rowId }, { data: job, updated_at: new Date(ctx.now()).toISOString() }); return job; };
+async function queueGrokJob(ctx, client, { kind, ref, item }) {
+  const open = (await grokRows(ctx, JOB_PREFIX + client.id + ':%')).map(r => r.data).find(j => OPEN.includes(j.status) && refKey(j.ref) === refKey(ref));
+  if (open) return { status: 200, body: { ...withBrief(open), existing: true } };
+  const at = new Date(ctx.now()).toISOString();
+  const job = newJob({ jobId: crypto.randomUUID(), client, kind, ref, item, by: ctx.actor.name || ctx.actor.email || (ctx.actor.kind === 'legacy' ? 'the suite' : ctx.actor.kind), now: at });
+  await ctx.db.insert('syte_suite_settings', { id: jobRowId(client.id, job.job_id), data: job, updated_at: at });
+  return { status: 201, body: withBrief(job) };
+}
+async function createGrokJob(ctx) {
+  const client = await clientOr404(ctx);
+  const kind = ctx.body.kind;
+  if (kind === 'tech') {
+    const taskId = requireString(ctx.body, 'taskId', { maxLen: 100 });
+    const task = await ctx.db.one('syte_suite_tseo_tasks', { id: taskId, client_id: client.id });
+    const fix = (await ctx.db.one('syte_suite_settings', { id: 'techfix:' + client.id + ':' + taskId }))?.data;
+    const { item, refuse } = techItem(client, task, fix);
+    if (refuse) throw new ApiError(task ? 409 : 404, refuse);
+    return queueGrokJob(ctx, client, { kind, ref: { task_id: taskId }, item });
+  }
+  if (kind === 'aeo') {
+    const url = requireString(ctx.body, 'url', { maxLen: 1000 }), optKey = requireString(ctx.body, 'optKey', { maxLen: 500 });
+    const row = (await ctx.db.many('syte_suite_aeo_results', { client_id: client.id, url }, { order: 'generated_at', limit: 1 }))[0];
+    const fix = (await grokRows(ctx, 'aeofix:' + client.id + ':%')).map(r => r.data).find(f => f?.url === url && f?.opt_key === optKey);
+    const { item, refuse } = aeoItem(client, row, optKey, fix);
+    if (refuse) throw new ApiError(row ? 409 : 404, refuse);
+    return queueGrokJob(ctx, client, { kind, ref: { url, opt_key: optKey }, item });
+  }
+  throw bad('`kind` must be tech or aeo.');
+}
+async function listGrokJobs(ctx) {
+  const clientId = ctx.params.id ? (await clientOr404(ctx)).id : (ctx.query.get('client_id') || '').replace(/[^a-zA-Z0-9-]/g, '');
+  const rows = await grokRows(ctx, JOB_PREFIX + (clientId || '%') + ':%');
+  // A job the bot claimed and never finished goes back in the queue.
+  for (const r of rows) if (isStaleClaim(r.data, ctx.now())) r.data = await saveGrokJob(ctx, r.id, { ...r.data, status: 'queued', claimed_by: null, claimed_at: null, note: 'Put back in the queue: the bot took it and did not report back.' });
+  const status = ctx.query.get('status');
+  let jobs = rows.map(r => r.data).filter(j => j && (!status || j.status === status));
+  jobs = status === 'queued' ? nextJobs(jobs, lim(ctx.query, 5, 20)) : jobs.sort((a, b) => String(b.requested_at).localeCompare(String(a.requested_at))).slice(0, lim(ctx.query, 100, 500));
+  return jobs.map(withBrief);
+}
+async function getGrokJob(ctx) { return withBrief((await grokJobOr404(ctx)).data); }
+async function claimGrokJob(ctx) {
+  const row = await grokJobOr404(ctx);
+  if (row.data.status !== 'queued') throw new ApiError(409, 'This job is ' + row.data.status + ', not waiting in the queue.');
+  return withBrief(await saveGrokJob(ctx, row.id, { ...row.data, status: 'claimed', claimed_by: ctx.actor.name || ctx.actor.email || ctx.actor.kind, claimed_at: new Date(ctx.now()).toISOString(), note: '' }));
+}
+async function completeGrokJob(ctx) {
+  const row = await grokJobOr404(ctx);
+  if (!OPEN.includes(row.data.status)) throw new ApiError(409, 'This job is already ' + row.data.status + '.');
+  let report;
+  try { report = normalizeReport(ctx.body); } catch (e) { throw bad(e.message); }
+  const at = new Date(ctx.now()).toISOString();
+  const job = { ...row.data, ...report, status: report.result, finished_at: at, claimed_by: row.data.claimed_by || ctx.actor.name || ctx.actor.kind };
+  const cfg = (await ctx.db.one('syte_suite_settings', { id: 'autopilot-config' }))?.data || {};
+  const to = String(cfg.report_email || '').split(/[,;\s]+/).map(x => x.trim()).filter(x => /@/.test(x));
+  if (!to.length) job.email_error = 'No report email is set (Settings → Autopilot report email).';
+  else {
+    try {
+      const send = ctx.mailer || (await import('./sendMail.js')).sendMail;
+      await send({ to, ...jobDoneEmail(job, ctx.base) });
+      job.emailed_to = to;
+    } catch (e) { job.email_error = 'Email failed: ' + String(e?.message || e).slice(0, 200); }
+  }
+  await saveGrokJob(ctx, row.id, job);
+  if (job.result === 'done') {
+    // Shows in the suite's work log like any other outside work.
+    try { await ctx.db.insert('syte_suite_external_work', { client_id: job.client_id, client_name: job.client_name, tool: 'Grok bot', category: job.kind === 'undo' ? 'Undo' : 'Fix', description: (job.kind === 'undo' ? '' : 'Done on the site: ') + job.title + (job.note ? ' — ' + job.note : ''), work_url: job.page_url || null, done_by: job.claimed_by }); } catch { /* the job itself is the record */ }
+    if (job.kind === 'undo' && job.ref?.undo_of) {
+      const orig = (await grokRows(ctx, JOB_PREFIX + '%:' + job.ref.undo_of))[0];
+      if (orig) await saveGrokJob(ctx, orig.id, { ...orig.data, undone_at: at });
+    }
+  }
+  return withBrief(job);
+}
+async function undoGrokJob(ctx) {
+  const row = await grokJobOr404(ctx);
+  const { item, refuse } = undoItem(row.data);
+  if (refuse) throw new ApiError(409, refuse);
+  const client = await ctx.db.one('syte_suite_clients', { id: row.data.client_id });
+  if (!client) throw new ApiError(404, 'The client for this job no longer exists.');
+  const out = await queueGrokJob(ctx, client, { kind: 'undo', ref: { undo_of: row.data.job_id }, item });
+  await saveGrokJob(ctx, row.id, { ...row.data, undone_by: out.body.job_id });
+  return out;
+}
+
 // ── article blueprint (lib/articleBlueprint.js) ────────────────────────────
 async function getBlueprint(ctx) {
   const client = await clientOr404(ctx);

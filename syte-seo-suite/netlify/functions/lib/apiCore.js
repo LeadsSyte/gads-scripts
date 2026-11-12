@@ -9,7 +9,9 @@ import { hashApiKey } from './requireAuth.js';
 // queue:review = send a draft back with "request changes" (it is then
 // rewritten automatically, draftRewrite.js) but never approve. queue:approve
 // includes it (requireAuth.js).
-export const SCOPES = ['read', 'scan', 'fix:plan', 'fix:apply', 'content', 'queue:review', 'queue:approve', 'publish', 'settings'];
+// grok:work = take and report Grok bot jobs (the Fixer bot; grokJobs.js).
+export const SCOPES = ['read', 'scan', 'fix:plan', 'fix:apply', 'content', 'queue:review', 'queue:approve', 'grok:work', 'publish', 'settings'];
+export const FIXER_SCOPES = ['read', 'grok:work'];
 export const RILEY_SCOPES = ['read', 'scan', 'fix:plan', 'content', 'queue:review'];
 export const JOB_STATUSES = ['queued', 'running', 'planning', 'applying', 'undoing', 'done', 'error', 'failed'];
 export const TERMINAL = new Set(['done', 'error', 'failed']);

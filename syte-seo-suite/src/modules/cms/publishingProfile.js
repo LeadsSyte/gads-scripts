@@ -104,7 +104,7 @@ export const PROFILE_DEFAULTS = {
   // (within 15 minutes) and the team is told afterwards. Needs autopilot_push.
   autopilot_publish: false,
 
-  // Tech Autopilot: scan the site on the 2nd of each month, write the fix
+  // Tech Autopilot: scan the site on the 1st of each month, write the fix
   // list, have it independently checked, and refresh the Technical SEO task
   // board (netlify/functions/techscan-monthly.js). Off until switched on.
   techscan_enabled: false,
@@ -115,7 +115,7 @@ export const PROFILE_DEFAULTS = {
   techfix_auto: false,
 
   // AEO Autopilot: generate and independently check this month's AEO
-  // optimisations on the 3rd (netlify/functions/aeoscan-monthly.js).
+  // optimisations on the 1st (netlify/functions/aeoscan-monthly.js).
   aeoscan_enabled: false,
 
   // AEO Autopilot: add the checked sections to the client's pages at the
