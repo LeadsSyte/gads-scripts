@@ -135,6 +135,27 @@ await t('topics already written this month are skipped', async () => {
   assertEq(calls.saved.length, 2);
 });
 
+await t('extra articles are added to a finished month without rewriting what is there', async () => {
+  const { deps, calls } = fakeDeps();
+  const state = newRunState(CLIENT);
+  await runAutopilotStep(CLIENT, state, deps);
+  const before = calls.saved.length, planBefore = state.plan.length;
+  assertEq(state.status, 'done');
+  // the planner now proposes the old topics plus two new ones
+  const NEW = [{ topic_title: 'Dust Mite Allergy at Home', primary_keyword: 'dust mite allergy', priority: 1, recommended_length: 900 }, { topic_title: 'Pet Allergies Explained', primary_keyword: 'pet allergy', priority: 2, recommended_length: 900 }];
+  const inner = deps.complete;
+  deps.complete = async (opts) => {
+    if (/TARGET_ARTICLES/.test(opts.messages[0].content)) return JSON.stringify({ ...PLAN, opportunities: [...PLAN.opportunities, ...NEW] });
+    const hit = NEW.find(o => opts.messages[0].content.includes(o.topic_title));
+    return hit ? article(hit.topic_title) : inner(opts);
+  };
+  state.extra_pending = 1; state.status = 'writing'; state.finished_at = null;
+  await runAutopilotStep(CLIENT, state, deps);
+  assertEq([state.plan.length, calls.saved.length, state.status, state.extra_pending].join(','), [planBefore + 1, before + 1, 'done', 0].join(','));
+  assertEq(state.plan[planBefore].topic_title, 'Dust Mite Allergy at Home');
+  assertEq(calls.saved[before].topic, 'Dust Mite Allergy at Home');
+});
+
 await t('a client with no website scan is scanned first, and the scan is what the writer and reviewer see', async () => {
   const unscanned = { ...CLIENT, brand_docs: '', audience: '' };
   const { deps, calls } = fakeDeps();
