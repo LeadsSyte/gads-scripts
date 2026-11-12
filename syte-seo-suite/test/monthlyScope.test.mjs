@@ -47,10 +47,12 @@ t('client override replaces the standard scope', () => {
 t('microsite renders the section in both report types, escaped', () => {
   const client = { name: 'Acme', monthly_scope_seo: 'Fix <b>: done', monthly_scope_aeo: 'Census: 220 prompts' };
   const seo = buildMicrositeHtml({ micro: MICRO, client, monthLabel: 'October 2026', seoOnly: true });
-  ok(seo.includes('What We Do For You Every Month') && seo.includes('Fix &lt;b&gt;'), 'seo section escaped');
-  ok(seo.includes('Your SEO programme'), 'seo label');
+  ok(seo.includes('What We Changed This Month') && seo.includes('Fix &lt;b&gt;'), 'seo section escaped');
+  ok(seo.includes('The changes we made for you in October 2026'), 'changes intro');
+  const std = buildMicrositeHtml({ micro: MICRO, client: { name: 'Acme' }, monthLabel: 'October 2026', seoOnly: true });
+  ok(std.includes('What We Do For You Every Month') && std.includes('Your SEO programme'), 'standard scope title');
   const aeo = buildMicrositeHtml({ micro: MICRO, client, monthLabel: 'October 2026', aeoOnly: true });
-  ok(aeo.includes('Census') && aeo.includes('Your AEO programme') && !aeo.includes('Fix &lt;b&gt;'), 'aeo uses aeo list');
+  ok(aeo.includes('Census') && aeo.includes('What We Changed This Month') && !aeo.includes('Fix &lt;b&gt;'), 'aeo uses aeo list');
 });
 
 console.log(`\n${pass} passed, ${fail} failed`);

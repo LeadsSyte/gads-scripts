@@ -654,7 +654,7 @@ export default function ClientModal({ initial, onClose }) {
                 <label style={{ margin: 0 }}>
                   Monthly scope: {name}{' '}
                   <span className="muted" style={{ textTransform: 'none', letterSpacing: 0, fontSize: 11 }}>
-                    (the "What we do for you every month" section; one item per line, "Title: description"; leave empty for the standard scope)
+                    (this month's actual changes, shown as "What we changed this month"; one item per line, "Title: description"; leave empty to show the standard monthly scope)
                   </span>
                 </label>
                 <button

@@ -2,7 +2,7 @@
 // monthly report microsite. No external JS, only Google Fonts via CDN.
 
 import { stripDashes } from './sanitize.js';
-import { monthlyScopeFor } from './monthlyScope.js';
+import { monthlyScopeFor, hasCustomScope } from './monthlyScope.js';
 
 function esc(s = '') {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -205,7 +205,9 @@ export function buildMicrositeHtml({ micro, client, monthLabel, previousMonthLab
   const work = micro?.workDone || {};
   const showWork = !!work.show && (work.items || []).length > 0 && !aeoOnly;
   // Standing monthly scope of work for this report's service (monthlyScope.js).
-  const scope = monthlyScopeFor(client, aeoOnly ? 'aeo' : 'seo', aeoOnly ? aeoProbe : null);
+  const scopeKind = aeoOnly ? 'aeo' : 'seo';
+  const scope = monthlyScopeFor(client, scopeKind, aeoOnly ? aeoProbe : null);
+  const scopeIsChanges = hasCustomScope(client, scopeKind);
   const rd = aeoOnly ? {} : (reportData || {});
   const traffic = rd.traffic || {};
   const isEcom = rd.clientType === 'ecommerce';
@@ -473,8 +475,10 @@ export function buildMicrositeHtml({ micro, client, monthLabel, previousMonthLab
 
     ${scope.length ? `
     <section>
-      <h2>What We Do For You Every Month</h2>
-      <p style="color:var(--muted);font-size:13px;">Your ${aeoOnly ? 'AEO' : 'SEO'} programme with Syte: the work that runs every month.</p>
+      <h2>${scopeIsChanges ? 'What We Changed This Month' : 'What We Do For You Every Month'}</h2>
+      <p style="color:var(--muted);font-size:13px;">${scopeIsChanges
+        ? `The changes we made for you in ${esc(monthLabel)}.`
+        : `Your ${aeoOnly ? 'AEO' : 'SEO'} programme with Syte: the work that runs every month.`}</p>
       <div class="work-grid">
         ${scope.map(it => `
           <div class="work-card">

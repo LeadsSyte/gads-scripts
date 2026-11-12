@@ -103,6 +103,12 @@ export function scopeField(kind) {
 
 // The items the report shows: the client's own list when set, otherwise the
 // standard scope.
+// A typed-in list is the month's actual changes; the standard list is the
+// standing scope. The report titles the section accordingly.
+export function hasCustomScope(client, kind) {
+  return parseScope(client?.[scopeField(kind)]).length > 0;
+}
+
 export function monthlyScopeFor(client, kind, probe = null) {
   const custom = parseScope(client?.[scopeField(kind)]);
   return custom.length ? custom : defaultScope(client, kind, probe);
