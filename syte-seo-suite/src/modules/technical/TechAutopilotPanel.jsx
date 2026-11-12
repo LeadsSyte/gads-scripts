@@ -4,6 +4,7 @@ import { supabase, updateClientFields } from '../../lib/supabase.js';
 import { proxyAuthHash } from '../cms/proxyAuth.js';
 import { getPublishingProfile } from '../cms/publishingProfile.js';
 import FixSheetButtons from '../../components/FixSheetButtons.jsx';
+import GrokBotButton from '../../components/GrokBotButton.jsx';
 
 // Tech Autopilot: the server crawls the selected client's site, writes the
 // fix list, and has a second AI check every fix against the live page.
@@ -241,7 +242,7 @@ export default function TechAutopilotPanel({ accent, onFinished }) {
       <label style={CHECKBOX_LABEL}>
         <input type="checkbox" checked={!!profile.techscan_enabled} disabled={busy}
           onChange={e => toggle('techscan_enabled', e.target.checked)} style={{ width: 'auto', margin: 0 }} />
-        Scan automatically on the 2nd of every month
+        Scan automatically on the 1st of every month
       </label>
       <label style={CHECKBOX_LABEL}>
         <input type="checkbox" checked={!!profile.techfix_auto} disabled={busy || !wpConnected}
@@ -305,6 +306,10 @@ export default function TechAutopilotPanel({ accent, onFinished }) {
                           <FixControls entry={e} wpConnected={wpConnected} accent={accent}
                             onPlan={() => fixAction(e.task.id, 'plan')} onApply={() => fixAction(e.task.id, 'apply')}
                             onUndo={() => fixAction(e.task.id, 'undo')} />
+                        )}
+                        {!active && e.check?.verdict === 'confirmed' && e.apply?.status !== 'applied' && !['planning', 'applying', 'undoing'].includes(e.apply?.status) && (
+                          <GrokBotButton client={client} kind="tech" taskId={e.task.id}
+                            primary={!wpConnected || ['manual', 'failed'].includes(e.apply?.status) || !(AUTO_FIX.includes(e.task.fix_type) || HELPER_FIX.includes(e.task.fix_type))} />
                         )}
                       </td>
                     </tr>

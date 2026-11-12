@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { supabase } from '../../lib/supabase.js';
 import { proxyAuthHash } from '../cms/proxyAuth.js';
 import { FixControls } from './TechAutopilotPanel.jsx';
+import GrokBotButton from '../../components/GrokBotButton.jsx';
 
 // Preview → Apply on the site → Undo for ONE task on the Technical SEO board.
 //
@@ -56,6 +57,11 @@ export default function ApplyFixControls({ task, client, accent }) {
       <FixControls entry={{ task, apply: fix }} wpConnected={siteConnected(client)} accent={accent}
         onPlan={() => act('plan')} onApply={() => act('apply')} onUndo={() => act('undo')} />
       {err && <div style={{ fontSize: 11, color: 'var(--red)', marginTop: 4 }}>{err}</div>}
+      {/* What the suite can't (or didn't) apply can go to the Grok bot. */}
+      {!busy && fix?.status !== 'applied' && (
+        <GrokBotButton client={client} kind="tech" taskId={task.id}
+          primary={!siteConnected(client) || ['manual', 'failed'].includes(fix?.status)} />
+      )}
     </div>
   );
 }

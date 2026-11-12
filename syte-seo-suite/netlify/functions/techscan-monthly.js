@@ -1,13 +1,13 @@
-// Starts the Tech Autopilot on the 2nd of every month (a day after the
-// content run) for every client whose publishing profile has
+// Starts the Tech Autopilot on the 1st of every month (Chris, 12 Nov 2026:
+// content, technical and AEO all run on the 1st; the 2nd is a catch-up day) for every client whose publishing profile has
 // techscan_enabled: true — off for every client by default. Staggered like
-// autopilot-monthly: hourly on the 2nd, at most BATCH clients per pass.
+// autopilot-monthly: hourly on the 1st, at most BATCH clients per pass.
 
 import { getServerSupabase } from './lib/serverSupabase.js';
 import { clientsToStart, BATCH } from './autopilot-monthly.js';
 import { TECH_STATE_PREFIX } from './lib/techScan.js';
 
-export const config = { schedule: '30 6-21 2 * *' };
+export const config = { schedule: '30 6-21 1-2 * *' };
 
 export default async function handler() {
   const auth = process.env.WP_PROXY_AUTH;

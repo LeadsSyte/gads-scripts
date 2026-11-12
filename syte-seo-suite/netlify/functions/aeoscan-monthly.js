@@ -1,12 +1,12 @@
-// Starts the AEO Autopilot on the 3rd of every month for every client whose
+// Starts the AEO Autopilot on the 1st of every month (the 2nd is a catch-up day) for every client whose
 // publishing profile has aeoscan_enabled: true — off by default. Staggered
-// like autopilot-monthly: hourly on the 3rd, at most BATCH clients per pass.
+// like autopilot-monthly: hourly on the 1st, at most BATCH clients per pass.
 
 import { getServerSupabase } from './lib/serverSupabase.js';
 import { clientsToStart, BATCH } from './autopilot-monthly.js';
 import { AEO_STATE_PREFIX } from './lib/aeoScan.js';
 
-export const config = { schedule: '15 6-21 3 * *' };
+export const config = { schedule: '15 6-21 1-2 * *' };
 
 export default async function handler() {
   const auth = process.env.WP_PROXY_AUTH;
