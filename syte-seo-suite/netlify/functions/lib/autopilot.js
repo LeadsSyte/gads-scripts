@@ -203,6 +203,36 @@ export async function runAutopilotStep(clientIn, state, deps) {
     await save();
   }
 
+  // 1b. Extra articles on top of a month that already ran (state.extra_pending,
+  //     set by the run function for { extra: N }). New topics are planned
+  //     and added to the end of the plan; what is already written is kept.
+  if (state.plan && state.extra_pending > 0) {
+    const want = Math.min(state.extra_pending, 3);
+    state.extra_pending = 0;
+    state.status = 'researching';
+    log(state, 'Planning ' + want + ' extra article' + (want === 1 ? '' : 's'), now());
+    await save();
+    let research;
+    try {
+      const { queries, pageQueries } = await deps.fetchGsc(client);
+      research = summarizeResearch(queries, pageQueries, 90);
+    } catch {
+      research = emptyResearch(90);
+    }
+    const key = s => String(s || '').trim().toLowerCase();
+    const have = new Set([...state.plan.map(o => key(o.topic_title)), ...(await deps.existingTopics(client, state.month))]);
+    const haveKeywords = new Set(state.plan.map(o => key(o.primary_keyword)).filter(Boolean));
+    const result = await generateTopicRecommendations(client, research, { targetArticles: state.plan.length + want + 2, complete: deps.complete });
+    const fresh = (result.opportunities || []).slice().sort((a, b) => (a.priority || 99) - (b.priority || 99))
+      .filter(o => o.topic_title && !have.has(key(o.topic_title)) && !haveKeywords.has(key(o.primary_keyword))).slice(0, want);
+    const slim = slimResearch(research, fresh);
+    state.research = { ...(state.research || slim), pageByQuery: { ...(state.research?.pageByQuery || {}), ...slim.pageByQuery } };
+    state.plan = [...state.plan, ...fresh];
+    state.status = 'writing';
+    log(state, fresh.length ? 'Added ' + fresh.length + ' extra article' + (fresh.length === 1 ? '' : 's') + ' to the plan' : 'No new topic found for an extra article', now());
+    await save();
+  }
+
   // 2. Write + check each article not yet handled.
   const already = await deps.existingTopics(client, state.month);
   for (let idx = 0; idx < state.plan.length; idx++) {

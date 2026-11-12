@@ -1,7 +1,7 @@
 // Autopilot run for ONE client — a Netlify background function (the
 // "-background" suffix gives it ~15 minutes and returns 202 immediately).
 //
-// POST { clientId, restart? }  with header X-Suite-Auth (same gate as wp-proxy)
+// POST { clientId, restart?, extra? (1-3 more articles on a finished month) }  with header X-Suite-Auth (same gate as wp-proxy)
 //
 // Writes this month's articles for the client (see lib/autopilot.js). If it
 // runs short of time it calls itself again and the next run carries on from
@@ -67,6 +67,7 @@ export async function handler(event) {
     return { statusCode: 202 };
   }
   const pushOnly = body.mode === 'push';
+  const extra = Math.max(0, Math.min(Math.floor(Number(body.extra) || 0), 3));
   let state = null;
   try {
     const client = await loadClient(supabase, clientId);
@@ -86,6 +87,11 @@ export async function handler(event) {
       }
     } else if (!state || state.month !== monthKey() || (hop === 0 && (restart || state.status === 'failed'))) {
       state = newRunState(client);
+    } else if (hop === 0 && extra && state.status === 'done' && state.plan) {
+      // { extra: N }: N more articles on top of this month's finished run.
+      state.extra_pending = extra;
+      state.status = 'writing';
+      state.finished_at = null;
     } else if (hop === 0 && state.status === 'done') {
       console.log('[autopilot] already done this month for', client.name);
       return { statusCode: 202 };

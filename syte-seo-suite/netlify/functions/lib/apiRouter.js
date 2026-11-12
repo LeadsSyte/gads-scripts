@@ -50,7 +50,7 @@ export const ROUTES = [
   r('GET', '/clients/:id/tech/rejections', 'read', 'reads', table('syte_suite_tseo_rejections', 'rejected_at'), { summary: 'Technical tasks the team rejected.' }),
   r('POST', '/clients/:id/aeo-fixes', fixScope, 'fixes', aeoFix, { summary: 'Plan, apply or undo one AEO addition (aeofix-background). apply/undo need fix:apply.', body: obj({ url: { type: 'string' }, optKey: { type: 'string', description: 'type::name of the optimisation' }, action: { type: 'string', enum: FIX_ACTIONS } }, ['url', 'optKey', 'action']), returns: '202 { jobId }' }),
   r('POST', '/clients/:id/tech-fixes', fixScope, 'fixes', techFix, { summary: 'Plan, apply or undo one technical task (techfix-background). apply/undo need fix:apply.', body: obj({ taskId: { type: 'string' }, action: { type: 'string', enum: FIX_ACTIONS } }, ['taskId', 'action']), returns: '202 { jobId }' }),
-  r('POST', '/clients/:id/autopilot', 'content', 'writes', startAutopilot, { summary: "Run this month's content Autopilot, or push the finished plan (mode: push).", body: obj({ mode: { type: 'string', enum: ['run', 'push'], default: 'run' }, restart: { type: 'boolean', default: false } }), returns: '202 { jobId }' }),
+  r('POST', '/clients/:id/autopilot', 'content', 'writes', startAutopilot, { summary: "Run this month's content Autopilot, push the finished plan (mode: push), or write 1-3 more articles on top of a month that already ran (extra). Articles reach the site as drafts only.", body: obj({ mode: { type: 'string', enum: ['run', 'push'], default: 'run' }, restart: { type: 'boolean', default: false }, extra: { type: 'integer', minimum: 1, maximum: 3 } }), returns: '202 { jobId }' }),
   r('GET', '/clients/:id/autopilot', 'read', 'reads', settingsState('autopilot:'), { summary: "This month's Autopilot run state." }),
   r('GET', '/clients/:id/blueprint', 'read', 'reads', getBlueprint, { summary: "The client's article blueprint (how their own published articles are written: structure, headings, tone, recurring elements) and the state of the last learn. New articles and rewrites follow it; check drafts against it." }),
   r('POST', '/clients/:id/blueprint', 'content', 'writes', learnBlueprintRoute, { summary: "Learn (or re-learn) the blueprint from the articles published on the client's own blog (blueprint-learn-background; read-only on the site). A blueprint the team edited is kept unless force is true. Poll GET /clients/{id}/blueprint until learn.status is done, skipped, not_enough or failed.", body: obj({ force: { type: 'boolean' } }, []) }),
@@ -271,7 +271,10 @@ async function learnBlueprintRoute(ctx) {
 async function startAutopilot(ctx) {
   const mode = ctx.body.mode || 'run';
   if (!['run', 'push'].includes(mode)) throw bad('`mode` must be run or push.');
-  return startBackground(ctx, { type: 'autopilot', body: mode === 'push' ? { mode: 'push' } : { restart: !!ctx.body.restart }, target: mode });
+  const extra = ctx.body.extra == null ? 0 : Number(ctx.body.extra);
+  if (!Number.isInteger(extra) || extra < 0 || extra > 3) throw bad('`extra` must be a whole number from 1 to 3.');
+  if (extra && mode !== 'run') throw bad('`extra` only goes with mode run.');
+  return startBackground(ctx, { type: 'autopilot', body: mode === 'push' ? { mode: 'push' } : extra ? { extra } : { restart: !!ctx.body.restart }, target: extra ? 'extra' : mode });
 }
 async function startReport(ctx) {
   const type = ctx.body.type || 'seo';
