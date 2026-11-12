@@ -109,7 +109,15 @@ Use the Syte SEO Suite API: base https://syte-seo-suite.netlify.app/api/v1, head
 5. Ask the Reviewer to review this month's drafts, AEO previews and reports for the
    clients from step 2. Before that, check each draft yourself: GET /queue?client_id={id}&status=pushed
    gives the drafts with the suite's own read-back "warnings"; GET /clients/{id} gives
-   the client's "content_rules" and "publishing_profile" (how their articles must look).
+   the client's "content_rules" and "publishing_profile" (how their articles must look);
+   GET /clients/{id}/blueprint gives the client's ARTICLE BLUEPRINT: how the articles on
+   their own blog are written (structure, headings, tone, recurring elements). A draft
+   that clearly breaks the blueprint (e.g. no FAQ where every article has one, wrong
+   person or spelling variant) is a real problem; small differences are not.
+   If a connected client has no blueprint ("blueprint": null and learn.status is none or
+   failed), start one: POST /clients/{id}/blueprint {} and poll GET until learn.status is
+   done / not_enough / failed. Never pass "force": true: a blueprint the team edited is
+   theirs. List clients with no blueprint (not_enough) in needs_chris so he can write one.
 5b. For every draft that is wrong (a Reviewer FLAG, a warning, or a broken client rule),
    send it back: POST /queue/{queueId}/reject {"reason": "<exactly what to change>"}.
    The suite rewrites the article against the reason and the client's rules, has the

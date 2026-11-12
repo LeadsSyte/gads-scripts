@@ -124,6 +124,20 @@ ${contentRules.split('\n').filter(Boolean).map(r => '- ' + r.trim()).join('\n')}
 These rules are non-negotiable. If any other instruction conflicts with them, the rules win. Every article for this client MUST comply.
 `.trim() : '';
 
+  // House blueprint: how this client's own published articles are built
+  // (learned by netlify/functions/lib/articleBlueprint.js, editable on CMS →
+  // Publishing Profile). Form only; rules and the brand reference win.
+  let bp = client?.publishing_profile;
+  if (typeof bp === 'string') { try { bp = JSON.parse(bp); } catch { bp = null; } }
+  const blueprint = String(bp?.article_blueprint?.text || '').trim();
+  const blueprintBlock = blueprint ? `
+HOUSE BLUEPRINT (how this client's own published articles are written — match it for structure, headings, paragraph style, tone and recurring elements):
+"""
+${blueprint.slice(0, 3500)}
+"""
+The blueprint covers form only. It never overrides the client-specific rules, the brand reference, or the output format and sections these instructions require.
+`.trim() : '';
+
   // Manual direction from the client record — if the account manager has
   // set one, every article for this client must honor it literally.
   const manualDirection = (client?.internal_notes || '').trim();
@@ -163,7 +177,7 @@ RANKING-AWARE WRITING RULES:
 - Naturally weave in the related queries above throughout the body so the article captures long-tail variations the brand already has traction for.
 `.trim() : '';
 
-  return [CORE_RULES, brandBlock, brandDocsBlock, rulesBlock, directionBlock, researchBlock, COMPLIANCE_RULES, QA_RULES, extra].filter(Boolean).join('\n\n');
+  return [CORE_RULES, brandBlock, brandDocsBlock, rulesBlock, blueprintBlock, directionBlock, researchBlock, COMPLIANCE_RULES, QA_RULES, extra].filter(Boolean).join('\n\n');
 }
 
 export const TAB_PROMPTS = {

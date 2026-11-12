@@ -52,6 +52,8 @@ export const ROUTES = [
   r('POST', '/clients/:id/tech-fixes', fixScope, 'fixes', techFix, { summary: 'Plan, apply or undo one technical task (techfix-background). apply/undo need fix:apply.', body: obj({ taskId: { type: 'string' }, action: { type: 'string', enum: FIX_ACTIONS } }, ['taskId', 'action']), returns: '202 { jobId }' }),
   r('POST', '/clients/:id/autopilot', 'content', 'writes', startAutopilot, { summary: "Run this month's content Autopilot, or push the finished plan (mode: push).", body: obj({ mode: { type: 'string', enum: ['run', 'push'], default: 'run' }, restart: { type: 'boolean', default: false } }), returns: '202 { jobId }' }),
   r('GET', '/clients/:id/autopilot', 'read', 'reads', settingsState('autopilot:'), { summary: "This month's Autopilot run state." }),
+  r('GET', '/clients/:id/blueprint', 'read', 'reads', getBlueprint, { summary: "The client's article blueprint (how their own published articles are written: structure, headings, tone, recurring elements) and the state of the last learn. New articles and rewrites follow it; check drafts against it." }),
+  r('POST', '/clients/:id/blueprint', 'content', 'writes', learnBlueprintRoute, { summary: "Learn (or re-learn) the blueprint from the articles published on the client's own blog (blueprint-learn-background; read-only on the site). A blueprint the team edited is kept unless force is true. Poll GET /clients/{id}/blueprint until learn.status is done, skipped, not_enough or failed.", body: obj({ force: { type: 'boolean' } }, []) }),
   r('GET', '/clients/:id/fix-sheet', 'read', 'reads', fixSheet, { summary: "The client's fix sheet: technical and AEO work the suite can't apply itself, as items, plain text, and a signed link a person or computer-use bot can open without a login." }),
   r('GET', '/clients/:id/articles', 'read', 'reads', table('syte_suite_content_blogs', 'created_at'), { summary: 'Written articles (content_blogs).' }),
   r('GET', '/clients/:id/implementations', 'read', 'reads', table('syte_suite_implementations', 'created_at'), { summary: 'Logged implementations.' }),
@@ -249,6 +251,22 @@ async function aeoFix(ctx) {
 async function techFix(ctx) {
   const taskId = requireString(ctx.body, 'taskId', { maxLen: 100 }), action = fixAction(ctx.body);
   return startBackground(ctx, { type: 'tech_fix', body: { taskId, action, by: 'api:' + (ctx.actor.name || ctx.actor.kind) }, target: taskId });
+}
+// ── article blueprint (lib/articleBlueprint.js) ────────────────────────────
+async function getBlueprint(ctx) {
+  const client = await clientOr404(ctx);
+  const learn = (await ctx.db.one('syte_suite_settings', { id: 'blueprint:' + client.id }))?.data || { status: 'none' };
+  const { blueprint: _b, ...state } = learn;
+  return { blueprint: getPublishingProfile(client).article_blueprint || null, learn: state };
+}
+async function learnBlueprintRoute(ctx) {
+  const client = await clientOr404(ctx);
+  let res;
+  try {
+    res = await ctx.fetchImpl(ctx.base + '/.netlify/functions/blueprint-learn-background', { method: 'POST', headers: { 'Content-Type': 'application/json', ...internalHeaders(ctx.env) }, body: JSON.stringify({ clientId: client.id, force: ctx.body?.force === true }), signal: AbortSignal.timeout(15000) });
+  } catch (e) { res = { status: 0 }; }
+  if (res.status !== 202) throw new ApiError(502, 'The blueprint function did not accept the request (HTTP ' + res.status + ').');
+  return { status: 202, body: { started: true, poll: '/clients/' + client.id + '/blueprint' } };
 }
 async function startAutopilot(ctx) {
   const mode = ctx.body.mode || 'run';
