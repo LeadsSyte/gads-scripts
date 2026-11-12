@@ -17,6 +17,7 @@ import { openThemePreview } from './previewLink.js';
 import { unpublishItem, canUnpublish } from './unpublish.js';
 import { downloadHelperPlugin, checkHelperPlugin, HELPER_PLUGIN_VERSION } from './helperPlugin.js';
 import ClientCssField from './ClientCssField.jsx';
+import BlueprintField from './BlueprintField.jsx';
 
 const ACCENT = '#4dabff';
 
@@ -669,6 +670,7 @@ export default function CMSPush({ sub, setSub }) {
                       does not render the post title itself.
                     </div>
                     <ClientCssField profile={profile} setP={setP} disabled={busy} />
+                    <BlueprintField client={client} profile={profile} setP={setP} disabled={busy} />
                     <div className="row" style={{ marginTop: 10 }}>
                       <button onClick={() => saveConnector({}, 'Profile saved.', 'profile')} disabled={busy}>Save Profile</button>
                     </div>

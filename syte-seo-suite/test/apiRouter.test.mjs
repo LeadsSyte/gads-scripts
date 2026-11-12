@@ -135,6 +135,19 @@ await t('queue: Riley can request changes (never approve); an article draft is h
   ok(/^not started: only articles/.test(r1.body.rewrite), r1.body.rewrite);
 });
 
+await t('blueprint: Riley can read it and start a learn', async () => {
+  const { call, calls, db } = await setup();
+  const none = await json(await call('GET', '/clients/c1/blueprint'));
+  eq([none.status, none.body.blueprint, none.body.learn.status], [200, null, 'none']);
+  const st = await json(await call('POST', '/clients/c1/blueprint', { body: {} }));
+  eq([st.status, st.body.started], [202, true]);
+  ok(calls.some(c => c.url.endsWith('/blueprint-learn-background') && c.body.clientId === 'c1' && c.body.force === false), 'learn started');
+  db.tables.syte_suite_clients[0].publishing_profile = { article_blueprint: { text: 'STRUCTURE\nIntro, FAQ.' } };
+  db.tables.syte_suite_settings.push({ id: 'blueprint:c1', data: { status: 'done', blueprint: { text: 'dup' }, finished_at: 'x' } });
+  const got = await json(await call('GET', '/clients/c1/blueprint'));
+  eq([got.body.blueprint.text, got.body.learn.status, got.body.learn.blueprint], ['STRUCTURE\nIntro, FAQ.', 'done', undefined]);
+});
+
 await t('keys: staff create (shown once) and list (never the hash); API keys may not manage keys; settings allowlist', async () => {
   const { call, staff } = await setup();
   eq((await call('POST', '/keys', { body: { name: 'x', scopes: ['read'] } })).status, 403);

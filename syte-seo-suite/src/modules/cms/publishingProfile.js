@@ -79,6 +79,12 @@ export const PROFILE_DEFAULTS = {
   // The text is the reason, shown on CMS → Connections. null = in scope.
   cms_skip_reason: null,
 
+  // How this client's own published articles are written, learned from
+  // their blog (articleBlueprint.js) and editable on the CMS page:
+  // { text, sources: [{ title, url }], learned_at, edited_at? }. The writer
+  // follows it for structure and tone. null = none.
+  article_blueprint: null,
+
   // When a draft is sent back with "request changes" (by a person through
   // the API or by a Grok bot), rewrite it against the reason and the client's
   // rules and update the same draft for review (draftRewrite.js). Drafts
