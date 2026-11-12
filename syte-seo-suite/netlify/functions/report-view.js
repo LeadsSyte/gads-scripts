@@ -9,7 +9,7 @@ import crypto from 'node:crypto';
 import { getServerSupabase } from './lib/serverSupabase.js';
 import { previewSig } from './lib/previewSig.js';
 import { buildMicrositeHtml } from '../../src/modules/reports/microsite.js';
-import { monthKeyLabel } from '../../src/modules/reports/reportMonths.js';
+import { monthKeyLabel, shiftMonthKey } from '../../src/modules/reports/reportMonths.js';
 import { compareSnapshots, rankBrandWithCompetitors, normalizeSnapshot } from '../../src/modules/reports/aeoCompare.js';
 import { withoutBrandedPrompts } from '../../src/modules/reports/probeRelevance.js';
 
@@ -38,6 +38,10 @@ export async function handler(event) {
     supabase.from('syte_suite_report_generated_log').select('*').eq('client_id', clientId).eq('month', month).eq('report_type', aeo ? 'aeo' : 'seo').limit(1)
   ]);
   const row = rows?.[0];
+  // "What we changed this month" (changeLog.js) reads the implementation log.
+  const { data: implementations } = await supabase.from('syte_suite_implementations')
+    .select('client_id, module, change_type, page_url, title, implemented_at, verification_status, created_at')
+    .eq('client_id', clientId).gte('implemented_at', shiftMonthKey(month, -6) + '-01');
   if (!client || !row?.microsite_json) return msg(404, 'No report found for this month.');
   let html = row.microsite_html_override;
   if (!html && aeo) {
@@ -51,7 +55,7 @@ export async function handler(event) {
     const aeoProbe = normalizeSnapshot(unbranded(row.aeo_probe || null));
     const previous = prev ? normalizeSnapshot(unbranded({ ...prev.aeo_probe, month: prev.month })) : null;
     html = buildMicrositeHtml({
-      micro: row.microsite_json, client, monthLabel: monthKeyLabel(month), previousMonthLabel: prev ? monthKeyLabel(prev.month) : null,
+      micro: row.microsite_json, client, monthLabel: monthKeyLabel(month), monthKey: month, implementations, previousMonthLabel: prev ? monthKeyLabel(prev.month) : null,
       rankscale: client.rankscale_url, reportData: null, aeoProbe,
       aeoCompare: aeoProbe ? compareSnapshots(aeoProbe, previous) : null,
       aeoRanking: aeoProbe ? rankBrandWithCompetitors(aeoProbe, client.name) : null,
@@ -59,7 +63,7 @@ export async function handler(event) {
     });
   }
   if (!html) html = buildMicrositeHtml({
-    micro: row.microsite_json, client, monthLabel: monthKeyLabel(month), previousMonthLabel: null,
+    micro: row.microsite_json, client, monthLabel: monthKeyLabel(month), monthKey: month, implementations, previousMonthLabel: null,
     rankscale: client.rankscale_url, reportData: row.report_data, aeoProbe: null, aeoCompare: null, aeoRanking: null,
     aeoOnly: false, seoOnly: true
   });

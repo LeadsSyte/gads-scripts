@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useClients } from '../../store/useClients.js';
 import { claudeComplete, extractJSON } from '../../lib/anthropic.js';
 import { previousMonthKey, monthKeyLabel } from './reportMonths.js';
-import { listAeoSnapshots, logReportSent, logReportGenerated, getGeneratedReport, getCachedReportData, setCachedReportData, persistAeoRuns, saveAeoSnapshot, latestEarlierAeoProbe } from '../../lib/supabase.js';
+import { listAeoSnapshots, listImplementations, logReportSent, logReportGenerated, getGeneratedReport, getCachedReportData, setCachedReportData, persistAeoRuns, saveAeoSnapshot, latestEarlierAeoProbe } from '../../lib/supabase.js';
 import {
   ALICE_SEO_SYSTEM, MICROSITE_SEO_SYSTEM, QA_SEO_SYSTEM,
   ALICE_AEO_SYSTEM, MICROSITE_AEO_SYSTEM, QA_AEO_SYSTEM,
@@ -153,6 +153,9 @@ export default function MonthlyReport({ initialMonth }) {
   const [reportData, setReportData] = useState(null);
   const [liveAeoProbe, setLiveAeoProbe] = useState(null);
   const [previousAeoSnap, setPreviousAeoSnap] = useState(null);
+  // Implementation log rows for this client: the report's "What we changed
+  // this month" table and month-to-month strip (changeLog.js).
+  const [implementations, setImplementations] = useState(null);
   const [aeoOnly, setAeoOnly] = useState(false);
   // Bumped on every saved-token change so the Search Console readiness gate
   // re-evaluates after a silent refresh or an explicit sign-in.
@@ -238,6 +241,7 @@ export default function MonthlyReport({ initialMonth }) {
 
   useEffect(() => {
     if (!client) { setAeoSnap(null); setPreviousAeoSnap(null); setWorkSummary(null); return; }
+    listImplementations(client.id).then(setImplementations).catch(() => setImplementations(null));
     listAeoSnapshots(client.id).then(async rows => {
       // Sort newest-first then find this month + the most recent prior month.
       const sorted = (rows || []).slice().sort((a, b) => (b.month || '').localeCompare(a.month || ''));
@@ -525,10 +529,12 @@ export default function MonthlyReport({ initialMonth }) {
       aeoProbe,
       aeoCompare,
       aeoRanking,
+      implementations,
+      monthKey: month,
       aeoOnly,
       seoOnly: !aeoOnly
     });
-  }, [microJson, client, month, reportData, liveAeoProbe, aeoSnap, previousAeoSnap, aeoOnly]);
+  }, [microJson, client, month, reportData, liveAeoProbe, aeoSnap, previousAeoSnap, aeoOnly, implementations]);
 
   // What we actually render / download / print: the operator's visual
   // edits if any, otherwise the freshly built microsite. Override is

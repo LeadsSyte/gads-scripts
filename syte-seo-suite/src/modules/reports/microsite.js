@@ -3,6 +3,7 @@
 
 import { stripDashes } from './sanitize.js';
 import { monthlyScopeFor, hasCustomScope } from './monthlyScope.js';
+import { changeLog } from './changeLog.js';
 
 function esc(s = '') {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -195,7 +196,7 @@ function renderKeywordSections(rd) {
 //          separate products, so a report is one or the other, never a
 //          blend. Every AEO input is dropped at the source below rather
 //          than gated per section, so sections added later stay covered.
-export function buildMicrositeHtml({ micro, client, monthLabel, previousMonthLabel, rankscale, reportData, aeoProbe, aeoCompare, aeoRanking, aeoOnly = false, seoOnly = false }) {
+export function buildMicrositeHtml({ micro, client, monthLabel, monthKey = null, previousMonthLabel, rankscale, reportData, aeoProbe, aeoCompare, aeoRanking, implementations = null, aeoOnly = false, seoOnly = false }) {
   const aeo = seoOnly ? {} : (micro?.aeoSection || {});
   const showAeo = !!aeo.show && !aeoOnly;
   const ppc = micro?.ppcEquivalent || {};
@@ -208,6 +209,15 @@ export function buildMicrositeHtml({ micro, client, monthLabel, previousMonthLab
   const scopeKind = aeoOnly ? 'aeo' : 'seo';
   const scope = monthlyScopeFor(client, scopeKind, aeoOnly ? aeoProbe : null);
   const scopeIsChanges = hasCustomScope(client, scopeKind);
+  // The changes actually made this month, from the implementation log
+  // (changeLog.js), plus a month-to-month count. Typed-in items (scope
+  // override) are shown alongside as changes made outside the suite.
+  const changes = (implementations && monthKey)
+    ? changeLog(implementations, { clientId: client?.id, kind: scopeKind, month: monthKey })
+    : { items: [], total: 0, byCategory: {}, history: [] };
+  const showChanges = changes.total > 0 || scopeIsChanges;
+  const historyMax = Math.max(1, ...changes.history.map(h => h.count));
+  const showHistory = changes.history.some(h => h.count > 0);
   const rd = aeoOnly ? {} : (reportData || {});
   const traffic = rd.traffic || {};
   const isEcom = rd.clientType === 'ecommerce';
@@ -473,12 +483,53 @@ export function buildMicrositeHtml({ micro, client, monthLabel, previousMonthLab
       </div>
     </section>` : ''}
 
-    ${scope.length ? `
+    ${showChanges ? `
     <section>
-      <h2>${scopeIsChanges ? 'What We Changed This Month' : 'What We Do For You Every Month'}</h2>
-      <p style="color:var(--muted);font-size:13px;">${scopeIsChanges
-        ? `The changes we made for you in ${esc(monthLabel)}.`
-        : `Your ${aeoOnly ? 'AEO' : 'SEO'} programme with Syte: the work that runs every month.`}</p>
+      <h2>What We Changed This Month</h2>
+      <p style="color:var(--muted);font-size:13px;margin-bottom:16px;">${changes.total
+        ? `${changes.total} change${changes.total > 1 ? 's' : ''} made for you in ${esc(monthLabel)}, each checked on your live site or handed to your developer.`
+        : `The changes we made for you in ${esc(monthLabel)}.`}</p>
+      ${showHistory ? `
+      <div class="change-history" style="display:flex;gap:8px;align-items:flex-end;height:96px;margin-bottom:20px;">
+        ${changes.history.map(h => `
+          <div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%;">
+            <div style="font-size:12px;font-family:'JetBrains Mono',monospace;margin-bottom:4px;">${h.count}</div>
+            <div style="width:100%;max-width:48px;height:${Math.round((h.count / historyMax) * 56)}px;min-height:2px;border-radius:4px 4px 0 0;background:${h.month === monthKey ? 'var(--accent)' : 'var(--border)'};"></div>
+            <div style="font-size:10px;color:var(--muted);margin-top:6px;text-transform:uppercase;letter-spacing:.05em;">${esc(h.label.slice(0, 3))}</div>
+          </div>`).join('')}
+      </div>
+      <p style="color:var(--muted);font-size:12px;margin:-8px 0 16px;">Changes delivered per month, last ${changes.history.length} months.</p>` : ''}
+      ${changes.total ? `
+      <table class="data-table" style="width:100%;border-collapse:collapse;font-size:12px;">
+        <thead>
+          <tr style="border-bottom:2px solid var(--border);text-align:left;">
+            <th style="padding:8px 10px;color:var(--muted);font-size:10px;text-transform:uppercase;">Change</th>
+            <th style="padding:8px 10px;color:var(--muted);font-size:10px;text-transform:uppercase;">Page</th>
+            <th style="padding:8px 10px;color:var(--muted);font-size:10px;text-transform:uppercase;">Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${changes.items.slice(0, 60).map(it => `<tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:6px 10px;">${esc(it.title)}${it.type && !aeoOnly ? `<div style="color:var(--muted);font-size:11px;">${esc(it.type)}</div>` : ''}</td>
+            <td style="padding:6px 10px;font-family:'JetBrains Mono',monospace;font-size:11px;word-break:break-all;">${esc(it.page || '')}</td>
+            <td style="padding:6px 10px;white-space:nowrap;color:${it.status === 'Live on your site' ? 'var(--green)' : 'var(--muted)'};">${esc(it.status)}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+      ${changes.total > 60 ? `<p style="color:var(--muted);font-size:12px;margin-top:8px;">Plus ${changes.total - 60} more changes.</p>` : ''}` : ''}
+      ${scopeIsChanges ? `
+      <div class="work-grid" style="margin-top:${changes.total ? '20px' : '0'};">
+        ${scope.map(it => `
+          <div class="work-card">
+            <div class="work-summary">${esc(it.title)}</div>
+            ${it.detail ? `<div class="work-detail">${esc(it.detail)}</div>` : ''}
+          </div>
+        `).join('')}
+      </div>` : ''}
+    </section>` : scope.length ? `
+    <section>
+      <h2>What We Do For You Every Month</h2>
+      <p style="color:var(--muted);font-size:13px;">Your ${aeoOnly ? 'AEO' : 'SEO'} programme with Syte: the work that runs every month.</p>
       <div class="work-grid">
         ${scope.map(it => `
           <div class="work-card">
