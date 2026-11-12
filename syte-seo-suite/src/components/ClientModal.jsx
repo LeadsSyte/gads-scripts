@@ -12,6 +12,7 @@ import { SERVICE_META } from '../lib/serviceAssignments.js';
 import { SEARCH_COUNTRIES, resolveSearchCountry } from '../modules/reports/searchCountry.js';
 import { readQueryFile, parseQueryText } from '../modules/reports/customQueries.js';
 import { relevanceFor, offTopicReason } from '../modules/reports/probeRelevance.js';
+import { defaultScope, formatScope, scopeField } from '../modules/reports/monthlyScope.js';
 
 // Brand voice presets — the dropdown contents. Picking Custom… reveals the
 // free text box so you can still type something bespoke.
@@ -642,6 +643,39 @@ export default function ClientModal({ initial, onClose }) {
             <Field key={k} k={k} label={label} type={type} value={f[k]} onChange={update} />
           ))}
         </div>
+
+        {/* "What we do for you every month" section on the SEO / AEO reports */}
+        {[['seo', 'SEO report'], ['aeo', 'AEO report']].map(([kind, name]) => {
+          const k = scopeField(kind);
+          const standard = formatScope(defaultScope(f, kind));
+          return (
+            <div key={k} style={{ marginTop: 12 }}>
+              <div className="row" style={{ justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 4 }}>
+                <label style={{ margin: 0 }}>
+                  Monthly scope: {name}{' '}
+                  <span className="muted" style={{ textTransform: 'none', letterSpacing: 0, fontSize: 11 }}>
+                    (the "What we do for you every month" section; one item per line, "Title: description"; leave empty for the standard scope)
+                  </span>
+                </label>
+                <button
+                  type="button"
+                  onClick={() => update(k, standard)}
+                  style={{ padding: '4px 10px', fontSize: 11 }}
+                  title="Copies the standard scope into the box so you can edit it."
+                >
+                  Start from standard
+                </button>
+              </div>
+              <textarea
+                rows={5}
+                value={f[k] || ''}
+                placeholder={standard}
+                onChange={e => update(k, e.target.value)}
+                style={{ width: '100%' }}
+              />
+            </div>
+          );
+        })}
 
         {/* AEO prompt census with grounded auto-generate */}
         <div style={{ marginTop: 12 }}>
