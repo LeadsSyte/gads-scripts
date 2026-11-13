@@ -317,6 +317,7 @@ export default function AEOSnapshot() {
       if (!previousSnapshot) previousSnapshot = await latestEarlierAeoProbe(runClient.id, thisMonth);
       const result = await runSnapshot(runClient, {
         iterations,
+        adaptive: true, // don't repeat a prompt whose first answer clearly leaves the brand out
         expandWinners: true, winnerTarget: 30, maxExpansionQueries: 60, // spider-web long-tail off every winner
         previousSnapshot,
         onProgress: (p) => setProgress(p),
@@ -439,6 +440,7 @@ export default function AEOSnapshot() {
       setBulkProgress({ index: i, total, clientName: c.name, status: 'running' });
       try {
         const result = await runSnapshot(c, {
+          adaptive: true,
           onRuns: (records, raws) => persistAeoRuns(records, raws).catch(() => {}),
           onProgress: (p) => {
             setBulkProgress({

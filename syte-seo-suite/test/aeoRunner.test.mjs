@@ -270,5 +270,46 @@ await t('estimateRunCost: totals probes×engines×modes×N', async () => {
   eq(est.totalCalls, 36, 'engine + extraction calls');
 });
 
+// ── Adaptive iterations ─────────────────────────────────────
+// Brand named only for "best widgets"; "buy widgets cape town" is a clean miss.
+const extractByQuery = async ({ text }) => /BEST/.test(text)
+  ? { appeared: true, position: 1, listLength: 2, segmentLabel: null, reasonPhrase: null, sentiment: 'positive', competitorsNamed: [] }
+  : { appeared: false, position: null, listLength: 3, segmentLabel: null, reasonPhrase: null, sentiment: 'neutral', competitorsNamed: ['BetaCorp'] };
+function countingStub() {
+  const asked = [];
+  const eng = gptStub({ ask: async (q, { search } = {}) => { asked.push(q); return { text: /best/.test(q) ? 'BEST Acme' : 'BetaCorp is good', raw: {}, searchMode: search ? 'search_on' : 'search_off' }; } });
+  return { eng, asked };
+}
+const ADAPT_CLIENT = { ...CLIENT, aeo_probe_queries: 'best widgets\nbuy widgets cape town', aeo_probes: undefined };
+
+await t('adaptive: a clean first miss is asked once; scores match a full run', async () => {
+  const a = countingStub(), f = countingStub();
+  const opts = { extract: extractByQuery, iterations: 3, retrievalOnly: true, concurrency: 1, now: NOW };
+  const full = await mod.runSnapshot(ADAPT_CLIENT, { ...opts, engines: [f.eng] });
+  const persisted = [];
+  const ad = await mod.runSnapshot(ADAPT_CLIENT, { ...opts, engines: [a.eng], adaptive: true, onRuns: (r) => persisted.push(...r) });
+  ok(a.asked.length < f.asked.length, 'fewer questions');
+  eq(a.asked.filter(q => /cape town/.test(q)).length, 1, 'miss asked once');
+  eq(a.asked.filter(q => /best widgets/.test(q)).length, 3, 'win asked in full');
+  eq(ad.composite_index, full.composite_index, 'composite unchanged');
+  eq(ad.visibility_score, full.visibility_score, 'visibility unchanged');
+  eq(JSON.stringify(ad.competitors), JSON.stringify(full.competitors), 'competitors unchanged');
+  ok(!persisted.some(r => r.inferred), 'inferred repeats are never persisted');
+  eq(ad.run_config.adaptive.skipped_calls, f.asked.length - a.asked.length, 'skipped calls reported');
+});
+
+await t('adaptive: a prompt won last month is repeated in full', async () => {
+  const a = countingStub();
+  const prev = { month: '2026-06', probe_results: [{ query: 'buy widgets cape town', appearances: 1, visibilityScore: 20 }] };
+  await mod.runSnapshot(ADAPT_CLIENT, { engines: [a.eng], extract: extractByQuery, iterations: 3, retrievalOnly: true, concurrency: 1, now: NOW, adaptive: true, previousSnapshot: prev, maxCarried: 0 });
+  eq(a.asked.filter(q => q === 'buy widgets cape town').length, 3, 'last-month winner asked 3x');
+});
+
+await t('adaptive: off by default', async () => {
+  const a = countingStub();
+  await mod.runSnapshot(ADAPT_CLIENT, { engines: [a.eng], extract: extractByQuery, iterations: 3, retrievalOnly: true, concurrency: 1, now: NOW });
+  eq(a.asked.filter(q => /cape town/.test(q)).length, 3, 'miss asked 3x without adaptive');
+});
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 if (fail > 0) process.exit(1);
