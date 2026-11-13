@@ -42,6 +42,15 @@ function resultsByQuery(snap) {
   return out;
 }
 
+// Normalized queries the brand appeared for (any engine) in a snapshot. The
+// runner's adaptive iterations keep these on the full repeat count, so a prompt
+// that won last month is always measured precisely.
+export function wonQueriesFrom(snap) {
+  const out = new Set();
+  for (const [k, v] of resultsByQuery(snap)) if (v.won) out.add(k);
+  return out;
+}
+
 // The long-tail prompts a previous snapshot probed. Prefers the explicit
 // expansion_probes list; older snapshots (or history rows saved without it)
 // fall back to the long-tail rows in probe_results.

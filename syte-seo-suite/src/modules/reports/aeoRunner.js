@@ -29,7 +29,7 @@ import { buildCitationGaps } from './aeoCitationGaps.js';
 import { expandWinnerQuery } from './winnerExpansion.js';
 import { relevanceFor, offTopicReason, competitorTermsFor, customQueriesFor } from './probeRelevance.js';
 import { resolveSearchCountry } from './searchCountry.js';
-import { carriedPromptsFrom, stampLongTail, carryForwardSummary, DEFAULT_MAX_CARRIED } from './aeoCarryForward.js';
+import { carriedPromptsFrom, stampLongTail, carryForwardSummary, wonQueriesFrom, DEFAULT_MAX_CARRIED } from './aeoCarryForward.js';
 
 const DEFAULT_ITERATIONS = 3;
 const DEFAULT_CONCURRENCY = 3;   // max in-flight requests per engine
@@ -231,6 +231,15 @@ export async function runSnapshot(client, opts = {}) {
     // point, so the web grows month to month instead of restarting.
     previousSnapshot = null,
     maxCarried = DEFAULT_MAX_CARRIED,
+    // Adaptive iterations: when the first answer for a (prompt, engine) clearly
+    // leaves the brand out, the remaining N-1 repeats are not asked. Most
+    // prompts are stable misses, so this removes most of the census's calls.
+    // The skipped repeats are scored as the same miss (copies of the real run,
+    // flagged `inferred`, never persisted), so every rate keeps the same
+    // denominator as a full run. Prompts are always repeated in full when the
+    // brand appeared for them last month, when any engine has already named
+    // the brand for them this run, and for reverse (brand-ask) instruments.
+    adaptive = false,
     // Server runs have a hard time limit, and a full census doesn't fit in
     // one. timeLeftMs() is asked before each (probe, engine, mode) group
     // starts: when it runs low, the groups not yet started are left for the
@@ -283,6 +292,12 @@ export async function runSnapshot(client, opts = {}) {
     || carriedChildren.find(p => p.source === 'carried')?.carriedFrom || null;
 
   const N = Math.max(1, Math.min(10, Number(iterations) || DEFAULT_ITERATIONS));
+  const wonLastMonth = adaptive ? wonQueriesFrom(previousSnapshot) : new Set();
+  const hitThisRun = new Set();   // queries any engine has named the brand for, this run
+  let settledGroups = carry?.settledGroups || 0;
+  let skippedCalls = carry?.skippedCalls || 0;
+  const repeatInFull = (probe) => probe.type === 'reverse'
+    || wonLastMonth.has(normQ(probe.query)) || hitThisRun.has(normQ(probe.query));
   const competitorList = parseCompetitors(client.competitors);
   const brandName = client.name;
   // Every engine searches from the client's market (searchCountry.js).
@@ -399,6 +414,16 @@ export async function runSnapshot(client, opts = {}) {
       runRecords.push(rec);
       rawEntries.push({ hash, engine: eng.id, run_mode: mode, raw_response: text, client_id: client.id });
       runs.push(rec);
+      if (rec.appeared) hitThisRun.add(normQ(probe.query));
+      // Adaptive: a clean first miss settles the group (see `adaptive`).
+      if (adaptive && i === 0 && N > 1 && !rec.appeared && !repeatInFull(probe)) {
+        for (let k = 1; k < N; k++) runs.push({ ...rec, runIndex: k, inferred: true });
+        done += N - 1;
+        settledGroups++;
+        skippedCalls += N - 1;
+        onProgress?.({ phase: 'done', engine: eng.label, query: probe.query, mode, index: done, total });
+        break;
+      }
     }
     return { probe, engine: eng, mode, runs };
   }
@@ -434,6 +459,7 @@ export async function runSnapshot(client, opts = {}) {
   }));
   const carriedKeys = new Set(carriedGroups.map(g => groupKey(g.probe, g.engine.id, g.mode)));
   for (const g of carriedGroups) if (g.runs.length) enginesRan.add(g.engine.id);
+  for (const g of carriedGroups) if (g.runs.some(r => r.appeared)) hitThisRun.add(normQ(g.probe.query));
   let unfinished = false;
 
   let groups = carriedGroups.concat(await sweep(runnableProbes.concat(carriedChildren, priorProbes)));
@@ -575,7 +601,8 @@ export async function runSnapshot(client, opts = {}) {
         discovered: discoveredProbes,
         expansionUsed, expansionDepth,
         expandedQueries: [...expandedQueries],
-        newDone, newFound
+        newDone, newFound,
+        settledGroups, skippedCalls
       }
     };
   }
@@ -835,7 +862,10 @@ export async function runSnapshot(client, opts = {}) {
       id: e.id, model: e.model, retrievalNative: !!e.retrievalNative,
       temperature, extraction_temperature: 0
     })),
-    run_config: { iterations: N, concurrency, retries, temperature },
+    // adaptive: (prompt, engine) pairs settled after one clean miss, and the
+    // engine calls (each also an extraction) that saved. null = full repeats.
+    run_config: { iterations: N, concurrency, retries, temperature,
+      adaptive: adaptive ? { settled_groups: settledGroups, skipped_calls: skippedCalls } : null },
     // Where the engines searched from (null = no location sent).
     search_country: searchCountry,
     run_modes_used: [...new Set(groups.map(g => g.mode))],
