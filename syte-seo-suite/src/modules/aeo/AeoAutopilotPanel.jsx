@@ -233,6 +233,16 @@ export default function AeoAutopilotPanel({ accent, onFinished }) {
         After each run, add the checked sections to the website without waiting for approval
         {!wpConnected && <span className="muted"> (needs a working WordPress or Shopify connection)</span>}
       </label>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '10px 0 0', cursor: 'pointer', width: 'fit-content' }}>
+        <input type="checkbox" checked={!!profile.aeogrok_auto} disabled={busy}
+          onChange={e => toggle('aeogrok_auto', e.target.checked)} style={{ width: 'auto', margin: 0 }} />
+        After each run, send what the suite can't do itself to the Grok bot (it makes the change on the site and emails what it changed)
+      </label>
+      <div className="muted" style={{ fontSize: 11, margin: '6px 0 0' }}>
+        {profile.aeofix_auto || profile.aeogrok_auto
+          ? 'Runs without approval: changes are made after each run, emailed, and can be undone.'
+          : 'Needs approval: nothing changes on the website until someone clicks Apply or Send to Grok bot.'}
+      </div>
       {!!profile.aeofix_auto && (
         <div className="muted" style={{ fontSize: 11, margin: '2px 0 0 24px' }}>
           This puts new AI-written wording on the client's live pages. The summary email lists every section added, and each can be undone here.

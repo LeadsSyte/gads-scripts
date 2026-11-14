@@ -114,6 +114,12 @@ export const PROFILE_DEFAULTS = {
   // without waiting for a person. Each one can be undone in the panel.
   techfix_auto: false,
 
+  // Tech Autopilot: after each scan, send the checked fixes the suite cannot
+  // make itself to the Grok bot (netlify/functions/lib/grokQueue.js), which
+  // makes them on the site and emails what it changed. With techfix_auto off
+  // as well, the client "needs approval": nothing changes until a person clicks.
+  techgrok_auto: false,
+
   // AEO Autopilot: generate and independently check this month's AEO
   // optimisations on the 1st (netlify/functions/aeoscan-monthly.js).
   aeoscan_enabled: false,
@@ -122,6 +128,10 @@ export const PROFILE_DEFAULTS = {
   // end of each run, without waiting for a person. This is new wording
   // visitors can see; each addition can be undone in the panel.
   aeofix_auto: false,
+
+  // AEO Autopilot: the same hand-off to the Grok bot for checked additions
+  // the suite cannot add itself (grokQueue.js).
+  aeogrok_auto: false,
 
   // Report Autopilot: build last month's SEO report on the 5th, check every
   // figure against the data, and tell the account manager it's ready

@@ -250,6 +250,16 @@ export default function TechAutopilotPanel({ accent, onFinished }) {
         After each scan, make the checked fixes on the website without waiting for approval
         {!wpConnected && <span className="muted"> (needs a working WordPress or Shopify connection)</span>}
       </label>
+      <label style={CHECKBOX_LABEL}>
+        <input type="checkbox" checked={!!profile.techgrok_auto} disabled={busy}
+          onChange={e => toggle('techgrok_auto', e.target.checked)} style={{ width: 'auto', margin: 0 }} />
+        After each scan, send what the suite can't do itself to the Grok bot (it makes the change on the site and emails what it changed)
+      </label>
+      <div className="muted" style={{ fontSize: 11, margin: '6px 0 0' }}>
+        {profile.techfix_auto || profile.techgrok_auto
+          ? 'Runs without approval: changes are made after each run, emailed, and can be undone.'
+          : 'Needs approval: nothing changes on the website until someone clicks Apply or Send to Grok bot.'}
+      </div>
 
       {!active && wpConnected && toApply.length > 0 && !applyingAll && !confirmingAll && (
         <button className="primary" onClick={() => setConfirmingAll(true)}

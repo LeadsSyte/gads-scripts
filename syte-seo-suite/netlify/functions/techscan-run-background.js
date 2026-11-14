@@ -13,6 +13,10 @@ import { fetchGscPages } from './lib/serverGsc.js';
 import { loadClient } from './lib/autopilotStore.js';
 import { loadTechHistory, replaceOpenTasks, loadTechState, saveTechState, fetchLiveHtml, fetchPlainText } from './lib/techStore.js';
 import { emailTechSummary, startAutoFixes } from './lib/runNotify.js';
+import { autoSendToBot } from './lib/grokQueue.js';
+import { loadTechFixes } from './lib/techStore.js';
+import { hasWordPress } from './lib/wpClient.js';
+import { hasShopify } from './lib/shopifyClient.js';
 import { getPublishingProfile } from '../../src/modules/cms/publishingProfile.js';
 
 const BUDGET_MS = 14 * 60 * 1000;
@@ -68,6 +72,9 @@ export async function handler(event) {
     } else {
       const auto = state.status === 'done' && getPublishingProfile(client).techfix_auto;
       if (!auto || !(await startAutoFixes('techfix-background', clientId, base, required))) {
+        // No automatic suite fixes: what the suite can't do goes to the Grok bot now
+        // (techgrok_auto); with them, techfix-background does this when it finishes.
+        if (await autoSendToBot(supabase, client, 'tech', state, { getPublishingProfile, loadFixes: loadTechFixes, hasSite: c => hasWordPress(c) || hasShopify(c) })) await saveTechState(supabase, state).catch(() => {});
         await emailTechSummary(supabase, client, state, base);
       }
     }

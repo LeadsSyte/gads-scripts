@@ -60,6 +60,7 @@ export const ROUTES = [
   r('GET', '/grok-jobs/:id', 'read', 'reads', getGrokJob, { summary: 'One Grok bot job with its `brief` (what to change, where, how to check, what to report).' }),
   r('POST', '/grok-jobs/:id/claim', 'grok:work', 'writes', claimGrokJob, { summary: 'The bot takes a queued job before starting it, so no other bot does the same work.' }),
   r('POST', '/grok-jobs/:id/complete', 'grok:work', 'writes', completeGrokJob, { summary: "The bot's report when it has finished: result done | failed | skipped, a note, and for done the list of changes with the value before and after (needed for undo). The suite emails the reviewer what changed and logs it as external work.", body: obj({ result: { type: 'string', enum: ['done', 'failed', 'skipped'] }, note: { type: 'string' }, changes: { type: 'array', items: obj({ url: { type: 'string' }, what: { type: 'string' }, before: { type: 'string' }, after: { type: 'string' } }, ['what']) } }, ['result']) }),
+  r('GET', '/grok-jobs/:id/login', 'grok:work', 'reads', grokJobLogin, { summary: "The website login stored in the suite for this job's client (CMS → Connector → Website login), for sites with no Vault login. Only for a job the caller has claimed; every read is written to the audit log. Never post it in a chat." }),
   r('POST', '/grok-jobs/:id/undo', 'content', 'writes', undoGrokJob, { summary: 'Queue a job that puts back the "before" values of a finished job.' }),
   r('GET', '/clients/:id/blueprint', 'read', 'reads', getBlueprint, { summary: "The client's article blueprint (how their own published articles are written: structure, headings, tone, recurring elements) and the state of the last learn. New articles and rewrites follow it; check drafts against it." }),
   r('POST', '/clients/:id/blueprint', 'content', 'writes', learnBlueprintRoute, { summary: "Learn (or re-learn) the blueprint from the articles published on the client's own blog (blueprint-learn-background; read-only on the site). A blueprint the team edited is kept unless force is true. Poll GET /clients/{id}/blueprint until learn.status is done, skipped, not_enough or failed.", body: obj({ force: { type: 'boolean' } }, []) }),
@@ -343,6 +344,18 @@ async function completeGrokJob(ctx) {
     }
   }
   return withBrief(job);
+}
+async function grokJobLogin(ctx) {
+  const row = await grokJobOr404(ctx);
+  const job = row.data;
+  const me = ctx.actor.name || ctx.actor.email || ctx.actor.kind;
+  if (job.status !== 'claimed') throw new ApiError(409, 'Claim the job first; the login is only given for a job in progress.');
+  if (ctx.actor.kind === 'api_key' && job.claimed_by !== me) throw new ApiError(403, 'This job was claimed by ' + job.claimed_by + '.');
+  const secrets = await ctx.db.one('syte_suite_client_secrets', { client_id: job.client_id });
+  const login = secrets?.site_login;
+  await audit(ctx.db, { actor: { kind: ctx.actor.kind, id: ctx.actor.id, name: me }, action: 'GET /grok-jobs/:id/login', client_id: job.client_id, target: job.job_id, result: login?.username ? 'given' : 'none stored', ip: ctx.ip });
+  if (!login?.username || !login?.password) throw new ApiError(404, 'No website login is stored in the suite for ' + job.client_name + '. Use the saved Vault login, or report the job "skipped".');
+  return { login_url: login.login_url || job.site_url, username: login.username, password: login.password, notes: login.notes || '' };
 }
 async function undoGrokJob(ctx) {
   const row = await grokJobOr404(ctx);

@@ -73,7 +73,7 @@ export function renderJobBrief(job) {
   lines.push(
     '',
     'RULES',
-    '- Log in with the saved login for this site. If there is none or it fails, do not try another way in: report result "skipped" with the reason.',
+    '- Log in with the saved Vault login for this site. If the Vault has none, GET /grok-jobs/' + job.job_id + '/login gives the login stored in the suite (type it in; never post it in a chat). If there is none or it fails, do not try another way in: report result "skipped" with the reason.',
     '- Before you change anything, copy the current value (the text, title, heading or code you are about to change). You must report it as "before" so the change can be undone.',
     '- Change only what is described. Do not touch other content, settings, plugins or themes.',
     '- Save the change (this is a live page; that is intended). Never publish drafts, never delete anything.',

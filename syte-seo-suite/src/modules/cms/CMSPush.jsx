@@ -18,6 +18,7 @@ import { unpublishItem, canUnpublish } from './unpublish.js';
 import { downloadHelperPlugin, checkHelperPlugin, HELPER_PLUGIN_VERSION } from './helperPlugin.js';
 import ClientCssField from './ClientCssField.jsx';
 import BlueprintField from './BlueprintField.jsx';
+import SiteLoginField from './SiteLoginField.jsx';
 
 const ACCENT = '#4dabff';
 
@@ -671,6 +672,7 @@ export default function CMSPush({ sub, setSub }) {
                     </div>
                     <ClientCssField profile={profile} setP={setP} disabled={busy} />
                     <BlueprintField client={client} profile={profile} setP={setP} disabled={busy} />
+                    <SiteLoginField client={client} disabled={busy} />
                     <div className="row" style={{ marginTop: 10 }}>
                       <button onClick={() => saveConnector({}, 'Profile saved.', 'profile')} disabled={busy}>Save Profile</button>
                     </div>
