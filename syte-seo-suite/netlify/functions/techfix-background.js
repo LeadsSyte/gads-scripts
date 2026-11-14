@@ -20,6 +20,8 @@ import { shopifyClient, hasShopify } from './lib/shopifyClient.js';
 import { shopifyTechOps } from './lib/shopifyFix.js';
 import { wpTechOps } from './lib/helperFix.js';
 import { emailTechSummary } from './lib/runNotify.js';
+import { autoSendToBot } from './lib/grokQueue.js';
+import { getPublishingProfile } from '../../src/modules/cms/publishingProfile.js';
 
 export const fixRowId = techFixRowId;
 const BUDGET_MS = 13 * 60 * 1000;
@@ -96,6 +98,7 @@ export async function handler(event) {
       console.error('[techfix] auto_all failed:', e.message);
       state.auto = { ...(state.auto || {}), status: 'failed', reason: String(e.message || e).slice(0, 300) };
     }
+    if (client) await autoSendToBot(supabase, client, 'tech', state, { getPublishingProfile, loadFixes: loadTechFixes, hasSite: c => hasWordPress(c) || hasShopify(c) });
     try { await saveTechState(supabase, state); } catch { /* the email still goes */ }
     await emailTechSummary(supabase, client || { id: clientId, name: state.client_name || 'Client' }, state, base);
     return { statusCode: 202 };

@@ -190,8 +190,10 @@ Work the Syte job queue. API base https://syte-seo-suite.netlify.app/api/v1, hea
    a. POST /grok-jobs/{job_id}/claim. If it answers 409, another run has it: skip it.
    b. Read the job's "brief": the page, what is wrong, where to change it, the exact change,
       the check, and the rules. Follow it exactly.
-   c. Log in to that client's site with the saved login. No login, or it fails: do not try
-      another way in. Report result "skipped" with what you saw.
+   c. Log in to that client's site with the saved Vault login. If the Vault has none, GET
+      /grok-jobs/{job_id}/login gives the login stored in the suite (CMS → Connector → Website
+      login): type it in, never post it in a chat. No login, or it fails: do not try another
+      way in. Report result "skipped" with what you saw.
    d. BEFORE changing anything, copy the current value you are about to change. Then make the
       change, save, clear the site cache if there is a button, and do the "Check" step.
       If the check fails, put the page back as it was and report "failed".
@@ -203,6 +205,11 @@ Work the Syte job queue. API base https://syte-seo-suite.netlify.app/api/v1, hea
    "Put back" text in the brief, check, and report the same way.
 
 The suite emails the reviewer what changed after every job; you do not email anyone.
+
+Where jobs come from: a person's "Send to Grok bot" click, or, for clients that run
+without approval (Tech/AEO Autopilot panels: "send what the suite can't do itself to the
+Grok bot"), the monthly run on the 1st. Clients that need approval only ever get jobs
+from a click.
 Never: change anything the brief does not name; touch themes, plugins or settings beyond
 the item; publish, unpublish or delete anything; work on a client on the standing skip list.
 ```

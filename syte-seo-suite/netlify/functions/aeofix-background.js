@@ -23,6 +23,7 @@ import { shopifyAeoOps } from './lib/shopifyAeo.js';
 import { wpAeoOps } from './lib/helperFix.js';
 import { previewUrl } from './lib/previewSig.js';
 import { emailAeoSummary } from './lib/runNotify.js';
+import { autoSendToBot } from './lib/grokQueue.js';
 import { visualCheck, visualCheckAvailable } from './lib/visualCheck.js';
 import { claudeCompleteServer } from './lib/serverAi.js';
 import { getPublishingProfile } from '../../src/modules/cms/publishingProfile.js';
@@ -105,6 +106,7 @@ export async function handler(event) {
       console.error('[aeofix] auto_all failed:', e.message);
       state.auto = { ...(state.auto || {}), status: 'failed', reason: String(e.message || e).slice(0, 300) };
     }
+    if (client) await autoSendToBot(supabase, client, 'aeo', state, { getPublishingProfile, loadFixes: loadAeoFixes, keyOf: fixKey, hasSite: c => hasWordPress(c) || hasShopify(c) });
     try { await saveAeoState(supabase, state); } catch { /* the email still goes */ }
     await emailAeoSummary(supabase, client || { id: clientId, name: state.client_name || 'Client' }, state, base);
     return { statusCode: 202 };

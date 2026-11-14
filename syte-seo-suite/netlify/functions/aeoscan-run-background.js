@@ -14,6 +14,11 @@ import { loadClient } from './lib/autopilotStore.js';
 import { fetchLiveHtml } from './lib/techStore.js';
 import { loadAeoPrior, saveAeoRow, loadAeoState, saveAeoState, trafficFromGsc } from './lib/aeoStore.js';
 import { emailAeoSummary, startAutoFixes } from './lib/runNotify.js';
+import { autoSendToBot } from './lib/grokQueue.js';
+import { loadAeoFixes } from './lib/aeoStore.js';
+import { fixKey } from './lib/aeoFix.js';
+import { hasWordPress } from './lib/wpClient.js';
+import { hasShopify } from './lib/shopifyClient.js';
 import { getPublishingProfile } from '../../src/modules/cms/publishingProfile.js';
 import { discoverSiteUrls } from '../../src/modules/aeo/sitemap.js';
 
@@ -69,6 +74,7 @@ export async function handler(event) {
     } else {
       const auto = state.status === 'done' && getPublishingProfile(client).aeofix_auto;
       if (!auto || !(await startAutoFixes('aeofix-background', clientId, base, required))) {
+        if (await autoSendToBot(supabase, client, 'aeo', state, { getPublishingProfile, loadFixes: loadAeoFixes, keyOf: fixKey, hasSite: c => hasWordPress(c) || hasShopify(c) })) await saveAeoState(supabase, state).catch(() => {});
         await emailAeoSummary(supabase, client, state, base);
       }
     }
